@@ -1,0 +1,13 @@
+[package]
+name = "extensions"
+description = "Extension API: add pages, react to Steam events, add buttons to games and friends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+client.workspace = true
+local.workspace = true
+model.workspace = true
+ui.workspace = true
+egui.workspace = true

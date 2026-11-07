@@ -1,0 +1,83 @@
+[workspace]
+resolver = "3"
+members = ["apps/desktop", "apps/installer", "crates/*"]
+# steamclient builds the DLL games load (it must sit next to steam-rs.exe).
+default-members = ["apps/desktop", "crates/steamclient"]
+
+[workspace.package]
+version = "0.1.0" # x-release-please-version
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+# Internal crates
+vdf = { path = "crates/vdf" }
+model = { path = "crates/model" }
+local = { path = "crates/local" }
+ui = { path = "crates/ui" }
+proto = { path = "crates/proto" }
+net = { path = "crates/net" }
+auth = { path = "crates/auth" }
+client = { path = "crates/client" }
+extensions = { path = "crates/extensions" }
+store = { path = "crates/store" }
+plugins = { path = "crates/plugins" }
+i18n = { path = "crates/i18n" }
+depot = { path = "crates/depot" }
+video = { path = "crates/video" }
+
+# Protocol
+prost = "0.14"
+prost-build = "0.14"
+protox = "0.10"
+tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+flate2 = "1"
+rsa = "0.9"
+rand = "0.8"
+base64 = "0.22"
+directories = "6"
+rhai = { version = "1.27", features = ["sync"] }
+qrcode = { version = "0.14", default-features = false }
+global-hotkey = "0.9"
+toml = "1"
+sys-locale = "0.3"
+tray-icon = "0.26"
+
+# UI
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+egui = "0.37"
+egui_extras = { version = "0.37", features = ["all_loaders"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+
+# Async + network
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "query", "form", "cookies"] }
+
+# Common
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+open = "5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Keep the target folder small: our code keeps line numbers (enough for
+# backtraces), dependencies carry no debug info at all.
+[profile.dev]
+debug = "line-tables-only"
+
+# Fast image decoding even in debug builds; no debug info for dependencies.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+# Video frames are converted pixel by pixel: keep that fast in debug builds.
+[profile.dev.package.video]
+opt-level = 3

@@ -1,0 +1,4 @@
+# This machine has MinGW but not the MSVC linker. Switch to
+# "stable-x86_64-pc-windows-msvc" once Visual Studio Build Tools are installed.
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"

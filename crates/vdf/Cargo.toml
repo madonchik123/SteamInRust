@@ -1,0 +1,9 @@
+[package]
+name = "vdf"
+description = "Parser for Valve's KeyValues (VDF / ACF) text format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true

@@ -1,0 +1,64 @@
+# How releases happen:
+# 1. Contributors' PRs are merged into main (PR titles like "feat: …", "fix: …").
+# 2. release-please keeps one open "chore(main): release X.Y.Z" PR that bumps
+#    the version in Cargo.toml and writes CHANGELOG.md from those titles.
+# 3. Merging that release PR tags vX.Y.Z and creates the GitHub release; the
+#    job below then builds the setup, portable zip and SHA256SUMS.txt and
+#    attaches them. Installed copies of the app update themselves from it.
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+
+      - name: MinGW (the project uses the GNU toolchain)
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
+
+      - name: Put MinGW on PATH
+        shell: pwsh
+        run: echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+      - name: Package
+        shell: pwsh
+        run: ./tools/package.ps1
+
+      - name: Attach the files to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release-please.outputs.tag }}" (Get-ChildItem target/package/dist/* | ForEach-Object FullName) --clobber

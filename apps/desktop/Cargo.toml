@@ -1,0 +1,45 @@
+[package]
+name = "steam-rs"
+description = "A native Steam client written in Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "steam-rs"
+path = "src/main.rs"
+
+[dependencies]
+client.workspace = true
+extensions.workspace = true
+plugins.workspace = true
+store.workspace = true
+video.workspace = true
+local.workspace = true
+model.workspace = true
+ui.workspace = true
+i18n.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+image.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+fs4 = "1"
+qrcode.workspace = true
+global-hotkey.workspace = true
+tray-icon.workspace = true
+rfd = "0.18"
+open.workspace = true
+directories.workspace = true
+sha2 = "0.10"
+reqwest.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+winresource = "0.1"

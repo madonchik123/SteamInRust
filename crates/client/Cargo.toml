@@ -1,0 +1,31 @@
+[package]
+name = "client"
+description = "High-level Steam session: login, presence, friends, owned library, game launching"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+net.workspace = true
+auth.workspace = true
+proto.workspace = true
+vdf.workspace = true
+model.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
+prost.workspace = true
+reqwest.workspace = true
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+directories.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+depot.workspace = true
+futures-util.workspace = true
+sha1 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+fs4 = "1"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+local.workspace = true

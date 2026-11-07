@@ -1,0 +1,25 @@
+[package]
+name = "installer"
+description = "SteamInRust setup: installs, updates and uninstalls the app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "SteamInRust-Setup"
+path = "src/main.rs"
+
+[dependencies]
+ui.workspace = true
+i18n.workspace = true
+eframe.workspace = true
+egui.workspace = true
+directories.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }
+rfd = "0.18"
+
+[build-dependencies]
+winresource = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

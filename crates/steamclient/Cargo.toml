@@ -1,0 +1,15 @@
+[package]
+name = "steamclient"
+description = "Replacement for Steam's steamclient64.dll: gives games started by SteamInRust the signed-in user, stats, achievements and cloud files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# steam_api64.dll loads this by full path (see client::launch); the file
+# name doesn't matter, the exports do.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,125 @@
+//! Icon glyphs from the bundled Phosphor icon font (MIT, see assets/).
+//! Use them in any text: `format!("{} Play", icons::PLAY)`.
+//! To add one, look up its codepoint at https://phosphoricons.com.
+
+pub const HOUSE: &str = "\u{E2C2}";
+pub const BOOKS: &str = "\u{E758}";
+pub const LIGHTNING: &str = "\u{E2DE}";
+pub const CHART_BAR: &str = "\u{E150}";
+pub const GEAR: &str = "\u{E270}";
+pub const SEARCH: &str = "\u{E30C}";
+pub const PLAY: &str = "\u{E3D0}";
+pub const USERS: &str = "\u{E4D6}";
+pub const USER: &str = "\u{E4C2}";
+pub const SHIELD: &str = "\u{E40C}";
+pub const FOLDER: &str = "\u{E256}";
+pub const POWER: &str = "\u{E3DA}";
+pub const DOWNLOAD: &str = "\u{E20C}";
+pub const LIST: &str = "\u{E2F0}";
+pub const GRID: &str = "\u{E464}";
+pub const X: &str = "\u{E4F6}";
+pub const PLUS: &str = "\u{E3D4}";
+pub const BACK: &str = "\u{E138}";
+pub const COPY: &str = "\u{E1CA}";
+pub const CONTROLLER: &str = "\u{E26E}";
+pub const CLOCK: &str = "\u{E19A}";
+pub const DRIVES: &str = "\u{E2A0}";
+pub const PUZZLE: &str = "\u{E596}";
+pub const PALETTE: &str = "\u{E6C8}";
+pub const INFO: &str = "\u{E2CE}";
+pub const SIGN_OUT: &str = "\u{E42A}";
+pub const BELL: &str = "\u{E0CE}";
+pub const DICE: &str = "\u{E1EE}";
+pub const CHAT: &str = "\u{E16C}";
+pub const CHATS: &str = "\u{E17C}";
+pub const STORE: &str = "\u{E470}";
+pub const USER_CIRCLE: &str = "\u{E4C4}";
+pub const SEND: &str = "\u{E396}";
+pub const CARET_DOWN: &str = "\u{E136}";
+pub const CARET_RIGHT: &str = "\u{E13A}";
+pub const CARET_LEFT: &str = "\u{E138}";
+pub const STAR: &str = "\u{E46A}";
+pub const WINDOWS: &str = "\u{E692}";
+pub const APPLE: &str = "\u{E516}";
+pub const LINUX: &str = "\u{EB02}";
+pub const CHECK: &str = "\u{E182}";
+pub const TROPHY: &str = "\u{E67E}";
+pub const PUSH_PIN: &str = "\u{E3E2}";
+pub const PUSH_PIN_SLASH: &str = "\u{E3E4}";
+pub const ARROW_LEFT: &str = "\u{E058}";
+pub const ARROW_RIGHT: &str = "\u{E06C}";
+pub const TAG: &str = "\u{E478}";
+pub const FIRE: &str = "\u{E242}";
+pub const SPARKLE: &str = "\u{E6A2}";
+pub const CALENDAR: &str = "\u{E108}";
+pub const THUMBS_UP: &str = "\u{E48E}";
+pub const DOTS: &str = "\u{E1FE}";
+pub const EXTERNAL: &str = "\u{E5DE}";
+pub const CART: &str = "\u{E41E}";
+pub const QR: &str = "\u{E3E6}";
+pub const KEY: &str = "\u{E2D6}";
+pub const LOCK: &str = "\u{E2FA}";
+pub const WARNING: &str = "\u{E4E0}";
+pub const REFRESH: &str = "\u{E036}";
+pub const TRASH: &str = "\u{E4A6}";
+pub const NOTE: &str = "\u{E348}";
+pub const GLOBE: &str = "\u{E288}";
+pub const MONITOR: &str = "\u{E32E}";
+pub const CROWN: &str = "\u{E614}";
+pub const PLUGS: &str = "\u{EB56}";
+pub const SLIDERS: &str = "\u{E432}";
+pub const EYE: &str = "\u{E220}";
+
+pub const CIRCLE: &str = "\u{E18A}";
+pub const STOP: &str = "\u{E46C}";
+pub const CARET_UP: &str = "\u{E13C}";
+pub const CLOUD_CHECK: &str = "\u{E1B0}";
+pub const CUBE: &str = "\u{E1DA}";
+pub const DESKTOP: &str = "\u{E560}";
+pub const BRANCH: &str = "\u{E278}";
+pub const HEART: &str = "\u{E2A8}";
+pub const IMAGE: &str = "\u{E2CA}";
+pub const LINK: &str = "\u{E2E2}";
+pub const PAINT: &str = "\u{E6F0}";
+pub const STACK: &str = "\u{E466}";
+pub const BACKPACK: &str = "\u{E922}";
+pub const SWAP: &str = "\u{E0A0}";
+pub const MEDAL: &str = "\u{E320}";
+pub const CAMERA: &str = "\u{E10E}";
+pub const USERS_THREE: &str = "\u{E68E}";
+pub const PACKAGE: &str = "\u{E390}";
+pub const STOREFRONT: &str = "\u{E470}";
+pub const GIFT: &str = "\u{E276}";
+pub const FUNNEL: &str = "\u{E266}";
+pub const LOCK_SIMPLE: &str = "\u{E308}";
+pub const SCROLL: &str = "\u{EB7A}";
+pub const SORT: &str = "\u{E444}";
+pub const USER_PLUS: &str = "\u{E4D0}";
+pub const EYE_SLASH: &str = "\u{E224}";
+pub const COINS: &str = "\u{E78E}";
+pub const MINUS: &str = "\u{E32A}";
+pub const SQUARE: &str = "\u{E45E}";
+pub const RESTORE: &str = "\u{E1CC}";
+pub const USER_SWITCH: &str = "\u{E756}";
+pub const QUESTION: &str = "\u{E3E8}";
+
+/// Map a short icon name (used in plugin manifests) to a glyph.
+pub fn by_name(name: &str) -> &'static str {
+    match name {
+        "bell" => BELL,
+        "dice" => DICE,
+        "chat" => CHAT,
+        "star" => STAR,
+        "chart" => CHART_BAR,
+        "trophy" => TROPHY,
+        "fire" => FIRE,
+        "clock" => CLOCK,
+        "users" => USERS,
+        "note" => NOTE,
+        "globe" => GLOBE,
+        "controller" => CONTROLLER,
+        "lightning" => LIGHTNING,
+        "gear" => GEAR,
+        _ => PUZZLE,
+    }
+}

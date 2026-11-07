@@ -1,0 +1,10 @@
+id = "friend-alerts"
+name = "Friend Alerts"
+version = "1.0.0"
+author = "SteamInRust"
+description = "Notifies you when chosen friends come online or start a game, and keeps a short log."
+permissions = ["friends.read", "notifications", "storage"]
+
+[page]
+title = "Friend Alerts"
+icon = "bell"

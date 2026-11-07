@@ -1,0 +1,16 @@
+[package]
+name = "local"
+description = "Reads the local Steam installation: libraries, games, accounts, playtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vdf.workspace = true
+model.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+open.workspace = true
+proto.workspace = true
+prost.workspace = true
+sha1 = "0.10"
