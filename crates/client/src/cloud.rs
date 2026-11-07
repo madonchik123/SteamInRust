@@ -103,7 +103,7 @@ impl Target {
         }
         for rule in self.config.iter().flat_map(|c| c.save_files.iter()) {
             let Some(base) = self.root_dir(&rule.root) else { continue };
-            let sub = self.expand(rule.path.trim_matches('/'));
+            let sub = self.expand(&rule_dir(&rule.path));
             let dir = join(&base, &sub);
             for file in walk(&dir, rule.recursive) {
                 let Some(fname) = file.file_name().and_then(|n| n.to_str()) else { continue };
@@ -113,7 +113,7 @@ impl Target {
                 let Ok(rel) = file.strip_prefix(&dir) else { continue };
                 let mut name = format!("%{}%", canonical_root(&rule.root));
                 if !sub.is_empty() {
-                    name.push_str(&rule.path.trim_matches('/').replace('\\', "/"));
+                    name.push_str(&rule_dir(&rule.path));
                     name.push('/');
                 }
                 name.push_str(&slashes(rel));
@@ -122,6 +122,14 @@ impl Target {
         }
         out
     }
+}
+
+/// An Auto-Cloud rule's folder with forward slashes and no slash at either
+/// end: `KnightsEnd\Saved\SaveGames\` -> `KnightsEnd/Saved/SaveGames`.
+/// (Trimming before converting left a trailing `\`, so files were named
+/// `SaveGames//file.sav` in the cloud instead of Steam's `SaveGames/file.sav`.)
+fn rule_dir(path: &str) -> String {
+    path.replace('\\', "/").trim_matches('/').to_string()
 }
 
 fn join(base: &Path, rel: &str) -> PathBuf {
@@ -208,7 +216,30 @@ fn snapshot_path(t: &Target) -> PathBuf {
 }
 
 fn load_snapshot(t: &Target) -> Snapshot {
-    std::fs::read_to_string(snapshot_path(t)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    let snap: Snapshot = std::fs::read_to_string(snapshot_path(t)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    // Older records may hold `dir//file` names (see `rule_dir`); the clean
+    // name wins when both are there.
+    let mut files = BTreeMap::new();
+    for (k, v) in snap.files.iter().filter(|(k, _)| clean_name(k) != **k) {
+        files.insert(clean_name(k), v.clone());
+    }
+    for (k, v) in snap.files.into_iter().filter(|(k, _)| clean_name(k) == *k) {
+        files.insert(k, v);
+    }
+    Snapshot { files }
+}
+
+/// A cloud file name with doubled slashes collapsed (`dir//file` -> `dir/file`),
+/// so files stored under the old names match the ones on this PC.
+fn clean_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c == '/' && out.ends_with('/') {
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn save_snapshot(t: &Target, s: &Snapshot) {
@@ -237,6 +268,8 @@ pub fn backups_dir(app_id: AppId) -> PathBuf {
 }
 
 struct RemoteFile {
+    /// The name as stored in the cloud (may differ from the clean key).
+    raw: String,
     sha: String,
     time: u64,
     size: u64,
@@ -290,7 +323,12 @@ pub async fn sync(conn: &Connection, t: &Target, mode: Mode, keep_local: &[Strin
         let prefix = f.path_prefix_index.and_then(|i| list.path_prefixes.get(i as usize)).cloned().unwrap_or_default();
         let name = format!("{prefix}{}", f.file_name());
         report.cloud_bytes += f.raw_file_size() as u64;
-        remote.insert(name, RemoteFile { sha: hex(f.sha_file()), time: f.time_stamp(), size: f.raw_file_size() as u64 });
+        let key = clean_name(&name);
+        // A file under its clean name beats one under an old `//` name.
+        if remote.get(&key).is_some_and(|r| r.raw == key) {
+            continue;
+        }
+        remote.insert(key, RemoteFile { raw: name, sha: hex(f.sha_file()), time: f.time_stamp(), size: f.raw_file_size() as u64 });
     }
     report.cloud_files = remote.len() as u32;
     if let Ok(q) = conn.call::<_, CCloudClientGetAppQuotaUsageResponse>("Cloud.ClientGetAppQuotaUsage#1", &CCloudClientGetAppQuotaUsageRequest { appid: Some(t.app_id) }).await {
@@ -337,7 +375,7 @@ pub async fn sync(conn: &Connection, t: &Target, mode: Mode, keep_local: &[Strin
                 let r = r.expect("conflict needs a cloud file");
                 report.conflicts.push(CloudConflict { name: name.clone(), local_time: mtime(path), cloud_time: r.time, local_size: data.as_ref().map(|d| d.len() as u64).unwrap_or(0), cloud_size: r.size });
             }
-            Plan::Download if matches!(mode, Mode::Download | Mode::Sync) => match download(conn, t, name, path, stamp).await {
+            Plan::Download if matches!(mode, Mode::Download | Mode::Sync) => match download(conn, t, r.map(|r| r.raw.as_str()).unwrap_or(name), path, stamp).await {
                 Ok(sha) => {
                     report.downloaded += 1;
                     snap.files.insert(name.clone(), sha);
@@ -520,6 +558,20 @@ fn http() -> &'static reqwest::Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_double_slash_names_match() {
+        assert_eq!(clean_name("%WinAppDataLocal%KnightsEnd/Saved/SaveGames//Save02.sav"), "%WinAppDataLocal%KnightsEnd/Saved/SaveGames/Save02.sav");
+        assert_eq!(clean_name("profile.dat"), "profile.dat");
+        assert_eq!(clean_name("a///b"), "a/b");
+    }
+
+    #[test]
+    fn rule_folders_have_single_slashes() {
+        assert_eq!(rule_dir(r"KnightsEnd\Saved\SaveGames\"), "KnightsEnd/Saved/SaveGames");
+        assert_eq!(rule_dir("/Saves/"), "Saves");
+        assert_eq!(rule_dir(""), "");
+    }
 
     #[test]
     fn decides_like_steam() {
