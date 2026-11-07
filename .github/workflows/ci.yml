@@ -6,6 +6,11 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
+# Newer rustup refuses a host tuple in rust-toolchain.toml's channel; this
+# picks the same GNU toolchain explicitly (it takes priority over the file).
+env:
+  RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+
 jobs:
   # PR titles become changelog lines and decide the next version
   # ("feat: …" = new feature, "fix: …" = bug fix), so check them.
@@ -48,7 +53,7 @@ jobs:
         shell: pwsh
         run: echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - run: rustup show
+      - run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace
       - run: cargo test --workspace
@@ -75,7 +80,7 @@ jobs:
         shell: pwsh
         run: echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - run: rustup show
+      - run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
       - uses: Swatinem/rust-cache@v2
 
       - name: Package
