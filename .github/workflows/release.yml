@@ -10,6 +10,11 @@ on:
 permissions:
   contents: write
 
+# Newer rustup refuses a host tuple in rust-toolchain.toml's channel; this
+# picks the same GNU toolchain explicitly (it takes priority over the file).
+env:
+  RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+
 jobs:
   release:
     runs-on: windows-latest
@@ -28,8 +33,8 @@ jobs:
         shell: pwsh
         run: echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - name: Rust toolchain (from rust-toolchain.toml)
-        run: rustup show
+      - name: Rust toolchain (GNU)
+        run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
 
       - uses: Swatinem/rust-cache@v2
 
