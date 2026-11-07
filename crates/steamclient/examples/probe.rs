@@ -1,0 +1,217 @@
+//! A tiny "game" for testing the steamclient replacement: loads a real
+//! `steam_api64.dll` (put it next to this exe), initialises it like a game
+//! does and prints what Steam answers.
+//!
+//! `probe [--unlock ACH_NAME] [--stat NAME=VALUE] [--cloud]`
+//! Writes only when asked (use with Spacewar, app 480).
+
+use std::ffi::{CStr, CString, c_char, c_void};
+use std::time::{Duration, Instant};
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn LoadLibraryW(name: *const u16) -> *mut c_void;
+    fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+}
+
+struct Api(*mut c_void);
+
+impl Api {
+    fn f(&self, name: &str) -> Option<usize> {
+        let n = CString::new(name).ok()?;
+        let p = unsafe { GetProcAddress(self.0, n.as_ptr().cast()) } as usize;
+        (p != 0).then_some(p)
+    }
+    /// First accessor that exists, e.g. SteamAPI_SteamUser_v023 / v021.
+    fn iface(&self, base: &str, versions: &[&str]) -> usize {
+        for v in versions {
+            if let Some(f) = self.f(&format!("SteamAPI_{base}_{v}")) {
+                let get: extern "C" fn() -> usize = unsafe { std::mem::transmute(f) };
+                return get();
+            }
+        }
+        0
+    }
+}
+
+macro_rules! call {
+    ($api:expr, $name:literal, fn($($t:ty),*) -> $r:ty, $($a:expr),*) => {{
+        let f = $api.f($name).unwrap_or_else(|| panic!("{} missing", $name));
+        let f: extern "C" fn($($t),*) -> $r = unsafe { std::mem::transmute(f) };
+        f($($a),*)
+    }};
+}
+
+#[repr(C)]
+struct CallbackMsg {
+    user: i32,
+    callback: i32,
+    param: *mut u8,
+    size: i32,
+}
+
+fn s(p: *const c_char) -> String {
+    if p.is_null() { "<null>".into() } else { unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned() }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+    let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+    let dll: Vec<u16> = dir.join("steam_api64.dll").to_string_lossy().encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(dll.as_ptr()) };
+    assert!(!module.is_null(), "steam_api64.dll not next to the probe");
+    let api = Api(module);
+
+    let ok = if let Some(init) = api.f("SteamAPI_InitFlat") {
+        let mut err = [0 as c_char; 1024];
+        let init: extern "C" fn(*mut c_char) -> i32 = unsafe { std::mem::transmute(init) };
+        let r = init(err.as_mut_ptr());
+        println!("SteamAPI_InitFlat = {r} {}", s(err.as_ptr()));
+        r == 0
+    } else {
+        let r = call!(api, "SteamAPI_Init", fn() -> bool,);
+        println!("SteamAPI_Init = {r}");
+        r
+    };
+    if !ok {
+        std::process::exit(2);
+    }
+    call!(api, "SteamAPI_ManualDispatch_Init", fn() -> (),);
+    let pipe = call!(api, "SteamAPI_GetHSteamPipe", fn() -> i32,);
+
+    let user = api.iface("SteamUser", &["v023", "v022", "v021"]);
+    let friends = api.iface("SteamFriends", &["v018", "v017"]);
+    let utils = api.iface("SteamUtils", &["v010", "v009"]);
+    let apps = api.iface("SteamApps", &["v008"]);
+    let stats = api.iface("SteamUserStats", &["v013", "v012"]);
+    let rs = api.iface("SteamRemoteStorage", &["v016"]);
+
+    println!("steam id      {}", call!(api, "SteamAPI_ISteamUser_GetSteamID", fn(usize) -> u64, user));
+    println!("logged on     {}", call!(api, "SteamAPI_ISteamUser_BLoggedOn", fn(usize) -> bool, user));
+    println!("persona       {}", s(call!(api, "SteamAPI_ISteamFriends_GetPersonaName", fn(usize) -> *const c_char, friends)));
+    println!("friends       {}", call!(api, "SteamAPI_ISteamFriends_GetFriendCount", fn(usize, i32) -> i32, friends, 4));
+    println!("app id        {}", call!(api, "SteamAPI_ISteamUtils_GetAppID", fn(usize) -> u32, utils));
+    println!("country       {}", s(call!(api, "SteamAPI_ISteamUtils_GetIPCountry", fn(usize) -> *const c_char, utils)));
+    println!("subscribed    {}", call!(api, "SteamAPI_ISteamApps_BIsSubscribed", fn(usize) -> bool, apps));
+    println!("language      {}", s(call!(api, "SteamAPI_ISteamApps_GetCurrentGameLanguage", fn(usize) -> *const c_char, apps)));
+
+    if api.f("SteamAPI_ISteamUserStats_RequestCurrentStats").is_some() {
+        call!(api, "SteamAPI_ISteamUserStats_RequestCurrentStats", fn(usize) -> bool, stats);
+    }
+    let n = call!(api, "SteamAPI_ISteamUserStats_GetNumAchievements", fn(usize) -> u32, stats);
+    println!("achievements  {n}");
+    for i in 0..n {
+        let name = call!(api, "SteamAPI_ISteamUserStats_GetAchievementName", fn(usize, u32) -> *const c_char, stats, i);
+        let (mut got, mut when) = (false, 0u32);
+        call!(api, "SteamAPI_ISteamUserStats_GetAchievementAndUnlockTime", fn(usize, *const c_char, *mut bool, *mut u32) -> bool, stats, name, &mut got, &mut when);
+        let key = CString::new("name").unwrap();
+        let display = call!(api, "SteamAPI_ISteamUserStats_GetAchievementDisplayAttribute", fn(usize, *const c_char, *const c_char) -> *const c_char, stats, name, key.as_ptr());
+        println!("  {:<24} {:<28} unlocked={got} at {when}", s(name), s(display));
+    }
+    for stat in ["NumGames", "NumWins", "NumLosses", "FeetTraveled", "MaxFeetTraveled"] {
+        let c = CString::new(stat).unwrap();
+        let mut i = 0i32;
+        let mut f = 0f32;
+        if call!(api, "SteamAPI_ISteamUserStats_GetStatInt32", fn(usize, *const c_char, *mut i32) -> bool, stats, c.as_ptr(), &mut i) {
+            println!("  stat {stat} = {i}");
+        } else if call!(api, "SteamAPI_ISteamUserStats_GetStatFloat", fn(usize, *const c_char, *mut f32) -> bool, stats, c.as_ptr(), &mut f) {
+            println!("  stat {stat} = {f}");
+        }
+    }
+
+    let mut wrote = false;
+    if let Some(name) = arg("--unlock") {
+        let c = CString::new(name.clone()).unwrap();
+        let r = call!(api, "SteamAPI_ISteamUserStats_SetAchievement", fn(usize, *const c_char) -> bool, stats, c.as_ptr());
+        println!("SetAchievement({name}) = {r}");
+        wrote = true;
+    }
+    if let Some(kv) = arg("--stat") {
+        let (k, v) = kv.split_once('=').expect("NAME=VALUE");
+        let c = CString::new(k).unwrap();
+        let r = call!(api, "SteamAPI_ISteamUserStats_SetStatInt32", fn(usize, *const c_char, i32) -> bool, stats, c.as_ptr(), v.parse().unwrap());
+        println!("SetStat({k}={v}) = {r}");
+        wrote = true;
+    }
+    if wrote {
+        println!("StoreStats = {}", call!(api, "SteamAPI_ISteamUserStats_StoreStats", fn(usize) -> bool, stats));
+    }
+    if args.iter().any(|a| a == "--cloud") {
+        let (name, data) = (CString::new("probe/test.txt").unwrap(), b"hello from the probe");
+        let w = call!(api, "SteamAPI_ISteamRemoteStorage_FileWrite", fn(usize, *const c_char, *const u8, i32) -> bool, rs, name.as_ptr(), data.as_ptr(), data.len() as i32);
+        let mut buf = [0u8; 64];
+        let r = call!(api, "SteamAPI_ISteamRemoteStorage_FileRead", fn(usize, *const c_char, *mut u8, i32) -> i32, rs, name.as_ptr(), buf.as_mut_ptr(), 64);
+        let count = call!(api, "SteamAPI_ISteamRemoteStorage_GetFileCount", fn(usize) -> i32, rs);
+        println!("cloud write={w} read={r} ({:?}) files={count}", std::str::from_utf8(&buf[..r.max(0) as usize]).unwrap_or("?"));
+        call!(api, "SteamAPI_ISteamRemoteStorage_FileDelete", fn(usize, *const c_char) -> bool, rs, name.as_ptr());
+    }
+    let players = call!(api, "SteamAPI_ISteamUserStats_GetNumberOfCurrentPlayers", fn(usize) -> u64, stats);
+    let tickets = args.iter().any(|a| a == "--ticket");
+    let mut my_ticket = Vec::new();
+    if tickets {
+        let mut buf = vec![0u8; 1024];
+        let mut len = 0u32;
+        let h = if api.f("SteamAPI_ISteamUser_GetAuthTicketForWebApi").is_some() {
+            call!(api, "SteamAPI_ISteamUser_GetAuthSessionTicket", fn(usize, *mut u8, i32, *mut u32, *const c_void) -> u32, user, buf.as_mut_ptr(), 1024, &mut len, std::ptr::null())
+        } else {
+            call!(api, "SteamAPI_ISteamUser_GetAuthSessionTicket", fn(usize, *mut u8, i32, *mut u32) -> u32, user, buf.as_mut_ptr(), 1024, &mut len)
+        };
+        my_ticket = buf[..len as usize].to_vec();
+        println!("GetAuthSessionTicket = handle {h}, {len} bytes");
+        let r = call!(api, "SteamAPI_ISteamUser_RequestEncryptedAppTicket", fn(usize, *const u8, i32) -> u64, user, b"probe".as_ptr(), 5);
+        println!("RequestEncryptedAppTicket = call {r}");
+    }
+    let mut begun = false;
+
+    // Pump callbacks for a few seconds, like a game's frame loop.
+    let until = Instant::now() + Duration::from_secs(if wrote || tickets { 25 } else { 5 });
+    while Instant::now() < until {
+        call!(api, "SteamAPI_ManualDispatch_RunFrame", fn(i32) -> (), pipe);
+        let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
+        while call!(api, "SteamAPI_ManualDispatch_GetNextCallback", fn(i32, *mut CallbackMsg) -> bool, pipe, &mut msg) {
+            let mut line = format!("callback {} ({} bytes)", msg.callback, msg.size);
+            if msg.callback == 703 {
+                let call_id = unsafe { (msg.param as *const u64).read_unaligned() };
+                let expected = unsafe { (msg.param.add(8) as *const i32).read_unaligned() };
+                let mut buf = [0u8; 512];
+                let mut failed = false;
+                let ok = call!(api, "SteamAPI_ManualDispatch_GetAPICallResult", fn(i32, u64, *mut u8, i32, i32, *mut bool) -> bool, pipe, call_id, buf.as_mut_ptr(), 512, expected, &mut failed);
+                line += &format!(" -> call {call_id} result {expected} ok={ok} failed={failed}");
+                if expected == 154 {
+                    let mut n = 0u32;
+                    let mut tb = vec![0u8; 2048];
+                    let got = call!(api, "SteamAPI_ISteamUser_GetEncryptedAppTicket", fn(usize, *mut u8, i32, *mut u32) -> bool, user, tb.as_mut_ptr(), 2048, &mut n);
+                    line += &format!(" EncryptedAppTicket result={} got={got} {n} bytes", i32::from_le_bytes(buf[0..4].try_into().unwrap()));
+                }
+                if call_id == players && expected == 1107 {
+                    line += &format!(" players={}", i32::from_le_bytes(buf[4..8].try_into().unwrap()));
+                }
+            } else if msg.callback == 1102 || msg.callback == 1101 {
+                let r = unsafe { (msg.param.add(8) as *const i32).read_unaligned() };
+                line += &format!(" result={r}");
+            } else if msg.callback == 163 {
+                let r = unsafe { (msg.param.add(4) as *const i32).read_unaligned() };
+                line += &format!(" GetAuthSessionTicketResponse result={r}");
+                if r == 1 && !begun {
+                    begun = true;
+                    let me = call!(api, "SteamAPI_ISteamUser_GetSteamID", fn(usize) -> u64, user);
+                    let b = call!(api, "SteamAPI_ISteamUser_BeginAuthSession", fn(usize, *const u8, i32, u64) -> i32, user, my_ticket.as_ptr(), my_ticket.len() as i32, me);
+                    line += &format!("; BeginAuthSession(own ticket) = {b}");
+                }
+            } else if msg.callback == 143 {
+                let resp = unsafe { (msg.param.add(8) as *const i32).read_unaligned() };
+                let owner = unsafe { (msg.param.add(16) as *const u64).read_unaligned() };
+                line += &format!(" ValidateAuthTicketResponse response={resp} owner={owner}");
+            } else if msg.callback == 1103 {
+                let name = unsafe { CStr::from_ptr(msg.param.add(9) as *const c_char) };
+                line += &format!(" achievement={}", name.to_string_lossy());
+            }
+            println!("{line}");
+            call!(api, "SteamAPI_ManualDispatch_FreeLastCallback", fn(i32) -> (), pipe);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    call!(api, "SteamAPI_Shutdown", fn() -> (),);
+    println!("done");
+}

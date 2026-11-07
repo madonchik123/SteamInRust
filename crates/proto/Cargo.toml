@@ -1,0 +1,13 @@
+[package]
+name = "proto"
+description = "Steam protobuf messages, generated from the vendored .proto files in ./protos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+prost.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protox.workspace = true

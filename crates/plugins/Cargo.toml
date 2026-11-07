@@ -1,0 +1,15 @@
+[package]
+name = "plugins"
+description = "Sandboxed user plugins (Rhai scripts) with declared permissions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+model.workspace = true
+rhai.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

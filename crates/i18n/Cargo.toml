@@ -1,0 +1,10 @@
+[package]
+name = "i18n"
+description = "Interface translations (English text is the key; other languages map from it)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+toml.workspace = true
+sys-locale.workspace = true

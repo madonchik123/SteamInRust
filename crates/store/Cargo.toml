@@ -1,0 +1,16 @@
+[package]
+name = "store"
+description = "Native client for the Steam store's public JSON endpoints (no webview)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+model.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

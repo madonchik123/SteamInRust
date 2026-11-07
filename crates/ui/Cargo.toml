@@ -1,0 +1,14 @@
+[package]
+name = "ui"
+description = "Design system: theme tokens, presets and reusable widgets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+egui = { workspace = true, features = ["serde"] }
+serde.workspace = true
+i18n.workspace = true
+
+[dev-dependencies]
+image.workspace = true

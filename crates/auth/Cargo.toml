@@ -1,0 +1,19 @@
+[package]
+name = "auth"
+description = "Steam login: RSA-encrypted password, Steam Guard (email/mobile/approval), refresh tokens"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+net.workspace = true
+proto.workspace = true
+rsa.workspace = true
+rand.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tracing-subscriber.workspace = true
