@@ -55,12 +55,20 @@ Everything below is in the current release. Area-by-area status:
   game or look up their server.
 - **Community.** Profiles, comments, game hubs, Workshop pages, guides and
   discussions, all inside the app.
+- **Workshop.** Browse a game's Workshop with its own tag filters. Subscribing
+  downloads the item right away, and missing or updated items download before
+  the game starts, like in Steam.
+- **Account.** Account details, purchase history, licenses and your Steam
+  Family, as native pages.
 - **Inventory and Market.** Every game's inventory, market prices, order book and
   price chart. Selling uses Steam's real fees; you confirm in the Steam Mobile app.
 - **Steam Cloud.** Sync before you play and after you quit, conflicts with
   local backups, and saves made offline upload once you're back online.
 - **Games.** Games without anti-cheat get achievements, stats, cloud saves,
-  lobbies and P2P from SteamInRust's own `steamclient`, 32-bit games included.
+  lobbies, P2P, Workshop, inventory, the server browser, screenshots and Steam
+  Input from SteamInRust's own `steamclient`, 32-bit games included. Older
+  multiplayer games (like Human Fall Flat) play with friends and strangers on
+  the official client.
   Games with VAC, Easy Anti-Cheat or BattlEye always start through the official
   client, silently, so their anti-cheat runs as intended
   ([how](docs/steam-compatibility.md)).
@@ -236,7 +244,7 @@ work are in [docs/parity.md](docs/parity.md).
 | Shift+Tab overlay | 0.75 |
 | Notifications and tray | 1 |
 | Settings, languages, updates | 0.75 |
-| Big Picture, Remote Play, Steam Input | 0 |
+| Big Picture, Remote Play | 0 |
 
 0 is not started, 1 is complete. What's missing in each area:
 [docs/parity.md](docs/parity.md).

@@ -210,6 +210,8 @@ pub struct Library {
     tile: f32,
     games: HashMap<AppId, GameSettings>,
     dialog: Option<Dialog>,
+    /// Games being uninstalled in the background: (name, progress, result).
+    uninstalling: HashMap<AppId, Uninstalling>,
     verify: Option<Verify>,
     reports: HashMap<AppId, VerifyReport>,
     pending: Option<String>,
@@ -262,6 +264,8 @@ impl Extension for Library {
     }
 
     fn on_event(&mut self, event: &client::Event, ctx: &mut Ctx) {
+        // An uninstall can end while another page is open.
+        self.finish_uninstalls(ctx);
         match event {
             client::Event::LoggedIn { steam_id, .. } => {
                 self.send_cloud_settings(ctx);
@@ -307,6 +311,10 @@ impl Extension for Library {
 
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {
         let t = ctx.theme.clone();
+        self.finish_uninstalls(ctx);
+        if !self.uninstalling.is_empty() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.downloading = ctx.state.downloads.values().filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).map(|d| (d.app_id, d.paused)).collect();
         self.queued = ctx.state.download_queue.iter().copied().collect();
         if self.tile == 0.0 {
@@ -1293,6 +1301,10 @@ impl Library {
                         ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::CLOCK), t!("Queued"), w::Kind::Secondary, w::Size::Lg));
                     } else {
                         match &installed {
+                            Some(_) if self.uninstalling.contains_key(&id) => {
+                                let p = self.uninstalling[&id].progress.fraction();
+                                uninstall_bar(ui, t, p);
+                            }
                             Some(_) if playing => {
                                 if w::button(ui, t, Some(icons::STOP), t!("Stop"), w::Kind::Danger, w::Size::Lg).on_hover_text(t!("Close the game")).clicked() {
                                     ctx.send(Command::StopGame { app_id: id });
@@ -1401,20 +1413,29 @@ impl Library {
             ui.add_space(18.0);
 
             w::centered(ui, 1300.0, 24.0, |ui| {
+                // Two columns when there's room, stacked in a narrow window
+                // (the window can also be tiny for a moment, e.g. while restoring).
                 let total = ui.available_width();
                 let side = (total * 0.32).clamp(280.0, 400.0);
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 24.0;
-                    ui.vertical(|ui| {
-                        ui.set_width(total - side - 24.0);
-                        self.dlc_strip(ui, t, ctx, id);
-                        self.updates_feed(ui, t, id);
+                if total >= 720.0 {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 24.0;
+                        ui.vertical(|ui| {
+                            ui.set_width(total - side - 24.0);
+                            self.dlc_strip(ui, t, ctx, id);
+                            self.updates_feed(ui, t, id);
+                        });
+                        ui.vertical(|ui| {
+                            ui.set_width(side);
+                            self.side_panels(ui, t, ctx, id, installed.as_ref(), owned.as_ref());
+                        });
                     });
-                    ui.vertical(|ui| {
-                        ui.set_width(side);
-                        self.side_panels(ui, t, ctx, id, installed.as_ref(), owned.as_ref());
-                    });
-                });
+                } else {
+                    self.side_panels(ui, t, ctx, id, installed.as_ref(), owned.as_ref());
+                    ui.add_space(16.0);
+                    self.dlc_strip(ui, t, ctx, id);
+                    self.updates_feed(ui, t, id);
+                }
                 ui.add_space(40.0);
             });
         });
@@ -1745,6 +1766,10 @@ impl Library {
             self.dialog = None;
             return;
         };
+        if self.uninstalling.contains_key(&id) {
+            self.dialog = None;
+            return;
+        }
         let running = ctx.state.playing == Some(id);
         egui::Modal::new(egui::Id::unique(("uninstall", id))).show(ui.ctx(), |ui| {
             ui.set_width(460.0);
@@ -1762,19 +1787,16 @@ impl Library {
             ui.horizontal(|ui| {
                 let go = ui.add_enabled_ui(!running, |ui| w::button(ui, t, Some(icons::TRASH), t!("Uninstall"), w::Kind::Danger, w::Size::Md)).inner.clicked();
                 if go {
-                    match local::manage::uninstall(g) {
-                        Ok(()) => {
-                            // Its desktop shortcut would only lead nowhere now.
-                            let removed = crate::links::remove_desktop_shortcuts(id);
-                            if removed > 0 {
-                                ctx.toast(t!("{name} was uninstalled and its desktop shortcut removed", name = name));
-                            } else {
-                                ctx.toast(t!("{name} was uninstalled", name = name));
-                            }
-                        }
-                        Err(e) => ctx.toast(e),
-                    }
-                    ctx.act(extensions::Action::ReloadLocal);
+                    // Deleting a big game takes a while: do it in the
+                    // background, with progress on the game's button.
+                    let job = Uninstalling { name: name.to_string(), progress: Arc::new(Progress::default()), result: Arc::new(Mutex::new(None)) };
+                    let (game, progress, result, egui_ctx) = (g.clone(), job.progress.clone(), job.result.clone(), ui.ctx().clone());
+                    std::thread::spawn(move || {
+                        let r = local::manage::uninstall_with(&game, &progress);
+                        *result.lock().unwrap() = Some(r);
+                        egui_ctx.request_repaint();
+                    });
+                    self.uninstalling.insert(id, job);
                     close = true;
                 }
                 if w::button(ui, t, None, t!("Cancel"), w::Kind::Secondary, w::Size::Md).clicked() {
@@ -1786,6 +1808,51 @@ impl Library {
             self.dialog = None;
         }
     }
+}
+
+/// A game being uninstalled in the background.
+struct Uninstalling {
+    name: String,
+    progress: Arc<Progress>,
+    result: Arc<Mutex<Option<Result<(), String>>>>,
+}
+
+impl Library {
+    /// Report uninstalls that ended, and refresh the installed games.
+    fn finish_uninstalls(&mut self, ctx: &mut Ctx) {
+        let done: Vec<AppId> = self.uninstalling.iter().filter(|(_, j)| j.result.lock().unwrap().is_some()).map(|(id, _)| *id).collect();
+        for id in done {
+            let Some(job) = self.uninstalling.remove(&id) else { continue };
+            let name = job.name;
+            match job.result.lock().unwrap().take() {
+                Some(Ok(())) => {
+                    // Its desktop shortcut would only lead nowhere now.
+                    if crate::links::remove_desktop_shortcuts(id) > 0 {
+                        ctx.toast(t!("{name} was uninstalled and its desktop shortcut removed", name = name));
+                    } else {
+                        ctx.toast(t!("{name} was uninstalled", name = name));
+                    }
+                }
+                Some(Err(e)) => ctx.toast(e),
+                None => {}
+            }
+            ctx.act(extensions::Action::ReloadLocal);
+        }
+    }
+}
+
+/// The play button while a game is being deleted: red, filling up, like Steam.
+fn uninstall_bar(ui: &mut Ui, t: &Theme, fraction: f32) {
+    let label = t!("Uninstalling… {pct}%", pct = (fraction.clamp(0.0, 1.0) * 100.0).round() as u32);
+    let galley = ui.painter().layout_no_wrap(format!("{}  {label}", icons::TRASH), w::font_semibold(16.0), t.danger);
+    let (rect, _) = ui.allocate_exact_size(vec2((galley.size().x + 48.0).max(220.0), 48.0), Sense::hover());
+    let r = t.corner_small();
+    let p = ui.painter();
+    p.rect_filled(rect, r, t.danger.gamma_multiply(0.14));
+    let fill = Rect::from_min_size(rect.min, vec2(rect.width() * fraction.clamp(0.0, 1.0), rect.height()));
+    p.rect_filled(fill, r, t.danger.gamma_multiply(0.35));
+    p.rect_stroke(rect, r, Stroke::new(1.0, t.danger.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+    p.galley(pos2(rect.center().x - galley.size().x / 2.0, rect.center().y - galley.size().y / 2.0), galley, t.danger);
 }
 
 fn fs4_free(path: &std::path::Path) -> Option<u64> {
