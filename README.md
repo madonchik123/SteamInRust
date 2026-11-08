@@ -97,27 +97,27 @@ Everything below is in the current release. Area-by-area status:
 
 ## Performance
 
-**SteamInRust opens its window about 4 times sooner than Steam and uses about
-a fifth of the memory**, on the same PC, account and network. Measured on
-8 November 2026 on a Ryzen 5 5600 with 16 GB of RAM, Windows 11, SteamInRust
-v0.1.0 against Steam 11.15.70.27. Both clients started on the library. Every
+**SteamInRust opens its window about 4 times sooner than Steam and uses less
+than a quarter of the memory**, on the same PC, account and network. Measured
+on 8 November 2026 on a Ryzen 5 5600 with 16 GB of RAM, Windows 11, SteamInRust
+0.4.0 against Steam 11.15.70.27. Both clients started on the library. Every
 figure is the median of 5 runs:
 
 | | Steam | SteamInRust |
 | --- | ---: | ---: |
-| Start → main window | 10.6 s | 2.4 s |
-| Start → library fully drawn | 20.5 s | 8.1 s |
-| Memory when idle (private bytes) | 1,130 MB | 245 MB |
-| CPU when idle | 8 % of a core | 0.03 % |
+| Start → main window | 9.4 s | 2.4 s |
+| Start → library fully drawn | 19.2 s | 10.0 s |
+| Memory when idle (private bytes) | 1,126 MB | 255 MB |
+| CPU when idle | 7.5 % of a core | 0.13 % |
 | Processes | 8 | 1 |
-| Program size | 1,083 MB | 25.5 MB |
-| Open a game page in the library | 0.89 s | 0.03 s |
-| Open Friends & Chat | 1.31 s | 0.06 s |
+| Program size | 1,083 MB | 27.2 MB |
+| Open the Store | 1.22 s | 0.56 s |
+| Open a game page in the library | 0.85 s | 0.06 s |
+| Open Friends & Chat | 1.32 s | 0.05 s |
 
-Opening the Store takes about as long in both (1.19 s and 1.01 s), because
-both wait on Steam's servers. Most of SteamInRust's 8.1 s was library art
-arriving over the network. Images are now cached on disk, so later starts
-don't wait for them. Method, ranges and what was left out:
+Most of SteamInRust's time to a fully drawn library is library art arriving
+over the network. With the art already cached on disk (a warm start), it was
+7.2 s. Method, ranges and what was left out:
 [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Download
