@@ -5,6 +5,7 @@
 //! so "Purchase" opens the store page in the system browser.
 
 pub mod browse;
+pub mod gift;
 pub mod events;
 pub mod itad;
 pub mod query;
@@ -36,15 +37,9 @@ pub struct Price {
 }
 
 impl Price {
+    /// Like Steam writes it: "$19.99", "4 480₸", "1 999 ₽"…
     pub fn format(cents: u64, currency: &str) -> String {
-        let v = cents as f64 / 100.0;
-        match currency {
-            "USD" | "" => format!("${v:.2}"),
-            "EUR" => format!("{v:.2}€"),
-            "GBP" => format!("£{v:.2}"),
-            "RUB" => format!("{v:.0} ₽"),
-            other => format!("{v:.2} {other}"),
-        }
+        model::format_price(cents as i64, currency)
     }
     pub fn label(&self) -> String {
         match self.final_ {

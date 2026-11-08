@@ -2,7 +2,7 @@
 
 use i18n::t;
 use client::Command;
-use egui::{Margin, Sense, Ui, vec2};
+use egui::{Align, Layout, Margin, Sense, Ui, vec2};
 use extensions::{Action, Ctx, Extension, Manifest, PageSpec};
 use ui::{Theme, icons, widgets as w};
 
@@ -494,6 +494,30 @@ fn overlay(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
 }
 
 fn folders(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+    // Saved pictures (store and library art), like Steam's web browser cache.
+    w::card(t).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(w::text(icons::IMAGE, 22.0, t.accent));
+            ui.vertical(|ui| {
+                ui.label(w::text_semibold(t!("Picture cache"), 15.0, t.text));
+                let size = ui.ctx().memory(|m| m.data.get_temp::<u64>(egui::Id::unique("image-cache-size")));
+                let size = size.unwrap_or_else(|| {
+                    let s = crate::image_cache::size();
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("image-cache-size"), s));
+                    s
+                });
+                ui.label(w::text(t!("{size} of store and library pictures, kept so pages open instantly and work offline.", size = ui::bytes(size)), 12.5, t.text_dim));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if w::button(ui, t, Some(icons::TRASH), t!("Clear"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                    crate::image_cache::clear(ui.ctx());
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("image-cache-size"), 0u64));
+                }
+            });
+        });
+    });
+    ui.add_space(14.0);
     w::page_title(ui, t, t!("Library folders"), Some(t!("Folders where games are installed (read from your Steam setup).")));
     if ctx.local.libraries.is_empty() {
         w::empty(ui, t, icons::DRIVES, t!("No library folders found"), t!("Install location detection looks for an existing Steam install."));

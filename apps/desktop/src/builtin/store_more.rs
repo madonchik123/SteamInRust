@@ -13,9 +13,14 @@ use ui::{Theme, icons, widgets as w};
 const TAGS: &[u32] = &[19, 21, 122, 9, 597, 599, 492, 1664, 1667, 1774, 1695, 3810, 1662, 4182, 3859, 1685, 701, 699, 1742, 3964, 128, 3871];
 
 pub struct Gift {
+    pub app: AppId,
     pub package: u32,
     pub name: String,
     pub to: Option<SteamId>,
+    /// Filter for the friend list.
+    pub search: String,
+    /// Region checks per friend ("can Steam deliver this gift to them?").
+    pub checks: std::collections::HashMap<SteamId, Shared<store::gift::GiftCheck>>,
 }
 
 fn snapshot<T: Clone>(slot: &Shared<T>) -> Option<Result<T, String>> {
@@ -236,7 +241,6 @@ impl Store {
                         if let Some(pkg) = it.package_id {
                             if w::icon_button(ui, t, icons::CART, t!("Add to cart"), false, 0).clicked() {
                                 ctx.send(Command::CartAdd { package_id: pkg, gift_to: None });
-                                ctx.toast(t!("Added to your cart"));
                             }
                         }
                         if w::icon_button(ui, t, icons::TRASH, t!("Remove from wishlist"), false, 0).clicked() {
@@ -325,15 +329,23 @@ impl Store {
                 }
             } else if w::button(ui, t, Some(icons::CART), t!("Add to cart"), w::Kind::Primary, w::Size::Lg).clicked() {
                 ctx.send(Command::CartAdd { package_id: pkg, gift_to: None });
-                ctx.toast(t!("Added to your cart"));
             }
             if w::button(ui, t, Some(icons::USER), t!("Buy as a gift…"), w::Kind::Secondary, w::Size::Lg).clicked() {
-                self.gift = Some(Gift { package: pkg, name: name.to_string(), to: None });
+                self.gift = Some(Gift { app: id, package: pkg, name: name.to_string(), to: None, search: String::new(), checks: Default::default() });
             }
         }
     }
 
     pub(super) fn gift_dialog(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        // Start the region check for the picked friend (once per friend).
+        let pending = self.gift.as_ref().and_then(|g| g.to.filter(|to| !g.checks.contains_key(to)).map(|to| (g.app, to)));
+        if let Some((app, to)) = pending {
+            let (api, cc) = (self.api.clone(), self.locale.0.clone());
+            let slot = self.fetch(async move { api.gift_check(app, &cc, to).await });
+            if let Some(g) = &mut self.gift {
+                g.checks.insert(to, slot);
+            }
+        }
         let Some(g) = &mut self.gift else { return };
         let mut close = false;
         let mut send = None;
@@ -342,15 +354,56 @@ impl Store {
             ui.label(w::text_bold(t!("Buy {name} as a gift", name = g.name), 19.0, t.text));
             ui.label(w::text(t!("Pick a friend. The gift goes into your cart and is delivered after checkout."), 13.0, t.text_dim));
             ui.add_space(8.0);
+            w::search(ui, t, &mut g.search, &t!("Search friends"), ui.available_width());
+            ui.add_space(6.0);
+            // Online friends first, then by name; avatar and status on each row.
+            let q = g.search.trim().to_lowercase();
+            let mut friends: Vec<_> = ctx.state.friend_list().into_iter().filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q)).collect();
+            friends.sort_by_key(|p| (p.state == model::PersonaState::Offline, !p.in_game(), p.name.to_lowercase()));
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                for p in ctx.state.friend_list() {
+                for p in &friends {
                     let sel = g.to == Some(p.steam_id);
-                    let r = ui.add(egui::Button::selectable(sel, w::text_medium(&p.name, 14.0, t.text)).min_size(vec2(ui.available_width(), 34.0)));
-                    if r.clicked() {
+                    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
+                    let hover = ui.ctx().animate_bool_with_time(r.id, r.hovered(), 0.1);
+                    let fill = if sel { t.accent.gamma_multiply(0.22) } else { t.surface_hover.gamma_multiply(hover) };
+                    ui.painter().rect_filled(rect, t.corner_small(), fill);
+                    if sel {
+                        ui.painter().rect_stroke(rect, t.corner_small(), Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+                    }
+                    let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 5.0))).layout(Layout::left_to_right(Align::Center)));
+                    w::avatar(&mut row, t, &model::art::avatar(p.avatar_hash.as_deref()), 34.0, Some(crate::shell::status_color(t, p)));
+                    row.add_space(4.0);
+                    row.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        // A friend Steam hasn't sent a name for yet shows their SteamID.
+                        let unnamed = p.name.is_empty() || p.name.chars().all(|c| c.is_ascii_digit());
+                        let name = if unnamed { t!("Friend {id}", id = p.steam_id) } else { p.name.clone() };
+                        ui.add(egui::Label::new(w::text_medium(name, 14.0, if unnamed { t.text_dim } else { t.text })).truncate());
+                        ui.add(egui::Label::new(w::text(crate::shell::status_text(ctx.state, p), 12.0, crate::shell::status_color(t, p))).truncate());
+                    });
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         g.to = Some(p.steam_id);
                     }
                 }
+                if friends.is_empty() {
+                    ui.label(w::text(t!("No friends match."), 13.0, t.text_faint));
+                }
             });
+            ui.add_space(8.0);
+            // Can Steam deliver it to them? (Regional price rule.)
+            if let Some(to) = g.to {
+                let name = ctx.state.persona(to).name;
+                let line = match g.checks.get(&to).and_then(snapshot) {
+                    None => (icons::CLOCK, t!("Checking whether Steam allows this gift in {name}'s region…", name = name), t.text_dim),
+                    Some(Err(_)) => (icons::INFO, t!("Couldn't check {name}'s region. Steam decides at checkout.", name = name), t.text_dim),
+                    Some(Ok(c)) => gift_line(t, &c, &name),
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(w::text(line.0, 15.0, line.2));
+                    ui.add(egui::Label::new(w::text(line.1, 13.0, line.2)).wrap());
+                });
+                ui.label(w::text(t!("Steam blocks gifts when the game is more than about 10% cheaper in the friend's region (base prices, converted)."), 11.5, t.text_faint));
+            }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if ui.add_enabled_ui(g.to.is_some(), |ui| w::button(ui, t, Some(icons::CART), t!("Add gift to cart"), w::Kind::Primary, w::Size::Md)).inner.clicked() {
@@ -363,7 +416,6 @@ impl Store {
         });
         if let Some((package, to)) = send {
             ctx.send(Command::CartAdd { package_id: package, gift_to: Some(to) });
-            ctx.toast(t!("Gift added to your cart"));
             close = true;
         }
         if close {
@@ -462,4 +514,22 @@ fn chart(ui: &mut Ui, t: &Theme, pts: &[(u64, f64)], currency: &str) {
         }
     }
     let _ = Color32::TRANSPARENT;
+}
+
+/// The region check, in words: (icon, text, color).
+fn gift_line(t: &Theme, c: &store::gift::GiftCheck, name: &str) -> (&'static str, String, egui::Color32) {
+    use store::gift::Verdict;
+    let price = |p: &Option<(u64, String)>| p.as_ref().map(|(cents, cur)| store::Price::format(*cents, cur)).unwrap_or_default();
+    match &c.verdict {
+        Verdict::Ok => {
+            let diff = c.difference.map(|d| format!("{d:+.0}%")).unwrap_or_default();
+            (icons::CHECK, t!("{name} can receive it: {theirs} there vs {yours} for you ({diff}).", name = name, theirs = price(&c.theirs), yours = price(&c.yours), diff = diff), t.play)
+        }
+        Verdict::Blocked => {
+            let diff = c.difference.map(|d| format!("{:.0}%", -d)).unwrap_or_default();
+            (icons::WARNING, t!("Steam will most likely refuse: it's {diff} cheaper in {name}'s region ({theirs} vs {yours}). A Steam gift card works instead.", diff = diff, name = name, theirs = price(&c.theirs), yours = price(&c.yours)), t.danger)
+        }
+        Verdict::Unknown(why) if why == "no country" => (icons::INFO, t!("{name} hasn't set a country on their profile, so the region can't be checked.", name = name), t.text_dim),
+        Verdict::Unknown(_) => (icons::INFO, t!("Can't compare prices for {name}'s region. Steam decides at checkout.", name = name), t.text_dim),
+    }
 }

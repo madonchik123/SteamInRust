@@ -256,6 +256,9 @@ pub struct DownloadStatus {
     pub error: Option<String>,
     /// Bytes saved by reusing unchanged chunks.
     pub reused: u64,
+    /// Not errors, but worth showing (e.g. skipped content).
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -938,12 +941,74 @@ mod store_country_tests {
 }
 
 pub fn format_money(cents: i64, code: i32) -> String {
-    let (iso, sym, after) = currency(code);
-    let v = cents as f64 / 100.0;
-    if sym.is_empty() {
-        return format!("{v:.2} {iso}");
+    let (iso, _, _) = currency(code);
+    format_price(cents, iso)
+}
+
+/// A price the way Steam's store writes it in that currency: "$19.99",
+/// "19,99€", "4 480₸", "1 999 ₽", "R$ 19,99", "¥ 1,980"…
+pub fn format_price(cents: i64, iso: &str) -> String {
+    // (before, after, decimal mark, thousands mark, whole numbers only)
+    let (pre, post, dec, th, whole) = match iso {
+        "USD" | "" => ("$", "", '.', ",", false),
+        "EUR" => ("", "€", ',', " ", false),
+        "GBP" => ("£", "", '.', ",", false),
+        "RUB" => ("", " ₽", ',', " ", true),
+        "KZT" => ("", "₸", ',', " ", true),
+        "UAH" => ("", "₴", ',', " ", true),
+        "PLN" => ("", "zł", ',', " ", false),
+        "BRL" => ("R$ ", "", ',', ".", false),
+        "TRY" => ("₺", "", ',', ".", false),
+        "JPY" => ("¥ ", "", '.', ",", true),
+        "CNY" => ("¥ ", "", '.', ",", false),
+        "KRW" => ("₩ ", "", '.', ",", true),
+        "INR" => ("₹ ", "", '.', ",", true),
+        "CAD" => ("CDN$ ", "", '.', ",", false),
+        "AUD" => ("A$ ", "", '.', ",", false),
+        "NZD" => ("NZ$ ", "", '.', ",", false),
+        "CHF" => ("CHF ", "", '.', "'", false),
+        "NOK" => ("", " kr", ',', " ", false),
+        "MXN" => ("Mex$ ", "", '.', ",", false),
+        "IDR" => ("Rp ", "", ',', " ", true),
+        "VND" => ("", "₫", ',', ".", true),
+        "SGD" => ("S$", "", '.', ",", false),
+        "HKD" => ("HK$ ", "", '.', ",", false),
+        "ILS" => ("₪", "", '.', ",", false),
+        "ZAR" => ("R ", "", '.', " ", false),
+        other => return format!("{:.2} {other}", cents as f64 / 100.0),
+    };
+    let negative = cents < 0;
+    let cents = cents.unsigned_abs();
+    let (units, minor) = (cents / 100, cents % 100);
+    // Group the whole part in threes.
+    let digits = units.to_string();
+    let mut grouped = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            grouped.push_str(th);
+        }
+        grouped.push(ch);
     }
-    if after { format!("{v:.2}{sym}") } else { format!("{sym}{v:.2}") }
+    // Whole-number currencies still show kopecks/tiyn if a price has them.
+    let frac = if whole && minor == 0 { String::new() } else { format!("{dec}{minor:02}") };
+    format!("{}{pre}{grouped}{frac}{post}", if negative { "-" } else { "" })
+}
+
+#[cfg(test)]
+mod price_tests {
+    use super::format_price;
+
+    #[test]
+    fn prices_look_like_steams() {
+        assert_eq!(format_price(448_000, "KZT"), "4 480₸");
+        assert_eq!(format_price(640_000, "KZT"), "6 400₸");
+        assert_eq!(format_price(1999, "USD"), "$19.99");
+        assert_eq!(format_price(1999, "EUR"), "19,99€");
+        assert_eq!(format_price(199_900, "RUB"), "1 999 ₽");
+        assert_eq!(format_price(1_234_567, "USD"), "$12,345.67");
+        assert_eq!(format_price(199_850, "KZT"), "1 998,50₸");
+        assert_eq!(format_price(198_000, "JPY"), "¥ 1,980");
+    }
 }
 
 /// One chat message in a 1:1 conversation.

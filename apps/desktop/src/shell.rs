@@ -509,8 +509,7 @@ fn app_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action
             app.client.send(Command::LogOut);
         }
         if item(ui, icons::POWER, t!("Exit")) {
-            app.exiting = true;
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            app.request_exit(ui.ctx());
         }
     });
 }
@@ -677,8 +676,7 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
             app.client.send(Command::LogOut);
         }
         if ui.add(egui::Button::new(w::text_medium(format!("{}   {}", icons::POWER, t!("Exit SteamInRust")), 13.5, t.danger)).frame(false).min_size(vec2(210.0, 32.0))).clicked() {
-            app.exiting = true;
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            app.request_exit(ui.ctx());
         }
     });
 }
