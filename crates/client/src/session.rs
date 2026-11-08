@@ -1268,6 +1268,7 @@ impl Online {
             return;
         };
         self.active_req = Some(req.clone());
+        let dest = req.library.join("steamapps").join("common").join(if app.install_dir.is_empty() { &app.name } else { &app.install_dir });
         let progress = std::sync::Arc::new(depot::Progress::default());
         progress.limit_kbps.store(self.limit_kbps, std::sync::atomic::Ordering::Relaxed);
         progress.concurrency.store(self.concurrency, std::sync::atomic::Ordering::Relaxed);
@@ -1279,25 +1280,34 @@ impl Online {
         // Progress ticker: speed over a sliding window, ~2 updates per second.
         let (p2, sink3) = (progress.clone(), sink.clone());
         tokio::spawn(async move {
-            let mut samples: std::collections::VecDeque<(std::time::Instant, u64)> = Default::default();
+            // (time, bytes from the network, bytes on disk)
+            let mut samples: std::collections::VecDeque<(std::time::Instant, u64, u64)> = Default::default();
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 let now = std::time::Instant::now();
-                let bytes = p2.downloaded.load(std::sync::atomic::Ordering::Relaxed);
-                samples.push_back((now, bytes));
+                let net = p2.downloaded.load(std::sync::atomic::Ordering::Relaxed);
+                // Real writes only: files found complete aren't disk activity.
+                let disk = p2.written.load(std::sync::atomic::Ordering::Relaxed);
+                samples.push_back((now, net, disk));
                 while samples.len() > 10 {
                     samples.pop_front();
                 }
-                let speed = match (samples.front(), samples.back()) {
-                    (Some(a), Some(b)) if b.0 > a.0 => ((b.1 - a.1) as f64 / (b.0 - a.0).as_secs_f64()) as u64,
-                    _ => 0,
+                let (speed, disk_speed) = match (samples.front(), samples.back()) {
+                    (Some(a), Some(b)) if b.0 > a.0 => {
+                        let secs = (b.0 - a.0).as_secs_f64();
+                        (((b.1 - a.1) as f64 / secs) as u64, (b.2.saturating_sub(a.2) as f64 / secs) as u64)
+                    }
+                    _ => (0, 0),
                 };
                 // Checked before sending: once a download has ended (failed
                 // included), a late "Downloading" tick must not cover the result.
                 if p2.ended.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
-                sink3(Event::Download(crate::download::status(app_id, &p2, speed)));
+                let mut status = crate::download::status(app_id, &p2, speed);
+                status.install_dir = Some(dest.clone());
+                status.disk_speed = disk_speed;
+                sink3(Event::Download(status));
                 if p2.phase() == depot::Phase::Done || p2.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }

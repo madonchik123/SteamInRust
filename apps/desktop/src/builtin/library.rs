@@ -134,6 +134,9 @@ enum MenuAct {
     Play,
     Stop,
     Install,
+    PauseDownload,
+    ResumeDownload,
+    CancelDownload,
     Favorite,
     Hide,
     Shortcut,
@@ -166,8 +169,31 @@ enum Sort {
     Size,
 }
 
+/// Where a game's install stands: one answer used by the list, the game
+/// page, the right-click menu and Properties, so they always agree.
+#[derive(Clone)]
+pub(crate) enum Setup {
+    NotInstalled,
+    Queued,
+    Downloading(model::DownloadStatus),
+    Installed,
+}
+
+pub(crate) fn setup_state(ctx: &Ctx, id: AppId, installed: bool) -> Setup {
+    if let Some(d) = ctx.state.downloads.get(&id).filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)) {
+        return Setup::Downloading(d.clone());
+    }
+    if ctx.state.download_queue.contains(&id) {
+        return Setup::Queued;
+    }
+    if installed { Setup::Installed } else { Setup::NotInstalled }
+}
+
 #[derive(Default)]
 pub struct Library {
+    /// This frame's downloads (paused?) and queue, for the right-click menu.
+    downloading: HashMap<AppId, bool>,
+    queued: BTreeSet<AppId>,
     rt: Option<tokio::runtime::Handle>,
     egui: Option<egui::Context>,
     favorites: BTreeSet<AppId>,
@@ -279,6 +305,8 @@ impl Extension for Library {
 
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {
         let t = ctx.theme.clone();
+        self.downloading = ctx.state.downloads.values().filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).map(|d| (d.app_id, d.paused)).collect();
+        self.queued = ctx.state.download_queue.iter().copied().collect();
         if self.tile == 0.0 {
             self.tile = 160.0;
         }
@@ -581,6 +609,15 @@ impl Library {
             };
             if running {
                 item(ui, icons::STOP, t!("Stop"), MenuAct::Stop);
+            } else if let Some(paused) = self.downloading.get(&id) {
+                if *paused {
+                    item(ui, icons::PLAY, t!("Resume download"), MenuAct::ResumeDownload);
+                } else {
+                    item(ui, "\u{E39E}", t!("Pause download"), MenuAct::PauseDownload);
+                }
+                item(ui, icons::X, t!("Cancel download"), MenuAct::CancelDownload);
+            } else if self.queued.contains(&id) {
+                item(ui, icons::X, t!("Remove from download queue"), MenuAct::CancelDownload);
             } else if installed {
                 item(ui, icons::PLAY, t!("Play"), MenuAct::Play);
             } else {
@@ -633,6 +670,9 @@ impl Library {
                 }
             }
             MenuAct::Stop => ctx.send(Command::StopGame { app_id: id }),
+            MenuAct::PauseDownload => ctx.send(Command::PauseDownload { app_id: id }),
+            MenuAct::ResumeDownload => ctx.send(Command::ResumeDownload { app_id: id }),
+            MenuAct::CancelDownload => ctx.send(Command::CancelDownload { app_id: id }),
             MenuAct::Install => self.install_dialog = Some(InstallDialog::new(id, ctx)),
             MenuAct::Favorite => {
                 if !self.favorites.remove(&id) {
@@ -957,7 +997,9 @@ impl Library {
                     if !ok && !w::paint_cover(ui, icon, &art::header(e.app_id), CornerRadius::same(4)) {
                         ui.painter().rect_filled(icon, CornerRadius::same(4), t.surface_hover);
                     }
-                    let color = if sel { t.text } else if e.installed.is_some() { w::mix(t.text_dim, t.text, hover) } else { t.text_faint };
+                    let setup = setup_state(ctx, e.app_id, e.installed.is_some());
+                    let busy = matches!(setup, Setup::Downloading(_) | Setup::Queued);
+                    let color = if busy { t.accent } else if sel { t.text } else if e.installed.is_some() { w::mix(t.text_dim, t.text, hover) } else { t.text_faint };
                     let galley = ui.painter().layout(e.name.to_string(), w::font_medium(13.5), color, rect.width() - 50.0);
                     let galley = if galley.rows.len() > 1 {
                         let mut job = egui::text::LayoutJob::simple_singleline(e.name.to_string(), w::font_medium(13.5), color);
@@ -969,6 +1011,14 @@ impl Library {
                     ui.painter().galley(pos2(icon.right() + 10.0, rect.center().y - galley.size().y / 2.0), galley, color);
                     if ctx.state.playing == Some(e.app_id) {
                         ui.painter().circle_filled(rect.right_center() - vec2(10.0, 0.0), 4.0, t.in_game);
+                    }
+                    // Installing: a thin bar along the bottom of the row, like Steam.
+                    if let Setup::Downloading(d) = &setup {
+                        let frac = (d.disk_done as f32 / d.disk_total.max(1) as f32).clamp(0.0, 1.0);
+                        let track = Rect::from_min_max(pos2(icon.right() + 10.0, rect.bottom() - 4.0), pos2(rect.right() - 8.0, rect.bottom() - 2.0));
+                        ui.painter().rect_filled(track, CornerRadius::same(1), t.raised);
+                        let fill = Rect::from_min_size(track.min, vec2(track.width() * frac, track.height()));
+                        ui.painter().rect_filled(fill, CornerRadius::same(1), if d.paused { t.text_faint } else { t.accent });
                     }
                     let id = e.app_id;
                     self.game_menu(&resp, id, e.installed.is_some(), ctx.state.playing == Some(id));
@@ -1371,13 +1421,7 @@ impl Library {
     }
 
     fn download_bar(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, d: &model::DownloadStatus) {
-        let label = match d.phase {
-            model::DownloadPhase::Queued | model::DownloadPhase::Preparing => t!("Preparing…"),
-            model::DownloadPhase::Checking => t!("Checking files…"),
-            model::DownloadPhase::Finishing => t!("Finishing…"),
-            _ if d.paused => t!("Paused"),
-            _ => t!("Downloading"),
-        };
+        let label = i18n::tr_dyn(d.activity());
         ui.vertical(|ui| {
             ui.set_width(380.0);
             ui.horizontal(|ui| {
@@ -1388,7 +1432,9 @@ impl Library {
             });
             let frac = d.disk_done as f32 / d.disk_total.max(1) as f32;
             w::progress(ui, t, frac, 380.0);
-            ui.label(w::text(format!("{}/s", ui::bytes(d.speed)), 12.0, t.text_faint));
+            // Network and disk separately (they differ a lot: reused data
+            // and buffered writes hit the disk without coming over the network).
+            ui.label(w::text(t!("Network {net}/s · Disk {disk}/s", net = ui::bytes(d.speed), disk = ui::bytes(d.disk_speed)), 12.0, t.text_faint));
         });
         if d.paused {
             if w::icon_button(ui, t, icons::PLAY, t!("Resume"), false, 0).clicked() {

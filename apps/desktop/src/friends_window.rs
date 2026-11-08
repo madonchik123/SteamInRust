@@ -32,24 +32,24 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
             app.friends_window.open = false;
         }
         let t = app.prefs.theme.clone();
-        egui::Panel::top("fw-title").exact_size(32.0).frame(egui::Frame::new().fill(t.chrome)).show(ui, |ui| {
-            let bar = ui.max_rect();
-            crate::chrome::drag_area(ui, bar, true);
-            let mut c = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(Layout::left_to_right(Align::Center)));
-            c.add_space(10.0);
-            w::logo(&mut c, &t, 14.0);
-            c.label(w::text_semibold(t!("Friends & Chat"), 12.5, t.text_dim));
-            c.with_layout(Layout::right_to_left(Align::Center), |ui| crate::chrome::window_buttons(ui, &t, 32.0, true));
-        });
+        // No title bar row, like Steam's friends window: the window buttons
+        // sit in the header (top right), and the header drags the window.
         if app.friends_window.chat.is_some() {
             egui::Panel::right("fw-chat")
                 .exact_size(480.0)
                 .resizable(false)
-                .frame(egui::Frame::new().fill(t.bg).inner_margin(Margin::same(16)))
-                .show(ui, |ui| chat(app, ui, actions));
+                .frame(egui::Frame::new().fill(t.bg).inner_margin(Margin { left: 16, right: 0, top: 0, bottom: 16 }))
+                .show(ui, |ui| {
+                    // Window buttons on the top edge of the chat side.
+                    let top = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(ui.max_rect().width(), 30.0));
+                    crate::chrome::drag_area(ui, top, true);
+                    ui.allocate_ui_with_layout(top.size(), Layout::right_to_left(Align::Min), |ui| crate::chrome::window_buttons(ui, &t, 30.0, true));
+                    ui.add_space(4.0);
+                    egui::Frame::new().inner_margin(Margin { left: 0, right: 16, top: 0, bottom: 0 }).show(ui, |ui| chat(app, ui, actions));
+                });
         }
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(t.chrome).inner_margin(Margin { left: 14, right: 10, top: 10, bottom: 8 }))
+            .frame(egui::Frame::new().fill(t.chrome).inner_margin(Margin { left: 14, right: 10, top: 12, bottom: 8 }))
             .show(ui, |ui| list(app, ui, actions));
         crate::chrome::resize_edges(ui);
         let ctx = ui.ctx().clone();
@@ -61,6 +61,15 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
 fn list(app: &mut SteamApp, ui: &mut Ui, actions: &mut Vec<Action>) {
     let t = app.prefs.theme.clone();
     let me = app.state.me().cloned().unwrap_or_default();
+    // The header drags the window (widgets on top of it still get their clicks).
+    let header = egui::Rect::from_min_size(ui.max_rect().min - egui::vec2(14.0, 12.0), egui::vec2(ui.max_rect().width() + 24.0, 64.0));
+    crate::chrome::drag_area(ui, header, true);
+    // With no chat open, the window buttons live in this header's top right.
+    if app.friends_window.chat.is_none() {
+        let corner = egui::Rect::from_min_max(egui::pos2(header.right() - 3.0 * 46.0, header.top()), egui::pos2(header.right(), header.top() + 30.0));
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(corner).layout(Layout::right_to_left(Align::Min)));
+        crate::chrome::window_buttons(&mut c, &t, 30.0, true);
+    }
     ui.horizontal(|ui| {
         w::avatar(ui, &t, &art::avatar(me.avatar_hash.as_deref()), 40.0, Some(crate::shell::status_color(&t, &me)));
         ui.vertical(|ui| {

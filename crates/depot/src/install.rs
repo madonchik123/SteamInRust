@@ -43,6 +43,9 @@ pub struct Progress {
     pub cancel: AtomicBool,
     /// The download ended (done, failed or cancelled): progress updates stop.
     pub ended: AtomicBool,
+    /// Bytes actually written to disk (not files found already complete),
+    /// for an honest disk speed.
+    pub written: AtomicU64,
     /// KB/s, 0 = unlimited.
     pub limit_kbps: AtomicU64,
     /// Parallel chunk downloads.
@@ -228,6 +231,7 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
             let (path, _) = &files[w.file];
             write_at(&part_path(path), w.chunk.offset, &data)?;
             progress.disk_done.fetch_add(data.len() as u64, Ordering::Relaxed);
+            progress.written.fetch_add(data.len() as u64, Ordering::Relaxed);
             if remaining[w.file].fetch_sub(1, Ordering::AcqRel) == 1 {
                 finish_file(path)?;
                 progress.files_done.fetch_add(1, Ordering::Relaxed);

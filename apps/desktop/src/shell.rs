@@ -689,7 +689,27 @@ fn status_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
         if dl.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             app.navigate("downloads".into(), None);
         }
-        ui.label(w::text(t!("Nothing in the queue"), 12.5, t.text_faint));
+        // Same state as the Downloads page: what's downloading and what's waiting.
+        let active = app.state.downloads.values().find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).cloned();
+        let waiting = app.state.download_queue.iter().filter(|id| active.as_ref().is_none_or(|d| d.app_id != **id)).count();
+        match &active {
+            Some(d) => {
+                let name = app.state.app_name(d.app_id).unwrap_or("").to_string();
+                let pct = d.disk_done as f64 * 100.0 / d.disk_total.max(1) as f64;
+                let text = if d.paused { t!("{game}: paused at {pct}%", game = name, pct = format!("{pct:.0}")) } else { t!("{game}: {pct}%", game = name, pct = format!("{pct:.0}")) };
+                ui.label(w::text(text, 12.5, t.accent));
+                w::progress(ui, t, (pct / 100.0) as f32, 90.0);
+                if waiting > 0 {
+                    ui.label(w::text(t!("+{n} queued", n = waiting), 12.5, t.text_faint));
+                }
+            }
+            None if waiting > 0 => {
+                ui.label(w::text(t!("{n} queued", n = waiting), 12.5, t.text_faint));
+            }
+            None => {
+                ui.label(w::text(t!("Nothing in the queue"), 12.5, t.text_faint));
+            }
+        }
         crate::offline_ui::status_note(app, ui, t);
         if let Some(id) = app.state.playing {
             ui.add_space(16.0);
@@ -812,11 +832,14 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
     let unread = app.state.unread.get(&p.steam_id).copied().unwrap_or(0);
 
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    // The whole row lights up wherever the pointer is in it (also over the
+    // game link inside it), and clearly enough to see on the dark list.
+    let pointer_in = ui.rect_contains_pointer(rect) || resp.context_menu_opened();
+    let hover = ui.ctx().animate_bool_with_time(resp.id, pointer_in, 0.1);
     if selected {
-        ui.painter().rect_filled(rect, t.corner_small(), t.surface_hover);
+        ui.painter().rect_filled(rect, t.corner_small(), t.accent.gamma_multiply(0.18));
     } else if hover > 0.0 {
-        ui.painter().rect_filled(rect, t.corner_small(), w::mix(egui::Color32::TRANSPARENT, t.surface, hover));
+        ui.painter().rect_filled(rect, t.corner_small(), w::mix(egui::Color32::TRANSPARENT, t.surface_hover, hover));
     }
     // Leave room on the right for the unread badge, so text never runs under it.
     let inner = rect.shrink2(vec2(6.0, 6.0));
@@ -832,6 +855,11 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
         // The game is a link to its page.
         let r = ui.add(egui::Label::new(w::text(&status, 12.0, if offline { t.text_faint } else if p.in_game() { t.in_game } else { t.text_dim })).truncate().sense(Sense::click()));
         if let Some(target) = p.game_app_id.filter(|_| p.in_game()) {
+            // The game is a link of its own: underlined while the pointer is
+            // on it, so it's clear a click opens the game, not the chat.
+            if r.hovered() {
+                ui.painter().hline(r.rect.x_range(), r.rect.bottom() - 1.0, Stroke::new(1.0, t.in_game));
+            }
             let r = r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Open the game's page"));
             if r.clicked() {
                 actions.push(game_page(&app.state, target));

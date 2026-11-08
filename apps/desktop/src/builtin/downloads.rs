@@ -199,24 +199,20 @@ impl Downloads {
                     w::image_or_skeleton(ui, t, r, &art::header(d.app_id), t.corner_small());
                     ui.vertical(|ui| {
                         ui.label(w::text_bold(&name, 17.0, t.text));
-                        let phase = match d.phase {
-                            model::DownloadPhase::Queued | model::DownloadPhase::Preparing => t!("Preparing…"),
-                            model::DownloadPhase::Checking => t!("Checking files…"),
-                            model::DownloadPhase::Finishing => t!("Finishing…"),
-                            _ if d.paused => t!("Paused"),
-                            _ => t!("Downloading"),
-                        };
-                        ui.label(w::text_semibold(phase, 13.5, t.accent));
+                        // Downloading / Writing to disk / Checking existing files…
+                        ui.label(w::text_semibold(i18n::tr_dyn(d.activity()), 13.5, t.accent));
                         let width = (ui.available_width() - 120.0).max(80.0);
                         w::progress(ui, t, d.disk_done as f32 / d.disk_total.max(1) as f32, width);
                         let left = d.download_total.saturating_sub(d.downloaded);
                         let eta = if d.speed > 0 && !d.paused { ui::playtime(left / d.speed / 60 + 1) } else { "—".into() };
                         ui.label(w::text(
                             format!(
-                                "{} / {}   ·   {}   ·   {}",
+                                "{} / {}   ·   {}   ·   {}   ·   {}",
                                 ui::bytes(d.disk_done),
                                 ui::bytes(d.disk_total),
-                                self.rate(d.speed),
+                                t!("network {rate}", rate = self.rate(d.speed)),
+                                // Disk in MB/s like Steam; network in the unit picked in settings.
+                                t!("disk {rate}", rate = format!("{}/s", ui::bytes(d.disk_speed))),
                                 t!("{time} left", time = eta)
                             ),
                             12.5,

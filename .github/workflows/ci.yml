@@ -47,6 +47,9 @@ jobs:
         with:
           msystem: MINGW64
           update: false
+          # Use the MSYS2 that ships with the runner instead of downloading it
+          # (the download often fails with HTTP 504).
+          release: false
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
 
       - name: Put MinGW on PATH
@@ -74,6 +77,9 @@ jobs:
         with:
           msystem: MINGW64
           update: false
+          # Use the MSYS2 that ships with the runner instead of downloading it
+          # (the download often fails with HTTP 504).
+          release: false
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
 
       - name: Put MinGW on PATH

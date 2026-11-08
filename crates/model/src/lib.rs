@@ -259,6 +259,32 @@ pub struct DownloadStatus {
     /// Not errors, but worth showing (e.g. skipped content).
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Where the game is going (exists as soon as files start arriving).
+    #[serde(default)]
+    pub install_dir: Option<PathBuf>,
+    /// Bytes per second landing on disk (downloaded, reused or copied).
+    #[serde(default)]
+    pub disk_speed: u64,
+}
+
+impl DownloadStatus {
+    /// What it's doing right now, in words (an English key for translation):
+    /// downloading, writing to disk, checking files…, like Steam's status.
+    pub fn activity(&self) -> &'static str {
+        match self.phase {
+            DownloadPhase::Queued | DownloadPhase::Preparing => "Preparing…",
+            DownloadPhase::Checking => "Checking existing files…",
+            DownloadPhase::Finishing => "Finishing…",
+            DownloadPhase::Done => "Done",
+            DownloadPhase::Failed => "Failed",
+            _ if self.paused => "Paused",
+            // More than ~50 KB/s over the network: downloading. Otherwise
+            // data still landing on disk (reused chunks, buffered writes).
+            _ if self.speed > 50_000 => "Downloading",
+            _ if self.disk_speed > 0 => "Writing to disk",
+            _ => "Waiting for content servers…",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

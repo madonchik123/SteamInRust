@@ -7,7 +7,8 @@ use ui::{Theme, icons, widgets as w};
 /// Make `rect` move the window when dragged (double-click maximizes).
 /// Call it before adding widgets on top, so they still get their clicks.
 pub fn drag_area(ui: &mut Ui, rect: Rect, can_maximize: bool) {
-    let resp = ui.interact(rect, Id::unique("window-drag"), Sense::click_and_drag());
+    // One id per drag area (a window can have several, e.g. Friends & Chat).
+    let resp = ui.interact(rect, Id::unique(("window-drag", rect.min.x as i32, rect.min.y as i32)), Sense::click_and_drag());
     if resp.drag_started_by(egui::PointerButton::Primary) {
         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
     }

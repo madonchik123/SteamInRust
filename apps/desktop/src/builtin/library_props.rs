@@ -371,6 +371,53 @@ impl Library {
     }
 
     fn tab_files(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, app: AppId, installed: Option<&InstalledGame>) {
+        // Being downloaded: its folder already exists, so it can be opened.
+        match super::setup_state(ctx, app, installed.is_some()) {
+            super::Setup::Downloading(d) => {
+                w::panel(t).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let pct = d.disk_done as f64 * 100.0 / d.disk_total.max(1) as f64;
+                    let label = if d.paused { t!("Download paused at {pct}%", pct = format!("{pct:.0}")) } else { t!("Installing… {pct}%", pct = format!("{pct:.0}")) };
+                    ui.label(w::text_semibold(label, 15.0, t.accent));
+                    ui.label(w::text(format!("{} / {}", ui::bytes(d.disk_done), ui::bytes(d.disk_total)), 12.5, t.text_dim));
+                    w::progress(ui, t, (pct / 100.0) as f32, ui.available_width());
+                    if let Some(dir) = &d.install_dir {
+                        ui.add_space(6.0);
+                        let path = dir.display().to_string();
+                        ui.add(egui::Label::new(w::text(&path, 12.5, t.text_dim).monospace()).truncate()).on_hover_text(&path);
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+                        if let Some(dir) = d.install_dir.as_ref().filter(|p| p.exists()) {
+                            if w::button(ui, t, Some(icons::FOLDER), t!("Browse…"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                                local::open_folder(dir);
+                            }
+                        }
+                        let (icon, label, cmd) = if d.paused {
+                            (icons::PLAY, t!("Resume download"), Command::ResumeDownload { app_id: app })
+                        } else {
+                            ("\u{E39E}", t!("Pause download"), Command::PauseDownload { app_id: app })
+                        };
+                        if w::button(ui, t, Some(icon), label, w::Kind::Secondary, w::Size::Sm).clicked() {
+                            ctx.send(cmd);
+                        }
+                        if w::button(ui, t, Some(icons::X), t!("Cancel download"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                            ctx.send(Command::CancelDownload { app_id: app });
+                        }
+                    });
+                });
+                return;
+            }
+            super::Setup::Queued if installed.is_none() => {
+                ui.label(w::text(t!("Waiting in the download queue."), 14.0, t.accent));
+                if w::button(ui, t, Some(icons::X), t!("Remove from download queue"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                    ctx.send(Command::CancelDownload { app_id: app });
+                }
+                return;
+            }
+            _ => {}
+        }
         let Some(g) = installed else {
             ui.label(w::text(t!("This game isn't installed."), 14.0, t.text_dim));
             if w::button(ui, t, Some(icons::DOWNLOAD), t!("Install"), w::Kind::Primary, w::Size::Md).clicked() {

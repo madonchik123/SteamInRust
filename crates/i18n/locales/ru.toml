@@ -1501,6 +1501,18 @@
 "Exit anyway" = "Всё равно выйти"
 "Keep downloading in the tray" = "Продолжить загрузку в трее"
 
+# --- Library install states ---
+"Resume download" = "Продолжить загрузку"
+"Pause download" = "Приостановить загрузку"
+"Cancel download" = "Отменить загрузку"
+"Remove from download queue" = "Убрать из очереди загрузок"
+"Download paused at {pct}%" = "Загрузка приостановлена на {pct}%"
+"Installing… {pct}%" = "Установка… {pct}%"
+"Waiting in the download queue." = "Ожидает в очереди загрузок."
+"{game}: paused at {pct}%" = "{game}: пауза на {pct}%"
+"{game}: {pct}%" = "{game}: {pct}%"
+"+{n} queued" = "+{n} в очереди"
+"{n} queued" = "В очереди: {n}"
 # --- Friends & Chat: join, server info, nicknames, favorites, block ---
 "Join game" = "Присоединиться к игре"
 "Joining {name} in {game}…" = "Присоединяемся к {name} в {game}…"
@@ -1530,3 +1542,12 @@
 "Block all communication with {name}?" = "Заблокировать все взаимодействия с {name}?"
 "They'll be removed from your friends and can't message you or invite you." = "Пользователь будет удалён из друзей и не сможет писать вам или приглашать."
 "Block" = "Заблокировать"
+
+# --- Download activity ---
+"Checking existing files…" = "Проверка имеющихся файлов…"
+"Writing to disk" = "Запись на диск"
+"Waiting for content servers…" = "Ожидание серверов загрузки…"
+"Failed" = "Ошибка"
+"Network {net}/s · Disk {disk}/s" = "Сеть {net}/с · Диск {disk}/с"
+"network {rate}" = "сеть {rate}"
+"disk {rate}" = "диск {rate}"
