@@ -100,6 +100,31 @@ pub enum Request {
     ItemDefs,
     /// Promo items this player can still get.
     PromoItems,
+    /// Game servers from Steam's master server: `filter` in Steam's
+    /// "\key\value" form. Answered with [`Reply::Servers`].
+    ServerList { filter: String, max: u32 },
+}
+
+/// A game server as Steam's server browser lists it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GameServer {
+    pub ip: u32,
+    pub query_port: u16,
+    pub game_port: u16,
+    pub steam_id: u64,
+    pub app_id: u32,
+    pub name: String,
+    pub map: String,
+    pub game_dir: String,
+    pub description: String,
+    pub tags: String,
+    pub version: u32,
+    pub players: u32,
+    pub max_players: u32,
+    pub bots: u32,
+    pub password: bool,
+    pub secure: bool,
+    pub ping: u32,
 }
 
 /// What ISteamInventory asked for.
@@ -297,6 +322,7 @@ pub enum Reply {
     /// Item definitions: (id, properties).
     ItemDefs { defs: Vec<(i32, Vec<(String, String)>)> },
     PromoItems { eresult: i32, defs: Vec<i32> },
+    Servers { servers: Vec<GameServer> },
     /// EResult, the item's folder, size on disk and last update time.
     UgcDownloaded { eresult: i32, folder: String, size: u64, updated: u32 },
     LbFound { found: bool, id: i32, count: i32, sort: i32, display: i32, name: String },

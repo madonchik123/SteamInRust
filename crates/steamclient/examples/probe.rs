@@ -470,9 +470,133 @@ fn inventory_test(dll: &str) -> ! {
     std::process::exit(if status(inv, h) == 1 && count > 0 { 0 } else { 1 });
 }
 
+/// A game's ISteamMatchmakingServerListResponse / Players / Rules objects:
+/// a vtable of our functions, counting what arrives.
+#[repr(C)]
+struct Listener {
+    vtable: *const usize,
+}
+
+static RESPONDED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static FAILED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static COMPLETE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+static PLAYERS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+static RULES: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+static COUNT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+extern "C" fn on_responded(_this: usize, _req: usize, _i: i32) {
+    RESPONDED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+extern "C" fn on_failed(_this: usize, _req: usize, _i: i32) {
+    FAILED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+extern "C" fn on_complete(_this: usize, _req: usize, r: i32) {
+    COMPLETE.store(r, std::sync::atomic::Ordering::SeqCst);
+}
+extern "C" fn on_player(_this: usize, name: *const c_char, score: i32, time: f32) {
+    if COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 3 {
+        println!("    player {:?} score {score} for {time:.0} s", s(name));
+    }
+}
+extern "C" fn on_rule(_this: usize, k: *const c_char, v: *const c_char) {
+    if COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 3 {
+        println!("    rule {} = {}", s(k), s(v));
+    }
+}
+extern "C" fn on_players_failed(_this: usize) {
+    PLAYERS.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+extern "C" fn on_players_done(_this: usize) {
+    PLAYERS.store(1, std::sync::atomic::Ordering::SeqCst);
+}
+extern "C" fn on_rules_failed(_this: usize) {
+    RULES.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+extern "C" fn on_rules_done(_this: usize) {
+    RULES.store(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// `--direct <steamclient.dll> --test servers --app <id>`: the server browser
+/// through our DLL: an internet list, then players and rules of one server.
+fn servers_test(dll: &str, app: u32) -> ! {
+    use std::sync::atomic::Ordering::SeqCst;
+    let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {dll}");
+    let api = Api(module);
+    let create: extern "C" fn(*const c_char, *mut i32) -> usize = unsafe { std::mem::transmute(api.f("CreateInterface").unwrap()) };
+    let client = create(c"SteamClient021".as_ptr(), std::ptr::null_mut());
+    let pipe: extern "C" fn(usize) -> i32 = unsafe { std::mem::transmute(slot(client, 0)) };
+    let pipe = pipe(client);
+    let connect: extern "C" fn(usize, i32) -> i32 = unsafe { std::mem::transmute(slot(client, 2)) };
+    let user = connect(client, pipe);
+    let generic: extern "C" fn(usize, i32, i32, *const c_char) -> usize = unsafe { std::mem::transmute(slot(client, 12)) };
+    const V: &str = "SteamMatchMakingServers002";
+    let mms = generic(client, user, pipe, c"SteamMatchMakingServers002".as_ptr());
+    let m = |name: &str| slot(mms, steamclient::slot_of(V, name).unwrap_or_else(|| panic!("{name}")));
+    let get_callback: extern "C" fn(i32, *mut CallbackMsg) -> bool = unsafe { std::mem::transmute(api.f("Steam_BGetCallback").unwrap()) };
+    let free_callback: extern "C" fn(i32) -> bool = unsafe { std::mem::transmute(api.f("Steam_FreeLastCallback").unwrap()) };
+    let pump = |until: &dyn Fn() -> bool| {
+        let end = Instant::now() + Duration::from_secs(40);
+        while Instant::now() < end && !until() {
+            let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
+            while get_callback(pipe, &mut msg) {
+                free_callback(pipe);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let list_vt: [usize; 3] = [on_responded as *const () as usize, on_failed as *const () as usize, on_complete as *const () as usize];
+    let list = Listener { vtable: list_vt.as_ptr() };
+    let request: extern "C" fn(usize, u32, *const *const u8, u32, *const Listener) -> usize = unsafe { std::mem::transmute(m("RequestInternetServerList")) };
+    let filters = [0u8; 512];
+    let fp = filters.as_ptr();
+    let h = request(mms, app, &fp, 0, &list);
+    pump(&|| COMPLETE.load(SeqCst) >= 0);
+    let count: extern "C" fn(usize, usize) -> i32 = unsafe { std::mem::transmute(m("GetServerCount")) };
+    println!("list: {} servers, {} answered, {} didn't, complete {}", count(mms, h), RESPONDED.load(SeqCst), FAILED.load(SeqCst), COMPLETE.load(SeqCst));
+    let details: extern "C" fn(usize, usize, i32) -> *const u8 = unsafe { std::mem::transmute(m("GetServerDetails")) };
+    let mut best: Option<(u32, u16, i32)> = None;
+    for i in 0..count(mms, h) {
+        let d = details(mms, h, i);
+        let d = unsafe { std::slice::from_raw_parts(d, 376) };
+        if d[12] == 0 {
+            continue;
+        }
+        let ping = i32::from_le_bytes(d[8..12].try_into().unwrap());
+        let players = i32::from_le_bytes(d[148..152].try_into().unwrap());
+        if i < 400 && best.is_none_or(|b| players > 0 && ping < b.2) {
+            best = Some((u32::from_le_bytes(d[4..8].try_into().unwrap()), u16::from_le_bytes(d[2..4].try_into().unwrap()), ping));
+        }
+        if RESPONDED.load(SeqCst) > 0 && i < 3 {
+            println!("  {:?} on {} {}/{} players, ping {ping}", s(d[172..].as_ptr().cast()), s(d[46..].as_ptr().cast()), players, i32::from_le_bytes(d[152..156].try_into().unwrap()));
+        }
+    }
+    let mut ok = COMPLETE.load(SeqCst) == 0 && RESPONDED.load(SeqCst) > 0;
+    if let Some((ip, port, ping)) = best {
+        println!("server {}:{port} (ping {ping}):", std::net::Ipv4Addr::from(ip));
+        let players_vt: [usize; 3] = [on_player as *const () as usize, on_players_failed as *const () as usize, on_players_done as *const () as usize];
+        let rules_vt: [usize; 3] = [on_rule as *const () as usize, on_rules_failed as *const () as usize, on_rules_done as *const () as usize];
+        let (p, r) = (Listener { vtable: players_vt.as_ptr() }, Listener { vtable: rules_vt.as_ptr() });
+        let ask_players: extern "C" fn(usize, u32, u16, *const Listener) -> i32 = unsafe { std::mem::transmute(m("PlayerDetails")) };
+        let ask_rules: extern "C" fn(usize, u32, u16, *const Listener) -> i32 = unsafe { std::mem::transmute(m("ServerRules")) };
+        ask_players(mms, ip, port, &p);
+        pump(&|| PLAYERS.load(SeqCst) >= 0);
+        COUNT.store(0, SeqCst);
+        ask_rules(mms, ip, port, &r);
+        pump(&|| RULES.load(SeqCst) >= 0);
+        println!("players {}, rules {}", PLAYERS.load(SeqCst), RULES.load(SeqCst));
+        ok &= PLAYERS.load(SeqCst) == 1;
+    }
+    std::process::exit(if ok { 0 } else { 1 });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+    if let (Some(dll), Some("servers")) = (arg("--direct"), arg("--test").as_deref()) {
+        servers_test(&dll, arg("--app").and_then(|a| a.parse().ok()).unwrap_or(440));
+    }
     if let (Some(dll), Some("ugc")) = (arg("--direct"), arg("--test").as_deref()) {
         ugc_test(&dll);
     }

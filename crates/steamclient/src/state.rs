@@ -161,6 +161,28 @@ pub fn lock() -> MutexGuard<'static, Global> {
     G.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+type Task = Box<dyn FnOnce() + Send>;
+static LATER: Mutex<Vec<Task>> = Mutex::new(Vec::new());
+
+/// Run `f` on the game's thread during its next SteamAPI_RunCallbacks (for
+/// calls into the game's own objects, like Steam's client makes them).
+pub fn on_game_thread(f: impl FnOnce() + Send + 'static) {
+    LATER.lock().unwrap_or_else(|e| e.into_inner()).push(Box::new(f));
+}
+
+/// Run what [`on_game_thread`] queued (no lock is held while they run).
+pub fn run_game_thread_tasks() {
+    loop {
+        let tasks = std::mem::take(&mut *LATER.lock().unwrap_or_else(|e| e.into_inner()));
+        if tasks.is_empty() {
+            break;
+        }
+        for t in tasks {
+            t();
+        }
+    }
+}
+
 pub fn now() -> u32 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0)
 }

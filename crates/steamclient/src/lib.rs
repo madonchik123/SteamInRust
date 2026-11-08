@@ -33,6 +33,7 @@ mod inventory;
 mod ipc;
 mod lobby;
 mod p2p;
+mod servers;
 mod sns;
 mod state;
 mod tables;
@@ -148,6 +149,7 @@ fn get_callback(_pipe: usize, msg: usize) -> usize {
     }
     // Networking callbacks the game set as functions run here, on its thread.
     sns::run_callbacks();
+    state::run_game_thread_tasks();
     let mut g = state::lock();
     let Some((callback, data)) = g.queue.pop_front() else { return 0 };
     g.current = Some(data);

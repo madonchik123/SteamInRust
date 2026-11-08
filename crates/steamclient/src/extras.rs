@@ -39,6 +39,7 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
         ("ISteamHTTP", m) => http_imp(m),
         ("ISteamUGC", m) => crate::ugc::imp(m),
         ("ISteamInventory", m) => crate::inventory::imp(m),
+        ("ISteamMatchmakingServers", m) => crate::servers::imp(m),
         _ => None,
     }
 }

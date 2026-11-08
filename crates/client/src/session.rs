@@ -2291,6 +2291,11 @@ impl Online {
                     let _ = reply.send(crate::game_inventory::item_defs(&conn, app_id).await);
                 });
             }
+            Request::ServerList { filter, max } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_servers::list(&conn, app_id, &filter, max).await);
+                });
+            }
             Request::PromoItems => {
                 tokio::spawn(async move {
                     let _ = reply.send(crate::game_inventory::promo_items(&conn, app_id, me).await);
