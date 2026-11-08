@@ -164,7 +164,7 @@ You need [Rust](https://rustup.rs) and MinGW-w64 (the project uses the GNU toolc
 cargo run                  # sign in with your account
 cargo run -- --demo        # sample data, no sign-in
 cargo test --workspace
-powershell -File tools/package.ps1   # setup + portable zip in target/package/dist
+cargo xtask package        # setup + portable zip in target/package/dist
 ```
 
 <details>

@@ -281,7 +281,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     // egui's bundled fonts stay as fallbacks for emoji and rare scripts.
     let mut fallbacks: Vec<String> = system;
     fallbacks.extend(fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
-    // The bundled fonts are trimmed so they never overlap (tools/fix_fonts.py):
+    // The bundled font files are trimmed so they never overlap:
     // Inter has no private-use glyphs and Phosphor has only private-use ones.
     let family = |main: &str| {
         let mut v = vec![main.to_string(), "phosphor".to_string()];

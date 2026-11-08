@@ -1,0 +1,3 @@
+[alias]
+# `cargo xtask package` builds a release (see xtask/src/main.rs).
+xtask = "run --quiet --package xtask --"

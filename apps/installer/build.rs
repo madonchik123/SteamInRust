@@ -1,4 +1,4 @@
-//! Embeds the app (a zip made by tools/package.ps1, passed as SIR_PAYLOAD)
+//! Embeds the app (a zip made by `cargo xtask package`, passed as SIR_PAYLOAD)
 //! and the icon. Without SIR_PAYLOAD the setup builds with an empty payload
 //! and says so when run (handy for working on its look).
 
