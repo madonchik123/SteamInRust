@@ -1,146 +1,180 @@
-# Steam parity tracker
+# Steam parity
 
-Legend: ✅ done · 🟡 partial · ⬜ not started · 🚫 not possible natively (explained)
+How much of the official Steam desktop client SteamInRust covers, area by
+area. Last checked against the code on 8 November 2026 (v0.3.0).
 
-## Account & sign-in
-| Feature | Status | Notes |
-|---|---|---|
-| Password sign-in with Steam Guard (email, mobile code, approve on phone) | ✅ | |
-| QR code sign-in | ✅ | Verified against Steam's servers |
-| Remember me / auto sign-in | ✅ | |
-| Multiple saved accounts, switch account | ✅ | App menu → Switch account |
-| Ask which account at startup | ✅ | Settings → Interface |
-| Refresh token in the OS keychain | ⬜ | Stored in a per-user file today |
-| Account details (email, phone, Steam Guard status, purchase history) | ⬜ | Account service calls |
-| Store preferences (content filters, ignored tags) | ⬜ | |
-| Family sharing / Steam Families | ⬜ | |
+Scores: **0** not started · **0.25** started · **0.5** usable, big parts
+missing · **0.75** mostly there · **1** complete. Anything marked "opens
+Steam's website" still works; it just isn't native yet.
 
-## Offline mode & connection
-| Feature | Status | Notes |
-|---|---|---|
-| Last sign-in kept per account (name, avatar, owned apps with launch options and cloud settings, friends) | ✅ | `<config>/offline/<account id>/account.json`, written from live data only; no credentials in it |
-| "Connection error" at startup with Retry / Start in offline mode | ✅ | Only for network failures (no connection, timeout, Steam down); a rejected login still goes to sign-in. Auto-login is never cleared by a network error |
-| Start offline by itself when Steam can't be reached | ✅ | Toggle in the Connection error window |
-| Offline mode sticks until "Go online" | ✅ | Like Steam: exit while offline, start offline next time |
-| Offline badge in the top bar, Go online / Go offline in the account menu | ✅ | |
-| Library and installed games offline | ✅ | Verified with Knights End through our steamclient: cold start offline, play, quit |
-| Store, Community, Profile, Inventory, Workshop, Support offline | ✅ | Clean "You're offline" page with Go online |
-| Friends offline | ✅ | Shown as offline with a note that their status is unknown and chat is unavailable |
-| Downloads paused while offline or reconnecting | ✅ | A running download pauses itself and resumes after reconnecting |
-| Reconnect after a dropped connection without signing out | ✅ | UI and running games stay; retries after 2, 5, 10, 20, 40, 60 s (then every minute); same logon id, so the new session replaces only our own old one. A connection that goes silent is noticed within about 100 s. Verified by cutting the network mid-session (reset and silent drop) |
-| Maintenance / busy server log-off reconnects instead of signing out | ✅ | `ServiceUnavailable`, `TryAnotherCM` |
-| Play time while offline | 🟡 | Recorded locally per session and added to the game page's Play time (with a note). Once back online (on reconnect, or at the next online start) it's sent with `Player.RecordDisconnectedPlaytime`, the call Steam's own client uses. Live test: Steam accepted 4 min of Knights End, but the profile's playtime (`Player.GetOwnedGames`) still showed the old 15 min about 5 minutes later, so it's unconfirmed whether Steam counts it |
-| Steam Cloud after offline play | ✅ | Offline launch skips the download (with a note); saves changed offline become an upload (the last-sync record tells them apart from conflicts) and run by themselves once online. Verified live: a save added offline (Knights End slot 2) uploaded by itself on going online; the cloud went from 2 files / 7.8 KB to 3 files / 13.0 KB |
-| Steam Cloud names for Auto-Cloud paths ending in `\` | ✅ | Fixed: rule folders are normalized (`SaveGames\` gives `SaveGames/file.sav`, as Steam names them). Files already in the cloud (or in the local sync record) under an old `//` name count as the same file, so they aren't uploaded again. One test save from before the fix may still sit in Knights End's cloud under the `//` name (Steam seems to normalize these itself); deleting cloud files isn't supported yet |
-| Games through our steamclient offline | ✅ | Cached user, `BLoggedOn` false, ownership kept; stats come from the local cache, stats stored offline are kept and sent when online (sending not live-tested) |
-| Anti-cheat games offline | 🟡 | The official client is started in its own offline mode (`WantsOfflineMode` / `SkipOfflineModeWarning` for that account, put back after Steam closes). Needs Steam to remember the account; if Steam is already running it keeps its own state. Unit-tested, not live-tested. Many anti-cheat games need to be online anyway |
-| Proxy for the Steam connection | ✅ | `STEAMINRUST_PROXY=http://host:port` (HTTP CONNECT); the rest of the app follows `HTTPS_PROXY` |
+| Area | Score | Main gaps |
+| --- | ---: | --- |
+| Sign-in and accounts | 0.75 | Tokens are in a per-user file, not the Windows credential store; account details open Steam's website |
+| Offline mode and reconnecting | 1 | Whether Steam counts playtime recorded offline is unconfirmed |
+| Library | 0.75 | Collection edits aren't saved back to Steam; dynamic collections are skipped |
+| Downloads and installs | 0.75 | No drag to reorder the queue; no taskbar progress; Workshop items aren't downloaded |
+| Store | 0.75 | Checkout happens on Steam's website (Steam requires it); no discovery queue; can't write reviews |
+| Friends and chat | 0.75 | No group chats or voice chat |
+| Community | 0.5 | Reading only for discussions; badge pages, groups and someone's reviews open Steam's website |
+| Inventory and Market | 0.75 | Trade offers open Steam's website; no Market search page |
+| Steam Cloud | 1 | Can't delete files from the cloud |
+| Steam features inside games | 0.75 | P2P with players on the official client; `ISteamNetworkingSockets`; game servers |
+| Shift+Tab overlay | 0.75 | Not shown over exclusive full-screen games; no in-game web browser or screenshots |
+| Notifications and tray | 1 | |
+| Settings, languages, updates | 0.75 | English and Russian only; Windows only |
+| Big Picture, Remote Play, Steam Input | 0 | Not planned for now |
+
+---
+
+## Sign-in and accounts
+
+| | |
+| --- | --- |
+| Password with Steam Guard (email code, mobile code, approve on the phone) | Done |
+| QR code from the Steam Mobile app | Done |
+| Remember me, several saved accounts, switch account, ask at startup | Done |
+| Refresh token storage | Per-user file in app data. Moving it to the Windows credential store is planned |
+| Account details, purchase history, Steam Families | Open Steam's website |
+
+## Offline mode and reconnecting
+
+| | |
+| --- | --- |
+| "Connection error" window at startup with Retry and Start offline | Done. A rejected sign-in still goes to the sign-in screen |
+| Offline mode sticks until you choose Go online, like Steam | Done |
+| Library, installed games and Steam features in games while offline | Done (cached user and stats, stats queued until online) |
+| Reconnect after the connection drops, without signing out | Done. Retries after 2, 5, 10, 20, 40 and 60 s, then every minute. A silent drop is noticed within about 100 s |
+| Downloads pause while offline and resume after reconnecting | Done |
+| Playtime while offline | Recorded and sent with `Player.RecordDisconnectedPlaytime`, the call Steam uses. Steam accepted it in a test, but the profile's playtime didn't change, so it's unconfirmed |
+| Anti-cheat games offline | The official client is started in its own offline mode. Not tested live |
+| Proxy | `STEAMINRUST_PROXY=http://host:port` for the Steam connection, `HTTPS_PROXY` for the rest |
 
 ## Library
-| Feature | Status | Notes |
-|---|---|---|
-| Owned games (all licenses via PICS) + installed games | ✅ | |
-| Sidebar list, search, filters, sort by name/recent/hours/size | ✅ | |
-| Library home: continue playing, recent shelf, grid | ✅ | |
-| Game page: hero, logo, play bar, details, launch options | ✅ | |
-| Launch games, show "playing" to friends | ✅ | DRM-free; see [compatibility](steam-compatibility.md) |
-| Stop a running game | ✅ | Ends the whole process tree |
-| Verify game files | ✅ | Against Steam's depot manifests (SHA-1) |
-| Uninstall | ✅ | With confirmation |
-| DLC list with on/off toggles | 🟡 | Saved; applied by the download manager |
-| Custom launch options per game | ✅ | |
-| Game news / patch notes on game page | 🟡 | API wired; UI in progress |
-| Add a non-Steam game | 🟡 | In progress |
-| Favorites, hidden games, collections | 🟡 | Favorites/hidden in progress; dynamic collections ⬜ |
-| Achievements | ✅ | Native page per game: filter, sort by rarity, compare with a friend (Player service) |
-| Cloud save status | ⬜ | |
-| Game properties: betas, language, compatibility tool | ⬜ | |
-| Install / update (depot downloader) | ⬜ | **Next big milestone** |
 
-## Downloads
-| Feature | Status | Notes |
-|---|---|---|
-| Downloads page with update queue and recently updated | ✅ | |
-| Download settings (region, bandwidth, schedule, while playing) | 🟡 | Saved; used by the downloader |
-| Actual downloading, pause/resume, reorder queue | ⬜ | Depot downloader |
-| Taskbar progress | ⬜ | With the downloader |
+| | |
+| --- | --- |
+| Every owned game (all licenses through PICS) and installed games | Done |
+| Search, filters (genre, features, Steam Deck status, installed, played), sort by name, recent, hours, size | Done |
+| Home with recent games and shelves, game page with art, play bar, news and achievements | Done |
+| Collections, including your Steam Favorites and Hidden | Read from Steam. Edits stay local for now |
+| Non-Steam games | Done |
+| Install states everywhere: list row with progress, game page, right-click menu, Properties | Done |
+| Properties: general, launch options, language, updates, installed files, versions and betas (with private beta codes), DLC, Steam Cloud, Workshop, controller, privacy | Done |
+| Verify files, uninstall, desktop shortcuts, browse local files (also while installing) | Done |
+| Achievements with rarity, sorting and comparing with a friend | Done |
 
-## Store (native, no web view)
-| Feature | Status | Notes |
-|---|---|---|
-| Front page: carousel, specials, top sellers, new, upcoming | ✅ | |
-| Search with results page | ✅ | |
-| Game page: media strip, description, requirements, languages | ✅ | |
-| Review score, tags, features, "Is this relevant to you?" | ✅ | IStoreBrowseService |
-| Prices in your currency, text in your language | ✅ | Follows your wallet currency (even through a VPN) + UI language |
-| Trailers | ✅ | Native player (`crates/video`): HLS/fMP4 streaming, Media Foundation H.264 + AAC, WASAPI audio clock; autoplays muted until you turn sound on (remembered), seek bar with buffered range, volume, quality, full screen, advances to the next item at the end, pauses when the page is hidden |
-| Microtrailers on hover over store capsules | ⬜ | The player already plays Steam's microtrailer MP4s (looping, silent) |
-| Wallet balance, pending funds | ✅ | Top bar; click for pending money, add funds, purchase history |
-| Product key activation | ✅ | App menu → Activate a product |
-| Wishlist, tag/genre browsing with filters | ✅ | Wishlist service, IStoreQueryService |
-| Discovery queue, recommendations | ⬜ | |
-| Price history | ✅ | IsThereAnyDeal (your own free key) + prices you've seen |
-| Cart, gifts for friends | ✅ | AccountCart service, same cart as the website |
-| Checkout | 🚫 | Steam only accepts payment on its website; opens in the browser |
-| User reviews (read/write) | ⬜ | |
+## Downloads and installs
 
-## Community, friends & chat
-| Feature | Status | Notes |
-|---|---|---|
-| Friends list with live status and in-game info | ✅ | |
-| 1:1 chat with history, typing indicator, unread counts | ✅ | |
-| Undocked Friends & Chat window | ✅ | Works while the main window is in the tray |
-| Profiles: background, avatar frame, bio, level | ✅ | |
-| Profile links: games, inventory, friends, badges, screenshots, reviews, groups | ✅ | Games and inventory native; private/friends-only profiles respected |
-| Friend requests: accept / ignore | ✅ | Community page; add by name still to do |
-| Group chats, voice chat | ⬜ | |
-| Notifications bell (all 30 Steam types), toasts | ✅ | SteamNotification service; game art / avatars, opens the right page |
-| Inventory: every game, per-game tag filters, rarity colors | ✅ | Econ service; game list from Steam's inventory data |
-| Market prices, order book, price chart, estimated value | ✅ | In your wallet currency |
-| Sell / quick sell / sell to highest buy order, your listings, buy orders | ✅ | Steam's real fee rules per currency; confirm in Steam Mobile app |
-| Trade offers | 🟡 | Opens Steam's trade page; native trading next |
-| Steam Support: your requests and replies, per-game help | ✅ | New requests and replies open Steam's help site |
-| Community hub per game: popular this week, screenshots, artwork, videos, news | ✅ | PublishedFile.QueryFiles; mature content left out |
-| Workshop item page: pictures/videos, description, required items, change notes, stats, tags, comments | ✅ | PublishedFile.GetDetails / GetChangeHistory; subscribe, unsubscribe |
-| Rate and favorite Workshop items and guides | 🟡 | Buttons work through Steam's services; not tested on a real account (they write to it) |
-| Guides: list with Steam's sorts, time ranges, categories, search; guide reader with index | ✅ | Sections read from the guide page |
-| Discussions: forums, topic list with paging, threads with pages, quotes, spoilers | ✅ | Reading only; replying and new topics open nowhere yet |
-| Someone's screenshots, artwork, videos, Workshop items, guides (profile links) | ✅ | PublishedFile.GetUserFiles |
-| Profile comments: all pages | ✅ | Older / newer pages instead of Steam's "all comments" page |
-| Badge details, someone's friends list, reviews, groups | ⬜ | Still open Steam's pages |
-| Community Market browsing, market history | ⬜ | Still open Steam's pages |
+| | |
+| --- | --- |
+| SteamInRust's own depot downloader (manifests, chunks, decryption, decompression) | Done |
+| Queue, pause, resume, cancel; the download survives a restart and resumes | Done |
+| Separate network and disk speeds, and what it's doing (downloading, writing to disk, verifying) | Done |
+| Every Steam download region and partner CDNs, sorted by measured speed | Done |
+| Bandwidth limit, update schedule, downloads while playing, automatic updates | Done |
+| Ask before quitting during a download | Done |
+| Reorder the queue by dragging, taskbar progress | Not yet |
+| Workshop item downloads | Not yet. Subscribing works; games that download items themselves are fine |
 
-## App
-| Feature | Status | Notes |
-|---|---|---|
-| Tray icon with menu, close to tray | ✅ | |
-| Shift+Tab overlay (friends, quick chat, notes) | ✅ | No injection; windowed/borderless games |
-| Overlay: guides, discussions, community hub, store page, achievements in its own windows | ✅ | Nothing opens the browser; links inside go back and forth in the window |
-| English / Russian, auto-detected | ✅ | `crates/i18n/locales` |
-| Themes, accent color, UI scale | ✅ | |
-| Plugins (sandboxed, permissioned) | ✅ | Rhai; see `crates/plugins` |
-| Plugin network access with per-domain permission | ⬜ | Unlocks plugins like OpenDota stats or price history |
-| Big Picture / controller UI | ⬜ | |
-| Remote Play, Steam Input | ⬜ | |
+## Store
 
-## Community-requested ideas we plan to include
-From r/Steam threads, Steam Client Beta discussions and popular add-ons
-(SteamDB extension, Augmented Steam, Millennium plugins):
-- Queue all pending updates at once; drag to reorder downloads; per-weekday schedules.
-- Library filters by language, accessibility, Deck status, hours, last played.
-- Price history and lowest price on store pages (plugin with network permission).
-- Player counts and latest game updates on store/game pages.
-- Lower memory use and fast startup (native Rust UI already helps here).
+All native, no web view.
 
-## Recently added
-| Feature | Status | Notes |
-|---|---|---|
-| Steam Cloud: per-game toggle, sync before play / after quit, conflicts, usage | ✅ | Cloud service; downloads verified live, local backups before replacing |
-| Library collections, Steam's Favorites and Hidden imported | ✅ | CloudConfigStore (read); edits aren't written back to Steam yet |
-| Right-click game menu with Properties, Manage, collections | ✅ | |
-| Workshop: game's own tag groups, 6 sorts, batch unsubscribe, size filter | ✅ | |
-| Profile: two columns, badges and level, comments (read/post), item showcase | ✅ | Posting comments not live-tested |
-| Steam-style sign-in window, custom title bar, custom tray menu, app icon | ✅ | |
-| Shift+Tab overlay redesign (dimmed game, top strip, floating windows, invites) | ✅ | Invites send a play link; no injection |
-| Desktop shortcut removed on uninstall | ✅ | |
-| Native community pages instead of the browser (hub, Workshop items, guides, discussions, achievements) | ✅ | Steam links inside posts and guides open natively; other websites in the browser |
+| | |
+| --- | --- |
+| Front page, search, tags and genres with filters, wishlist | Done |
+| Game pages: screenshots, trailers, description, requirements, languages, review score, tags, DLC | Done |
+| Trailers | Native player (`crates/video`): HLS streaming, Media Foundation H.264 and AAC, full screen, quality and volume |
+| Prices in your wallet's currency, "In library" marks | Done |
+| Cart (the same cart as the website), product keys, wallet balance | Done |
+| Gifts, including games you already own, with a check that Steam will deliver to the friend's region | Done |
+| Price history | Through IsThereAnyDeal, with your own free key |
+| Checkout | Opens Steam's website. Steam only takes payment there |
+| Discovery queue, writing reviews, microtrailers on hover | Not yet |
+
+## Friends and chat
+
+| | |
+| --- | --- |
+| Friends list with live status, the game being played and rich presence | Done |
+| One-to-one chat with history, typing indicator and unread counts | Done |
+| Separate Friends & Chat window that works while the main window is in the tray | Done |
+| Right-click menu: join game, view server info (live A2S query), watch game, view game info, invite to play, nickname, favorites, remove, block | Done |
+| Add friends, friend code, accept or ignore requests | Done |
+| Group chats, voice chat | Not yet |
+
+## Community
+
+| | |
+| --- | --- |
+| Profiles: background, avatar frame, level, badges, showcases, comments (read and post) | Done |
+| Someone's games, inventory, screenshots, artwork, videos, Workshop items and guides | Done |
+| Community hub per game: screenshots, artwork, videos, news | Done |
+| Workshop item pages: media, description, required items, change notes, comments; subscribe, rate, favorite | Done. Rating and favoriting weren't tested on a real account |
+| Guides: list, sorts, search, reader with contents | Done |
+| Discussions: forums, topics, threads with quotes and spoilers | Reading only |
+| Steam Support: your requests and replies | Done. New requests open Steam's help site |
+| Badge pages, groups, someone's friends and reviews | Open Steam's website |
+
+## Inventory and Market
+
+| | |
+| --- | --- |
+| Every game's inventory with the game's own filters and rarity colors | Done |
+| Market price, order book, price chart, estimated value, in your currency | Done |
+| Sell, quick sell, sell to the highest buy order, your listings and buy orders | Done. Steam's fees per currency; you confirm in the Steam Mobile app |
+| Trade offers | Open Steam's website |
+| Market search and history pages | Open Steam's website |
+
+## Steam Cloud
+
+| | |
+| --- | --- |
+| Per-game toggle, sync before launch and after quit, usage | Done |
+| Conflicts, with a local backup before anything is replaced | Done |
+| Saves changed offline upload by themselves once online | Done |
+| Deleting cloud files | Not yet |
+
+## Steam features inside games
+
+Details: [steam-compatibility.md](steam-compatibility.md).
+
+| | |
+| --- | --- |
+| Games without anti-cheat use SteamInRust's own `steamclient` DLL, 64-bit and 32-bit | Done |
+| Games with VAC, Easy Anti-Cheat or BattlEye start through the official client, silently | Done. Our DLL is never used for them |
+| User, apps, achievements, stats, cloud, friends, auth tickets, encrypted app tickets | Done |
+| Lobbies (`ISteamMatchmaking`) through Steam's matchmaking service | Done |
+| P2P (`ISteamNetworking`) between SteamInRust players | Done, with UDP hole punching |
+| Leaderboards, global achievement percentages, avatars, `ISteamHTTP`, installed Workshop items | Done |
+| P2P with players on the official client | Not possible: Valve routes it over the Steam Datagram Relay, whose protocol isn't public |
+| `ISteamNetworkingSockets`, `ISteamNetworkingMessages`, game servers | Stubs |
+| Inventory, screenshots, Steam Input, Workshop queries | Stubs |
+
+## Shift+Tab overlay
+
+| | |
+| --- | --- |
+| Opens over the running game with Shift+Tab, only while the game's window is in front | Done |
+| Game overview, achievements, friends, chat, notes, guides, discussions, hub, store page | Done, in floating windows |
+| Pin windows over the game with adjustable opacity | Done |
+| Nothing is injected into the game | By design. The overlay can't show over exclusive full-screen games; windowed and borderless work |
+| In-game web browser, screenshots (F12), FPS counter | Not yet |
+
+## Notifications and tray
+
+| | |
+| --- | --- |
+| All Steam notification types with game art or avatars, toasts | Done |
+| Tray icon with Steam's menu, close to tray | Done |
+
+## Settings, languages, updates
+
+| | |
+| --- | --- |
+| Settings: account, friends, security, notifications, interface, appearance, store, library, downloads, storage, cloud, in game, accessibility, plugins | Done |
+| Themes, accent color, UI scale | Done |
+| English and Russian, picked from the system language | Done. Other languages aren't translated yet |
+| Installer, uninstaller, background updates checked with SHA-256 | Done |
+| Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done. Network access for plugins is planned |
+| Linux and macOS | Not yet |
