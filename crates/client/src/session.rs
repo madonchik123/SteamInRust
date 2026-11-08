@@ -1208,6 +1208,7 @@ impl Online {
             return;
         };
         self.active_req = Some(req.clone());
+        let dest = req.library.join("steamapps").join("common").join(if app.install_dir.is_empty() { &app.name } else { &app.install_dir });
         let progress = std::sync::Arc::new(depot::Progress::default());
         progress.limit_kbps.store(self.limit_kbps, std::sync::atomic::Ordering::Relaxed);
         progress.concurrency.store(self.concurrency, std::sync::atomic::Ordering::Relaxed);
@@ -1232,7 +1233,9 @@ impl Online {
                     (Some(a), Some(b)) if b.0 > a.0 => ((b.1 - a.1) as f64 / (b.0 - a.0).as_secs_f64()) as u64,
                     _ => 0,
                 };
-                sink3(Event::Download(crate::download::status(app_id, &p2, speed)));
+                let mut status = crate::download::status(app_id, &p2, speed);
+                status.install_dir = Some(dest.clone());
+                sink3(Event::Download(status));
                 if p2.phase() == depot::Phase::Done || p2.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }

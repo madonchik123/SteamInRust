@@ -1500,3 +1500,16 @@
 "{game} is still downloading. If you exit, it continues the next time you open SteamInRust." = "{game} ещё загружается. Если выйти, загрузка продолжится при следующем запуске SteamInRust."
 "Exit anyway" = "Всё равно выйти"
 "Keep downloading in the tray" = "Продолжить загрузку в трее"
+
+# --- Library install states ---
+"Resume download" = "Продолжить загрузку"
+"Pause download" = "Приостановить загрузку"
+"Cancel download" = "Отменить загрузку"
+"Remove from download queue" = "Убрать из очереди загрузок"
+"Download paused at {pct}%" = "Загрузка приостановлена на {pct}%"
+"Installing… {pct}%" = "Установка… {pct}%"
+"Waiting in the download queue." = "Ожидает в очереди загрузок."
+"{game}: paused at {pct}%" = "{game}: пауза на {pct}%"
+"{game}: {pct}%" = "{game}: {pct}%"
+"+{n} queued" = "+{n} в очереди"
+"{n} queued" = "В очереди: {n}"

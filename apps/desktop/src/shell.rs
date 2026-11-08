@@ -689,7 +689,27 @@ fn status_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
         if dl.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             app.navigate("downloads".into(), None);
         }
-        ui.label(w::text(t!("Nothing in the queue"), 12.5, t.text_faint));
+        // Same state as the Downloads page: what's downloading and what's waiting.
+        let active = app.state.downloads.values().find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).cloned();
+        let waiting = app.state.download_queue.iter().filter(|id| active.as_ref().is_none_or(|d| d.app_id != **id)).count();
+        match &active {
+            Some(d) => {
+                let name = app.state.app_name(d.app_id).unwrap_or("").to_string();
+                let pct = d.disk_done as f64 * 100.0 / d.disk_total.max(1) as f64;
+                let text = if d.paused { t!("{game}: paused at {pct}%", game = name, pct = format!("{pct:.0}")) } else { t!("{game}: {pct}%", game = name, pct = format!("{pct:.0}")) };
+                ui.label(w::text(text, 12.5, t.accent));
+                w::progress(ui, t, (pct / 100.0) as f32, 90.0);
+                if waiting > 0 {
+                    ui.label(w::text(t!("+{n} queued", n = waiting), 12.5, t.text_faint));
+                }
+            }
+            None if waiting > 0 => {
+                ui.label(w::text(t!("{n} queued", n = waiting), 12.5, t.text_faint));
+            }
+            None => {
+                ui.label(w::text(t!("Nothing in the queue"), 12.5, t.text_faint));
+            }
+        }
         crate::offline_ui::status_note(app, ui, t);
         if let Some(id) = app.state.playing {
             ui.add_space(16.0);

@@ -175,6 +175,18 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
                 SupportMessage { from_steam: true, header: "Message from Steam Support on Nov 2 @ 10:03am".into(), html: "<b>Thanks for reaching out.</b><br>Please verify the game's files, then tell us if it still happens.<ul><li>Library → Portal 2 → Manage → Verify game files</li></ul>".into() },
             ]),
         },
+        // A download in progress, to show install states in the library.
+        Event::Download(model::DownloadStatus {
+            app_id: 1145360,
+            phase: model::DownloadPhase::Downloading,
+            downloaded: 6_100_000_000,
+            download_total: 13_400_000_000,
+            disk_done: 6_100_000_000,
+            disk_total: 13_400_000_000,
+            speed: 3_200_000,
+            install_dir: Some(std::path::PathBuf::from(r"C:\Games\SteamLibrary\steamapps\common\Hades")),
+            ..Default::default()
+        }),
         Event::PlayerGames {
             steam_id: me,
             result: Ok(vec![model::PlayerGame { app_id: 1145360, name: "Hades".into(), playtime_minutes: 2_710, playtime_2weeks: 185, last_played: Some(now - 3600), icon: None }]),

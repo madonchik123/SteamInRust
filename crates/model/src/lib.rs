@@ -259,6 +259,9 @@ pub struct DownloadStatus {
     /// Not errors, but worth showing (e.g. skipped content).
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Where the game is going (exists as soon as files start arriving).
+    #[serde(default)]
+    pub install_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
