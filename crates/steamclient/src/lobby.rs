@@ -67,6 +67,8 @@ const LOBBY_CHAT_MSG: i32 = 507;
 const LOBBY_GAME_CREATED: i32 = 509;
 const LOBBY_MATCH_LIST: i32 = 510;
 const LOBBY_CREATED: i32 = 513;
+const GAME_LOBBY_JOIN_REQUESTED: i32 = 333;
+const GAME_RICH_PRESENCE_JOIN_REQUESTED: i32 = 337;
 
 use crate::protocol::SIGNAL_PREFIX;
 
@@ -583,6 +585,20 @@ fn apply(e: GameEvent) {
             post(LOBBY_GAME_CREATED, b.0);
         }
         GameEvent::Signal { from, data } => crate::p2p::signal(from, &data),
+        GameEvent::JoinRequested { lobby, friend, connect } => {
+            crate::log!("join requested: lobby {lobby}, connect {connect:?}");
+            if lobby != 0 {
+                // GameLobbyJoinRequested_t: lobby, friend.
+                let mut b = Bytes::new(16);
+                b.u64(0, lobby).u64(8, friend);
+                lock().post(GAME_LOBBY_JOIN_REQUESTED, b.0);
+            } else {
+                // GameRichPresenceJoinRequested_t: friend, connect[256].
+                let mut b = Bytes::new(264);
+                b.u64(0, friend).str(8, 256, &connect);
+                lock().post(GAME_RICH_PRESENCE_JOIN_REQUESTED, b.0);
+            }
+        }
     }
 }
 

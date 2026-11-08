@@ -586,6 +586,10 @@ async fn online(
                     st.persona_state = s;
                     let _ = set_persona(&conn, s);
                 }
+                Some(Command::JoinRunningGame { app_id, friend, connect }) => {
+                    let lobby = lobby_of(&connect);
+                    st.ipc.push(app_id, crate::ipc::protocol::GameEvent::JoinRequested { lobby, friend, connect });
+                }
                 Some(Command::AttachGame { app_id, install_dir }) => {
                     st.launched_dirs.insert(app_id, install_dir);
                     let token = st.ipc.register(app_id);
@@ -2303,6 +2307,16 @@ impl Online {
                     let _ = reply.send(crate::input_config::config(&conn, app_id, me, &root, &dir).await);
                 });
             }
+            Request::Overlay { dialog, target } => {
+                _sink(Event::GameOverlay { app_id, dialog, target });
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::GameInvite { friend, connect } => {
+                // Official clients drop invite markup from other clients; a
+                // steam://run link arrives as a normal, clickable message.
+                self.send_message(friend, invite_link(app_id, &connect), _sink);
+                let _ = reply.send(Reply::Ok);
+            }
             Request::ServerList { filter, max } => {
                 tokio::spawn(async move {
                     let _ = reply.send(crate::game_servers::list(&conn, app_id, &filter, max).await);
@@ -2762,4 +2776,34 @@ async fn sync_installed(conn: Connection, me: SteamId, cell: u32, root: Option<s
     let Some(library) = library else { return };
     let result = crate::workshop::sync(&conn, me, app_id, &library, cell, items).await;
     sink(Event::WorkshopSync { app_id, result });
+}
+
+/// "+connect_lobby <id>" in a connect string or command line → the lobby.
+fn lobby_of(connect: &str) -> u64 {
+    let mut words = connect.split_whitespace();
+    while let Some(w) = words.next() {
+        if w == "+connect_lobby" {
+            return words.next().and_then(|id| id.parse().ok()).unwrap_or(0);
+        }
+    }
+    0
+}
+
+/// `steam://run/<app>//<args>`: Steam starts the game with these arguments.
+fn invite_link(app_id: AppId, connect: &str) -> String {
+    let args: String = connect
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~+".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect();
+    format!("steam://run/{app_id}//{args}")
+}
+
+#[cfg(test)]
+mod invite_tests {
+    #[test]
+    fn connect_strings() {
+        assert_eq!(super::lobby_of("+connect_lobby 109775243904435019"), 109775243904435019);
+        assert_eq!(super::lobby_of("-dev +connect 1.2.3.4"), 0);
+        assert_eq!(super::invite_link(477160, "+connect_lobby 5"), "steam://run/477160//+connect_lobby%205");
+    }
 }

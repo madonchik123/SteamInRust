@@ -250,7 +250,7 @@ impl State {
                 *chat = merged;
             }
             // A developer attaching a game by hand: nothing to show.
-            Event::GameAttached { .. } => {}
+            Event::GameAttached { .. } | Event::GameOverlay { .. } => {}
             Event::GameStarted { app_id } => {
                 self.playing = Some(*app_id);
                 // Show it on our own status right away, like Steam.

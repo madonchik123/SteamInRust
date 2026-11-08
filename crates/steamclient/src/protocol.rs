@@ -105,6 +105,13 @@ pub enum Request {
     ServerList { filter: String, max: u32 },
     /// Steam Input bindings for an Xbox-style pad: answered with [`Reply::InputConfig`].
     InputConfig,
+    /// The game asked for Steam's overlay: `dialog` is "invite" (target: lobby
+    /// id), "invite_connect" (target: connect string), one of
+    /// ActivateGameOverlay's names ("friends", "players", "community"…), or
+    /// "user:<name>" (ActivateGameOverlayToUser; target: Steam ID).
+    Overlay { dialog: String, target: String },
+    /// Invite a friend to play with this connect string (ISteamFriends::InviteUserToGame).
+    GameInvite { friend: u64, connect: String },
 }
 
 /// A game server as Steam's server browser lists it.
@@ -297,6 +304,10 @@ pub enum GameEvent {
     LobbyGameServer { lobby: u64, ip: u32, port: u16, server: u64 },
     /// A P2P signalling message from another player.
     Signal { from: u64, data: Vec<u8> },
+    /// The player accepted an invite (or picked "Join game") while the game
+    /// runs: GameLobbyJoinRequested_t for a lobby, else
+    /// GameRichPresenceJoinRequested_t with the connect string.
+    JoinRequested { lobby: u64, friend: u64, connect: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

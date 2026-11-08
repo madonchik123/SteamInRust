@@ -63,6 +63,11 @@ const CHUNK: usize = 1100;
 const MAX_UNRELIABLE: usize = 1200;
 const MAX_RELIABLE: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// A SteamInRust player answers our signal through Steam within about a
+/// second. No answer means the other side isn't SteamInRust (an official
+/// client, which only talks over Valve's relays to strangers): fail the
+/// session like Steam does, so the game shows its own "couldn't connect".
+const NO_ANSWER_TIMEOUT: Duration = Duration::from_secs(6);
 /// PINGs go every 2 s; this long without an answer means the link is gone.
 const LINK_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -93,6 +98,8 @@ struct Peer {
     channels: HashMap<i32, Channel>,
     failed: bool,
     announced: bool,
+    /// Their signal (or a packet) reached us: they run SteamInRust.
+    answered: bool,
     /// Round trip of the last answered PING.
     rtt: Option<Duration>,
 }
@@ -100,7 +107,7 @@ struct Peer {
 impl Peer {
     fn new() -> Self {
         let now = Instant::now();
-        Peer { token: 0, candidates: Vec::new(), addr: None, since: now, last_ping: now - Duration::from_secs(1), last_heard: None, waiting: VecDeque::new(), channels: HashMap::new(), failed: false, announced: false, rtt: None }
+        Peer { token: 0, candidates: Vec::new(), addr: None, since: now, last_ping: now - Duration::from_secs(1), last_heard: None, waiting: VecDeque::new(), channels: HashMap::new(), failed: false, announced: false, answered: false, rtt: None }
     }
 }
 
@@ -202,6 +209,7 @@ impl Endpoint {
                 p.since = Instant::now();
             }
             p.token = token;
+            p.answered = true;
             p.candidates = candidates;
             p.last_ping = Instant::now() - Duration::from_secs(1);
         }
@@ -225,6 +233,7 @@ impl Endpoint {
             }
         };
         if new {
+            crate::log!("p2p: connecting to {to}");
             self.outside.signal(to, self.signal_payload(false));
         }
     }
@@ -459,7 +468,11 @@ impl Endpoint {
                     let _ = self.socket.send_to(&b, a);
                 }
             }
-            if p.addr.is_none() && !p.failed && p.since.elapsed() > CONNECT_TIMEOUT {
+            let waited = p.since.elapsed();
+            if p.addr.is_none() && !p.failed && (waited > CONNECT_TIMEOUT || !p.answered && waited > NO_ANSWER_TIMEOUT) {
+                if !p.answered {
+                    crate::log!("p2p: {id} never answered (not on SteamInRust?)");
+                }
                 p.failed = true;
                 p.waiting.clear();
                 failed.push(*id);
