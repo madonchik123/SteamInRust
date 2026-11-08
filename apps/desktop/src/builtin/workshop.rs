@@ -100,13 +100,27 @@ impl Extension for Workshop {
 
                 self.loading = false;
             }
+            // Downloads of subscribed items (after subscribing, or before a launch).
+            Event::WorkshopSync { result, .. } => match result {
+                Ok(r) => {
+                    match r.downloaded.as_slice() {
+                        [] => {}
+                        [(_, title)] => ctx.toast(t!("Workshop item downloaded: {title}", title = title)),
+                        many => ctx.toast(t!("{n} Workshop items downloaded", n = many.len())),
+                    }
+                    for (_, title, why) in &r.failed {
+                        ctx.toast(t!("Couldn't download {title}: {why}", title = title, why = why));
+                    }
+                }
+                Err(e) => ctx.toast(t!("Couldn't check Workshop items: {e}", e = e)),
+            },
             Event::WorkshopTags { app_id, result } if Some(*app_id) == self.app => {
                 self.categories = Some(result.clone());
             }
             Event::WorkshopSubscribed { file_id, result } => match result {
                 Ok(()) => {
                     self.subscribed.insert(*file_id);
-                    ctx.toast(t!("Subscribed. Steam will download it with the game."));
+                    ctx.toast(t!("Subscribed. Downloading it if the game is installed…"));
                 }
                 Err(e) => ctx.toast(e.clone()),
             },
