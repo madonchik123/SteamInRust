@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InstallRequest {
     pub app_id: AppId,
     /// Library folder (the one that contains `steamapps`).
@@ -77,6 +77,11 @@ async fn depot_key(conn: &Connection, app: AppId, depot: u32) -> Result<Vec<u8>,
         .await
         .map_err(|e| e.to_string())?;
     let r: CMsgClientGetDepotDecryptionKeyResponse = reply.body().map_err(|e| e.to_string())?;
+    if r.eresult() == eresult::ACCESS_DENIED {
+        // For content this means the license doesn't include this depot
+        // (optional content, another region's files, a DLC you don't own).
+        return Err(format!("your license doesn't include depot {depot}"));
+    }
     if r.eresult() != eresult::OK {
         return Err(eresult::describe(r.eresult(), &format!("depot {depot}")));
     }
@@ -127,6 +132,7 @@ pub fn status(app_id: AppId, p: &depot::Progress, speed: u64) -> DownloadStatus 
         paused: p.paused.load(Ordering::Relaxed),
         error: None,
         reused: 0,
+        notes: p.notes.lock().map(|n| n.clone()).unwrap_or_default(),
     }
 }
 
@@ -166,8 +172,12 @@ pub async fn run(
         let key = match depot_key(&conn, app.app_id, d.id).await {
             Ok(k) => k,
             Err(e) => {
-                // Usually a depot this account doesn't own (optional content).
-                tracing::warn!("skipping depot {}: {e}", d.id);
+                // Usually a depot this account doesn't own (optional content);
+                // Steam's client skips these too. Shown on the Downloads page.
+                tracing::info!("skipping depot {}: {e}", d.id);
+                if let Ok(mut n) = progress.notes.lock() {
+                    n.push(e);
+                }
                 continue;
             }
         };

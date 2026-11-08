@@ -103,6 +103,10 @@ pub struct SteamApp {
     pub activate: Option<Activate>,
     /// Set by "Exit" so closing really quits instead of hiding to the tray.
     pub exiting: bool,
+    /// Items in the Steam cart last time we heard (for "added" toasts).
+    cart_count: Option<usize>,
+    /// "A download is in progress, exit anyway?" is showing.
+    confirm_exit: bool,
     window_mode: Option<WindowMode>,
     pub tray: crate::tray::Tray,
     flags: crate::builtin::settings::SharedFlags,
@@ -133,6 +137,9 @@ impl SteamApp {
             .enable_all()
             .build()
             .expect("tokio runtime");
+        // Pictures come from the disk cache when possible (added after the
+        // standard loaders, so it's asked first).
+        crate::image_cache::ImageCache::install(&cc.egui_ctx, rt.handle().clone());
         let (tx, events) = mpsc::channel();
         let demo_tx = tx.clone();
         let repaint = cc.egui_ctx.clone();
@@ -207,6 +214,8 @@ impl SteamApp {
             search_open: false,
             activate: None,
             exiting: false,
+            cart_count: None,
+            confirm_exit: false,
             window_mode: None,
             tray: crate::tray::Tray::new(&cc.egui_ctx),
             flags,
@@ -270,6 +279,17 @@ impl SteamApp {
                         self.prefs.auto_login = None;
                     }
                     self.saved = client::store::load();
+                }
+                // Store actions that failed (they used to be silent).
+                Event::StoreError(e) => self.toast(now, i18n::tr_dyn(e), ""),
+                // Confirm cart additions only when the cart really grew.
+                Event::Cart(lines) => {
+                    let before = self.cart_count;
+                    self.cart_count = Some(lines.len());
+                    if before.is_some_and(|b| lines.len() > b) {
+                        let gift = lines.last().is_some_and(|l| l.gift_to.is_some());
+                        self.toast(now, if gift { i18n::tr("Gift added to your cart") } else { i18n::tr("Added to your cart") }, "");
+                    }
                 }
                 Event::LoginFailed(_) => {
                     self.prefs.auto_login = None;
@@ -437,11 +457,68 @@ impl SteamApp {
                 TrayCmd::Friends => self.friends_window.open = true,
                 TrayCmd::Status(s) => self.client.send(Command::SetPersonaState(s)),
                 TrayCmd::Exit => {
-                    self.exiting = true;
                     self.show_window(ctx);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.request_exit(ctx);
                 }
             }
+        }
+    }
+}
+
+impl SteamApp {
+    /// A download is running, paused or queued.
+    pub fn downloading(&self) -> bool {
+        !self.state.download_queue.is_empty() || self.state.downloads.values().any(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed))
+    }
+
+    /// Exit the app, asking first if a download is in progress (like Steam).
+    pub fn request_exit(&mut self, ctx: &egui::Context) {
+        if self.downloading() {
+            self.confirm_exit = true;
+        } else {
+            self.exiting = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn exit_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_exit {
+            return;
+        }
+        let t = self.prefs.theme.clone();
+        let name = self
+            .state
+            .downloads
+            .values()
+            .find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed))
+            .map(|d| d.app_id)
+            .or_else(|| self.state.download_queue.first().copied())
+            .and_then(|id| self.state.app_name(id).map(String::from))
+            .unwrap_or_default();
+        let (mut exit, mut tray, mut cancel) = (false, false, false);
+        egui::Modal::new(egui::Id::unique("confirm-exit")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(ui::widgets::text_bold(i18n::tr("A download is in progress"), 18.0, t.text));
+            ui.add_space(6.0);
+            let body = i18n::trf("{game} is still downloading. If you exit, it continues the next time you open SteamInRust.", &[("game", name.clone())]);
+            ui.add(egui::Label::new(ui::widgets::text(body, 13.5, t.text_dim)).wrap());
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                exit = ui::widgets::button(ui, &t, Some(ui::icons::POWER), i18n::tr("Exit anyway"), ui::widgets::Kind::Danger, ui::widgets::Size::Md).clicked();
+                tray = ui::widgets::button(ui, &t, None, i18n::tr("Keep downloading in the tray"), ui::widgets::Kind::Secondary, ui::widgets::Size::Md).clicked();
+                cancel = ui::widgets::button(ui, &t, None, i18n::tr("Cancel"), ui::widgets::Kind::Ghost, ui::widgets::Size::Md).clicked();
+            });
+        });
+        if exit {
+            self.confirm_exit = false;
+            self.exiting = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if tray {
+            self.confirm_exit = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.hidden = true;
+        } else if cancel {
+            self.confirm_exit = false;
         }
     }
 }
@@ -491,7 +568,12 @@ impl eframe::App for SteamApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.hidden = true;
+        } else if ctx.input(|i| i.viewport().close_requested()) && !self.exiting && self.downloading() {
+            // Closing for real while something downloads: ask first.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm_exit = true;
         }
+        self.exit_dialog(&ctx);
         if self.hidden {
             // Keep the friends window, overlay and notifications alive while hidden.
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);

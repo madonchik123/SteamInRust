@@ -222,6 +222,7 @@ impl Downloads {
                             12.5,
                             t.text_dim,
                         ));
+                        notes(ui, t, d);
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if w::icon_button(ui, t, ui::icons::X, t!("Cancel"), false, 0).clicked() {
@@ -239,7 +240,8 @@ impl Downloads {
             });
             ui.add_space(8.0);
         }
-        for id in ctx.state.download_queue.clone() {
+        // Queued games; the one downloading is never listed twice.
+        for id in ctx.state.download_queue.clone().into_iter().filter(|id| !running.iter().any(|d| d.app_id == *id)) {
             let name = ctx.state.app_name(id).unwrap_or_default().to_string();
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(92.0, 43.0), Sense::hover());
@@ -270,6 +272,7 @@ impl Downloads {
                         ui.label(w::text(ui::bytes(d.disk_total), 12.5, t.text_faint));
                     }
                 });
+                notes(ui, t, &d);
             }
         }
         ui.add_space(20.0);
@@ -506,4 +509,18 @@ fn row(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, app_id: u32, name: &str, status: &
         }
     });
     ui.add_space(8.0);
+}
+
+/// Things that didn't stop the download but are worth knowing, like a part
+/// of the game the account's license doesn't include (Steam skips those too).
+fn notes(ui: &mut Ui, t: &Theme, d: &model::DownloadStatus) {
+    if d.notes.is_empty() {
+        return;
+    }
+    let text = if d.notes.len() == 1 {
+        t!("1 part of this game was skipped: {why}", why = d.notes[0])
+    } else {
+        t!("{n} parts of this game were skipped (your license doesn't include them)", n = d.notes.len())
+    };
+    ui.label(w::text(format!("{}  {text}", ui::icons::INFO), 12.0, t.text_faint)).on_hover_text(d.notes.join("\n"));
 }

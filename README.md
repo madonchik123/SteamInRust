@@ -28,12 +28,34 @@ The official Steam client is a full web browser in disguise: a dozen
 and draws everything natively, so it starts fast, stays light and still does
 what you open Steam for: buy and play games, talk to friends, trade items.
 
+## Faster than Steam
+
+<div align="center">
+<img src="docs/media/en/startup-race.gif" width="880" alt="SteamInRust and Steam starting side by side">
+</div>
+
+Measured on the same PC, account and network, median of 5 runs ([method and raw data](docs/benchmarks.md)):
+
+| | Steam | SteamInRust |
+|---|---:|---:|
+| Start → main window | 10.6 s | **2.4 s** |
+| Start → library fully loaded | 20.5 s | **8.1 s** |
+| Memory while idle | 1130 MB | **245 MB** |
+| CPU while idle | 8 % of a core | **0.03 %** |
+| Processes | 8 | **1** |
+| Program size | 1083 MB | **25.5 MB** |
+| Open a library game page | 0.89 s | **0.03 s** |
+| Open Friends & Chat | 1.31 s | **0.06 s** |
+
+Opening the Store takes about the same time in both (1.19 s vs 1.01 s): both wait on Steam's servers.
+Pictures are now kept in a disk cache, so later starts no longer wait for the network.
+
 ## Highlights
 
 | | |
 |---|---|
 | ⚡ **Native and light** | One Rust process, no Chromium. The UI is drawn on the GPU with [egui](https://github.com/emilk/egui). |
-| 🛒 **The whole store** | Front page, search, tag browsing with filters, wishlist, cart, gifts, price history. Game pages with **trailers playing natively** (HLS streaming, sound, full screen), clickable developers, publishers and tags. |
+| 🛒 **The whole store** | Front page, search, tag browsing with filters, wishlist, cart, price history, prices in your wallet's currency, "In library" marks. **Gifts**, also of games you own, with a check of whether Steam will deliver it to that friend's region. Game pages with **trailers playing natively** (HLS streaming, sound, full screen), clickable developers, publishers and tags. |
 | 📚 **Library** | Collections (your Steam Favorites and Hidden imported), filters by genre, features and Steam Deck status, Properties, DLC, launch options, verify files, desktop shortcuts. |
 | ⬇️ **Downloads** | Its own depot downloader with a queue, auto-updates, bandwidth limits and every Steam download region, plus partner CDNs, sorted by measured speed. |
 | ☁️ **Steam Cloud** | Per-game toggle, sync before you play and after you quit, conflict handling with local backups. |
@@ -123,8 +145,9 @@ and purchases stay on your Steam account.
 
 **Where are my sign-in details kept?** On your PC only, in your user's app data folder,
 and they're only ever sent to Steam. Besides Steam, the app only contacts GitHub
-(to check for updates) and, if you add your own key, IsThereAnyDeal (price
-history). There's no telemetry.
+(to check for updates), a public exchange-rate service (only when you check
+whether a gift can reach a friend's region) and, if you add your own key,
+IsThereAnyDeal (price history). There's no telemetry.
 
 **Can I buy games?** Yes: the cart is the same as on the website, and payment
 happens on Steam's website, which Steam requires.

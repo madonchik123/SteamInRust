@@ -1,11 +1,16 @@
 //! System tray icon. Right-click opens our own menu window (styled like the
 //! app) instead of the plain Windows menu.
+//!
+//! The menu window is created once and then kept alive hidden, so it opens
+//! instantly; it repaints on its own (it doesn't wait for the main window),
+//! and it sizes itself to its contents so every item, Exit included, shows
+//! at any UI zoom.
 
 use crate::app::SteamApp;
-use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, Ui, ViewportBuilder, ViewportId, pos2, vec2};
+use egui::{Align2, Color32, CornerRadius, Pos2, Sense, Stroke, Ui, Vec2, ViewportBuilder, ViewportId, pos2, vec2};
 use i18n::t;
-use model::PersonaState;
-use std::sync::mpsc;
+use model::{Persona, PersonaState};
+use std::sync::{Arc, Mutex, mpsc};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use ui::{Theme, icons, widgets as w};
 
@@ -20,16 +25,40 @@ pub enum TrayCmd {
     Exit,
 }
 
+const MENU_W: f32 = 270.0;
+const MENU_ID: &str = "tray-menu";
+
+/// What the menu shows, copied from the app each frame.
+#[derive(Clone, Default)]
+struct MenuData {
+    signed_in: bool,
+    name: String,
+    me: Persona,
+    online: usize,
+    download: Option<String>,
+    theme: Theme,
+}
+
+/// Shared between the app and the menu window (which paints on its own).
+#[derive(Default)]
+struct MenuState {
+    open: bool,
+    /// Bottom-right corner, at the cursor (logical points).
+    anchor: Pos2,
+    had_focus: bool,
+    /// Measured content height.
+    height: f32,
+    data: MenuData,
+}
+
 pub struct Tray {
     _icon: Option<TrayIcon>,
     rx: mpsc::Receiver<TrayCmd>,
-    tx: mpsc::Sender<TrayCmd>,
-    /// Open menu: where (logical points) and whether it has had focus yet.
-    menu: Option<(egui::Pos2, bool)>,
+    tx: Arc<Mutex<mpsc::Sender<TrayCmd>>>,
+    menu: Arc<Mutex<MenuState>>,
+    /// The menu window exists (created on first use, then kept hidden).
+    created: bool,
 }
-
-const MENU_W: f32 = 270.0;
-const MENU_H: f32 = 404.0;
 
 impl Tray {
     pub fn new(ctx: &egui::Context) -> Self {
@@ -53,7 +82,8 @@ impl Tray {
                 repaint.request_repaint();
             }
         }));
-        Self { _icon: icon, rx, tx, menu: None }
+        let menu = MenuState { height: 400.0, ..Default::default() };
+        Self { _icon: icon, rx, tx: Arc::new(Mutex::new(tx)), menu: Arc::new(Mutex::new(menu)), created: false }
     }
 
     pub fn poll(&mut self, ctx: &egui::Context) -> Vec<TrayCmd> {
@@ -61,10 +91,12 @@ impl Tray {
         for cmd in self.rx.try_iter() {
             match cmd {
                 TrayCmd::Menu(x, y) => {
-                    // Place the menu so its bottom-right corner sits at the cursor.
                     let ppp = ctx.native_pixels_per_point().unwrap_or(1.0);
-                    let cursor = pos2(x as f32 / ppp, y as f32 / ppp);
-                    self.menu = Some((pos2((cursor.x - MENU_W).max(0.0), (cursor.y - MENU_H).max(0.0)), false));
+                    let mut m = self.menu.lock().unwrap();
+                    m.anchor = pos2(x as f32 / ppp, y as f32 / ppp);
+                    m.open = true;
+                    m.had_focus = false;
+                    ctx.request_repaint_of(ViewportId::from_hash_of(MENU_ID));
                 }
                 other => out.push(other),
             }
@@ -73,10 +105,20 @@ impl Tray {
     }
 }
 
-/// Draw the tray menu window while it's open.
+/// Keep the menu window alive (hidden when closed) and feed it fresh data.
 pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
-    let Some((pos, had_focus)) = app.tray.menu else { return };
-    let t = app.prefs.theme.clone();
+    let open = {
+        let mut m = app.tray.menu.lock().unwrap();
+        m.data = snapshot(app);
+        m.open
+    };
+    // Created hidden right away, so even the first right-click is instant.
+    app.tray.created = true;
+    let (pos, size) = {
+        let m = app.tray.menu.lock().unwrap();
+        let size = vec2(MENU_W, m.height);
+        (pos2((m.anchor.x - size.x).max(0.0), (m.anchor.y - size.y).max(0.0)), size)
+    };
     let builder = ViewportBuilder::default()
         .with_title("SteamInRust")
         .with_decorations(false)
@@ -84,69 +126,92 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
         .with_always_on_top()
         .with_taskbar(false)
         .with_resizable(false)
+        .with_visible(open)
         .with_position(pos)
-        .with_inner_size([MENU_W, MENU_H]);
-    let mut close = false;
-    let mut picked: Option<TrayCmd> = None;
-    ctx.show_viewport_immediate(ViewportId::from_hash_of("tray-menu"), builder, |ui, _| {
+        .with_inner_size(size);
+    let (menu, tx) = (app.tray.menu.clone(), app.tray.tx.clone());
+    ctx.show_viewport_deferred(ViewportId::from_hash_of(MENU_ID), builder, move |ui, _| {
+        let mut m = menu.lock().unwrap();
+        if !m.open {
+            return;
+        }
         let focused = ui.input(|i| i.viewport().focused);
-        if focused == Some(true) && !had_focus {
-            if let Some(m) = &mut app.tray.menu {
-                m.1 = true;
+        if !m.had_focus {
+            if focused == Some(true) {
+                m.had_focus = true;
+            } else {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+                ui.ctx().request_repaint();
             }
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
-        } else if !had_focus {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-        // Clicking anywhere else closes it, like any menu.
-        if (had_focus && focused == Some(false)) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            close = true;
-        }
+        let mut close = (m.had_focus && focused == Some(false)) || ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let data = m.data.clone();
+        let t = data.theme.clone();
+        let mut picked = None;
+        let mut used = 0.0;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::TRANSPARENT)).show(ui, |ui| {
             let rect = ui.max_rect().shrink(2.0);
             ui.painter().rect_filled(rect, CornerRadius::same(10), t.chrome);
             ui.painter().rect_stroke(rect, CornerRadius::same(10), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
             let mut c = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(8.0)).layout(egui::Layout::top_down(egui::Align::Min)));
-            picked = contents(app, &mut c, &t);
+            picked = contents(&data, &mut c, &t);
+            used = c.min_rect().height() + 20.0;
         });
+        // Fit the window to what was drawn (UI zoom, languages…).
+        if (used - m.height).abs() > 1.0 {
+            m.height = used;
+            ui.ctx().request_repaint_of(ViewportId::ROOT);
+        }
+        if let Some(cmd) = picked {
+            let _ = tx.lock().unwrap().send(cmd);
+            close = true;
+        }
+        if close {
+            m.open = false;
+            ui.ctx().request_repaint_of(ViewportId::ROOT);
+        }
     });
-    if let Some(cmd) = picked {
-        let _ = app.tray.tx.send(cmd);
-        ctx.request_repaint();
-        close = true;
-    }
-    if close {
-        app.tray.menu = None;
+}
+
+fn snapshot(app: &SteamApp) -> MenuData {
+    let me = app.state.persona(app.state.steam_id);
+    MenuData {
+        signed_in: app.state.steam_id != 0,
+        name: if app.state.persona_name.is_empty() { me.name.clone() } else { app.state.persona_name.clone() },
+        me,
+        online: app.state.friend_list().iter().filter(|p| p.state != PersonaState::Offline).count(),
+        download: app.state.downloads.values().find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).map(|d| {
+            let pct = d.disk_done as f64 * 100.0 / d.disk_total.max(1) as f64;
+            format!("{pct:.0}%")
+        }),
+        theme: app.prefs.theme.clone(),
     }
 }
 
-fn contents(app: &SteamApp, ui: &mut Ui, t: &Theme) -> Option<TrayCmd> {
+fn contents(d: &MenuData, ui: &mut Ui, t: &Theme) -> Option<TrayCmd> {
     let mut picked = None;
     // Who's signed in, and status dots.
-    let me = app.state.persona(app.state.steam_id);
-    let signed_in = app.state.steam_id != 0;
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        if signed_in {
-            w::avatar(ui, t, &model::art::avatar(me.avatar_hash.as_deref()), 34.0, Some(crate::shell::status_color(t, &me)));
+        if d.signed_in {
+            w::avatar(ui, t, &model::art::avatar(d.me.avatar_hash.as_deref()), 34.0, Some(crate::shell::status_color(t, &d.me)));
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                let name = if app.state.persona_name.is_empty() { me.name.clone() } else { app.state.persona_name.clone() };
-                ui.label(w::text_semibold(name, 14.0, t.text));
-                ui.label(w::text(i18n::tr_dyn(me.state.label()), 12.0, crate::shell::status_color(t, &me)));
+                ui.label(w::text_semibold(&d.name, 14.0, t.text));
+                ui.label(w::text(i18n::tr_dyn(d.me.state.label()), 12.0, crate::shell::status_color(t, &d.me)));
             });
         } else {
             w::logo(ui, t, 26.0);
             ui.label(w::text_semibold("SteamInRust", 14.0, t.text));
         }
     });
-    if signed_in {
+    if d.signed_in {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.add_space(4.0);
             ui.spacing_mut().item_spacing.x = 4.0;
             for (s, color) in [(PersonaState::Online, t.online), (PersonaState::Away, t.away), (PersonaState::Busy, t.danger), (PersonaState::Invisible, t.text_faint)] {
-                let on = me.state == s;
+                let on = d.me.state == s;
                 let (r, resp) = ui.allocate_exact_size(vec2(58.0, 26.0), Sense::click());
                 let hover = resp.hovered();
                 ui.painter().rect_filled(r, CornerRadius::same(13), if on { color.gamma_multiply(0.2) } else if hover { t.surface_hover } else { t.raised });
@@ -173,14 +238,8 @@ fn contents(app: &SteamApp, ui: &mut Ui, t: &Theme) -> Option<TrayCmd> {
     ];
     for (icon, label, cmd) in items {
         let extra = match cmd {
-            TrayCmd::Friends => {
-                let online = app.state.friend_list().iter().filter(|p| p.state != PersonaState::Offline).count();
-                (online > 0).then(|| t!("{n} online", n = online))
-            }
-            TrayCmd::Page("downloads") => app.state.downloads.values().find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).map(|d| {
-                let pct = d.disk_done as f64 * 100.0 / d.disk_total.max(1) as f64;
-                format!("{pct:.0}%")
-            }),
+            TrayCmd::Friends => (d.online > 0).then(|| t!("{n} online", n = d.online)),
+            TrayCmd::Page("downloads") => d.download.clone(),
             _ => None,
         };
         if row(ui, t, icon, label, extra.as_deref(), t.text) {
@@ -200,7 +259,7 @@ fn separator(ui: &mut Ui, t: &Theme) {
 }
 
 fn row(ui: &mut Ui, t: &Theme, icon: &str, label: &str, extra: Option<&str>, color: Color32) -> bool {
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.08);
     if hover > 0.0 {
         ui.painter().rect_filled(r, CornerRadius::same(6), t.surface_hover.gamma_multiply(hover));
@@ -211,6 +270,5 @@ fn row(ui: &mut Ui, t: &Theme, icon: &str, label: &str, extra: Option<&str>, col
     if let Some(extra) = extra {
         p.text(pos2(r.right() - 10.0, r.center().y), Align2::RIGHT_CENTER, extra, w::font(12.0), t.text_dim);
     }
-    let _ = Rect::NOTHING;
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
