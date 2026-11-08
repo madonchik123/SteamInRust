@@ -1,9 +1,10 @@
 //! Project chores, written in Rust so the repo needs no other tools.
 //!
-//!   cargo xtask package
-//!
-//! Builds a release in target/package/dist: the setup (with the app inside),
-//! a portable zip and SHA256SUMS.txt. The release workflows run this too.
+//!   cargo xtask package          release in target/package/dist: the setup
+//!                                (with the app inside), a portable zip and
+//!                                SHA256SUMS.txt. The release workflows run it.
+//!   cargo xtask steamclient32    the 32-bit steamclient DLL for 32-bit games,
+//!     [--release]                where a debug/release build of the app finds it.
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -17,7 +18,8 @@ fn main() {
     let task = std::env::args().nth(1).unwrap_or_default();
     let result = match task.as_str() {
         "package" => package(),
-        _ => Err("usage: cargo xtask package".into()),
+        "steamclient32" => steamclient32(std::env::args().any(|a| a == "--release")).map(|dll| println!("Built {}", dll.display())),
+        _ => Err("usage: cargo xtask package | steamclient32 [--release]".into()),
     };
     if let Err(e) = result {
         eprintln!("error: {e}");
@@ -56,13 +58,32 @@ fn copy(from: &Path, to: &Path) -> Result {
     fs::copy(from, to).map(|_| ()).map_err(|e| format!("copy {}: {e}", from.display()))
 }
 
-/// A 32-bit MinGW gcc: SIR_MINGW32 (its bin folder) or i686-w64-mingw32-gcc on PATH.
+/// A 32-bit MinGW gcc: SIR_MINGW32 (its bin folder), i686-w64-mingw32-gcc
+/// on PATH, or the usual install folders (WinLibs in C:\tools, MSYS2).
 fn gcc32() -> Option<PathBuf> {
     let exe = "i686-w64-mingw32-gcc.exe";
     if let Some(dir) = std::env::var_os("SIR_MINGW32") {
         return Some(Path::new(&dir).join(exe)).filter(|p| p.exists());
     }
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).map(|d| d.join(exe)).find(|p| p.exists())
+    let usual = [r"C:\tools\winlibs32\mingw32\bin", r"C:\msys64\mingw32\bin", r"C:\mingw32\bin"].map(PathBuf::from);
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).chain(usual).map(|d| d.join(exe)).find(|p| p.exists())
+}
+
+/// Build the steamclient DLL for 32-bit games with a 32-bit MinGW. The app
+/// finds it in target/i686-pc-windows-gnu/<profile>/ while developing.
+fn steamclient32(release: bool) -> Result<PathBuf> {
+    let root = root();
+    let gcc = gcc32().ok_or("no 32-bit MinGW found: install one (e.g. WinLibs i686) and set SIR_MINGW32 to its bin folder")?;
+    let status = Command::new("rustup").args(["target", "add", "i686-pc-windows-gnu"]).status();
+    if !status.is_ok_and(|s| s.success()) {
+        return Err("rustup target add i686-pc-windows-gnu failed".into());
+    }
+    let mut args = vec!["build", "-p", "steamclient", "--target", "i686-pc-windows-gnu"];
+    if release {
+        args.push("--release");
+    }
+    cargo(&root, &args, &[("CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER", gcc.as_os_str())], gcc.parent())?;
+    Ok(root.join("target").join("i686-pc-windows-gnu").join(if release { "release" } else { "debug" }).join("steamclient.dll"))
 }
 
 fn package() -> Result {
@@ -84,18 +105,8 @@ fn package() -> Result {
     copy(&release.join("steamclient.dll"), &stage.join("steamclient.dll"))?;
 
     // The same DLL for 32-bit games, when a 32-bit MinGW is around.
-    if let Some(gcc) = gcc32() {
-        let status = Command::new("rustup").args(["target", "add", "i686-pc-windows-gnu"]).status();
-        if !status.is_ok_and(|s| s.success()) {
-            return Err("rustup target add i686-pc-windows-gnu failed".into());
-        }
-        cargo(
-            &root,
-            &["build", "--release", "-p", "steamclient", "--target", "i686-pc-windows-gnu"],
-            &[("CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER", gcc.as_os_str())],
-            gcc.parent(),
-        )?;
-        copy(&root.join("target/i686-pc-windows-gnu/release/steamclient.dll"), &stage.join("steamclient32.dll"))?;
+    if gcc32().is_some() {
+        copy(&steamclient32(true)?, &stage.join("steamclient32.dll"))?;
     } else {
         eprintln!("warning: no 32-bit MinGW found: 32-bit games will start without Steam features (no steamclient32.dll).");
     }

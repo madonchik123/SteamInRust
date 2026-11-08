@@ -182,6 +182,7 @@ cd SteamInRust
 cargo run                  # sign in with your account
 cargo run -- --demo        # sample data, no sign-in
 cargo test --workspace
+cargo xtask steamclient32   # the DLL for 32-bit games (needs a 32-bit MinGW)
 cargo xtask package        # installer and portable zip in target/package/dist
 ```
 
