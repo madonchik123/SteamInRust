@@ -1,9 +1,11 @@
-//! ISteamNetworking (SendP2PPacket / ReadP2PPacket) between players who
-//! both run SteamInRust.
+//! ISteamNetworking (SendP2PPacket / ReadP2PPacket).
 //!
-//! Valve's client carries these packets over the Steam Datagram Relay, a
-//! closed protocol, so players on the official client can't be reached.
-//! Between two SteamInRust players it works like this:
+//! Players on Valve's official client are reached with the protocol their
+//! client uses for this API, libjingle 0.4.0 (see [`crate::jingle`]). When
+//! the game first sends to someone we offer both: our own signal and
+//! libjingle candidates. A SteamInRust player answers our signal; an
+//! official client answers with candidates of its own. Between two
+//! SteamInRust players it works like this:
 //!
 //! 1. Each side opens one UDP socket and learns its addresses: LAN
 //!    addresses, and the public one from a STUN server.
@@ -64,10 +66,10 @@ const MAX_UNRELIABLE: usize = 1200;
 const MAX_RELIABLE: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// A SteamInRust player answers our signal through Steam within about a
-/// second. No answer means the other side isn't SteamInRust (an official
-/// client, which only talks over Valve's relays to strangers): fail the
-/// session like Steam does, so the game shows its own "couldn't connect".
-const NO_ANSWER_TIMEOUT: Duration = Duration::from_secs(6);
+/// second, an official client with libjingle candidates once its game
+/// accepted the session. Neither after this long: fail the session like
+/// Steam does, so the game shows its own "couldn't connect".
+const NO_ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 /// PINGs go every 2 s; this long without an answer means the link is gone.
 const LINK_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -102,12 +104,14 @@ struct Peer {
     answered: bool,
     /// Round trip of the last answered PING.
     rtt: Option<Duration>,
+    /// They're on the official client: packets go through [`crate::jingle`].
+    official: bool,
 }
 
 impl Peer {
     fn new() -> Self {
         let now = Instant::now();
-        Peer { token: 0, candidates: Vec::new(), addr: None, since: now, last_ping: now - Duration::from_secs(1), last_heard: None, waiting: VecDeque::new(), channels: HashMap::new(), failed: false, announced: false, answered: false, rtt: None }
+        Peer { token: 0, candidates: Vec::new(), addr: None, since: now, last_ping: now - Duration::from_secs(1), last_heard: None, waiting: VecDeque::new(), channels: HashMap::new(), failed: false, announced: false, answered: false, rtt: None, official: false }
     }
 }
 
@@ -115,6 +119,10 @@ impl Peer {
 /// tests can run two endpoints without Steam.
 pub trait Outside: Send + Sync {
     fn signal(&self, to: u64, payload: Vec<u8>);
+    /// A libjingle candidate for an official client (no lobby message).
+    fn signal_official(&self, to: u64, payload: Vec<u8>) {
+        self.signal(to, payload)
+    }
     fn session_request(&self, from: u64);
     fn connect_failed(&self, to: u64);
     /// Channels another module handles (networking sockets / messages):
@@ -132,6 +140,11 @@ pub struct Endpoint {
     peers: Mutex<HashMap<u64, Peer>>,
     inbox: Mutex<HashMap<i32, VecDeque<(u64, Vec<u8>)>>>,
     outside: Box<dyn Outside>,
+    /// Sessions with official clients, and each one's own UDP socket.
+    jingle: Mutex<crate::jingle::Jingle>,
+    jsock: Mutex<HashMap<u64, Arc<UdpSocket>>>,
+    stun: bool,
+    stun_server: Mutex<Option<SocketAddr>>,
 }
 
 fn random_u64() -> u64 {
@@ -154,6 +167,10 @@ impl Endpoint {
             peers: Mutex::new(HashMap::new()),
             inbox: Mutex::new(HashMap::new()),
             outside,
+            jingle: Mutex::new(crate::jingle::Jingle::new()),
+            jsock: Mutex::new(HashMap::new()),
+            stun,
+            stun_server: Mutex::new(None),
         });
         let e = ep.clone();
         std::thread::spawn(move || e.run(stun));
@@ -194,10 +211,21 @@ impl Endpoint {
         b
     }
 
-    /// A signalling message from `from` (through Steam).
-    pub fn on_signal(&self, from: u64, payload: &[u8]) {
-        let Some((answer, token, candidates)) = parse_signal(payload) else { return };
+    /// A signalling message from `from` (through Steam): ours, or a
+    /// libjingle candidate from an official client.
+    pub fn on_signal(self: &Arc<Self>, from: u64, payload: &[u8]) {
+        let Some((answer, token, candidates)) = parse_signal(payload) else {
+            if let Some(c) = crate::jingle::Candidate::decode(payload) {
+                self.on_official_candidate(from, c);
+            }
+            return;
+        };
         crate::log!("p2p: signal from {from}: {} address(es)", candidates.len());
+        // They run SteamInRust: no libjingle session with them.
+        if self.jingle.lock().unwrap().knows(from) {
+            self.jingle.lock().unwrap().forget(from);
+            self.jsock.lock().unwrap().remove(&from);
+        }
         {
             let mut peers = self.peers.lock().unwrap();
             let p = peers.entry(from).or_insert_with(Peer::new);
@@ -219,7 +247,7 @@ impl Endpoint {
     }
 
     /// Start connecting to `to` (sends our addresses through Steam).
-    fn ensure_peer(&self, to: u64) {
+    fn ensure_peer(self: &Arc<Self>, to: u64) {
         let new = {
             let mut peers = self.peers.lock().unwrap();
             let fresh = !peers.contains_key(&to);
@@ -235,15 +263,176 @@ impl Endpoint {
         if new {
             crate::log!("p2p: connecting to {to}");
             self.outside.signal(to, self.signal_payload(false));
+            let known_sir = self.peers.lock().unwrap().get(&to).is_some_and(|p| p.answered);
+            if !known_sir {
+                self.start_official(to);
+            }
         }
     }
 
-    pub fn send(&self, to: u64, data: &[u8], send_type: i32, channel: i32) -> bool {
+    // ------------------------------------------------- official clients
+
+    /// The UDP socket for an official peer (made on first use) and its local addresses.
+    fn official_socket(self: &Arc<Self>, id: u64) -> Option<Vec<SocketAddr>> {
+        let mut socks = self.jsock.lock().unwrap();
+        let sock = match socks.get(&id) {
+            Some(s) => s.clone(),
+            None => {
+                let s = Arc::new(UdpSocket::bind("0.0.0.0:0").ok()?);
+                s.set_read_timeout(Some(Duration::from_millis(50))).ok()?;
+                socks.insert(id, s.clone());
+                let me = self.clone();
+                let thread_sock = s.clone();
+                std::thread::spawn(move || me.official_loop(id, thread_sock));
+                s
+            }
+        };
+        let port = sock.local_addr().ok()?.port();
+        let mut ips = local_ips();
+        if ips.is_empty() {
+            ips.push(Ipv4Addr::LOCALHOST);
+        }
+        Some(ips.into_iter().map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, port))).collect())
+    }
+
+    /// Reads one official peer's socket until the session is dropped.
+    fn official_loop(self: Arc<Self>, id: u64, sock: Arc<UdpSocket>) {
+        let mut buf = vec![0u8; 65536];
+        let mut stun_at: Option<Instant> = None;
+        let mut public = false;
+        loop {
+            let current = self.jsock.lock().unwrap().get(&id).is_some_and(|s| Arc::ptr_eq(s, &sock));
+            if !current {
+                return;
+            }
+            if self.stun && !public && stun_at.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+                stun_at = Some(Instant::now());
+                let server = *self.stun_server.lock().unwrap();
+                let server = server.or_else(|| {
+                    let s = resolve_stun();
+                    *self.stun_server.lock().unwrap() = s;
+                    s
+                });
+                if let Some(s) = server {
+                    let _ = sock.send_to(&stun_request(), s);
+                }
+            }
+            let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
+            let d = &buf[..n];
+            if let Some(addr) = parse_stun_response(d) {
+                public = true;
+                self.jingle.lock().unwrap().set_public(id, addr);
+            } else {
+                self.jingle.lock().unwrap().on_datagram(id, from, d);
+            }
+            self.flush_official();
+        }
+    }
+
+    fn start_official(self: &Arc<Self>, to: u64) {
+        let Some(local) = self.official_socket(to) else { return };
+        {
+            let mut j = self.jingle.lock().unwrap();
+            j.ensure(to, local);
+            j.start(to);
+        }
+        self.flush_official();
+    }
+
+    fn on_official_candidate(self: &Arc<Self>, from: u64, c: crate::jingle::Candidate) {
+        if self.peers.lock().unwrap().get(&from).is_some_and(|p| p.answered) {
+            return; // a SteamInRust player: our own protocol
+        }
+        let Some(local) = self.official_socket(from) else { return };
+        {
+            let mut j = self.jingle.lock().unwrap();
+            j.ensure(from, local);
+            j.on_candidate(from, c);
+        }
+        self.flush_official();
+    }
+
+    /// Carry out what the libjingle side asked for.
+    fn flush_official(&self) {
+        loop {
+            let out = self.jingle.lock().unwrap().take_out();
+            if out.datagrams.is_empty() && out.signals.is_empty() && out.delivered.is_empty() && out.opened.is_empty() && out.closed.is_empty() && out.requests.is_empty() {
+                return;
+            }
+            {
+                let socks = self.jsock.lock().unwrap();
+                for (peer, to, d) in &out.datagrams {
+                    if let Some(s) = socks.get(peer) {
+                        let _ = s.send_to(d, to);
+                    }
+                }
+            }
+            for (to, c) in out.signals {
+                self.outside.signal_official(to, c);
+            }
+            for id in out.requests {
+                self.outside.session_request(id);
+            }
+            if !out.delivered.is_empty() {
+                let mut by_peer: HashMap<u64, Vec<(i32, Vec<u8>)>> = HashMap::new();
+                for (id, ch, data) in out.delivered {
+                    by_peer.entry(id).or_default().push((ch, data));
+                }
+                for (id, msgs) in by_peer {
+                    self.deliver(id, msgs);
+                }
+            }
+            for id in out.opened {
+                // Send what the game queued while connecting.
+                let waiting: Vec<(i32, bool, Vec<u8>)> = {
+                    let mut peers = self.peers.lock().unwrap();
+                    let p = peers.entry(id).or_insert_with(Peer::new);
+                    p.official = true;
+                    p.failed = false;
+                    p.waiting.drain(..).collect()
+                };
+                crate::log!("p2p: {id} is on the official client; {} queued packet(s) go now", waiting.len());
+                let mut j = self.jingle.lock().unwrap();
+                for (ch, rel, data) in waiting {
+                    j.send(id, ch, rel, &data);
+                }
+            }
+            for id in out.closed {
+                self.jsock.lock().unwrap().remove(&id);
+                let had = {
+                    let mut peers = self.peers.lock().unwrap();
+                    match peers.get_mut(&id) {
+                        Some(p) if p.addr.is_none() => {
+                            p.failed = true;
+                            p.official = false;
+                            p.waiting.clear();
+                            true
+                        }
+                        Some(_) => false,
+                        None => true,
+                    }
+                };
+                if had {
+                    self.outside.connect_failed(id);
+                }
+            }
+        }
+    }
+
+    pub fn send(self: &Arc<Self>, to: u64, data: &[u8], send_type: i32, channel: i32) -> bool {
         let rel = reliable(send_type);
         if data.is_empty() || data.len() > if rel { MAX_RELIABLE } else { MAX_UNRELIABLE } || to == 0 {
             return false;
         }
         self.ensure_peer(to);
+        let sir_connected = self.peers.lock().unwrap().get(&to).is_some_and(|p| p.addr.is_some());
+        if !sir_connected {
+            let sent = self.jingle.lock().unwrap().send(to, channel, rel, data);
+            if sent {
+                self.flush_official();
+                return true;
+            }
+        }
         let mut peers = self.peers.lock().unwrap();
         let Some(p) = peers.get_mut(&to) else { return false };
         match p.addr {
@@ -306,11 +495,25 @@ impl Endpoint {
     }
 
     pub fn close(&self, peer: u64) -> bool {
-        self.peers.lock().unwrap().remove(&peer).is_some()
+        let official = {
+            let mut j = self.jingle.lock().unwrap();
+            let k = j.knows(peer);
+            j.close(peer);
+            k
+        };
+        self.flush_official();
+        self.jsock.lock().unwrap().remove(&peer);
+        self.peers.lock().unwrap().remove(&peer).is_some() || official
     }
 
     /// (connected, connecting, failed, address).
     pub fn state(&self, peer: u64) -> Option<(bool, bool, bool, Option<SocketAddr>, usize)> {
+        {
+            let j = self.jingle.lock().unwrap();
+            if j.is_open(peer) {
+                return Some((true, false, false, j.link(peer).map(|l| l.0), j.queued(peer)));
+            }
+        }
         let peers = self.peers.lock().unwrap();
         let p = peers.get(&peer)?;
         let queued = p.waiting.len() + p.channels.values().map(|c| c.unacked.len()).sum::<usize>();
@@ -364,6 +567,7 @@ impl Endpoint {
         }
         let body = &d[HEADER..];
         let mut deliver: Vec<(i32, Vec<u8>)> = Vec::new();
+        // (Routing to other modules happens in deliver().)
         let mut request = false;
         {
             let mut peers = self.peers.lock().unwrap();
@@ -428,8 +632,6 @@ impl Endpoint {
                 _ => {}
             }
         }
-        // Networking sockets / messages take their own channels.
-        deliver.retain(|(ch, data)| !self.outside.route(src, *ch, data));
         if !deliver.is_empty() {
             let mut peers = self.peers.lock().unwrap();
             if let Some(p) = peers.get_mut(&src).filter(|p| !p.announced) {
@@ -440,23 +642,40 @@ impl Endpoint {
         if request {
             self.outside.session_request(src);
         }
-        if !deliver.is_empty() {
-            let mut inbox = self.inbox.lock().unwrap();
-            for (ch, data) in deliver {
-                let q = inbox.entry(ch).or_default();
-                if q.len() < 8192 {
-                    q.push_back((src, data));
-                }
+        self.deliver(src, deliver);
+    }
+
+    /// Packets for ReadP2PPacket (or the module owning their channel).
+    fn deliver(&self, src: u64, mut msgs: Vec<(i32, Vec<u8>)>) {
+        msgs.retain(|(ch, data)| !self.outside.route(src, *ch, data));
+        if msgs.is_empty() {
+            return;
+        }
+        let mut inbox = self.inbox.lock().unwrap();
+        for (ch, data) in msgs {
+            let q = inbox.entry(ch).or_default();
+            if q.len() < 8192 {
+                q.push_back((src, data));
             }
         }
     }
 
     /// Pings, retransmissions and timeouts (called ~20 times a second).
     fn tick(&self) {
+        self.jingle.lock().unwrap().tick();
+        self.flush_official();
         let now = Instant::now();
         let mut failed = Vec::new();
+        // Players whose official client answered: their own timeouts apply.
+        let official: std::collections::HashSet<u64> = {
+            let j = self.jingle.lock().unwrap();
+            self.peers.lock().unwrap().keys().copied().filter(|id| j.heard(*id) || j.is_open(*id)).collect()
+        };
         let mut peers = self.peers.lock().unwrap();
         for (id, p) in peers.iter_mut() {
+            if p.official || official.contains(id) {
+                continue;
+            }
             if p.token != 0 && (p.addr.is_none() || p.last_ping.elapsed() > Duration::from_secs(2)) && p.last_ping.elapsed() > Duration::from_millis(200) {
                 p.last_ping = now;
                 let b = self.header(PING, *id, p.token);
@@ -584,6 +803,11 @@ impl Outside for Steam {
             // to that player when we share a lobby.
             let lobby = crate::lobby::members_of_joined().into_iter().find(|(_, m)| m.contains(&to)).map(|(id, _)| id).unwrap_or(0);
             let _ = crate::ipc::request(Request::Signal { to, data: payload, lobby });
+        });
+    }
+    fn signal_official(&self, to: u64, payload: Vec<u8>) {
+        std::thread::spawn(move || {
+            let _ = crate::ipc::request(Request::Signal { to, data: payload, lobby: 0 });
         });
     }
     fn session_request(&self, from: u64) {
@@ -806,5 +1030,125 @@ mod tests {
         s.extend_from_slice(&[192, 168, 1, 2]);
         s.extend_from_slice(&5000u16.to_le_bytes());
         assert_eq!(parse_signal(&s), Some((false, 7, vec!["192.168.1.2:5000".parse().unwrap()])));
+    }
+
+    /// Signalling to a stand-in official client: candidates only.
+    struct ToOfficial {
+        tx: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
+        requests: Mutex<Vec<u64>>,
+    }
+
+    impl Outside for Arc<ToOfficial> {
+        fn signal(&self, _to: u64, payload: Vec<u8>) {
+            // Our own signal: an official client can't read it.
+            assert!(crate::jingle::Candidate::decode(&payload).is_none());
+        }
+        fn signal_official(&self, _to: u64, payload: Vec<u8>) {
+            let _ = self.tx.lock().unwrap().send(payload);
+        }
+        fn session_request(&self, from: u64) {
+            self.requests.lock().unwrap().push(from);
+        }
+        fn connect_failed(&self, _to: u64) {}
+    }
+
+    /// A bare libjingle state machine on its own UDP socket, standing in
+    /// for Valve's client.
+    struct Official {
+        id: u64,
+        sock: UdpSocket,
+        j: crate::jingle::Jingle,
+        got: Vec<(u64, i32, Vec<u8>)>,
+    }
+
+    impl Official {
+        fn new(id: u64) -> Self {
+            let ip = local_ips().first().copied().unwrap_or(Ipv4Addr::LOCALHOST);
+            let sock = UdpSocket::bind(SocketAddrV4::new(ip, 0)).unwrap();
+            sock.set_read_timeout(Some(Duration::from_millis(5))).unwrap();
+            Official { id, sock, j: crate::jingle::Jingle::new(), got: Vec::new() }
+        }
+        /// Run a bit: our signals in, its signals out to `ep`.
+        fn step(&mut self, us: u64, ep: &Arc<Endpoint>, rx: &std::sync::mpsc::Receiver<Vec<u8>>) {
+            let local = vec![self.sock.local_addr().unwrap()];
+            while let Ok(c) = rx.try_recv() {
+                self.j.ensure(us, local.clone());
+                self.j.on_candidate(us, crate::jingle::Candidate::decode(&c).unwrap());
+            }
+            let mut buf = [0u8; 65536];
+            while let Ok((n, from)) = self.sock.recv_from(&mut buf) {
+                self.j.on_datagram(us, from, &buf[..n]);
+            }
+            self.j.tick();
+            let out = self.j.take_out();
+            for (_, to, d) in out.datagrams {
+                let _ = self.sock.send_to(&d, to);
+            }
+            for (_, c) in out.signals {
+                ep.on_signal(self.id, &c);
+            }
+            self.got.extend(out.delivered);
+        }
+    }
+
+    fn official_pair() -> (u64, u64, Arc<Endpoint>, Arc<ToOfficial>, std::sync::mpsc::Receiver<Vec<u8>>, Official) {
+        let (us, them) = (76561198000000011u64, 76561198000000012u64);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let w = Arc::new(ToOfficial { tx: Mutex::new(tx), requests: Mutex::default() });
+        let ep = Endpoint::start(us, Box::new(w.clone()), false).unwrap();
+        (us, them, ep, w, rx, Official::new(them))
+    }
+
+    #[test]
+    fn joins_an_official_host() {
+        let (us, them, ep, _w, rx, mut off) = official_pair();
+        // The game sends before anything is connected: it waits, then goes.
+        assert!(ep.send(them, b"join please", 2, 0));
+        assert!(ep.send(them, b"hello on 7", 0, 7));
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) && off.got.len() < 2 {
+            off.step(us, &ep, &rx);
+        }
+        assert!(off.got.contains(&(us, 0, b"join please".to_vec())), "reliable packet reached them: {:?}", off.got);
+        // Unreliable sent before the link existed is queued too.
+        assert!(off.got.contains(&(us, 7, b"hello on 7".to_vec())));
+        // And back.
+        assert!(off.j.send(us, 1, true, b"welcome"));
+        let start = Instant::now();
+        let mut got = None;
+        while start.elapsed() < Duration::from_secs(5) && got.is_none() {
+            off.step(us, &ep, &rx);
+            got = ep.read(1);
+        }
+        assert_eq!(got, Some((them, b"welcome".to_vec())));
+        assert!(matches!(ep.state(them), Some((true, false, false, Some(_), _))));
+    }
+
+    #[test]
+    fn official_player_joins_us() {
+        let (us, them, ep, w, rx, mut off) = official_pair();
+        // They start: their candidates reach us first.
+        off.j.ensure(us, vec![off.sock.local_addr().unwrap()]);
+        off.j.start(us);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) && !off.j.is_open(us) {
+            off.step(us, &ep, &rx);
+        }
+        assert!(off.j.is_open(us), "session opened from their side");
+        assert!(off.j.send(us, 0, false, b"state"));
+        let start = Instant::now();
+        let mut got = None;
+        while start.elapsed() < Duration::from_secs(5) && got.is_none() {
+            off.step(us, &ep, &rx);
+            got = ep.read(0);
+        }
+        assert_eq!(got, Some((them, b"state".to_vec())));
+        assert_eq!(w.requests.lock().unwrap().as_slice(), &[them], "P2PSessionRequest_t once");
+        assert!(ep.send(them, b"ack", 2, 0));
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) && off.got.is_empty() {
+            off.step(us, &ep, &rx);
+        }
+        assert_eq!(off.got, vec![(us, 0, b"ack".to_vec())]);
     }
 }

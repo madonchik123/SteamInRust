@@ -291,6 +291,13 @@ pub fn members_of_joined() -> Vec<(u64, Vec<u64>)> {
     l.joined.iter().filter_map(|id| Some((*id, l.known.get(id)?.members.iter().map(|m| m.steam_id).collect()))).collect()
 }
 
+/// A player's name as Steam gave it with a lobby's members (how the
+/// official client knows strangers' names in a game's lobby).
+pub fn member_name(id: u64) -> Option<String> {
+    let l = lobbies();
+    l.known.values().flat_map(|x| x.members.iter()).find(|m| m.steam_id == id && !m.name.is_empty()).map(|m| m.name.clone())
+}
+
 // ------------------------------------------------------------- lobby data
 
 extern "C" fn get_data(_t: This, lobby: u64, key: *const c_char) -> *const c_char {

@@ -18,7 +18,7 @@ Steam's website" still works; it just isn't native yet.
 | Community | 0.5 | Reading only for discussions; badge pages, groups and someone's reviews open Steam's website |
 | Inventory and Market | 0.75 | Trade offers open Steam's website; no Market search page |
 | Steam Cloud | 1 | Can't delete files from the cloud |
-| Steam features inside games | 0.75 | P2P with players on the official client; hosting game servers; inventory item definitions |
+| Steam features inside games | 0.75 | Networking sockets / messages with players on the official client; hosting game servers; inventory item definitions |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games only (others get a window overlay); no in-game web browser or screenshots |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | English and Russian only; Windows only |
@@ -150,9 +150,10 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | User, apps, achievements, stats, cloud, friends, auth tickets, encrypted app tickets | Done |
 | Lobbies (`ISteamMatchmaking`) through Steam's matchmaking service | Done |
 | P2P (`ISteamNetworking`) between SteamInRust players | Done, with UDP hole punching |
+| P2P (`ISteamNetworking`) with players on the official client | Done: Valve's libjingle protocol, direct or through Valve's relays. Tested joining an official player's Human Fall Flat lobby |
 | Leaderboards, global achievement percentages, avatars, `ISteamHTTP` | Done |
 | Exact interface layouts for SDK 1.3x–1.6x (91 versions, both bitnesses) | Done |
-| P2P with players on the official client | Not possible: Valve routes it over the Steam Datagram Relay, whose protocol isn't public |
+| `ISteamNetworkingSockets` / `ISteamNetworkingMessages` with players on the official client | Not yet: needs Valve's certificates, the SteamNetworkingSockets handshake and the Steam Datagram Relay |
 | `ISteamNetworkingSockets`, `ISteamNetworkingMessages` between SteamInRust players | Done (P2P; connecting by IP to dedicated servers isn't possible) |
 | Workshop (`ISteamUGC`): queries, subscriptions, votes, favorites, downloads | Done. Publishing items isn't supported |
 | Inventory (`ISteamInventory`): items, drops, promos, crafting, properties | Done. Item definitions don't load yet; no purchases |
