@@ -246,7 +246,7 @@ impl Library {
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
                 ui.add_sized(vec2(70.0, 30.0), egui::Label::new(w::text_bold(t!("INSTALL"), 11.0, t.text_faint)));
-                ui.add_sized(vec2(ui.available_width() - 110.0, 30.0), egui::Label::new(w::text_bold(t!("NAME"), 11.0, t.text_faint)));
+                ui.add_sized(vec2((ui.available_width() - 110.0).max(0.0), 30.0), egui::Label::new(w::text_bold(t!("NAME"), 11.0, t.text_faint)));
                 ui.label(w::text_bold(t!("SIZE"), 11.0, t.text_faint));
             });
             for d in dlc.iter().filter(|d| q.is_empty() || d.name.to_lowercase().contains(&q)) {
@@ -274,7 +274,7 @@ impl Library {
                         ui.painter().text(badge.center(), egui::Align2::CENTER_CENTER, "DLC", w::font_bold(9.0), egui::Color32::WHITE);
                     }
                     ui.add_space(8.0);
-                    ui.add_sized(vec2(ui.available_width() - 100.0, 45.0), egui::Label::new(w::text_medium(&d.name, 13.5, t.text)).wrap());
+                    ui.add_sized(vec2((ui.available_width() - 100.0).max(0.0), 45.0), egui::Label::new(w::text_medium(&d.name, 13.5, t.text)).wrap());
                     let size = size_of(d.app_id);
                     ui.label(w::text(if size > 0 { ui::bytes(size) } else { "—".into() }, 12.5, t.text_dim));
                 });

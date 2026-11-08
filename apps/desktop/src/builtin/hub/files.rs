@@ -202,7 +202,7 @@ fn card(ui: &mut Ui, t: &Theme, io: &mut Io, kind: FileKind, e: &FileEntry, widt
         }
         open |= resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
         egui::Frame::new().inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 10 }).show(ui, |ui| {
-            ui.set_width(width - 20.0);
+            ui.set_width((width - 20.0).max(0.0));
             let title = if e.title.trim().is_empty() { e.description.lines().next().unwrap_or_default().to_string() } else { e.title.clone() };
             if !title.trim().is_empty() && ui.add(egui::Label::new(w::text_semibold(title, 13.5, t.text)).truncate().sense(Sense::click())).clicked() {
                 open = true;
@@ -470,7 +470,7 @@ fn guide_tile(ui: &mut Ui, t: &Theme, io: &mut Io, g: &FileEntry, width: f32) ->
         }
         open |= resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
         egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-            ui.set_width(width - 20.0);
+            ui.set_width((width - 20.0).max(0.0));
             ui.spacing_mut().item_spacing.y = 3.0;
             if ui.add(egui::Label::new(w::text_semibold(&g.title, 14.0, t.text)).truncate().sense(Sense::click())).clicked() {
                 open = true;
