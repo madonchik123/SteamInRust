@@ -591,6 +591,8 @@ pub fn empty(ui: &mut Ui, t: &Theme, icon: &str, title: &str, body: &str) {
 
 /// Thin progress bar.
 pub fn progress(ui: &mut Ui, t: &Theme, value: f32, width: f32) {
+    // Never negative: egui aborts the whole app on a negative size.
+    let width = width.max(0.0);
     let (rect, _) = ui.allocate_exact_size(vec2(width, 6.0), Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::same(3), t.raised);
     let fill = Rect::from_min_size(rect.min, vec2(rect.width() * value.clamp(0.0, 1.0), rect.height()));
