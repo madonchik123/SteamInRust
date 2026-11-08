@@ -311,6 +311,8 @@ struct Online {
     download_host: Option<String>,
     /// Games whose names we've looked up (not in the library).
     names_asked: std::collections::HashSet<AppId>,
+    /// Your nicknames for people.
+    nicknames: HashMap<SteamId, String>,
     /// Download region the player picked (overrides the login's region).
     download_cell: Option<u32>,
     /// Steam Cloud: where `userdata` is, and games the player turned it off for.
@@ -435,6 +437,7 @@ async fn online(
         cell_id: info.cell_id,
         download_cell: None,
         names_asked: Default::default(),
+        nicknames: Default::default(),
         download_host: None,
         steam_root: None,
         cloud_off: Default::default(),
@@ -649,6 +652,31 @@ async fn online(
                     let result = crate::social::comments(web.as_deref().ok(), steam_id, start).await;
                     sink(Event::Comments { steam_id, result });
                 }),
+                Some(Command::SetNickname { steam_id, nickname }) => {
+                    let nick = nickname.clone().unwrap_or_default();
+                    let _ = st.conn.send(emsg::AM_CLIENT_SET_PLAYER_NICKNAME, &CMsgClientSetPlayerNickname { steamid: Some(steam_id), nickname: Some(nick) });
+                    match nickname.filter(|n| !n.is_empty()) {
+                        Some(n) => st.nicknames.insert(steam_id, n),
+                        None => st.nicknames.remove(&steam_id),
+                    };
+                    let entry = st.personas.entry(steam_id).or_insert_with(|| Persona { steam_id, ..Default::default() });
+                    entry.nickname = st.nicknames.get(&steam_id).cloned();
+                    sink(Event::Personas(vec![entry.clone()]));
+                }
+                Some(Command::BlockFriend { steam_id, block }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::social::block_user(&w, steam_id, block).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::Blocked { steam_id, result });
+                }),
+                Some(Command::QueryServer { addr }) => {
+                    let sink = sink.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let result = crate::a2s::query(&addr);
+                        sink(Event::ServerInfo { addr, result });
+                    });
+                }
                 Some(Command::PostComment { steam_id, text }) => st.with_web(sink, move |web, sink| async move {
                     let result = match web {
                         Ok(w) => crate::social::post_comment(&w, steam_id, &text).await,
@@ -988,7 +1016,8 @@ impl Online {
                     if rel == Relationship::None {
                         self.friends.remove(&id);
                     } else {
-                        if !self.personas.contains_key(&id) {
+                        // Unknown, or known without a name (e.g. from the offline cache).
+                        if self.personas.get(&id).is_none_or(|p| p.name.is_empty()) {
                             new_ids.push(id);
                         }
                         self.friends.insert(id, rel);
@@ -1005,6 +1034,26 @@ impl Online {
                         },
                     )?;
                 }
+            }
+            emsg::CLIENT_PLAYER_NICKNAME_LIST => {
+                let list: CMsgClientPlayerNicknameList = p.body()?;
+                let removal = list.removal();
+                if !list.incremental() && !removal {
+                    self.nicknames.clear();
+                }
+                let mut changed = Vec::new();
+                for n in list.nicknames {
+                    let id = n.steamid();
+                    if removal || n.nickname().is_empty() {
+                        self.nicknames.remove(&id);
+                    } else {
+                        self.nicknames.insert(id, n.nickname().to_string());
+                    }
+                    let entry = self.personas.entry(id).or_insert_with(|| Persona { steam_id: id, ..Default::default() });
+                    entry.nickname = self.nicknames.get(&id).cloned();
+                    changed.push(entry.clone());
+                }
+                sink(Event::Personas(changed));
             }
             emsg::CLIENT_PERSONA_STATE => {
                 let msg: CMsgClientPersonaState = p.body()?;
@@ -1035,6 +1084,17 @@ impl Online {
                     if f.persona_state.is_some() || f.game_played_app_id.is_some() {
                         let status = f.rich_presence.iter().find(|kv| kv.key() == "status").map(|kv| kv.value().trim().to_string());
                         entry.rich_status = status.filter(|s| !s.is_empty() && !s.starts_with('#'));
+                        // How to join them: server, lobby, or the game's own "connect" line.
+                        entry.connect = f.rich_presence.iter().find(|kv| kv.key() == "connect").map(|kv| kv.value().trim().to_string()).filter(|c| !c.is_empty());
+                        entry.server = match (f.game_server_ip.unwrap_or(0), f.game_server_port.unwrap_or(0)) {
+                            (ip, port) if ip != 0 && port != 0 => Some(format!("{}:{port}", std::net::Ipv4Addr::from(ip))),
+                            _ => None,
+                        };
+                        entry.lobby = f.game_lobby_id.filter(|l| *l != 0);
+                        entry.broadcasting = f.broadcast_id.is_some_and(|b| b != 0);
+                    }
+                    if let Some(nick) = self.nicknames.get(&id) {
+                        entry.nickname = Some(nick.clone());
                     }
                     if let Some(app) = entry.game_app_id {
                         if !self.apps.contains_key(&app) && self.names_asked.insert(app) {
@@ -1232,6 +1292,11 @@ impl Online {
                     (Some(a), Some(b)) if b.0 > a.0 => ((b.1 - a.1) as f64 / (b.0 - a.0).as_secs_f64()) as u64,
                     _ => 0,
                 };
+                // Checked before sending: once a download has ended (failed
+                // included), a late "Downloading" tick must not cover the result.
+                if p2.ended.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
                 sink3(Event::Download(crate::download::status(app_id, &p2, speed)));
                 if p2.phase() == depot::Phase::Done || p2.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
@@ -1239,7 +1304,9 @@ impl Online {
             }
         });
         tokio::spawn(async move {
+            let ended = progress.clone();
             let result = crate::download::run(conn, app, owned, req, cell, host, me, progress).await;
+            ended.ended.store(true, std::sync::atomic::Ordering::Relaxed);
             let msg = result.map(|r| {
                 format!(
                     "{} MB downloaded, {} MB reused, {} files unchanged",

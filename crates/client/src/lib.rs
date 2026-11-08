@@ -16,6 +16,7 @@ pub mod market;
 pub mod social;
 pub mod cloud;
 pub mod regions;
+pub mod a2s;
 mod notify;
 pub mod offline;
 pub mod support;
@@ -72,6 +73,12 @@ pub enum Command {
     AddFriend { steam_id: SteamId },
     /// Remove a friend, or ignore a friend request.
     RemoveFriend { steam_id: SteamId },
+    /// Set (or clear, with `None`) your nickname for someone.
+    SetNickname { steam_id: SteamId, nickname: Option<String> },
+    /// Block (or unblock) all communication with someone.
+    BlockFriend { steam_id: SteamId, block: bool },
+    /// Ask a game server about itself ("ip:port").
+    QueryServer { addr: String },
     /// Tell a friend you're typing.
     Typing { to: SteamId },
     /// Fetch recent chat history with a friend.
@@ -211,6 +218,8 @@ pub enum Event {
     /// Comments on a profile, or why they can't be shown (private, turned off).
     Comments { steam_id: SteamId, result: Result<model::Comments, String> },
     CommentPosted { steam_id: SteamId, result: Result<(), String> },
+    ServerInfo { addr: String, result: Result<crate::a2s::ServerInfo, String> },
+    Blocked { steam_id: SteamId, result: Result<bool, String> },
     Badges { steam_id: SteamId, result: Result<model::Badges, String> },
     /// The full notification list (replaces the old one).
     Notifications(model::Notifications),

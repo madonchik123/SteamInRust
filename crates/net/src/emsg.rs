@@ -21,6 +21,9 @@ pub const CLIENT_GET_DEPOT_DECRYPTION_KEY: u32 = 5438;
 pub const CLIENT_EMAIL_ADDR_INFO: u32 = 5456;
 pub const CLIENT_ADD_FRIEND: u32 = 791;
 pub const CLIENT_REMOVE_FRIEND: u32 = 714;
+/// Your nicknames for friends (sent at sign-in and when they change).
+pub const CLIENT_PLAYER_NICKNAME_LIST: u32 = 5587;
+pub const AM_CLIENT_SET_PLAYER_NICKNAME: u32 = 5588;
 pub const CLIENT_FRIEND_PROFILE_INFO: u32 = 5535;
 pub const CLIENT_PICS_PRODUCT_INFO_REQUEST: u32 = 8903;
 pub const CLIENT_PICS_PRODUCT_INFO_RESPONSE: u32 = 8904;

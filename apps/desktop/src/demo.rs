@@ -30,6 +30,10 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
             state: *state,
             game_app_id: *game,
             last_logoff: Some(1_700_000_000),
+            // Nova is on a game server: shows "Join game" and "View server info".
+            server: (i == 1).then(|| "127.0.0.1:27015".to_string()),
+            rich_status: (i == 1).then(|| "Ranked · Dire 21 – 17 Radiant".to_string()),
+            nickname: (i == 2).then(|| "Pix".to_string()),
             ..Default::default()
         }))
         .collect();

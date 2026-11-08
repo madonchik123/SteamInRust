@@ -52,6 +52,8 @@ pub struct State {
     pub player_games: HashMap<SteamId, Result<Vec<model::PlayerGame>, String>>,
     /// Your achievements per game: (unlocked, total).
     pub achievements: HashMap<AppId, (u32, u32)>,
+    /// Game server details asked for with "View server info".
+    pub servers: HashMap<String, Result<crate::a2s::ServerInfo, String>>,
     /// A game's achievement list, once loaded.
     pub achievement_list: HashMap<AppId, Result<Vec<model::Achievement>, String>>,
     pub downloads: HashMap<AppId, model::DownloadStatus>,
@@ -150,6 +152,13 @@ impl State {
                 self.badges.insert(*steam_id, result.clone());
             }
             Event::CommentPosted { .. } => {}
+            Event::ServerInfo { addr, result } => {
+                self.servers.insert(addr.clone(), result.clone());
+            }
+            Event::Blocked { steam_id, result: Ok(true) } => {
+                self.friends.remove(steam_id);
+            }
+            Event::Blocked { .. } => {}
             Event::WorkshopTags { .. } => {}
             Event::AppNames(list) => self.app_names.extend(list.iter().cloned()),
             Event::Email { address, validated } => self.email = Some((address.clone(), *validated)),
