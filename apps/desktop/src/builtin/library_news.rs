@@ -10,6 +10,8 @@ use store::events::{EventKind, GameEvent};
 use ui::{Theme, icons, widgets as w};
 
 pub type EventsSlot = Arc<Mutex<Option<Vec<GameEvent>>>>;
+/// People playing a game right now, once Steam has answered.
+pub type PlayersSlot = Arc<Mutex<Option<u32>>>;
 
 /// Which post is open in the reader.
 pub struct Reader {
@@ -49,6 +51,28 @@ impl Library {
             self.events.insert(id, slot);
         }
         self.events[&id].lock().unwrap().clone()
+    }
+
+    /// People in the game right now (Steam's count), asked again every
+    /// minute while the page is open. The last number stays meanwhile.
+    pub(super) fn current_players(&mut self, id: AppId) -> Option<u32> {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+        let (Some(rt), Some(ctx)) = (self.rt.clone(), self.egui.clone()) else { return None };
+        if self.players.get(&id).is_none_or(|(asked, _)| asked.elapsed() >= EVERY) {
+            let slot = self.players.get(&id).map(|(_, s)| s.clone()).unwrap_or_default();
+            let (out, repaint) = (slot.clone(), ctx.clone());
+            let api = store::StoreClient::new("us", i18n::language().steam_name());
+            rt.spawn(async move {
+                match api.current_players(id).await {
+                    Ok(n) => *out.lock().unwrap() = n,
+                    Err(e) => tracing::debug!("players in {id}: {e}"),
+                }
+                repaint.request_repaint();
+            });
+            self.players.insert(id, (std::time::Instant::now(), slot));
+        }
+        ctx.request_repaint_after(EVERY);
+        *self.players[&id].1.lock().unwrap()
     }
 
     /// The updates feed on a game's page.

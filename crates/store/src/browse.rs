@@ -86,6 +86,28 @@ impl StoreClient {
         Ok(resp.response.tags.into_iter().map(|t| (t.tagid, t.name)).collect())
     }
 
+    /// How many people are playing a game on Steam right now (Steam's own
+    /// count, the one SteamDB charts). `None` when Steam has no count for it.
+    pub async fn current_players(&self, id: AppId) -> Result<Option<u32>> {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            player_count: Option<u32>,
+            #[serde(default)]
+            result: i32,
+        }
+        let resp: Envelope<Raw> = self
+            .http
+            .get(format!("{API}/ISteamUserStats/GetNumberOfCurrentPlayers/v1/"))
+            .query(&[("appid", id.to_string())])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(resp.response.player_count.filter(|_| resp.response.result == 1))
+    }
+
     /// Latest news and patch notes for a game.
     pub async fn news(&self, id: AppId, count: u32) -> Result<Vec<NewsItem>> {
         let resp: RawNewsEnvelope = self

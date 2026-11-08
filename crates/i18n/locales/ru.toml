@@ -1551,3 +1551,5 @@
 "Network {net}/s · Disk {disk}/s" = "Сеть {net}/с · Диск {disk}/с"
 "network {rate}" = "сеть {rate}"
 "disk {rate}" = "диск {rate}"
+"PLAYING NOW" = "СЕЙЧАС ИГРАЮТ"
+"People playing on Steam right now. Updates every minute." = "Столько людей играет в Steam прямо сейчас. Обновляется каждую минуту."
