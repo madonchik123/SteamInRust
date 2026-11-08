@@ -33,6 +33,7 @@ mod inventory;
 mod ipc;
 mod lobby;
 mod p2p;
+mod screenshots;
 mod servers;
 mod sns;
 mod state;
