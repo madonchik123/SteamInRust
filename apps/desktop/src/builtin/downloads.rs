@@ -240,7 +240,8 @@ impl Downloads {
             });
             ui.add_space(8.0);
         }
-        for id in ctx.state.download_queue.clone() {
+        // Queued games; the one downloading is never listed twice.
+        for id in ctx.state.download_queue.clone().into_iter().filter(|id| !running.iter().any(|d| d.app_id == *id)) {
             let name = ctx.state.app_name(id).unwrap_or_default().to_string();
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(92.0, 43.0), Sense::hover());

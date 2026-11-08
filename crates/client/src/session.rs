@@ -320,6 +320,10 @@ struct Online {
     launched_dirs: HashMap<AppId, std::path::PathBuf>,
     queue: std::collections::VecDeque<crate::download::InstallRequest>,
     active: Option<(AppId, std::sync::Arc<depot::Progress>)>,
+    /// The running download's request, kept so it can be saved and resumed.
+    active_req: Option<crate::download::InstallRequest>,
+    /// Unfinished downloads from the last run were put back in the queue.
+    downloads_restored: bool,
     limit_kbps: u64,
     concurrency: u32,
     refresh_token: String,
@@ -436,6 +440,8 @@ async fn online(
         cloud_off: Default::default(),
         launched_dirs: HashMap::new(),
         queue: Default::default(),
+        active_req: None,
+        downloads_restored: false,
         active: None,
         limit_kbps: 0,
         concurrency: 16,
@@ -684,6 +690,7 @@ async fn online(
                         st.queue.push_back(req);
                     }
                     st.pump(sink, &dl_tx);
+                    st.save_downloads();
                 }
                 Some(Command::PauseDownload { app_id }) => {
                     st.auto_paused = false;
@@ -693,6 +700,10 @@ async fn online(
                 Some(Command::CancelDownload { app_id }) => {
                     st.queue.retain(|q| q.app_id != app_id);
                     st.with_progress(app_id, |p| p.cancel.store(true, std::sync::atomic::Ordering::Relaxed));
+                    if st.active_req.as_ref().is_some_and(|r| r.app_id == app_id) {
+                        st.active_req = None;
+                    }
+                    st.save_downloads();
                     sink(Event::DownloadQueue(st.queue.iter().map(|q| q.app_id).collect()));
                 }
                 Some(Command::DownloadLimits { limit_kbps, concurrency }) => {
@@ -739,6 +750,12 @@ async fn online(
             Some(apps) = apps_rx.recv() => {
                 st.apps = apps.iter().map(|a| (a.app_id, a.clone())).collect();
                 sink(Event::Apps(apps));
+                // Downloads that were running or queued when the app closed
+                // carry on (files already on disk are checked and kept).
+                if !st.downloads_restored {
+                    st.downloads_restored = true;
+                    st.restore_downloads(sink, &dl_tx);
+                }
                 st.cache_dirty = true;
                 st.save_cache();
                 // Saves changed offline go up once the library has sent its
@@ -752,9 +769,11 @@ async fn online(
             Some(()) = flush_rx.recv() => st.flush_cloud(sink),
             Some((app_id, result)) = dl_rx.recv() => {
                 st.active = None;
+                st.active_req = None;
                 st.auto_paused = false;
                 sink(Event::DownloadFinished { app_id, result });
                 st.pump(sink, &dl_tx);
+                st.save_downloads();
             }
             Some((app_id, dir, args)) = launch_rx.recv() => {
                 let _ = st.launch(app_id, &dir, &args, sink, &exit_tx);
@@ -1174,16 +1193,21 @@ impl Online {
 
     /// Start the next queued download if nothing is running.
     fn pump(&mut self, sink: &Sink, done: &mpsc::UnboundedSender<(AppId, Result<String, String>)>) {
-        sink(Event::DownloadQueue(self.queue.iter().map(|q| q.app_id).collect()));
+        // The queue is reported after the next game leaves it, so the one
+        // that's downloading isn't also listed as "queued".
         if self.active.is_some() || self.link != Link::Online {
+            sink(Event::DownloadQueue(self.queue.iter().map(|q| q.app_id).collect()));
             return;
         }
-        let Some(req) = self.queue.pop_front() else { return };
+        let next = self.queue.pop_front();
+        sink(Event::DownloadQueue(self.queue.iter().map(|q| q.app_id).collect()));
+        let Some(req) = next else { return };
         let app_id = req.app_id;
         let Some(app) = self.apps.get(&app_id).cloned() else {
             let _ = done.send((app_id, Err("Your library is still loading. Try again in a moment.".into())));
             return;
         };
+        self.active_req = Some(req.clone());
         let progress = std::sync::Arc::new(depot::Progress::default());
         progress.limit_kbps.store(self.limit_kbps, std::sync::atomic::Ordering::Relaxed);
         progress.concurrency.store(self.concurrency, std::sync::atomic::Ordering::Relaxed);
@@ -1230,6 +1254,36 @@ impl Online {
             let _ = sink2;
             let _ = done.send((app_id, msg));
         });
+    }
+
+    /// Unfinished downloads (running first, then the queue), per account.
+    fn downloads_path(&self) -> std::path::PathBuf {
+        store::config_dir().join(format!("downloads-{}.json", self.me))
+    }
+
+    fn save_downloads(&self) {
+        let list: Vec<&crate::download::InstallRequest> = self.active_req.iter().chain(self.queue.iter()).collect();
+        let path = self.downloads_path();
+        if list.is_empty() {
+            let _ = std::fs::remove_file(&path);
+        } else if let Ok(text) = serde_json::to_string_pretty(&list) {
+            let _ = std::fs::create_dir_all(store::config_dir());
+            let _ = std::fs::write(&path, text);
+        }
+    }
+
+    fn restore_downloads(&mut self, sink: &Sink, done: &mpsc::UnboundedSender<(AppId, Result<String, String>)>) {
+        let Ok(text) = std::fs::read_to_string(self.downloads_path()) else { return };
+        let Ok(list) = serde_json::from_str::<Vec<crate::download::InstallRequest>>(&text) else { return };
+        for req in list {
+            let busy = self.active.as_ref().is_some_and(|a| a.0 == req.app_id) || self.queue.iter().any(|q| q.app_id == req.app_id);
+            if !busy && self.apps.contains_key(&req.app_id) {
+                tracing::info!("resuming the download of {}", req.app_id);
+                self.queue.push_back(req);
+            }
+        }
+        self.pump(sink, done);
+        self.save_downloads();
     }
 
     fn unsubscribe(&self, app_id: AppId, file_id: u64, sink: &Sink) {

@@ -1496,3 +1496,7 @@
 "Can't compare prices for {name}'s region. Steam decides at checkout." = "Не удалось сравнить цены для региона {name}. Steam решит при оформлении."
 "Steam didn't add it to your cart. It may not be sold in your region, or gifting it isn't allowed." = "Steam не добавил игру в корзину. Возможно, она не продаётся в вашем регионе или её нельзя подарить."
 "Friend {id}" = "Друг {id}"
+"A download is in progress" = "Идёт загрузка"
+"{game} is still downloading. If you exit, it continues the next time you open SteamInRust." = "{game} ещё загружается. Если выйти, загрузка продолжится при следующем запуске SteamInRust."
+"Exit anyway" = "Всё равно выйти"
+"Keep downloading in the tray" = "Продолжить загрузку в трее"
