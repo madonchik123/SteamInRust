@@ -390,9 +390,44 @@ pub struct Persona {
     /// Hex avatar hash; see [`art::avatar`].
     pub avatar_hash: Option<String>,
     pub last_logoff: Option<u64>,
+    /// The game server they're on ("ip:port"), when the game reports one.
+    #[serde(default)]
+    pub server: Option<String>,
+    /// The game lobby they're in.
+    #[serde(default)]
+    pub lobby: Option<u64>,
+    /// How to join them: the game's own launch arguments (rich presence "connect").
+    #[serde(default)]
+    pub connect: Option<String>,
+    /// They're broadcasting their game on Steam.
+    #[serde(default)]
+    pub broadcasting: bool,
+    /// Your nickname for them (Steam syncs these).
+    #[serde(default)]
+    pub nickname: Option<String>,
 }
 
 impl Persona {
+    /// Your nickname for them, else their name, else their SteamID.
+    pub fn display_name(&self) -> String {
+        match (&self.nickname, self.name.is_empty()) {
+            (Some(n), _) if !n.is_empty() => n.clone(),
+            (_, false) => self.name.clone(),
+            _ => self.steam_id.to_string(),
+        }
+    }
+
+    /// Launch arguments that join them in their game, if Steam says how.
+    pub fn join_args(&self) -> Option<String> {
+        if let Some(c) = self.connect.as_ref().filter(|c| !c.trim().is_empty()) {
+            return Some(c.trim().to_string());
+        }
+        if let Some(s) = &self.server {
+            return Some(format!("+connect {s}"));
+        }
+        self.lobby.map(|l| format!("+connect_lobby {l}"))
+    }
+
     pub fn in_game(&self) -> bool {
         self.game_app_id.is_some() || self.game_name.is_some()
     }

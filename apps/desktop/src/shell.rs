@@ -788,17 +788,20 @@ fn friends_drawer(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<
 /// Returns the friend that was clicked.
 pub fn friend_list(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>, list: &[Persona], selected: Option<u64>) -> Option<u64> {
     let filter = app.friend_filter.to_lowercase();
-    let ok = |p: &&Persona| filter.is_empty() || p.name.to_lowercase().contains(&filter);
-    let in_game: Vec<&Persona> = list.iter().filter(ok).filter(|p| p.in_game()).collect();
-    let online: Vec<&Persona> = list.iter().filter(ok).filter(|p| !p.in_game() && p.state != PersonaState::Offline).collect();
-    let offline: Vec<&Persona> = list.iter().filter(ok).filter(|p| p.state == PersonaState::Offline).collect();
+    let ok = |p: &&Persona| filter.is_empty() || p.name.to_lowercase().contains(&filter) || p.nickname.as_ref().is_some_and(|n| n.to_lowercase().contains(&filter));
+    let favs = app.prefs.favorite_friends.clone();
+    let fav = |p: &&Persona| favs.contains(&p.steam_id);
+    let favorites: Vec<&Persona> = list.iter().filter(ok).filter(fav).collect();
+    let in_game: Vec<&Persona> = list.iter().filter(ok).filter(|p| !fav(p) && p.in_game()).collect();
+    let online: Vec<&Persona> = list.iter().filter(ok).filter(|p| !fav(p) && !p.in_game() && p.state != PersonaState::Offline).collect();
+    let offline: Vec<&Persona> = list.iter().filter(ok).filter(|p| !fav(p) && p.state == PersonaState::Offline).collect();
     let mut clicked = None;
 
     egui::ScrollArea::vertical().id_salt("friend-list").auto_shrink([false, false]).show(ui, |ui| {
         if list.is_empty() {
             ui.label(w::text(t!("Loading friends…"), 13.0, t.text_faint));
         }
-        for (title, group) in [(t!("In game"), &in_game), (t!("Online"), &online), (t!("Offline"), &offline)] {
+        for (title, group) in [(t!("Favorites"), &favorites), (t!("In game"), &in_game), (t!("Online"), &online), (t!("Offline"), &offline)] {
             if group.is_empty() {
                 continue;
             }
@@ -824,18 +827,24 @@ pub fn friend_list(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec
 fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: &mut Vec<Action>, selected: bool) -> bool {
     let offline = p.state == PersonaState::Offline;
     let color = status_color(t, p);
-    let name = if p.name.is_empty() { p.steam_id.to_string() } else { p.name.clone() };
+    let name = p.display_name();
     let status = if app.state.is_typing(p.steam_id) { t!("typing…").to_string() } else { status_text(&app.state, p) };
     let unread = app.state.unread.get(&p.steam_id).copied().unwrap_or(0);
 
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    // The whole row lights up wherever the pointer is in it (also over the
+    // game link inside it), and clearly enough to see on the dark list.
+    let pointer_in = ui.rect_contains_pointer(rect) || resp.context_menu_opened();
+    let hover = ui.ctx().animate_bool_with_time(resp.id, pointer_in, 0.1);
     if selected {
-        ui.painter().rect_filled(rect, t.corner_small(), t.surface_hover);
+        ui.painter().rect_filled(rect, t.corner_small(), t.accent.gamma_multiply(0.18));
     } else if hover > 0.0 {
-        ui.painter().rect_filled(rect, t.corner_small(), w::mix(egui::Color32::TRANSPARENT, t.surface, hover));
+        ui.painter().rect_filled(rect, t.corner_small(), w::mix(egui::Color32::TRANSPARENT, t.surface_hover, hover));
     }
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(6.0, 6.0))).layout(Layout::left_to_right(Align::Center)));
+    // Leave room on the right for the unread badge, so text never runs under it.
+    let inner = rect.shrink2(vec2(6.0, 6.0));
+    let inner = if unread > 0 { Rect::from_min_max(inner.min, egui::pos2(inner.right() - 26.0, inner.bottom())) } else { inner };
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::left_to_right(Align::Center)));
     w::avatar(&mut child, t, &art::avatar(p.avatar_hash.as_deref()), 36.0, Some(color));
     child.add_space(4.0);
     child.vertical(|ui| {
@@ -846,6 +855,11 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
         // The game is a link to its page.
         let r = ui.add(egui::Label::new(w::text(&status, 12.0, if offline { t.text_faint } else if p.in_game() { t.in_game } else { t.text_dim })).truncate().sense(Sense::click()));
         if let Some(target) = p.game_app_id.filter(|_| p.in_game()) {
+            // The game is a link of its own: underlined while the pointer is
+            // on it, so it's clear a click opens the game, not the chat.
+            if r.hovered() {
+                ui.painter().hline(r.rect.x_range(), r.rect.bottom() - 1.0, Stroke::new(1.0, t.in_game));
+            }
             let r = r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Open the game's page"));
             if r.clicked() {
                 actions.push(game_page(&app.state, target));
@@ -859,20 +873,45 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
     }
 
     let persona = p.clone();
+    let vp = ui.ctx().viewport_id();
     resp.context_menu(|ui| {
         ui.label(w::text_semibold(&name, 14.0, t.text));
+        if persona.nickname.is_some() && !persona.name.is_empty() {
+            ui.label(w::text(&persona.name, 12.0, t.text_dim));
+        }
         ui.separator();
         if ui.button(format!("{}  {}", icons::CHAT, t!("Send a message"))).clicked() {
             actions.push(Action::OpenChat(persona.steam_id));
             ui.close();
         }
-        if ui.button(format!("{}  {}", icons::USER_CIRCLE, t!("View profile"))).clicked() {
-            actions.push(Action::Navigate { page: "profile".into(), arg: Some(persona.steam_id.to_string()) });
-            ui.close();
-        }
+        // In a game: join them, see their server, watch their broadcast, like Steam.
         if let Some(game) = persona.game_app_id.filter(|_| persona.in_game()) {
-            let name = app.state.app_name(game).map(String::from).unwrap_or_else(|| t!("the game").to_string());
-            if ui.button(format!("{}  {}", icons::CONTROLLER, t!("Open {game} page", game = name))).clicked() {
+            let game_name = app.state.app_name(game).map(String::from).unwrap_or_else(|| t!("the game").to_string());
+            ui.separator();
+            if let Some(args) = persona.join_args() {
+                if ui.button(format!("{}  {}", icons::PLAY, t!("Join game"))).on_hover_text(&args).clicked() {
+                    match app.local.games.iter().find(|g| g.app_id == game) {
+                        Some(g) => {
+                            app.client.send(Command::Launch { app_id: game, install_dir: g.install_dir.clone(), args });
+                            actions.push(Action::Toast(t!("Joining {name} in {game}…", name = persona.display_name(), game = game_name)));
+                        }
+                        None => actions.push(Action::Toast(t!("Install {game} to join {name}.", game = game_name, name = persona.display_name()))),
+                    }
+                    ui.close();
+                }
+            }
+            if let Some(addr) = persona.server.clone() {
+                if ui.button(format!("{}  {}", icons::INFO, t!("View server info"))).clicked() {
+                    app.client.send(Command::QueryServer { addr: addr.clone() });
+                    app.friend_dialog = Some((vp, FriendDialog::Server { name: persona.display_name(), game, addr }));
+                    ui.close();
+                }
+            }
+            if persona.broadcasting && ui.button(format!("{}  {}", icons::EYE, t!("Watch game"))).on_hover_text(t!("Opens their Steam broadcast")).clicked() {
+                let _ = open::that_detached(format!("https://steamcommunity.com/broadcast/watch/{}", persona.steam_id));
+                ui.close();
+            }
+            if ui.button(format!("{}  {}", icons::CONTROLLER, t!("View game info"))).clicked() {
                 actions.push(game_page(&app.state, game));
                 ui.close();
             }
@@ -886,14 +925,47 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
                 ui.close();
             }
         }
+        ui.separator();
+        if ui.button(format!("{}  {}", icons::USER_CIRCLE, t!("View profile"))).clicked() {
+            actions.push(Action::Navigate { page: "profile".into(), arg: Some(persona.steam_id.to_string()) });
+            ui.close();
+        }
         if ui.button(format!("{}  {}", icons::BACKPACK, t!("Inventory"))).clicked() {
             actions.push(Action::Navigate { page: "inventory".into(), arg: Some(persona.steam_id.to_string()) });
             ui.close();
         }
-        if ui.button(format!("{}  {}", icons::COPY, t!("Copy SteamID"))).clicked() {
-            ui.ctx().copy_text(persona.steam_id.to_string());
-            ui.close();
-        }
+        ui.menu_button(format!("{}  {}", icons::GEAR, t!("Manage")), |ui| {
+            if ui.button(t!("Add nickname…")).clicked() {
+                app.friend_dialog = Some((vp, FriendDialog::Nickname { id: persona.steam_id, text: persona.nickname.clone().unwrap_or_default() }));
+                ui.close();
+            }
+            if persona.nickname.is_some() && ui.button(t!("Remove nickname")).clicked() {
+                app.client.send(Command::SetNickname { steam_id: persona.steam_id, nickname: None });
+                ui.close();
+            }
+            let is_fav = app.prefs.favorite_friends.contains(&persona.steam_id);
+            if ui.button(if is_fav { t!("Remove from Favorites") } else { t!("Add to Favorites") }).clicked() {
+                if is_fav {
+                    app.prefs.favorite_friends.retain(|f| *f != persona.steam_id);
+                } else {
+                    app.prefs.favorite_friends.push(persona.steam_id);
+                }
+                ui.close();
+            }
+            if ui.button(t!("Copy SteamID")).clicked() {
+                ui.ctx().copy_text(persona.steam_id.to_string());
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(w::text(t!("Remove friend…"), 13.5, t.danger)).clicked() {
+                app.friend_dialog = Some((vp, FriendDialog::Remove { id: persona.steam_id, name: persona.display_name() }));
+                ui.close();
+            }
+            if ui.button(w::text(t!("Block all communication…"), 13.5, t.danger)).clicked() {
+                app.friend_dialog = Some((vp, FriendDialog::Block { id: persona.steam_id, name: persona.display_name() }));
+                ui.close();
+            }
+        });
         let env = Env {
             state: &app.state,
             local: &app.local,
@@ -940,4 +1012,134 @@ pub fn toasts(app: &mut SteamApp, ctx: &egui::Context) {
             }
         });
     ctx.request_repaint_after(std::time::Duration::from_millis(200));
+}
+
+/// Dialogs opened from a friend's menu.
+#[derive(Clone)]
+pub enum FriendDialog {
+    Nickname { id: model::SteamId, text: String },
+    Server { name: String, game: model::AppId, addr: String },
+    Remove { id: model::SteamId, name: String },
+    Block { id: model::SteamId, name: String },
+}
+
+/// Draw the open friend dialog, in the window it was opened from.
+pub fn friend_dialogs(app: &mut SteamApp, ctx: &egui::Context) {
+    let Some((vp, dialog)) = app.friend_dialog.clone() else { return };
+    if vp != ctx.viewport_id() {
+        return;
+    }
+    let t = app.prefs.theme.clone();
+    let mut close = false;
+    let mut keep = dialog.clone();
+    // Fits narrow windows too (the Friends window can be ~300 px wide).
+    let width = (ctx.content_rect().width() - 64.0).clamp(220.0, 400.0);
+    egui::Modal::new(egui::Id::unique("friend-dialog")).show(ctx, |ui| {
+        ui.set_width(width);
+        match &mut keep {
+            FriendDialog::Nickname { id, text } => {
+                ui.label(w::text_bold(t!("Add a nickname"), 17.0, t.text));
+                ui.label(w::text(t!("Only you see it. Steam keeps it on all your devices."), 12.5, t.text_dim));
+                ui.add_space(8.0);
+                let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).hint_text(t!("Nickname")));
+                r.request_focus();
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let save = w::button(ui, &t, None, t!("Save"), w::Kind::Primary, w::Size::Sm).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if save {
+                        let nick = text.trim().to_string();
+                        app.client.send(Command::SetNickname { steam_id: *id, nickname: (!nick.is_empty()).then_some(nick) });
+                        close = true;
+                    }
+                    if w::button(ui, &t, None, t!("Cancel"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                        close = true;
+                    }
+                });
+            }
+            FriendDialog::Server { name, game, addr } => {
+                let game_name = app.state.app_name(*game).unwrap_or_default().to_string();
+                ui.add(egui::Label::new(w::text_bold(t!("{name}'s server", name = name), 17.0, t.text)).wrap());
+                ui.label(w::text(&game_name, 12.5, t.text_dim));
+                ui.add_space(8.0);
+                match app.state.servers.get(addr.as_str()) {
+                    None => {
+                        ui.label(w::text(t!("Asking the server…"), 13.0, t.text_dim));
+                    }
+                    Some(Err(e)) => {
+                        ui.label(w::text(e, 13.0, t.text_dim));
+                    }
+                    Some(Ok(s)) => {
+                        egui::Grid::new("server-info").num_columns(2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
+                            for (k, v) in [
+                                (t!("Name"), s.name.clone()),
+                                (t!("Map"), s.map.clone()),
+                                (t!("Players"), format!("{} / {}{}", s.players, s.max_players, if s.bots > 0 { format!(" (+{} bots)", s.bots) } else { String::new() })),
+                                (t!("Ping"), format!("{} ms", s.ping_ms)),
+                                (t!("Anti-cheat"), if s.vac { "VAC".to_string() } else { "—".to_string() }),
+                                (t!("Password"), if s.password { t!("Yes").to_string() } else { t!("No").to_string() }),
+                            ] {
+                                ui.label(w::text_bold(k.to_uppercase(), 10.5, t.text_faint));
+                                ui.add(egui::Label::new(w::text(v, 13.0, t.text)).truncate());
+                                ui.end_row();
+                            }
+                        });
+                    }
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(w::text(addr.as_str(), 12.5, t.text_dim));
+                    if ui.small_button(t!("Copy")).clicked() {
+                        ui.ctx().copy_text(addr.clone());
+                    }
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if let Some(g) = app.local.games.iter().find(|g| g.app_id == *game) {
+                        if w::button(ui, &t, Some(icons::PLAY), t!("Join"), w::Kind::Primary, w::Size::Sm).clicked() {
+                            app.client.send(Command::Launch { app_id: *game, install_dir: g.install_dir.clone(), args: format!("+connect {addr}") });
+                            close = true;
+                        }
+                    }
+                    if w::button(ui, &t, Some(icons::REFRESH), t!("Refresh"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                        app.client.send(Command::QueryServer { addr: addr.clone() });
+                    }
+                    if w::button(ui, &t, None, t!("Close"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                        close = true;
+                    }
+                });
+            }
+            FriendDialog::Remove { id, name } => {
+                ui.add(egui::Label::new(w::text_bold(t!("Remove {name} from your friends?", name = name), 17.0, t.text)).wrap());
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if w::button(ui, &t, None, t!("Remove friend"), w::Kind::Danger, w::Size::Sm).clicked() {
+                        app.client.send(Command::RemoveFriend { steam_id: *id });
+                        close = true;
+                    }
+                    if w::button(ui, &t, None, t!("Cancel"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                        close = true;
+                    }
+                });
+            }
+            FriendDialog::Block { id, name } => {
+                ui.add(egui::Label::new(w::text_bold(t!("Block all communication with {name}?", name = name), 17.0, t.text)).wrap());
+                ui.add(egui::Label::new(w::text(t!("They'll be removed from your friends and can't message you or invite you."), 12.5, t.text_dim)).wrap());
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if w::button(ui, &t, None, t!("Block"), w::Kind::Danger, w::Size::Sm).clicked() {
+                        app.client.send(Command::BlockFriend { steam_id: *id, block: true });
+                        close = true;
+                    }
+                    if w::button(ui, &t, None, t!("Cancel"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                        close = true;
+                    }
+                });
+            }
+        }
+    });
+    if close {
+        app.friend_dialog = None;
+    } else if let Some((_, d)) = &mut app.friend_dialog {
+        *d = keep;
+    }
 }

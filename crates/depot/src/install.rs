@@ -41,6 +41,8 @@ pub struct Progress {
     pub files_done: AtomicUsize,
     pub paused: AtomicBool,
     pub cancel: AtomicBool,
+    /// The download ended (done, failed or cancelled): progress updates stop.
+    pub ended: AtomicBool,
     /// KB/s, 0 = unlimited.
     pub limit_kbps: AtomicU64,
     /// Parallel chunk downloads.
@@ -118,10 +120,22 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
     progress.set_phase(Phase::Checking);
     fs::create_dir_all(dir)?;
 
+    // A file can be in more than one depot (a language or platform depot
+    // replacing a base file). Like Steam, the later depot's copy wins; the
+    // earlier one is skipped, so the file is never written (and its
+    // temporary file renamed) twice.
+    let key_of = |name: &str| name.replace('\\', "/").to_lowercase();
+    let mut owner: HashMap<String, usize> = HashMap::new();
+    for (i, job) in jobs.iter().enumerate() {
+        for f in job.manifest.files.iter().filter(|f| !f.directory) {
+            owner.insert(key_of(&f.name), i);
+        }
+    }
+
     // Plan: which files need work, and where each chunk comes from.
     let mut files: Vec<(PathBuf, FileEntry)> = Vec::new();
     let mut work: Vec<Work> = Vec::new();
-    for job in &jobs {
+    for (job_index, job) in jobs.iter().enumerate() {
         let key = Arc::new(job.key.clone());
         let old_files: HashMap<&str, &FileEntry> = job.old.iter().flat_map(|m| &m.files).map(|f| (f.name.as_str(), f)).collect();
         // Index of every chunk in the installed version, for reuse.
@@ -137,7 +151,7 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
                 fs::create_dir_all(&path)?;
                 continue;
             }
-            if f.link.is_some() {
+            if f.link.is_some() || owner.get(&key_of(&f.name)) != Some(&job_index) {
                 continue;
             }
             progress.disk_total.fetch_add(f.size, Ordering::Relaxed);
