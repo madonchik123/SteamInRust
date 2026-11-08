@@ -23,7 +23,7 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
             Some($f as Fp)
         };
     }
-    if let Some(f) = crate::extras::imp(kind, name) {
+    if let Some(f) = crate::extras::imp(kind, name).or_else(|| crate::sns::imp(kind, name)) {
         return Some(f);
     }
     match (kind, name) {
@@ -157,8 +157,6 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
 
         // ISteamNetworkingUtils
         ("ISteamNetworkingUtils", "GetLocalTimestamp") => f!(nu_timestamp),
-        ("ISteamNetworkingUtils", "GetRelayNetworkStatus") => f!(nu_relay_status),
-        ("ISteamNetworkingUtils", "SetGlobalConfigValueString" | "SetConfigValue") => f!(yes),
         ("ISteamNetworkingUtils", "GetConfigValue") => f!(minus_one),
         _ => None,
     }
@@ -1178,10 +1176,6 @@ extern "C" fn rs_quota(_t: This, total: *mut u64, available: *mut u64) -> bool {
 
 extern "C" fn nu_timestamp(_t: This) -> i64 {
     lock().started.elapsed().as_micros() as i64 + 1
-}
-/// ESteamNetworkingAvailability: -102 "can't try" (no relay network).
-extern "C" fn nu_relay_status(_t: This, _details: *mut c_void) -> i32 {
-    -102
 }
 
 #[cfg(test)]

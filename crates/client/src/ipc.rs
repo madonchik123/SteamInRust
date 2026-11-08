@@ -96,6 +96,14 @@ impl Server {
         }
     }
 
+    /// Queue an event for one launch only.
+    pub fn push_to(&self, token: &str, event: GameEvent) {
+        if let Some(slot) = self.tokens.lock().unwrap().get_mut(token) {
+            slot.events.push_back(event);
+            slot.notify.notify_one();
+        }
+    }
+
     /// Games running right now (for routing Steam's pushes).
     pub fn running_apps(&self) -> Vec<AppId> {
         let mut apps: Vec<AppId> = self.tokens.lock().unwrap().values().map(|s| s.app_id).collect();

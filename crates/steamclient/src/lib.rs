@@ -25,6 +25,7 @@ mod ifaces;
 mod ipc;
 mod lobby;
 mod p2p;
+mod sns;
 mod state;
 mod tables;
 #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
@@ -136,6 +137,8 @@ fn get_callback(_pipe: usize, msg: usize) -> usize {
     if msg.is_null() {
         return 0;
     }
+    // Networking callbacks the game set as functions run here, on its thread.
+    sns::run_callbacks();
     let mut g = state::lock();
     let Some((callback, data)) = g.queue.pop_front() else { return 0 };
     g.current = Some(data);

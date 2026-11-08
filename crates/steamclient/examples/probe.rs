@@ -54,9 +54,247 @@ fn s(p: *const c_char) -> String {
     if p.is_null() { "<null>".into() } else { unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned() }
 }
 
+/// SteamNetworkingSockets / Messages through the real steam_api: a host
+/// listens, connects to itself, accepts, and both sides exchange data.
+fn sockets_test(api: &Api, pipe: i32, me: u64) {
+    let sockets = api.iface("SteamNetworkingSockets_SteamAPI", &["v012", "v011", "v009"]);
+    let messages = api.iface("SteamNetworkingMessages_SteamAPI", &["v002"]);
+    let utils = api.iface("SteamNetworkingUtils_SteamAPI", &["v004", "v003"]);
+    let mut status = [0u8; 272];
+    println!("relay status  {}", call!(api, "SteamAPI_ISteamNetworkingUtils_GetRelayNetworkStatus", fn(usize, *mut u8) -> i32, utils, status.as_mut_ptr()));
+    let mut id = [0u8; 136];
+    id[0..4].copy_from_slice(&16i32.to_le_bytes());
+    id[4..8].copy_from_slice(&8i32.to_le_bytes());
+    id[8..16].copy_from_slice(&me.to_le_bytes());
+    let listen = call!(api, "SteamAPI_ISteamNetworkingSockets_CreateListenSocketP2P", fn(usize, i32, i32, *const u8) -> u32, sockets, 7, 0, std::ptr::null());
+    let conn = call!(api, "SteamAPI_ISteamNetworkingSockets_ConnectP2P", fn(usize, *const u8, i32, i32, *const u8) -> u32, sockets, id.as_ptr(), 7, 0, std::ptr::null());
+    println!("listen {listen}, connect {conn}");
+    let mut accepted = 0u32;
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until {
+        call!(api, "SteamAPI_ManualDispatch_RunFrame", fn(i32) -> (), pipe);
+        let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
+        while call!(api, "SteamAPI_ManualDispatch_GetNextCallback", fn(i32, *mut CallbackMsg) -> bool, pipe, &mut msg) {
+            if msg.callback == 1221 {
+                let b = unsafe { std::slice::from_raw_parts(msg.param, msg.size as usize) };
+                let h = u32::from_le_bytes(b[0..4].try_into().unwrap());
+                let ls = u32::from_le_bytes(b[8 + 144..8 + 148].try_into().unwrap());
+                let state = i32::from_le_bytes(b[8 + 176..8 + 180].try_into().unwrap());
+                println!("  status: conn {h} listen {ls} state {state} ({} bytes)", msg.size);
+                if ls == listen && state == 1 {
+                    accepted = h;
+                    println!("  AcceptConnection = {}", call!(api, "SteamAPI_ISteamNetworkingSockets_AcceptConnection", fn(usize, u32) -> i32, sockets, h));
+                }
+            } else {
+                println!("  callback {}", msg.callback);
+            }
+            call!(api, "SteamAPI_ManualDispatch_FreeLastCallback", fn(i32) -> (), pipe);
+        }
+        if accepted != 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let r = call!(api, "SteamAPI_ISteamNetworkingSockets_SendMessageToConnection", fn(usize, u32, *const u8, u32, i32, *mut i64) -> i32, sockets, conn, b"hello host".as_ptr(), 10, 8, std::ptr::null_mut());
+    println!("SendMessageToConnection = {r}");
+    let mut out = [std::ptr::null_mut::<u8>(); 4];
+    let n = call!(api, "SteamAPI_ISteamNetworkingSockets_ReceiveMessagesOnConnection", fn(usize, u32, *mut *mut u8, i32) -> i32, sockets, accepted, out.as_mut_ptr(), 4);
+    for m in &out[..n.max(0) as usize] {
+        print_message(*m);
+    }
+    let r = call!(api, "SteamAPI_ISteamNetworkingMessages_SendMessageToUser", fn(usize, *const u8, *const u8, u32, i32, i32) -> i32, messages, id.as_ptr(), b"hi me".as_ptr(), 5, 8, 3);
+    println!("SendMessageToUser = {r}");
+    let n = call!(api, "SteamAPI_ISteamNetworkingMessages_ReceiveMessagesOnChannel", fn(usize, i32, *mut *mut u8, i32) -> i32, messages, 3, out.as_mut_ptr(), 4);
+    for m in &out[..n.max(0) as usize] {
+        print_message(*m);
+    }
+    println!("CloseConnection = {}", call!(api, "SteamAPI_ISteamNetworkingSockets_CloseConnection", fn(usize, u32, i32, *const c_char, bool) -> bool, sockets, conn, 0, std::ptr::null(), false));
+}
+
+/// Print a SteamNetworkingMessage_t, then release it like a game does.
+fn print_message(m: *mut u8) {
+    let w = size_of::<usize>();
+    unsafe {
+        let data = (m as *const *const u8).read_unaligned();
+        let size = (m.add(w) as *const i32).read_unaligned();
+        let conn = (m.add(w + 4) as *const u32).read_unaligned();
+        let from = (m.add(w + 8 + 8) as *const u64).read_unaligned();
+        let release_at = if w == 8 { 184 } else { 180 };
+        let release: extern "C" fn(*mut u8) = std::mem::transmute((m.add(release_at) as *const usize).read_unaligned());
+        println!("  message on conn {conn} from {from}: {:?}", String::from_utf8_lossy(std::slice::from_raw_parts(data, size as usize)));
+        release(m);
+    }
+}
+
+/// Vtable slot `i` of a C++ interface object.
+fn slot(obj: usize, i: usize) -> usize {
+    unsafe { *(*(obj as *const *const usize)).add(i) }
+}
+
+/// A SteamNetworkingMessage_t's connection, sender and bytes; released after.
+fn take_message(m: *mut u8) -> (u32, u64, Vec<u8>) {
+    let w = size_of::<usize>();
+    unsafe {
+        let data = (m as *const *const u8).read_unaligned();
+        let size = (m.add(w) as *const i32).read_unaligned();
+        let conn = (m.add(w + 4) as *const u32).read_unaligned();
+        let from = (m.add(w + 8 + 8) as *const u64).read_unaligned();
+        let bytes = std::slice::from_raw_parts(data, size as usize).to_vec();
+        let release: extern "C" fn(*mut u8) = std::mem::transmute((m.add(if w == 8 { 184 } else { 180 }) as *const usize).read_unaligned());
+        release(m);
+        (conn, from, bytes)
+    }
+}
+
+fn identity(steam_id: u64) -> [u8; 136] {
+    let mut id = [0u8; 136];
+    id[0..4].copy_from_slice(&16i32.to_le_bytes());
+    id[4..8].copy_from_slice(&8i32.to_le_bytes());
+    id[8..16].copy_from_slice(&steam_id.to_le_bytes());
+    id
+}
+
+/// `--direct <steamclient.dll> --role host|join --peer <steam id>`: load our
+/// DLL without steam_api and play one side of a two-player test (the client
+/// crate's `p2p_pair` example plays Steam for both). 64-bit only.
+fn direct(dll: &str, host: bool, peer: u64) -> ! {
+    let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {dll}");
+    let api = Api(module);
+    let who = if host { "host" } else { "join" };
+    let create: extern "C" fn(*const c_char, *mut i32) -> usize = unsafe { std::mem::transmute(api.f("CreateInterface").unwrap()) };
+    let client = create(c"SteamClient021".as_ptr(), std::ptr::null_mut());
+    let pipe: extern "C" fn(usize) -> i32 = unsafe { std::mem::transmute(slot(client, 0)) };
+    let pipe = pipe(client);
+    let connect: extern "C" fn(usize, i32) -> i32 = unsafe { std::mem::transmute(slot(client, 2)) };
+    let user = connect(client, pipe);
+    let generic: extern "C" fn(usize, i32, i32, *const c_char) -> usize = unsafe { std::mem::transmute(slot(client, 12)) };
+    let sockets = generic(client, user, pipe, c"SteamNetworkingSockets012".as_ptr());
+    let messages = generic(client, user, pipe, c"SteamNetworkingMessages002".as_ptr());
+    assert!(sockets != 0 && messages != 0);
+    let get_callback: extern "C" fn(i32, *mut CallbackMsg) -> bool = unsafe { std::mem::transmute(api.f("Steam_BGetCallback").unwrap()) };
+    let free_callback: extern "C" fn(i32) -> bool = unsafe { std::mem::transmute(api.f("Steam_FreeLastCallback").unwrap()) };
+    // ISteamNetworkingSockets012 / Messages002 slots.
+    type Listen = extern "C" fn(usize, i32, i32, *const u8) -> u32;
+    type Connect = extern "C" fn(usize, *const u8, i32, i32, *const u8) -> u32;
+    type Accept = extern "C" fn(usize, u32) -> i32;
+    type Close = extern "C" fn(usize, u32, i32, *const c_char, bool) -> bool;
+    type Send = extern "C" fn(usize, u32, *const u8, u32, i32, *mut i64) -> i32;
+    type Receive = extern "C" fn(usize, u32, *mut *mut u8, i32) -> i32;
+    type SendUser = extern "C" fn(usize, *const u8, *const u8, u32, i32, i32) -> i32;
+    type ReceiveChannel = extern "C" fn(usize, i32, *mut *mut u8, i32) -> i32;
+    type AcceptUser = extern "C" fn(usize, *const u8) -> bool;
+    let (listen, connect_p2p): (Listen, Connect) = unsafe { (std::mem::transmute(slot(sockets, 2)), std::mem::transmute(slot(sockets, 3))) };
+    let (accept, close): (Accept, Close) = unsafe { (std::mem::transmute(slot(sockets, 4)), std::mem::transmute(slot(sockets, 5))) };
+    let (send, receive): (Send, Receive) = unsafe { (std::mem::transmute(slot(sockets, 11)), std::mem::transmute(slot(sockets, 14))) };
+    let (send_user, receive_channel): (SendUser, ReceiveChannel) = unsafe { (std::mem::transmute(slot(messages, 0)), std::mem::transmute(slot(messages, 1))) };
+    let accept_user: AcceptUser = unsafe { std::mem::transmute(slot(messages, 2)) };
+
+    let them = identity(peer);
+    let big: Vec<u8> = (0..200_000u32).map(|i| (i % 253) as u8).collect();
+    let mut conn = 0u32;
+    let mut passed: Vec<&str> = Vec::new();
+    if host {
+        let ls = listen(sockets, 7, 0, std::ptr::null());
+        println!("[host] listening: socket {ls}");
+    } else {
+        conn = connect_p2p(sockets, them.as_ptr(), 7, 0, std::ptr::null());
+        println!("[join] connecting: connection {conn}");
+        println!("[join] SendMessageToUser = {}", send_user(messages, them.as_ptr(), b"msg hi".as_ptr(), 6, 8, 3));
+    }
+    // host: socket message + user message, then the joiner closes;
+    // join: socket reply + big message + user reply.
+    let want = if host { 2 } else { 3 };
+    let until = Instant::now() + Duration::from_secs(40);
+    let mut closed = false;
+    while Instant::now() < until {
+        if passed.len() >= want && (!host || closed) {
+            break;
+        }
+        let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
+        while get_callback(pipe, &mut msg) {
+            let b = unsafe { std::slice::from_raw_parts(msg.param, msg.size as usize) }.to_vec();
+            free_callback(pipe);
+            match msg.callback {
+                1221 => {
+                    let h = u32::from_le_bytes(b[0..4].try_into().unwrap());
+                    let state = i32::from_le_bytes(b[8 + 176..8 + 180].try_into().unwrap());
+                    let ls = u32::from_le_bytes(b[8 + 144..8 + 148].try_into().unwrap());
+                    println!("[{who}] connection {h}: state {state}");
+                    if host && ls != 0 && state == 1 {
+                        println!("[host] AcceptConnection = {}", accept(sockets, h));
+                    }
+                    if state == 3 {
+                        conn = h;
+                        if !host {
+                            println!("[join] send = {}", send(sockets, h, b"hello host".as_ptr(), 10, 8, std::ptr::null_mut()));
+                        }
+                    }
+                    if state == 4 {
+                        closed = true;
+                        close(sockets, h, 0, std::ptr::null(), false);
+                    }
+                }
+                1251 => {
+                    let from = u64::from_le_bytes(b[8..16].try_into().unwrap());
+                    println!("[{who}] session request from {from}: accept = {}", accept_user(messages, b.as_ptr()));
+                }
+                other => println!("[{who}] callback {other}"),
+            }
+        }
+        let mut out = [std::ptr::null_mut::<u8>(); 8];
+        if conn != 0 {
+            let n = receive(sockets, conn, out.as_mut_ptr(), 8);
+            for m in &out[..n.max(0) as usize] {
+                let (c, from, data) = take_message(*m);
+                if host && data == b"hello host" {
+                    println!("[host] got {:?} on {c} from {from}", String::from_utf8_lossy(&data));
+                    send(sockets, conn, b"hello join".as_ptr(), 10, 8, std::ptr::null_mut());
+                    send(sockets, conn, big.as_ptr(), big.len() as u32, 8, std::ptr::null_mut());
+                    passed.push("socket message");
+                } else if !host && data == b"hello join" {
+                    println!("[join] got {:?} from {from}", String::from_utf8_lossy(&data));
+                    passed.push("socket reply");
+                } else if !host && data == big {
+                    println!("[join] got the 200 KB message intact");
+                    passed.push("big message");
+                } else {
+                    println!("[{who}] unexpected {} bytes", data.len());
+                }
+            }
+        }
+        let n = receive_channel(messages, 3, out.as_mut_ptr(), 8);
+        for m in &out[..n.max(0) as usize] {
+            let (_, from, data) = take_message(*m);
+            println!("[{who}] channel 3 from {from}: {:?}", String::from_utf8_lossy(&data));
+            if host && data == b"msg hi" {
+                send_user(messages, them.as_ptr(), b"msg back".as_ptr(), 8, 8, 3);
+                passed.push("user message");
+            }
+            if !host && data == b"msg back" {
+                passed.push("user reply");
+            }
+        }
+        if !host && passed.len() >= want {
+            println!("[join] closing");
+            close(sockets, conn, 1000, c"done".as_ptr(), false);
+            std::thread::sleep(Duration::from_millis(500));
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ok = passed.len() >= want && (!host || closed);
+    println!("[{who}] {} {passed:?}", if ok { "PASS" } else { "FAIL" });
+    std::process::exit(if ok { 0 } else { 1 });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+    if let Some(dll) = arg("--direct") {
+        direct(&dll, arg("--role").as_deref() == Some("host"), arg("--peer").and_then(|p| p.parse().ok()).unwrap_or(0));
+    }
     let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
     let dll: Vec<u16> = dir.join(if cfg!(target_pointer_width = "64") { "steam_api64.dll" } else { "steam_api.dll" }).to_string_lossy().encode_utf16().chain([0]).collect();
     let module = unsafe { LoadLibraryW(dll.as_ptr()) };
@@ -177,6 +415,10 @@ fn main() {
         let mut c = 0u64;
         let sent = call!(api, "SteamAPI_ISteamHTTP_SendHTTPRequest", fn(usize, u32, *mut u64) -> bool, http, h, &mut c);
         println!("HTTP request {h} sent={sent} call {c}");
+    }
+    if args.iter().any(|a| a == "--sockets") {
+        let me = call!(api, "SteamAPI_ISteamUser_GetSteamID", fn(usize) -> u64, user);
+        sockets_test(&api, pipe, me);
     }
     let mm = api.iface("SteamMatchmaking", &["v009"]);
     let mut my_lobby = 0u64;
