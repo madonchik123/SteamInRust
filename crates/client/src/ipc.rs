@@ -913,7 +913,8 @@ pub fn lobby_invite(conn: &Connection, app_id: AppId, lobby: u64, user: u64) {
 /// (`ClientP2PConnectionInfo`, the message Steam's own P2P set-up uses).
 pub fn signal(conn: &Connection, app_id: AppId, me: u64, to: u64, data: &[u8], lobby: u64) {
     let msg = proto::CMsgClientP2pConnectionInfo { steam_id_dest: Some(to), steam_id_src: Some(me), app_id: Some(app_id), candidate: Some(data.to_vec()), ..Default::default() };
-    let _ = conn.send(EMSG_P2P_CONNECTION_INFO, &msg);
+    // Valve's client routes these by the game's app id in the header too.
+    let _ = conn.send_with(EMSG_P2P_CONNECTION_INFO, proto::CMsgProtoBufHeader { routing_appid: Some(app_id), ..Default::default() }, &msg);
     if lobby != 0 {
         let mut chat = protocol::SIGNAL_PREFIX.to_vec();
         chat.extend_from_slice(data);

@@ -518,6 +518,58 @@ extern "C" fn on_rules_done(_this: usize) {
 
 /// `--direct <steamclient.dll> --test servers --app <id>`: the server browser
 /// through our DLL: an internet list, then players and rules of one server.
+/// Public lobbies of the attached game, worldwide: id, owner, members, data.
+fn lobbies_test(dll: &str) -> ! {
+    let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {dll}");
+    let api = Api(module);
+    let create: extern "C" fn(*const c_char, *mut i32) -> usize = unsafe { std::mem::transmute(api.f("CreateInterface").unwrap()) };
+    let client = create(c"SteamClient021".as_ptr(), std::ptr::null_mut());
+    let pipe: extern "C" fn(usize) -> i32 = unsafe { std::mem::transmute(slot(client, 0)) };
+    let pipe = pipe(client);
+    let connect: extern "C" fn(usize, i32) -> i32 = unsafe { std::mem::transmute(slot(client, 2)) };
+    let user = connect(client, pipe);
+    let generic: extern "C" fn(usize, i32, i32, *const c_char) -> usize = unsafe { std::mem::transmute(slot(client, 12)) };
+    const V: &str = "SteamMatchMaking009";
+    let mm = generic(client, user, pipe, c"SteamMatchMaking009".as_ptr());
+    let m = |name: &str| slot(mm, steamclient::slot_of(V, name).unwrap_or_else(|| panic!("{name}")));
+    let get_callback: extern "C" fn(i32, *mut CallbackMsg) -> bool = unsafe { std::mem::transmute(api.f("Steam_BGetCallback").unwrap()) };
+    let free_callback: extern "C" fn(i32) -> bool = unsafe { std::mem::transmute(api.f("Steam_FreeLastCallback").unwrap()) };
+    let distance: extern "C" fn(usize, i32) = unsafe { std::mem::transmute(m("AddRequestLobbyListDistanceFilter")) };
+    let request: extern "C" fn(usize) -> u64 = unsafe { std::mem::transmute(m("RequestLobbyList")) };
+    distance(mm, 3);
+    println!("RequestLobbyList = call {}", request(mm));
+    let end = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < end {
+        let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
+        while get_callback(pipe, &mut msg) {
+            free_callback(pipe);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let by_index: extern "C" fn(usize, i32) -> u64 = unsafe { std::mem::transmute(m("GetLobbyByIndex")) };
+    let members: extern "C" fn(usize, u64) -> i32 = unsafe { std::mem::transmute(m("GetNumLobbyMembers")) };
+    let limit: extern "C" fn(usize, u64) -> i32 = unsafe { std::mem::transmute(m("GetLobbyMemberLimit")) };
+    let count: extern "C" fn(usize, u64) -> i32 = unsafe { std::mem::transmute(m("GetLobbyDataCount")) };
+    let by_idx: extern "C" fn(usize, u64, i32, *mut c_char, i32, *mut c_char, i32) -> bool = unsafe { std::mem::transmute(m("GetLobbyDataByIndex")) };
+    for i in 0..100 {
+        let id = by_index(mm, i);
+        if id == 0 {
+            break;
+        }
+        let mut data = String::new();
+        for k in 0..count(mm, id) {
+            let (mut key, mut val) = ([0 as c_char; 256], [0 as c_char; 512]);
+            if by_idx(mm, id, k, key.as_mut_ptr(), 256, val.as_mut_ptr(), 512) {
+                data += &format!(" {}={:?}", s(key.as_ptr()), s(val.as_ptr()));
+            }
+        }
+        println!("lobby {id} members {}/{}{data}", members(mm, id), limit(mm, id));
+    }
+    std::process::exit(0);
+}
+
 fn servers_test(dll: &str, app: u32) -> ! {
     use std::sync::atomic::Ordering::SeqCst;
     let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();
@@ -621,6 +673,9 @@ fn main() {
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
     if let (Some(dll), Some("input")) = (arg("--direct"), arg("--test").as_deref()) {
         input_test(&dll);
+    }
+    if let (Some(dll), Some("lobbies")) = (arg("--direct"), arg("--test").as_deref()) {
+        lobbies_test(&dll);
     }
     if let (Some(dll), Some("servers")) = (arg("--direct"), arg("--test").as_deref()) {
         servers_test(&dll, arg("--app").and_then(|a| a.parse().ok()).unwrap_or(440));
