@@ -595,7 +595,7 @@ impl Store {
             });
         } else {
             let tw = side.width();
-            let (r, _) = c.allocate_exact_size(vec2(tw, (tw * 0.56).min(upper.height() - 40.0)), Sense::hover());
+            let (r, _) = c.allocate_exact_size(vec2(tw, (tw * 0.56).min(upper.height() - 40.0).max(0.0)), Sense::hover());
             w::skeleton(&c, t, r, t.corner_small());
         }
         // Price on the right first; the label gets what's left and shortens itself.

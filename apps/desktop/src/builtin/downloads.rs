@@ -207,7 +207,7 @@ impl Downloads {
                             _ => t!("Downloading"),
                         };
                         ui.label(w::text_semibold(phase, 13.5, t.accent));
-                        let width = ui.available_width() - 120.0;
+                        let width = (ui.available_width() - 120.0).max(80.0);
                         w::progress(ui, t, d.disk_done as f32 / d.disk_total.max(1) as f32, width);
                         let left = d.download_total.saturating_sub(d.downloaded);
                         let eta = if d.speed > 0 && !d.paused { ui::playtime(left / d.speed / 60 + 1) } else { "—".into() };
