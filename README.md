@@ -101,7 +101,7 @@ Everything below is in the current release. Area-by-area status:
 than a quarter of the memory**, on the same PC, account and network. Measured
 on 8 November 2026 on a Ryzen 5 5600 with 16 GB of RAM, Windows 11, SteamInRust
 0.4.0 against Steam 11.15.70.27. Both clients started on the library. Every
-figure is the median of 5 runs:
+figure is the typical (middle) result of 5 runs:
 
 | | Steam | SteamInRust |
 | --- | ---: | ---: |
@@ -117,7 +117,8 @@ figure is the median of 5 runs:
 
 Most of SteamInRust's time to a fully drawn library is library art arriving
 over the network. With the art already cached on disk (a warm start), it was
-7.2 s. Method, ranges and what was left out:
+7.2 s. Your games list itself shows about 1 s after start-up: SteamInRust shows
+the library saved at your last sign-in while Steam sends the current one. Method, ranges and what was left out:
 [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Download
