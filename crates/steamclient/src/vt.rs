@@ -25,10 +25,11 @@ const CLIENT017: &[&str] = &[
     "CreateSteamPipe", "BReleaseSteamPipe", "ConnectToGlobalUser", "CreateLocalUser", "ReleaseUser", "GetISteamUser",
     "GetISteamGameServer", "SetLocalIPBinding", "GetISteamFriends", "GetISteamUtils", "GetISteamMatchmaking",
     "GetISteamMatchmakingServers", "GetISteamGenericInterface", "GetISteamUserStats", "GetISteamGameServerStats",
-    "GetISteamApps", "GetISteamNetworking", "GetISteamRemoteStorage", "GetISteamScreenshots", "", "GetIPCCallCount",
-    "SetWarningMessageHook", "BShutdownIfAllPipesClosed", "GetISteamHTTP", "", "GetISteamController", "GetISteamUGC",
-    "GetISteamAppList", "GetISteamMusic", "GetISteamMusicRemote", "GetISteamHTMLSurface", "", "", "",
-    "GetISteamInventory", "GetISteamVideo", "GetISteamParentalSettings",
+    "GetISteamApps", "GetISteamNetworking", "GetISteamRemoteStorage", "GetISteamScreenshots", "RunFrame", "GetIPCCallCount",
+    "SetWarningMessageHook", "BShutdownIfAllPipesClosed", "GetISteamHTTP", "GetISteamUnifiedMessages", "GetISteamController",
+    "GetISteamUGC", "GetISteamAppList", "GetISteamMusic", "GetISteamMusicRemote", "GetISteamHTMLSurface",
+    "DEPRECATED_Set_SteamAPI_CPostAPIResultInProcess", "DEPRECATED_Remove_SteamAPI_CPostAPIResultInProcess",
+    "Set_SteamAPI_CCheckCallbackRegisteredInProcess", "GetISteamInventory", "GetISteamVideo", "GetISteamParentalSettings",
 ];
 
 /// Interface name and slot list for a version string, falling back to the
@@ -75,7 +76,12 @@ fn client_bytes(kind: &str, name: &str) -> Option<u16> {
         "GetISteamUtils" => 8,
         n if n.starts_with("GetISteam") => 12,
         "CreateSteamPipe" | "RunFrame" | "GetIPCCallCount" | "BShutdownIfAllPipesClosed" | "DestroyAllInterfaces" => 0,
-        "BReleaseSteamPipe" | "ConnectToGlobalUser" | "SetWarningMessageHook" | "Set_SteamAPI_CCheckCallbackRegisteredInProcess" => 4,
+        "BReleaseSteamPipe"
+        | "ConnectToGlobalUser"
+        | "SetWarningMessageHook"
+        | "Set_SteamAPI_CCheckCallbackRegisteredInProcess"
+        | "DEPRECATED_Set_SteamAPI_CPostAPIResultInProcess"
+        | "DEPRECATED_Remove_SteamAPI_CPostAPIResultInProcess" => 4,
         "CreateLocalUser" | "ReleaseUser" | "SetLocalIPBinding" => 8,
         _ => return None,
     })
@@ -278,6 +284,21 @@ mod tests {
             assert!(methods.iter().all(|(_, b)| b % 4 == 0 && *b < 256), "{v}");
         }
         assert_eq!(layout32("SteamClient017").unwrap().1[9], ("GetISteamUtils", 8));
+        // Every ISteamClient017 slot needs its real size: a 32-bit stub that
+        // pops the wrong number of bytes breaks the game's stack (Human Fall
+        // Flat crashed asking for GetISteamUnifiedMessages, slot 24).
+        let (_, m) = layout32("SteamClient017").unwrap();
+        for (i, (name, bytes)) in m.iter().enumerate() {
+            assert!(*bytes != UNKNOWN, "SteamClient017 slot {i} ({name:?}) has no size");
+        }
+        assert_eq!(m[24], ("GetISteamUnifiedMessages", 12));
+        // Old versions have their own exact layouts (not a newer one's).
+        let (_, m) = layout32("SteamUser019").unwrap();
+        assert_eq!(m[2], ("GetSteamID", 4));
+        let (_, m) = layout32("SteamController005").unwrap();
+        assert_eq!(m[12], ("GetAnalogActionData", 20));
+        let (_, m) = layout32("STEAMUSERSTATS_INTERFACE_VERSION011").unwrap();
+        assert_eq!(&m[1..3], &[("GetStatFloat", 8), ("GetStatInt32", 8)]);
     }
 
     #[test]
