@@ -310,6 +310,10 @@ struct Peer {
     created: Instant,
     open: bool,
     announced: bool,
+    /// Game packets (in, out) and bytes (in, out), for the log.
+    stats: [u64; 4],
+    logged: [u64; 4],
+    stats_at: Instant,
 }
 
 #[derive(Default)]
@@ -391,6 +395,9 @@ impl Jingle {
             created: Instant::now(),
             open: false,
             announced: false,
+            stats: [0; 4],
+            logged: [0; 4],
+            stats_at: Instant::now(),
         });
     }
 
@@ -483,6 +490,8 @@ impl Jingle {
                         p.announced = true;
                         self.out.requests.push(id);
                     }
+                    p.stats[0] += 1;
+                    p.stats[2] += data.len() as u64;
                     self.out.delivered.push((id, ch, data.to_vec()));
                 }
             }
@@ -507,6 +516,8 @@ impl Jingle {
                             p.announced = true;
                             self.out.requests.push(id);
                         }
+                        p.stats[0] += 1;
+                        p.stats[2] += data.len() as u64;
                         self.out.delivered.push((id, ch, data.to_vec()));
                     }
                 }
@@ -583,6 +594,8 @@ impl Jingle {
         let now = Instant::now();
         let Some(p) = self.peers.get_mut(&to).filter(|p| p.open) else { return false };
         let pkt = frame_packet(channel, data);
+        p.stats[1] += 1;
+        p.stats[3] += data.len() as u64;
         if reliable {
             p.stream_out.extend((pkt.len() as u32).to_be_bytes());
             p.stream_out.extend(pkt);
@@ -678,6 +691,12 @@ impl Jingle {
                 continue;
             }
             Self::flush_tcp(id, p, &mut self.out, now);
+            if p.stats != p.logged && (p.logged == [0; 4] || now - p.stats_at > Duration::from_secs(30)) {
+                let link = best(&p.conns, now).map(|i| (p.conns[i].addr, p.conns[i].kind.clone(), p.conns[i].rtt));
+                crate::log!("p2p/official: {id}: {} packet(s) / {} B in, {} / {} B out, via {:?}", p.stats[0], p.stats[2], p.stats[1], p.stats[3], link);
+                p.logged = p.stats;
+                p.stats_at = now;
+            }
             if !p.open && now - p.created > OPEN_TIMEOUT {
                 crate::log!("p2p/official: couldn't open a session with {id} ({} address(es) tried)", p.conns.len());
                 dead.push(id);

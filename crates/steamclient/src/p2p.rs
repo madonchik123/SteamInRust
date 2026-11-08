@@ -66,10 +66,10 @@ const MAX_UNRELIABLE: usize = 1200;
 const MAX_RELIABLE: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// A SteamInRust player answers our signal through Steam within about a
-/// second. No answer means the other side isn't SteamInRust (an official
-/// client, which only talks over Valve's relays to strangers): fail the
-/// session like Steam does, so the game shows its own "couldn't connect".
-const NO_ANSWER_TIMEOUT: Duration = Duration::from_secs(6);
+/// second, an official client with libjingle candidates once its game
+/// accepted the session. Neither after this long: fail the session like
+/// Steam does, so the game shows its own "couldn't connect".
+const NO_ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 /// PINGs go every 2 s; this long without an answer means the link is gone.
 const LINK_TIMEOUT: Duration = Duration::from_secs(20);
 

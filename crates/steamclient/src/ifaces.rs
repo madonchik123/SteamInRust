@@ -554,13 +554,14 @@ extern "C" fn fr_state(_t: This, id: u64) -> i32 {
     with_session(|s| if id == s.steam_id { 1 } else { s.friends.iter().find(|f| f.steam_id == id).map(|f| f.state as i32).unwrap_or(0) }).unwrap_or(0)
 }
 extern "C" fn fr_name(_t: This, id: u64) -> *const c_char {
-    let mut g = lock();
-    let name = g
-        .session
-        .as_ref()
-        .map(|s| if id == s.steam_id { s.persona_name.clone() } else { s.friends.iter().find(|f| f.steam_id == id).map(|f| f.name.clone()).unwrap_or_default() })
+    let mut name = with_session(|s| if id == s.steam_id { s.persona_name.clone() } else { s.friends.iter().find(|f| f.steam_id == id).map(|f| f.name.clone()).unwrap_or_default() })
         .unwrap_or_default();
-    g.intern(&name)
+    // Not a friend: the name Steam sent with a shared lobby's members.
+    // (Lobbies lock before the global state, so ask with it released.)
+    if name.is_empty() {
+        name = crate::lobby::member_name(id).unwrap_or_default();
+    }
+    lock().intern(&name)
 }
 extern "C" fn fr_game_played(_t: This, id: u64, out: *mut u8) -> bool {
     let game = with_session(|s| if id == s.steam_id { s.app_id } else { s.friends.iter().find(|f| f.steam_id == id).map(|f| f.game).unwrap_or(0) }).unwrap_or(0);

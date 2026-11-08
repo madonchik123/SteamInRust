@@ -127,9 +127,30 @@ While developing, the launcher also finds
   `LobbyGameCreated_t`). These are the same lobbies players on the official
   client see. Tested on Spacewar: create → set data → Steam's push → found
   by a filtered search → leave.
-- **P2P between SteamInRust players** (`ISteamNetworking`:
+- **P2P with players on the official client** (`ISteamNetworking`:
   `SendP2PPacket`, `ReadP2PPacket`, `IsP2PPacketAvailable`,
-  `AcceptP2PSessionWithUser`, session state). Each side learns its LAN and
+  `AcceptP2PSessionWithUser`, session state). Valve's client still runs
+  this API on libjingle 0.4.0 (the Google Talk P2P library; its sources are
+  in Steam's client build as `src/external/libjingle-0.4.0`), not on
+  SteamNetworkingSockets, and SteamInRust speaks the same protocol
+  (`crates/steamclient/src/jingle.rs`, `pseudotcp.rs`):
+  one `ClientP2PConnectionInfo` per candidate in Valve's serialization,
+  libjingle's STUN connectivity checks (RFC 3489, username fragments),
+  Valve's "mixed" socket (`[0]` unreliable / `[1]` PseudoTcp segment,
+  `0xBEEFFACE` to close), a port of libjingle's PseudoTcp (conversation 0)
+  for reliable packets with `[u32 length]` framing, and Valve's packet
+  header (`[0][data]` on channel 0, `[1][i32 channel][data]`). Official
+  players behind NAT offer a candidate on Valve's libjingle relay servers;
+  those forward to the player anything carrying their binding's name, so
+  SteamInRust reaches them through the relay with no relay account of its
+  own, and it works behind any NAT on our side. Each official peer gets
+  its own UDP socket (players on one relay share its address). Tested
+  live: Human Fall Flat joined a public lobby hosted by an official-client
+  player; the session opened through Valve's relay in Chicago and the game
+  loaded the host's level ("Siege", 2 players). Hosting for official
+  players uses the same code (tested against a stand-in libjingle peer
+  over real UDP in both directions; not yet live).
+- **P2P between SteamInRust players** (the same API). Each side learns its LAN and
   public (STUN) addresses, the two exchange them with a random session
   token through Steam (a lobby message addressed to that player when both
   are in a lobby, plus Steam's `ClientP2PConnectionInfo`), then connect
@@ -196,20 +217,23 @@ While developing, the launcher also finds
 
 ### What doesn't (yet)
 
-- **P2P with players on the official client**: Valve's client carries P2P
-  traffic (`ISteamNetworking`, `ISteamNetworkingSockets`,
-  `ISteamNetworkingMessages`) over the Steam Datagram Relay, whose protocol
-  isn't public (the open-source GameNetworkingSockets leaves it out). So a
-  SteamInRust player and an official-client player can share a lobby but
-  not exchange game packets; the connection attempt ends with
-  `P2PSessionConnectFail_t` (timeout). Between two SteamInRust players it
-  works directly; behind two strict (symmetric) NATs hole punching can fail,
-  and there's no relay to fall back on.
-  Why there's no way around it: on Steam, P2P connections are set up and
-  carried through Valve's relays and authenticated with certificates
-  Valve signs; the client side of that relay protocol isn't published, and
-  an official client never tries a direct link to an endpoint that doesn't
-  speak it.
+- **Networking sockets and messages with players on the official client**
+  (`ISteamNetworkingSockets`, `ISteamNetworkingMessages`, used by newer
+  games; `ISteamNetworking` above works). For these Valve's client uses
+  SteamNetworkingSockets: signals in `ClientP2PConnectionInfo.rendezvous`,
+  Valve-signed certificates (`ClientNetworkingCertRequest`, EMsg 5621),
+  Ed25519/X25519/AES-GCM, the SNP framing, and either direct ICE (open
+  source in GameNetworkingSockets) or the Steam Datagram Relay. Not done
+  yet: SteamInRust doesn't answer those signals, so such a connection ends
+  with a timeout. It isn't ruled out: the SDR client code isn't open
+  source, but Valve's `steamclient64.dll` carries all of it with its debug
+  strings, the relay list is public (`ISteamApps/GetSDRConfig`), and the
+  official client with default settings relays rather than sharing IPs
+  with strangers, so the relay path is the one that matters.
+  Between two SteamInRust players everything works directly; behind two
+  strict (symmetric) NATs hole punching can fail, with no relay to fall
+  back on (official players' libjingle relays carry `ISteamNetworking`
+  traffic to them, not between two SteamInRust players).
 - **Connecting by IP address** (`ConnectByIPAddress`, dedicated servers):
   Steam's sockets speak Valve's encrypted UDP protocol to those servers;
   SteamInRust doesn't implement it, so these connections fail at once with
@@ -304,7 +328,7 @@ start the game" (Steam may be showing an update or EULA prompt).
   `steam_api64.dll` (or `steam_api.dll` when built for 32-bit) and prints
   what Steam answers. `--lobby`, `--ticket`, `--extras` (leaderboards,
   percentages, avatar, HTTP), `--unlock`, `--stat`, `--cloud`,
-  `--sockets`. With `--direct <steamclient.dll> --test ugc|inventory|servers|input`
+  `--sockets`. With `--direct <steamclient.dll> --test ugc|inventory|servers|input|lobbies`
   it loads our DLL without steam_api and checks one area through the
   vtables (read-only on the account, except one Workshop item download).
 - `crates/client/examples/steamclient_attach.rs <appid> <dir> <probe> [args]`:
