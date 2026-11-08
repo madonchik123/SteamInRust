@@ -295,17 +295,26 @@ pub fn icon_button(ui: &mut Ui, t: &Theme, icon: &str, tooltip: &str, active: bo
 
 /// Top navigation tab with an animated underline.
 pub fn nav_tab(ui: &mut Ui, t: &Theme, label: &str, selected: bool, height: f32) -> Response {
-    let galley = ui.painter().layout_no_wrap(label.to_uppercase(), font_bold(13.0), t.text);
+    // Laid out without a color, so the state color below applies (a fixed
+    // color made every tab look the same, hovered or not).
+    let galley = ui.painter().layout_no_wrap(label.to_uppercase(), font_bold(13.0), Color32::PLACEHOLDER);
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 24.0, height), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
     let sel = ui.ctx().animate_bool_with_time(resp.id.with("sel"), selected, 0.18);
     let color = mix(mix(t.text_dim, t.text, hover), t.text, sel);
     let p = ui.painter();
+    // A soft pill behind the hovered tab.
+    if hover > 0.0 {
+        let bg = Rect::from_center_size(rect.center(), vec2(rect.width() - 4.0, (galley.size().y + 14.0).min(rect.height())));
+        p.rect_filled(bg, CornerRadius::same(6), t.surface_hover.gamma_multiply(hover * 0.8));
+    }
     p.galley(rect.center() - galley.size() / 2.0, galley, color);
-    if sel > 0.0 {
-        let w = (rect.width() - 24.0) * sel;
+    // Accent underline for the open page; a faint one while hovering others.
+    let underline = sel.max(hover * 0.45);
+    if underline > 0.0 {
+        let w = (rect.width() - 24.0) * underline.max(sel);
         let line = Rect::from_center_size(pos2(rect.center().x, rect.bottom() - 1.5), vec2(w, 3.0));
-        p.rect_filled(line, CornerRadius::same(2), t.accent);
+        p.rect_filled(line, CornerRadius::same(2), if sel > 0.0 { t.accent } else { t.text_faint.gamma_multiply(hover) });
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -318,7 +327,7 @@ pub fn chip(ui: &mut Ui, t: &Theme, label: &str, selected: bool) -> Response {
 /// A chip in its own color, e.g. an item rarity: a colored dot and text,
 /// and a tinted fill when selected.
 pub fn tinted_chip(ui: &mut Ui, t: &Theme, label: &str, tint: Option<Color32>, selected: bool) -> Response {
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.0), t.text);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.0), Color32::PLACEHOLDER);
     let dot = if tint.is_some() { 14.0 } else { 0.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 24.0 + dot, 30.0), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
@@ -377,7 +386,7 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, t: &Theme, value: &mut T, opt
             ui.horizontal(|ui| {
                 for (opt, label) in options {
                     let on = *value == *opt;
-                    let galley = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.0), t.text);
+                    let galley = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.0), Color32::PLACEHOLDER);
                     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 20.0, 26.0), Sense::click());
                     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
                     if on {
@@ -675,7 +684,7 @@ pub fn check(ui: &mut Ui, t: &Theme, on: &mut bool, label: impl Into<egui::Widge
 
 /// A chip with a small picture (a game icon, an avatar) before the label.
 pub fn image_chip(ui: &mut Ui, t: &Theme, image: Option<&str>, label: &str, selected: bool) -> Response {
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.0), t.text);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.0), Color32::PLACEHOLDER);
     let pic = if image.is_some() { 26.0 } else { 0.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 24.0 + pic, 30.0), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
