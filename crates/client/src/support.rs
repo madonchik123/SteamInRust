@@ -8,7 +8,7 @@ fn between<'a>(s: &'a str, start: &str, end: &str) -> Option<&'a str> {
     Some(&s[a..b])
 }
 
-fn clean(s: &str) -> String {
+pub(crate) fn clean(s: &str) -> String {
     let mut out = String::new();
     let mut tag = false;
     for c in s.chars() {

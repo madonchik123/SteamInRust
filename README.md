@@ -64,9 +64,10 @@ Everything below is in the current release. Area-by-area status:
   Games with VAC, Easy Anti-Cheat or BattlEye always start through the official
   client, silently, so their anti-cheat runs as intended
   ([how](docs/steam-compatibility.md)).
-- **Overlay.** Shift+Tab over the running game opens friends, chat,
-  achievements, guides and notes. You can pin any of them over the game. Nothing
-  is injected into the game.
+- **Overlay.** Shift+Tab in the running game opens friends, chat,
+  achievements, guides and notes. Like Steam's, it's drawn inside the game
+  (D3D11 games), so it works in full screen. You can pin any of them over the
+  game.
 - **Offline mode.** It works like Steam's. If the connection drops, SteamInRust
   reconnects without signing you out, and your running games keep going.
 - **Plugins.** Small [Rhai](https://rhai.rs) scripts can add pages,

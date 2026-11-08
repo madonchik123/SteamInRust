@@ -12,6 +12,7 @@ mod plugins;
 mod support;
 mod profile;
 pub mod settings;
+mod settings_account;
 pub mod store;
 mod workshop;
 
