@@ -232,5 +232,19 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
         }),
     ];
     out.extend(prices);
+    // Human Fall Flat's Workshop tag groups, for the Workshop filters.
+    let cat = |name: &str, single: bool, tags: &[&str]| model::WorkshopTagCategory { name: name.into(), single, tags: tags.iter().map(|t| (t.to_string(), t.to_string())).collect() };
+    out.push(Event::WorkshopTags {
+        app_id: 477160,
+        result: Ok(vec![
+            cat("", false, &["Human's Finest", "Levels", "Lobbies", "Model", "Aug's Selection", "Monthly Throwback", "New Selection"]),
+            cat("Theme", false, &["Mansion", "Train", "Carry", "Mountain", "Demolition", "Castle", "Water", "Power Plant", "Aztec", "Dark", "Steam", "Ice", "Christmas", "Model - Animal", "Model - Anime / Manga", "Model - Cartoon / TV", "Model - Christmas", "Model - Comic Book", "Model - Film", "Model - Horror", "Model - Human", "Model - Sci-fi", "Model - Sport", "Model - Video Game", "Model - Other"]),
+            cat("Type", true, &["Puzzle", "Platforming", "Story", "Misc", "Sandbox", "Hide and Seek"]),
+            cat("Level Type", true, &["Multiplayer", "Singleplayer", "Speedrun"]),
+            cat("Recommended Players", true, &["1 Player", "2 Players", "3 Players", "4 Players", "5 Players", "6 Players", "7 Players", "8 Players"]),
+            cat("Difficulty", true, &["Beginner", "Intermediate", "Expert"]),
+            cat("Language", true, &["English", "Spanish", "French", "German", "Russian", "Italian", "Chinese", "Japanese", "Korean", "Polish", "Portuguese", "Vietnamese"]),
+        ]),
+    });
     out
 }

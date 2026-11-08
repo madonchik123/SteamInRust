@@ -71,7 +71,7 @@ pub async fn content_servers(conn: &Connection, cell_id: u32) -> Result<Vec<depo
         .collect())
 }
 
-async fn depot_key(conn: &Connection, app: AppId, depot: u32) -> Result<Vec<u8>, String> {
+pub(crate) async fn depot_key(conn: &Connection, app: AppId, depot: u32) -> Result<Vec<u8>, String> {
     let reply = conn
         .request(emsg::CLIENT_GET_DEPOT_DECRYPTION_KEY, &CMsgClientGetDepotDecryptionKey { depot_id: Some(depot), app_id: Some(app) })
         .await
@@ -88,7 +88,7 @@ async fn depot_key(conn: &Connection, app: AppId, depot: u32) -> Result<Vec<u8>,
     Ok(r.depot_encryption_key().to_vec())
 }
 
-async fn request_code(conn: &Connection, app: AppId, depot: u32, gid: u64, branch: &str) -> u64 {
+pub(crate) async fn request_code(conn: &Connection, app: AppId, depot: u32, gid: u64, branch: &str) -> u64 {
     conn.call::<_, CContentServerDirectoryGetManifestRequestCodeResponse>(
         "ContentServerDirectory.GetManifestRequestCode#1",
         &CContentServerDirectoryGetManifestRequestCodeRequest {
