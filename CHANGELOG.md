@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.0](https://github.com/madonchik123/SteamInRust/compare/v0.3.0...v0.4.0) (2026-11-08)
+
+
+### New
+
+* compact Workshop filters; items download when subscribed ([#17](https://github.com/madonchik123/SteamInRust/issues/17)) ([c7d9d46](https://github.com/madonchik123/SteamInRust/commit/c7d9d46585edd2894a587c882108bcb42057df28))
+* ISteamNetworkingSockets / Messages on Valve's protocol (certs, rendezvous, SNP, ICE) ([#22](https://github.com/madonchik123/SteamInRust/issues/22)) ([511aa3d](https://github.com/madonchik123/SteamInRust/commit/511aa3d36909561a2e2f872d3114f9cdb1c20cf3))
+* live player count on game pages; easy 32-bit DLL for dev builds ([#14](https://github.com/madonchik123/SteamInRust/issues/14)) ([60825be](https://github.com/madonchik123/SteamInRust/commit/60825be9645ac4806a58117ec23f6095fd9c18b5))
+* native account details, purchase history, licenses and Steam Family ([#18](https://github.com/madonchik123/SteamInRust/issues/18)) ([31843c9](https://github.com/madonchik123/SteamInRust/commit/31843c943d08e794b4acc0d41fc47b00966e4fbd))
+* P2P with official-client players (ISteamNetworking over Valve's libjingle protocol) ([#21](https://github.com/madonchik123/SteamInRust/issues/21)) ([ed03c49](https://github.com/madonchik123/SteamInRust/commit/ed03c497fe53080b9aa00ada16fc015073722fa7))
+* real Steam services in our steamclient (sockets, Workshop, inventory, server browser, screenshots, Steam Input) ([#20](https://github.com/madonchik123/SteamInRust/issues/20)) ([6966ea6](https://github.com/madonchik123/SteamInRust/commit/6966ea63b892a2f9c410b298307a60a1dc36e6d6))
+* Shift+Tab overlay drawn inside the game; Steam-style invites in chat ([#19](https://github.com/madonchik123/SteamInRust/issues/19)) ([8b8e4b0](https://github.com/madonchik123/SteamInRust/commit/8b8e4b0b3fbfae2a1b6346815f28fb73c5da1d30))
+
+
+### Fixes
+
+* 32-bit games on older Steamworks SDKs crashed at start (Human Fall Flat) ([#15](https://github.com/madonchik123/SteamInRust/issues/15)) ([bce12f4](https://github.com/madonchik123/SteamInRust/commit/bce12f486728093b47f49906b8dae300622f1b1c))
+* uninstalling no longer freezes or crashes the app ([#23](https://github.com/madonchik123/SteamInRust/issues/23)) ([7357847](https://github.com/madonchik123/SteamInRust/commit/7357847ff634b35d36ce73ea9e8079472749acb5))
+
+
+### Faster
+
+* library images no longer fetch their fallback while loading ([#26](https://github.com/madonchik123/SteamInRust/issues/26)) ([75c84b0](https://github.com/madonchik123/SteamInRust/commit/75c84b0c807186568251f9bf5e9f3caad31e780d))
+* the library shows at once instead of "Loading your games" ([#27](https://github.com/madonchik123/SteamInRust/issues/27)) ([bdaa71a](https://github.com/madonchik123/SteamInRust/commit/bdaa71a403f119c45b2f75700ef802133f243139))
+
 ## [0.3.0](https://github.com/madonchik123/SteamInRust/compare/v0.2.0...v0.3.0) (2026-11-08)
 
 
