@@ -899,7 +899,10 @@ fn friends_window(app: &mut SteamApp, ctx: &egui::Context, t: &Theme, actions: &
 
 fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: &mut Vec<Action>) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
-    let hover = resp.hovered() || resp.context_menu_opened();
+    // The pointer anywhere on the row, its quick buttons included: those take
+    // the hover from the row, and checking the row alone made them flicker.
+    let over = ui.rect_contains_pointer(rect);
+    let hover = over || resp.hovered() || resp.context_menu_opened();
     if hover || app.overlay.chat_with == Some(p.steam_id) {
         ui.painter().rect_filled(rect, t.corner_small(), t.surface_hover);
     }
@@ -925,7 +928,7 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
     // the game reports: its lobby, its match (join string), or just the game.
     let options = crate::shell::invite_options(&app.state);
     let mut invite = None;
-    if resp.hovered() && unread == 0 {
+    if over && unread == 0 {
         let mut x = rect.right() - 6.0;
         let mut button = |ui: &mut Ui, icon: &str, tip: &str| -> bool {
             let r = Rect::from_center_size(pos2(x - 14.0, rect.center().y), vec2(28.0, 28.0));
