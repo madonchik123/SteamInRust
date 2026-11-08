@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+description = "Project chores in Rust (`cargo xtask package` builds a release)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha2 = "0.10"

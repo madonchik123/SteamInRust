@@ -2,9 +2,9 @@
 
 Measured on 8 November 2026 on one PC, signed in to the same account, on the
 same network. Every number is the **median of 5 runs**, with the range of the
-runs in brackets. The raw results are in
-[`tools/bench/results/`](../tools/bench/results), and the scripts that produced
-them are in [`tools/bench/`](../tools/bench).
+runs in brackets. The measuring scripts and raw results were removed from the
+repo to keep it all Rust; they're kept in its history at
+[`tools/bench/` (commit 29d9fa1)](https://github.com/madonchik123/SteamInRust/tree/29d9fa1/tools/bench).
 
 | Metric | Steam | SteamInRust |
 |---|---|---|
@@ -59,7 +59,7 @@ Both sign in automatically with the saved account. Steam's "always show the
 account picker" option was switched off for the runs and switched back on
 afterwards.
 
-**Start-up time.** The harness ([`bench.py`](../tools/bench/bench.py)) places a
+**Start-up time.** The harness ([`bench.py`](https://github.com/madonchik123/SteamInRust/blob/29d9fa1/tools/bench/bench.py)) places a
 black backdrop at a fixed 1280×800 spot and starts the client. Every client
 window that appears is moved into that spot and kept on top, with the main
 window resized to 1280×800. It then grabs that region about 30 times a second
@@ -95,7 +95,7 @@ Steam's processes are steam.exe and steamwebhelper.exe. SteamService.exe runs
 as a Windows service and can't be read without admin rights, so it isn't
 counted. SteamInRust is the single steam-rs.exe.
 
-**Opening pages** ([`nav.py`](../tools/bench/nav.py)). With the client idle on
+**Opening pages** ([`nav.py`](https://github.com/madonchik123/SteamInRust/blob/29d9fa1/tools/bench/nav.py)). With the client idle on
 the library, the harness clicks the Store tab, a game in the library list
 (*7 Days to Die*, first in both lists) and the Friends & Chat button. The clock
 starts on the mouse-button release, since both clients act on release. Both
@@ -151,19 +151,10 @@ because both sign-in screens show the account name. The feature tour uses
 
 ## Reproduce
 
-```bash
-cargo build --release -p steam-rs
-```
-
-```bash
-bash tools/bench/full.sh
-```
-
-`full.sh` runs the 5 start-up rounds, the click tests and the recordings.
-`python -I tools/bench/analyze.py` prints the table and writes
-`tools/bench/out/summary.json` and `disk.json`. The `make_*.py` scripts render
-the videos from `out/rec/`, and `tour.py record en|ru` records the demo-mode
-tour (it changes the language in SteamInRust's saved preferences, so back up
-`%APPDATA%\SteamInRust\data\app.ron` first). Steam has to sign in without the
-account picker, and the mouse and screen must be left alone while it runs
-(about 50 minutes).
+The scripts live in the repo's history: check out
+[`tools/bench/` at commit 29d9fa1](https://github.com/madonchik123/SteamInRust/tree/29d9fa1/tools/bench), build the app with
+`cargo build --release -p steam-rs`, and run `bash tools/bench/full.sh`. It runs
+the 5 start-up rounds, the click tests and the recordings, and needs Python 3.
+`python -I tools/bench/analyze.py` then prints the table. Steam has to sign in
+without the account picker, and the mouse and screen must be left alone while
+it runs (about 50 minutes).

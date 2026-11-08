@@ -164,7 +164,7 @@ fn page() {
 cargo run                  # вход в ваш аккаунт
 cargo run -- --demo        # демо-данные без входа
 cargo test --workspace
-powershell -File tools/package.ps1   # установщик и zip в target/package/dist
+cargo xtask package        # установщик и zip в target/package/dist
 ```
 
 ## Благодарности
