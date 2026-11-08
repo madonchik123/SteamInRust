@@ -96,7 +96,7 @@ jobs:
           SIR_MINGW32: ${{ steps.msys2.outputs.msys2-location }}\mingw32\bin
         run: cargo xtask package
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: SteamInRust-preview-${{ github.sha }}
           path: target/package/dist/*
