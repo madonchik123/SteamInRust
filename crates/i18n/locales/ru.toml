@@ -1479,3 +1479,18 @@
 "SteamInRust update" = "Обновление SteamInRust"
 "Your SteamInRust client is already up to date ({v})." = "У вас последняя версия SteamInRust ({v})."
 "OK" = "ОК"
+
+# --- Downloads notes, picture cache, gifting owned games ---
+"1 part of this game was skipped: {why}" = "Пропущена 1 часть игры: {why}"
+"{n} parts of this game were skipped (your license doesn't include them)" = "Пропущено частей игры: {n} (они не входят в вашу лицензию)"
+"Picture cache" = "Кэш изображений"
+"{size} of store and library pictures, kept so pages open instantly and work offline." = "{size} изображений магазина и библиотеки — страницы открываются сразу и работают без сети."
+"Clear" = "Очистить"
+"You already own this; buying it again makes a gift for a friend." = "Игра у вас уже есть — повторная покупка станет подарком другу."
+"Checking whether Steam allows this gift in {name}'s region…" = "Проверяем, разрешит ли Steam подарок в регион {name}…"
+"Couldn't check {name}'s region. Steam decides at checkout." = "Не удалось проверить регион {name}. Steam решит при оформлении."
+"Steam blocks gifts when the game is more than about 10% cheaper in the friend's region (base prices, converted)." = "Steam не даёт отправить подарок, если в регионе друга игра дешевле примерно на 10% и больше (по базовым ценам после конвертации)."
+"{name} can receive it: {theirs} there vs {yours} for you ({diff})." = "{name} сможет получить подарок: там {theirs}, у вас {yours} ({diff})."
+"Steam will most likely refuse: it's {diff} cheaper in {name}'s region ({theirs} vs {yours}). A Steam gift card works instead." = "Скорее всего, Steam откажет: в регионе {name} игра дешевле на {diff} ({theirs} против {yours}). Вместо неё можно подарить подарочную карту Steam."
+"{name} hasn't set a country on their profile, so the region can't be checked." = "{name} не указал страну в профиле, поэтому регион проверить нельзя."
+"Can't compare prices for {name}'s region. Steam decides at checkout." = "Не удалось сравнить цены для региона {name}. Steam решит при оформлении."

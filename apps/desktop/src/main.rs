@@ -6,6 +6,7 @@ mod builtin;
 mod chrome;
 mod demo;
 mod friends_window;
+mod image_cache;
 mod launch_popup;
 mod links;
 mod login;

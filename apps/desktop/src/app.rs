@@ -133,6 +133,9 @@ impl SteamApp {
             .enable_all()
             .build()
             .expect("tokio runtime");
+        // Pictures come from the disk cache when possible (added after the
+        // standard loaders, so it's asked first).
+        crate::image_cache::ImageCache::install(&cc.egui_ctx, rt.handle().clone());
         let (tx, events) = mpsc::channel();
         let demo_tx = tx.clone();
         let repaint = cc.egui_ctx.clone();

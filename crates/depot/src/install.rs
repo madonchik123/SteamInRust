@@ -46,6 +46,9 @@ pub struct Progress {
     /// Parallel chunk downloads.
     pub concurrency: AtomicU32,
     pub phase: std::sync::Mutex<Phase>,
+    /// Things worth telling the user that don't stop the download,
+    /// e.g. a part of the game this account doesn't include.
+    pub notes: std::sync::Mutex<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

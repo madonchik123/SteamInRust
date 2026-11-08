@@ -62,6 +62,8 @@ pub struct Store {
     shot: usize,
     /// The strip item last scrolled into view, so a new pick gets centered once.
     shot_centered: Option<usize>,
+    /// Games on your account (library + installed), for "In library" marks.
+    owned: std::collections::HashSet<AppId>,
     /// The trailer playing in the media area: (source URL, player).
     trailer: Option<(String, video::Player)>,
     filters: store::query::Filters,
@@ -121,6 +123,7 @@ impl Store {
             shelf_page: HashMap::new(),
             shot: 0,
             shot_centered: None,
+            owned: Default::default(),
             trailer: None,
         }
     }
@@ -315,6 +318,12 @@ impl Extension for Store {
 
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {
         let t = ctx.theme.clone();
+        // Refresh the owned set only when the library changes size.
+        let count = ctx.state.apps.as_ref().map(|a| a.len()).unwrap_or(0) + ctx.local.games.len();
+        if count != self.owned.len() {
+            self.owned = ctx.state.apps.as_ref().map(|a| a.keys().copied().collect()).unwrap_or_default();
+            self.owned.extend(ctx.local.games.iter().map(|g| g.app_id));
+        }
         if !self.sync_locale(ctx) {
             // Don't load prices in the wrong currency while sign-in finishes.
             let (r, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
@@ -540,15 +549,30 @@ impl Store {
         let img = Rect::from_min_size(rect.min, vec2(rect.width() * 0.64, rect.height()));
         let r_img = CornerRadius { nw: t.radius, sw: t.radius, ne: 0, se: 0 };
         w::image_or_skeleton(ui, t, img, item.large.as_deref().unwrap_or(&item.header), r_img);
+        let owned = self.owned.contains(&item.app_id);
+        if owned {
+            in_library_badge(ui, t, img);
+        }
 
         // Right panel: title, screenshots, price.
         let side = Rect::from_min_max(pos2(img.right(), rect.top()), rect.max).shrink2(vec2(22.0, 22.0));
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(side).layout(Layout::top_down(Align::Min)));
-        c.add(egui::Label::new(w::text_bold(&item.name, 22.0, t.text)).wrap());
+        // Everything above the price row, so nothing can run into it.
+        let bottom = Rect::from_min_max(pos2(side.left(), side.bottom() - 30.0), side.max);
+        let upper = Rect::from_min_max(side.min, pos2(side.right(), bottom.top() - 12.0));
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(upper).layout(Layout::top_down(Align::Min)));
+        c.set_clip_rect(upper.expand(1.0));
+        c.add(egui::Label::new(w::text_bold(&item.name, 22.0, t.text)).truncate());
         c.add_space(8.0);
         if let Some(d) = self.details(item.app_id) {
-            let tw = (side.width() - 8.0) / 2.0;
-            for row in d.screenshots.chunks(2).take(2) {
+            // Screenshots: two rows if they fit above the tags, else one.
+            let tags_h = 30.0;
+            let room = (upper.bottom() - c.cursor().top() - tags_h - 10.0).max(0.0);
+            let mut tw = (side.width() - 8.0) / 2.0;
+            let rows = if 2.0 * tw * 0.5625 + 8.0 <= room { 2 } else { 1 };
+            if rows == 1 && tw * 0.5625 > room {
+                tw = room / 0.5625;
+            }
+            for row in d.screenshots.chunks(2).take(rows) {
                 c.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     for s in row {
@@ -558,21 +582,33 @@ impl Store {
                 });
             }
             c.add_space(10.0);
-            c.horizontal_wrapped(|ui| {
+            // One row of genre pills: stop at the first one that doesn't fit.
+            c.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
                 for g in d.genres.iter().take(4) {
+                    let need = ui.painter().layout_no_wrap(g.clone(), w::font(12.0), t.text_dim).size().x + 22.0;
+                    if need > ui.available_width() {
+                        break;
+                    }
                     w::pill(ui, g, t.text_dim, t.raised);
                 }
             });
         } else {
             let tw = side.width();
-            let (r, _) = c.allocate_exact_size(vec2(tw, tw * 0.56), Sense::hover());
+            let (r, _) = c.allocate_exact_size(vec2(tw, (tw * 0.56).min(upper.height() - 40.0)), Sense::hover());
             w::skeleton(&c, t, r, t.corner_small());
         }
-        let bottom = Rect::from_min_max(pos2(side.left(), side.bottom() - 30.0), side.max);
-        let mut b = ui.new_child(egui::UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)));
-        b.label(w::text_medium(if item.price.discount > 0 { t!("Special offer") } else { t!("Now available") }, 13.0, t.text_dim));
-        b.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            w::price_tag(ui, t, &item.price.label(), item.price.original_label().as_deref(), item.price.discount);
+        // Price on the right first; the label gets what's left and shortens itself.
+        let mut b = ui.new_child(egui::UiBuilder::new().max_rect(bottom).layout(Layout::right_to_left(Align::Center)));
+        if owned {
+            b.label(w::text_semibold(t!("In library"), 14.0, t.play));
+        } else {
+            w::price_tag(&mut b, t, &item.price.label(), item.price.original_label().as_deref(), item.price.discount);
+        }
+        b.add_space(10.0);
+        b.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            let label = if item.price.discount > 0 { t!("Special offer") } else { t!("Now available") };
+            ui.add(egui::Label::new(w::text_medium(label, 13.0, t.text_dim)).truncate());
         });
 
         // Arrows and dots.
@@ -639,7 +675,7 @@ impl Store {
                     w::skeleton(ui, t, r, t.corner());
                     continue;
                 }
-                if card(ui, t, item, actual_w).clicked() {
+                if card(ui, t, item, actual_w, self.owned.contains(&item.app_id)).clicked() {
                     self.open(View::App(item.app_id));
                 }
             }
@@ -668,7 +704,7 @@ impl Store {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 for item in row {
-                    if card(ui, t, item, cw).clicked() {
+                    if card(ui, t, item, cw, self.owned.contains(&item.app_id)).clicked() {
                         self.open(View::App(item.app_id));
                     }
                 }
@@ -709,7 +745,11 @@ impl Store {
                         }
                     });
                     c.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        w::price_tag(ui, t, &item.price.label(), item.price.original_label().as_deref(), item.price.discount);
+                        if self.owned.contains(&item.app_id) {
+                            w::pill(ui, t!("In library"), t.play, t.play.gamma_multiply(0.15));
+                        } else {
+                            w::price_tag(ui, t, &item.price.label(), item.price.original_label().as_deref(), item.price.discount);
+                        }
                     });
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         self.open(View::App(item.app_id));
@@ -868,6 +908,16 @@ impl Store {
                         if owned {
                             if w::button(ui, t, Some(icons::BOOKS), t!("In your library"), w::Kind::Play, w::Size::Lg).clicked() {
                                 ctx.navigate("library", Some(id.to_string()));
+                            }
+                            // Like Steam: you can still buy it, as a gift for a friend.
+                            if let Some(pkg) = d.package_id.filter(|_| !d.is_free) {
+                                ui.add_space(8.0);
+                                if w::button(ui, t, Some(icons::USER), t!("Buy as a gift…"), w::Kind::Secondary, w::Size::Lg)
+                                    .on_hover_text(t!("You already own this; buying it again makes a gift for a friend."))
+                                    .clicked()
+                                {
+                                    self.gift = Some(more::Gift { app: id, package: pkg, name: d.name.clone(), to: None, checks: Default::default() });
+                                }
                             }
                         } else if d.is_free {
                             if let Some(pkg) = d.package_id {
@@ -1122,7 +1172,7 @@ fn thousands(n: u64) -> String {
 }
 
 /// One store card: header art, name, price.
-fn card(ui: &mut Ui, t: &Theme, item: &Item, width: f32) -> egui::Response {
+fn card(ui: &mut Ui, t: &Theme, item: &Item, width: f32, owned: bool) -> egui::Response {
     let h = width * 215.0 / 460.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(width, h + 64.0), Sense::click());
     if !ui.is_rect_visible(rect) {
@@ -1137,12 +1187,20 @@ fn card(ui: &mut Ui, t: &Theme, item: &Item, width: f32) -> egui::Response {
     p.rect_filled(lift, t.corner(), w::mix(t.surface, t.surface_hover, hover));
     let img = Rect::from_min_size(lift.min, vec2(width, h));
     w::image_or_skeleton(ui, t, img, &item.header, CornerRadius { nw: t.radius, ne: t.radius, sw: 0, se: 0 });
+    if owned {
+        in_library_badge(ui, t, img);
+    }
     let body = Rect::from_min_max(pos2(lift.left() + 12.0, img.bottom() + 8.0), lift.max - vec2(12.0, 8.0));
     let mut c = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(Layout::top_down(Align::Min)));
     c.spacing_mut().item_spacing.y = 2.0;
     c.add(egui::Label::new(w::text_medium(&item.name, 14.0, t.text)).truncate());
     c.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        w::price_tag(ui, t, &item.price.label(), item.price.original_label().as_deref(), item.price.discount);
+        // Like Steam: games you own say so instead of showing a price.
+        if owned {
+            ui.label(w::text_semibold(t!("In library"), 13.0, t.play));
+        } else {
+            w::price_tag(ui, t, &item.price.label(), item.price.original_label().as_deref(), item.price.discount);
+        }
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             if item.windows {
                 ui.label(w::text(icons::WINDOWS, 13.0, t.text_faint));
@@ -1150,6 +1208,15 @@ fn card(ui: &mut Ui, t: &Theme, item: &Item, width: f32) -> egui::Response {
         });
     });
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// "In library" ribbon on a store picture's top-left corner, like Steam's.
+fn in_library_badge(ui: &Ui, t: &Theme, img: Rect) {
+    let text = format!("{}  {}", icons::CHECK, t!("In library"));
+    let galley = ui.painter().layout_no_wrap(text, w::font_semibold(11.5), Color32::WHITE);
+    let r = Rect::from_min_size(img.min + vec2(8.0, 8.0), galley.size() + vec2(14.0, 8.0));
+    ui.painter().rect_filled(r, CornerRadius::same(4), t.play.gamma_multiply(0.92));
+    ui.painter().galley(r.min + vec2(7.0, 4.0), galley, Color32::WHITE);
 }
 
 /// Lay out store HTML / Steam BBCode blocks.

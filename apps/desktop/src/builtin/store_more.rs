@@ -13,9 +13,12 @@ use ui::{Theme, icons, widgets as w};
 const TAGS: &[u32] = &[19, 21, 122, 9, 597, 599, 492, 1664, 1667, 1774, 1695, 3810, 1662, 4182, 3859, 1685, 701, 699, 1742, 3964, 128, 3871];
 
 pub struct Gift {
+    pub app: AppId,
     pub package: u32,
     pub name: String,
     pub to: Option<SteamId>,
+    /// Region checks per friend ("can Steam deliver this gift to them?").
+    pub checks: std::collections::HashMap<SteamId, Shared<store::gift::GiftCheck>>,
 }
 
 fn snapshot<T: Clone>(slot: &Shared<T>) -> Option<Result<T, String>> {
@@ -328,12 +331,21 @@ impl Store {
                 ctx.toast(t!("Added to your cart"));
             }
             if w::button(ui, t, Some(icons::USER), t!("Buy as a gift…"), w::Kind::Secondary, w::Size::Lg).clicked() {
-                self.gift = Some(Gift { package: pkg, name: name.to_string(), to: None });
+                self.gift = Some(Gift { app: id, package: pkg, name: name.to_string(), to: None, checks: Default::default() });
             }
         }
     }
 
     pub(super) fn gift_dialog(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        // Start the region check for the picked friend (once per friend).
+        let pending = self.gift.as_ref().and_then(|g| g.to.filter(|to| !g.checks.contains_key(to)).map(|to| (g.app, to)));
+        if let Some((app, to)) = pending {
+            let (api, cc) = (self.api.clone(), self.locale.0.clone());
+            let slot = self.fetch(async move { api.gift_check(app, &cc, to).await });
+            if let Some(g) = &mut self.gift {
+                g.checks.insert(to, slot);
+            }
+        }
         let Some(g) = &mut self.gift else { return };
         let mut close = false;
         let mut send = None;
@@ -351,6 +363,21 @@ impl Store {
                     }
                 }
             });
+            ui.add_space(8.0);
+            // Can Steam deliver it to them? (Regional price rule.)
+            if let Some(to) = g.to {
+                let name = ctx.state.persona(to).name;
+                let line = match g.checks.get(&to).and_then(snapshot) {
+                    None => (icons::CLOCK, t!("Checking whether Steam allows this gift in {name}'s region…", name = name), t.text_dim),
+                    Some(Err(_)) => (icons::INFO, t!("Couldn't check {name}'s region. Steam decides at checkout.", name = name), t.text_dim),
+                    Some(Ok(c)) => gift_line(t, &c, &name),
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(w::text(line.0, 15.0, line.2));
+                    ui.add(egui::Label::new(w::text(line.1, 13.0, line.2)).wrap());
+                });
+                ui.label(w::text(t!("Steam blocks gifts when the game is more than about 10% cheaper in the friend's region (base prices, converted)."), 11.5, t.text_faint));
+            }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if ui.add_enabled_ui(g.to.is_some(), |ui| w::button(ui, t, Some(icons::CART), t!("Add gift to cart"), w::Kind::Primary, w::Size::Md)).inner.clicked() {
@@ -462,4 +489,22 @@ fn chart(ui: &mut Ui, t: &Theme, pts: &[(u64, f64)], currency: &str) {
         }
     }
     let _ = Color32::TRANSPARENT;
+}
+
+/// The region check, in words: (icon, text, color).
+fn gift_line(t: &Theme, c: &store::gift::GiftCheck, name: &str) -> (&'static str, String, egui::Color32) {
+    use store::gift::Verdict;
+    let price = |p: &Option<(u64, String)>| p.as_ref().map(|(cents, cur)| store::Price::format(*cents, cur)).unwrap_or_default();
+    match &c.verdict {
+        Verdict::Ok => {
+            let diff = c.difference.map(|d| format!("{d:+.0}%")).unwrap_or_default();
+            (icons::CHECK, t!("{name} can receive it: {theirs} there vs {yours} for you ({diff}).", name = name, theirs = price(&c.theirs), yours = price(&c.yours), diff = diff), t.play)
+        }
+        Verdict::Blocked => {
+            let diff = c.difference.map(|d| format!("{:.0}%", -d)).unwrap_or_default();
+            (icons::WARNING, t!("Steam will most likely refuse: it's {diff} cheaper in {name}'s region ({theirs} vs {yours}). A Steam gift card works instead.", diff = diff, name = name, theirs = price(&c.theirs), yours = price(&c.yours)), t.danger)
+        }
+        Verdict::Unknown(why) if why == "no country" => (icons::INFO, t!("{name} hasn't set a country on their profile, so the region can't be checked.", name = name), t.text_dim),
+        Verdict::Unknown(_) => (icons::INFO, t!("Can't compare prices for {name}'s region. Steam decides at checkout.", name = name), t.text_dim),
+    }
 }
