@@ -460,7 +460,7 @@ fn wallet_button(ui: &mut Ui, t: &Theme, balance: i64, currency: i32, pending: i
             actions.push(Action::Navigate { page: "inventory".into(), arg: Some("listings".into()) });
         }
         if item(ui, icons::SCROLL, t!("Purchase history")) {
-            let _ = open::that_detached("https://store.steampowered.com/account/history/");
+            actions.push(Action::Navigate { page: "settings".into(), arg: Some("history".into()) });
         }
     });
 }

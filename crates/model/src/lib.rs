@@ -729,6 +729,133 @@ pub struct SupportMessage {
     pub html: String,
 }
 
+/// Your account's security details (Steam's "Account details" page).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AccountSecurity {
+    pub steam_guard: bool,
+    /// Unix time Steam Guard was turned on.
+    pub steam_guard_since: Option<u64>,
+    /// The Steam Mobile authenticator.
+    pub authenticator: bool,
+    pub authenticator_since: Option<u64>,
+    pub phone_verified: bool,
+    pub password_changed: Option<u64>,
+    pub email_changed: Option<u64>,
+    pub password_reset: Option<u64>,
+    /// Computers that Steam Guard remembers for this account.
+    pub devices: Vec<GuardDevice>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GuardDevice {
+    pub name: String,
+    /// Unix time it was authorized.
+    pub since: Option<u64>,
+    pub ip: String,
+}
+
+/// One row of your purchase history (store purchases, gifts, wallet and
+/// Market transactions).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Purchase {
+    /// As Steam writes it ("8 Nov, 2026").
+    pub date: String,
+    pub items: Vec<String>,
+    /// "Purchase", "Gift Purchase", "Refund", "Market Transaction", ...
+    pub kind: String,
+    /// Payment method under the type, when shown.
+    pub payment: String,
+    pub total: String,
+    pub wallet_change: String,
+    pub wallet_balance: String,
+    /// Refunded or otherwise struck through.
+    pub refunded: bool,
+}
+
+/// A page of purchase history; `more` continues it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PurchasePage {
+    pub rows: Vec<Purchase>,
+    /// Opaque cursor for the next page (None at the end).
+    pub more: Option<String>,
+}
+
+/// A license on your account (Steam's "Licenses and product key activations").
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct License {
+    pub date: String,
+    pub name: String,
+    /// "Steam Store", "Retail", "Complimentary", "Gift/Guest Pass", ...
+    pub method: String,
+    /// Package id, when Steam shows a remove link for it.
+    pub package_id: Option<u32>,
+}
+
+/// Your Steam Family.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Family {
+    pub id: u64,
+    pub name: String,
+    pub members: Vec<FamilyMember>,
+    /// People invited but not in yet: (steam id, role).
+    pub invites: Vec<(SteamId, FamilyRole)>,
+    pub free_spots: u32,
+    pub country: String,
+    /// Seconds until a new member can join after someone left.
+    pub slot_cooldown: u32,
+    /// Games shared in the family, with who owns them.
+    pub shared: Vec<SharedApp>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FamilyRole {
+    Adult,
+    Child,
+    #[default]
+    Unknown,
+}
+
+impl FamilyRole {
+    /// Steam's `EFamilyGroupRole`: 1 adult, 2 child.
+    pub fn from_steam(v: i32) -> Self {
+        match v {
+            1 => FamilyRole::Adult,
+            2 => FamilyRole::Child,
+            _ => FamilyRole::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FamilyMember {
+    pub steam_id: SteamId,
+    pub role: FamilyRole,
+    pub joined: u64,
+    /// Seconds until they can join another family after leaving.
+    pub cooldown: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SharedApp {
+    pub app_id: AppId,
+    pub name: String,
+    pub owners: Vec<SteamId>,
+    /// Can't be shared (Steam's exclude reason is not 0).
+    pub excluded: bool,
+}
+
+/// Whether you're in a family, and which.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FamilyStatus {
+    pub family: Option<Family>,
+    /// Your own role in it.
+    pub role: FamilyRole,
+    /// Seconds before you can join a family again.
+    pub cooldown: u32,
+    /// Families that invited you: (family id, inviter).
+    pub invites: Vec<(u64, SteamId)>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MyListings {
     pub listings: Vec<MyListing>,

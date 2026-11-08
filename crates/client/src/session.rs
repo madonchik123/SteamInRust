@@ -734,6 +734,43 @@ async fn online(
                 Some(Command::LoadNotifications) => st.load_notifications(sink),
                 Some(Command::MarkNotificationsRead { ids }) => st.mark_read(ids, sink),
                 Some(Command::LoadSupportTickets) => st.support_tickets(sink),
+                Some(Command::LoadAccountSecurity) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move { sink(Event::AccountSecurity(crate::account::security(&conn).await)) });
+                }
+                Some(Command::LoadFamily { language }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        let r = crate::account::family(&conn, me, &language).await;
+                        // Names and avatars for members who aren't friends.
+                        if let Ok(f) = &r {
+                            let mut ids: Vec<SteamId> = f.invites.iter().map(|i| i.1).collect();
+                            if let Some(g) = &f.family {
+                                ids.extend(g.members.iter().map(|m| m.steam_id).chain(g.invites.iter().map(|i| i.0)));
+                            }
+                            ids.retain(|id| *id != me && *id != 0);
+                            if !ids.is_empty() {
+                                let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: ids });
+                            }
+                        }
+                        sink(Event::Family(r));
+                    });
+                }
+                Some(Command::LoadPurchases { language, cursor }) => st.with_web(sink, move |web, sink| async move {
+                    let more = cursor.is_some();
+                    let result = match web {
+                        Ok(w) => crate::account::purchases(&w, &language, cursor).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::Purchases { more, result });
+                }),
+                Some(Command::LoadLicenses { language }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::account::licenses(&w, &language).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::LicenseList(result));
+                }),
                 Some(Command::LoadSupportTicket { id, url }) => st.support_ticket(id, url, sink),
                 Some(Command::CancelListing { listing_id }) => st.cancel_listing(listing_id, sink),
                 Some(Command::CancelBuyOrder { order_id }) => st.cancel_buy_order(order_id, sink),
