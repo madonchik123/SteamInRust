@@ -118,7 +118,9 @@ impl Community {
         ui.painter().hline(rect.x_range(), ui.cursor().top(), Stroke::new(1.0, t.border));
         egui::Frame::new().inner_margin(Margin::symmetric(24, 12)).show(ui, |ui| {
             let h = ui.available_height();
-            chat_body(ui, t, ctx.state, &client_of(ctx), id, &mut self.input, h);
+            if let Some(a) = chat_body(ui, t, ctx.state, &client_of(ctx), id, &mut self.input, h) {
+                ctx.act(a);
+            }
         });
     }
 }
@@ -145,89 +147,138 @@ impl Sender for Client {
     }
 }
 
-/// Message list plus composer. Used by Community and the overlay.
-pub fn chat_body(ui: &mut Ui, t: &Theme, state: &State, client: &impl Sender, friend: SteamId, input: &mut String, height: f32) {
+/// Message list plus composer. Used by Community, the Friends window and
+/// the overlay. Returns a game invite the user chose to join.
+pub fn chat_body(ui: &mut Ui, t: &Theme, state: &State, client: &impl Sender, friend: SteamId, input: &mut String, height: f32) -> Option<Action> {
     let empty = Vec::new();
     let msgs = state.chats.get(&friend).unwrap_or(&empty);
-    // The composer goes in first, at the bottom, and the messages get exactly
-    // what's left, so the whole thing never needs more than `height` (inside a
-    // resizable window, needing more made the window grow every frame).
-    let size = egui::vec2(ui.available_width(), height);
-    ui.allocate_ui_with_layout(size, egui::Layout::bottom_up(egui::Align::Min), |ui| {
-        ui.set_max_size(size);
-        egui::Frame::new()
-            .fill(t.raised)
-            .stroke(Stroke::new(1.0, t.border))
-            .corner_radius(t.corner())
-            .inner_margin(Margin::symmetric(12, 8))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let before = input.len();
-                    let r = ui.add(
-                        egui::TextEdit::singleline(input)
-                            .hint_text(w::text(t!("Message {name}", name = state.persona(friend).name), 14.0, t.text_faint))
-                            .font(w::font(14.5))
-                            .frame(egui::Frame::NONE)
-                            .desired_width(ui.available_width() - 48.0),
-                    );
-                    if input.len() > before && before == 0 {
-                        client.send(Command::Typing { to: friend });
-                    }
-                    let send = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                    let clicked = w::icon_button(ui, t, icons::SEND, t!("Send"), false, 0).clicked();
-                    if (send || clicked) && !input.trim().is_empty() {
-                        client.send(Command::SendMessage { to: friend, text: input.trim().to_string() });
-                        input.clear();
-                        r.request_focus();
+    let mut join = None;
+    // The messages get exactly what the composer (measured last frame)
+    // leaves, so the whole thing never needs more than `height`. Inside a
+    // resizable window, needing even a little more made it grow every frame.
+    let composer_id = ui.scope_id().with(("chat-composer", friend));
+    let composer = ui.data(|d| d.get_temp::<f32>(composer_id)).unwrap_or(46.0);
+    let gap = 8.0;
+    let spacing = ui.spacing().item_spacing.y;
+    let list = (height - composer - gap - spacing).floor().max(40.0);
+    egui::ScrollArea::vertical()
+        .id_salt(("chat", friend))
+        .max_height(list)
+        .min_scrolled_height(list)
+        .auto_shrink([false, false])
+        .stick_to_bottom(true)
+        .show(ui, |ui| {
+            if msgs.is_empty() {
+                w::empty(ui, t, icons::CHAT, t!("No messages yet"), t!("Say hi!"));
+            }
+            let mut last: Option<(SteamId, u64)> = None;
+            // Nothing to show (e.g. markup we don't draw): skip it.
+            for m in msgs.iter().filter(|m| !m.text.is_empty() || m.invite.is_some()) {
+                let new_group = last.is_none_or(|(from, time)| from != m.from || m.time.saturating_sub(time) > 300);
+                if new_group {
+                    ui.add_space(10.0);
+                    let p = state.persona(m.from);
+                    ui.horizontal_top(|ui| {
+                        w::avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), 34.0, None);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.horizontal(|ui| {
+                                let me = m.from == state.steam_id;
+                                let name = if p.name.is_empty() { t!("You").to_string() } else { p.name.clone() };
+                                ui.label(w::text_semibold(name, 14.0, if me { t.accent } else { t.text }));
+                                ui.label(w::text(format_time(m.time), 11.5, t.text_faint));
+                            });
+                            message(ui, t, state, m, &mut join);
+                        });
+                    });
+                } else {
+                    ui.horizontal_top(|ui| {
+                        ui.add_space(42.0);
+                        ui.vertical(|ui| message(ui, t, state, m, &mut join));
+                    });
+                }
+                last = Some((m.from, m.time));
+            }
+            if state.is_typing(friend) {
+                ui.add_space(6.0);
+                ui.label(w::text(t!("{name} is typing…", name = state.persona(friend).name), 12.5, t.text_faint).italics());
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+            }
+        });
+    ui.add_space(gap);
+    let r = egui::Frame::new()
+        .fill(t.raised)
+        .stroke(Stroke::new(1.0, t.border))
+        .corner_radius(t.corner())
+        .inner_margin(Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let before = input.len();
+                let r = ui.add(
+                    egui::TextEdit::singleline(input)
+                        .hint_text(w::text(t!("Message {name}", name = state.persona(friend).name), 14.0, t.text_faint))
+                        .font(w::font(14.5))
+                        .frame(egui::Frame::NONE)
+                        .desired_width(ui.available_width() - 48.0),
+                );
+                if input.len() > before && before == 0 {
+                    client.send(Command::Typing { to: friend });
+                }
+                let send = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                let clicked = w::icon_button(ui, t, icons::SEND, t!("Send"), false, 0).clicked();
+                if (send || clicked) && !input.trim().is_empty() {
+                    client.send(Command::SendMessage { to: friend, text: input.trim().to_string() });
+                    input.clear();
+                    r.request_focus();
+                }
+            });
+        });
+    let measured = r.response.rect.height();
+    if (measured - composer).abs() > 0.5 {
+        ui.data_mut(|d| d.insert_temp(composer_id, measured));
+        ui.ctx().request_repaint();
+    }
+    join
+}
+
+/// One message: its text, and a game invite as a card.
+fn message(ui: &mut Ui, t: &Theme, state: &State, m: &model::ChatMessage, join: &mut Option<Action>) {
+    let Some(inv) = &m.invite else {
+        ui.add(egui::Label::new(w::text(&m.text, 14.0, t.text)).wrap());
+        return;
+    };
+    // Steam's invites are only markup; old SteamInRust ones were the link text.
+    if !m.text.is_empty() && !m.text.contains("steam://run/") {
+        ui.add(egui::Label::new(w::text(&m.text, 14.0, t.text)).wrap());
+    }
+    let mine = m.from == state.steam_id;
+    let name = state.app_name(inv.app_id).map(String::from).unwrap_or_else(|| t!("App {id}", id = inv.app_id).to_string());
+    let width = ui.available_width().min(380.0);
+    egui::Frame::new()
+        .fill(t.raised)
+        .stroke(Stroke::new(1.0, t.border))
+        .corner_radius(t.corner())
+        .inner_margin(Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(width - 16.0);
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(107.0, 50.0), Sense::hover());
+                w::image_or_title(ui, t, r, &art::header(inv.app_id), &name, t.corner_small());
+                ui.add_space(4.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let head = if mine { t!("YOU SENT A GAME INVITE") } else { t!("INVITED YOU TO PLAY") };
+                    ui.label(w::text_bold(head, 10.5, t.text_faint));
+                    ui.add(egui::Label::new(w::text_bold(&name, 14.0, t.text)).truncate());
+                    if !mine {
+                        let label = if inv.connect.is_empty() { t!("Play") } else { t!("Join game") };
+                        if w::button(ui, t, Some(icons::PLAY), label, w::Kind::Primary, w::Size::Sm).clicked() {
+                            *join = Some(Action::JoinGame { app_id: inv.app_id, connect: inv.connect.clone() });
+                        }
                     }
                 });
             });
-        ui.add_space(8.0);
-        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt(("chat", friend))
-                .max_height(ui.available_height().max(40.0))
-                .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    if msgs.is_empty() {
-                        w::empty(ui, t, icons::CHAT, t!("No messages yet"), t!("Say hi!"));
-                    }
-                    let mut last: Option<(SteamId, u64)> = None;
-                    for m in msgs {
-                        let new_group = last.is_none_or(|(from, time)| from != m.from || m.time.saturating_sub(time) > 300);
-                        if new_group {
-                            ui.add_space(10.0);
-                            let p = state.persona(m.from);
-                            ui.horizontal(|ui| {
-                                w::avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), 34.0, None);
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 2.0;
-                                    ui.horizontal(|ui| {
-                                        let me = m.from == state.steam_id;
-                                        let name = if p.name.is_empty() { t!("You").to_string() } else { p.name.clone() };
-                                        ui.label(w::text_semibold(name, 14.0, if me { t.accent } else { t.text }));
-                                        ui.label(w::text(format_time(m.time), 11.5, t.text_faint));
-                                    });
-                                    ui.add(egui::Label::new(w::text(&m.text, 14.0, t.text)).wrap());
-                                });
-                            });
-                        } else {
-                            ui.horizontal(|ui| {
-                                ui.add_space(42.0);
-                                ui.add(egui::Label::new(w::text(&m.text, 14.0, t.text)).wrap());
-                            });
-                        }
-                        last = Some((m.from, m.time));
-                    }
-                    if state.is_typing(friend) {
-                        ui.add_space(6.0);
-                        ui.label(w::text(t!("{name} is typing…", name = state.persona(friend).name), 12.5, t.text_faint).italics());
-                        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
-                    }
-                });
         });
-    });
 }
 
 fn format_time(unix: u64) -> String {
@@ -583,5 +634,52 @@ fn parse_friend(input: &str) -> Option<SteamId> {
         1..=0xFFFF_FFFF => Some(n + 76561197960265728),
         76561197960265729..=76561202255233023 => Some(n),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoSend;
+    impl Sender for NoSend {
+        fn send(&self, _: Command) {}
+    }
+
+    /// The chat inside a resizable window (like the overlay's) must keep the
+    /// window's size; it used to grow a little every frame.
+    #[test]
+    fn chat_keeps_window_size() {
+        let ctx = egui::Context::default();
+        let t = Theme::default();
+        let mut state = State::default();
+        let friend: SteamId = 76561197960287930;
+        state.chats.insert(friend, (0..30).map(|i| model::ChatMessage { friend, from: friend, text: format!("message {i}"), time: 1_700_000_000 + i * 600, invite: (i % 7 == 0).then(|| model::GameInvite { app_id: 477160, connect: "+connect_lobby 1".into() }) }).collect());
+        let mut input = String::new();
+        let mut heights = Vec::new();
+        for frame in 0..40 {
+            let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1920.0, 1080.0))), time: Some(frame as f64 / 60.0), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                let r = egui::Window::new("chat")
+                    .title_bar(false)
+                    .frame(egui::Frame::new().inner_margin(Margin::same(14)))
+                    .default_pos(pos2(100.0, 100.0))
+                    .default_size(vec2(440.0, 520.0))
+                    .min_size(vec2(260.0, 160.0))
+                    .resizable(true)
+                    .show(ui.ctx(), |ui| {
+                        ui.horizontal(|ui| ui.label("title"));
+                        ui.separator();
+                        ui.horizontal(|ui| ui.label("status"));
+                        ui.add_space(6.0);
+                        let h = ui.available_height();
+                        let _ = chat_body(ui, &t, &state, &NoSend, friend, &mut input, h);
+                    });
+                heights.push(r.map(|r| r.response.rect.height()).unwrap_or(0.0));
+            });
+            out.textures_delta.clear();
+        }
+        let last = heights[heights.len() - 1];
+        assert!((last - heights[5]).abs() < 0.5, "window grew: {:?}", &heights[..]);
     }
 }

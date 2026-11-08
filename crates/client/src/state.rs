@@ -72,6 +72,10 @@ pub struct State {
     /// When each friend last sent a typing notice (unix seconds).
     pub typing: HashMap<SteamId, u64>,
     pub playing: Option<AppId>,
+    /// The running game's lobby, if it's in one ("Invite to lobby").
+    pub game_lobby: Option<u64>,
+    /// The running game's join string, rich presence `connect` ("Invite to game").
+    pub game_connect: Option<String>,
     /// How each game was last started (SteamInRust / official Steam / no Steam).
     pub launch_modes: HashMap<AppId, crate::LaunchMode>,
     pub last_error: Option<String>,
@@ -231,7 +235,7 @@ impl State {
             Event::Message(m) => {
                 let chat = self.chats.entry(m.friend).or_default();
                 // The server echoes our own messages; skip exact duplicates.
-                if !chat.iter().rev().take(5).any(|c| c.from == m.from && c.text == m.text && c.time.abs_diff(m.time) < 5) {
+                if !chat.iter().rev().take(5).any(|c| c.from == m.from && c.text == m.text && c.invite == m.invite && c.time.abs_diff(m.time) < 5) {
                     chat.push(m.clone());
                 }
                 if m.from != self.steam_id {
@@ -251,17 +255,24 @@ impl State {
             }
             Event::GameStarted { app_id } => {
                 self.playing = Some(*app_id);
+                self.game_lobby = None;
+                self.game_connect = None;
                 // Show it on our own status right away, like Steam.
                 let me = self.steam_id;
                 self.personas.entry(me).or_insert_with(|| Persona { steam_id: me, ..Default::default() }).game_app_id = Some(*app_id);
             }
             Event::GameStopped { .. } => {
                 self.playing = None;
+                self.game_lobby = None;
+                self.game_connect = None;
                 if let Some(p) = self.personas.get_mut(&self.steam_id) {
                     p.game_app_id = None;
                     p.game_name = None;
                 }
             }
+            Event::GameLobby { app_id, lobby } if self.playing == Some(*app_id) => self.game_lobby = *lobby,
+            Event::GameConnect { app_id, connect } if self.playing == Some(*app_id) => self.game_connect = connect.clone(),
+            Event::GameLobby { .. } | Event::GameConnect { .. } => {}
             Event::LoggedOut { reason } => {
                 *self = State { last_error: Some(reason.clone()), ..Default::default() };
             }

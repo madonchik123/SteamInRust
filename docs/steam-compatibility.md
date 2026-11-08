@@ -97,8 +97,16 @@ While developing, the launcher also finds
 - **Friends**: friends list, names, online state, what they're playing.
 - **Rich presence**: what the game sets is sent to Steam, so friends see it.
 - **Playing status and playtime**: SteamInRust reports the game as played.
+- **In-game overlay**: in D3D11 games our steamclient draws SteamInRust's
+  Shift+Tab overlay inside the game, like Steam's, and sends the game
+  `GameOverlayActivated_t` when it opens and closes. While it's open the game
+  doesn't get mouse or keyboard input. Other games get a separate overlay
+  window. Set `STEAMINRUST_NO_INGAME_OVERLAY=1` to turn the in-game one off.
+- **Invites**: the game's lobby and its rich presence `connect` decide what
+  the friend menus offer ("Invite to lobby", "Invite to game", or just
+  "Invite to play"). All are sent as Steam's own chat invites.
 - **Overlay links**: "open web page" and "open store page" open in your
-  browser (there is no in-game overlay).
+  browser.
 - **Multiplayer sign-in (auth tickets)**: `GetAuthSessionTicket` builds
   tickets like Valve's client (a game connect token Steam sends at sign-in,
   a session header, the game's ownership ticket) and registers them with

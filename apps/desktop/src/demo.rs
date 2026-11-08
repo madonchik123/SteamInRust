@@ -56,7 +56,7 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
     ];
     events.push(Event::History {
         friend: ferris,
-        messages: chat.iter().map(|(from, text, ago)| ChatMessage { friend: ferris, from: *from, text: (*text).into(), time: now - ago }).collect(),
+        messages: chat.iter().map(|(from, text, ago)| ChatMessage { friend: ferris, from: *from, text: (*text).into(), time: now - ago, invite: None }).collect(),
     });
     events.push(Event::Profile(model::ProfileInfo {
         steam_id: me,
@@ -68,7 +68,7 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
         ..Default::default()
     }));
     events.push(Event::Wallet { balance: 1234, currency: 1, pending: 250 });
-    events.push(Event::Message(ChatMessage { friend: BASE + 101, from: BASE + 101, text: "gg! one more?".into(), time: now - 30 }));
+    events.push(Event::Message(ChatMessage { friend: BASE + 101, from: BASE + 101, text: "gg! one more?".into(), time: now - 30, invite: None }));
     events.extend(inventory(me, now));
     events.extend(crate::builtin::hub::demo::events());
     events

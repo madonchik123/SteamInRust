@@ -19,7 +19,7 @@ Steam's website" still works; it just isn't native yet.
 | Inventory and Market | 0.75 | Trade offers open Steam's website; no Market search page |
 | Steam Cloud | 1 | Can't delete files from the cloud |
 | Steam features inside games | 0.75 | P2P with players on the official client; `ISteamNetworkingSockets`; game servers |
-| Shift+Tab overlay | 0.75 | Not shown over exclusive full-screen games; no in-game web browser or screenshots |
+| Shift+Tab overlay | 0.75 | Drawn inside D3D11 games only (others get a window overlay); no in-game web browser or screenshots |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | English and Russian only; Windows only |
 | Big Picture, Remote Play, Steam Input | 0 | Not planned for now |
@@ -156,9 +156,12 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | | |
 | --- | --- |
 | Opens over the running game with Shift+Tab, only while the game's window is in front | Done |
+| Drawn inside the game, like Steam's, so it works in exclusive full screen and the game keeps focus | Done for D3D11 games SteamInRust starts with its steamclient (32- and 64-bit). D3D9, D3D12, OpenGL and Vulkan games get the window overlay, which shows over windowed and borderless games only |
+| Mouse and keyboard go to the overlay while it's open; the cursor shows and the game gets `GameOverlayActivated_t` | Done |
 | Game overview, achievements, friends, chat, notes, guides, discussions, hub, store page | Done, in floating windows |
 | Pin windows over the game with adjustable opacity | Done |
-| Nothing is injected into the game | By design. The overlay can't show over exclusive full-screen games; windowed and borderless work |
+| Games with anti-cheat | They start through the official client, so they get Steam's own overlay |
+| Game invites in chat show as cards with a Join button (Steam's `[gameinvite]` markup). Friend menus offer "Invite to lobby" or "Invite to game" from what the game reports, else "Invite to play", all sent as real Steam invites | Done |
 | In-game web browser, screenshots (F12), FPS counter | Not yet |
 
 ## Notifications and tray
