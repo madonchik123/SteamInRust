@@ -23,6 +23,12 @@ enum Load<T> {
 }
 type Shared<T> = Arc<Mutex<Load<T>>>;
 
+struct Players {
+    asked: std::time::Instant,
+    slot: Shared<Option<u32>>,
+    last: Option<u32>,
+}
+
 #[derive(Clone, PartialEq)]
 enum View {
     Home,
@@ -43,6 +49,8 @@ pub struct Store {
     front: Option<Shared<(Vec<Item>, Vec<Section>)>>,
     details: HashMap<AppId, Shared<Details>>,
     browse: HashMap<AppId, Shared<BrowseInfo>>,
+    /// People playing each game right now, refreshed every minute.
+    players: HashMap<AppId, Players>,
     tags: Option<Shared<HashMap<u32, String>>>,
     /// (country, language) the caches were loaded with.
     locale: (String, String),
@@ -97,6 +105,7 @@ impl Store {
             front: None,
             details: HashMap::new(),
             browse: HashMap::new(),
+            players: HashMap::new(),
             tags: None,
             locale: ("us".into(), "english".into()),
             ratings: Default::default(),
@@ -164,6 +173,28 @@ impl Store {
             Load::Ready(b) => Some(b.clone()),
             _ => None,
         }
+    }
+
+    /// People in the game right now (Steam's count). Asked again every
+    /// minute while the page is open; the last number stays meanwhile.
+    fn current_players(&mut self, id: AppId) -> Option<u32> {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+        if self.players.get(&id).is_none_or(|p| p.asked.elapsed() >= EVERY) {
+            let last = self.players.get(&id).and_then(|p| p.last);
+            let api = self.api.clone();
+            let slot = self.fetch(async move { api.current_players(id).await });
+            self.players.insert(id, Players { asked: std::time::Instant::now(), slot, last });
+        }
+        self.egui.request_repaint_after(EVERY);
+        let p = self.players.get_mut(&id)?;
+        let ready = match &*p.slot.lock().unwrap() {
+            Load::Ready(n) => Some(*n),
+            _ => None,
+        };
+        if let Some(n) = ready {
+            p.last = n;
+        }
+        p.last
     }
 
     fn tag_name(&mut self, id: u32) -> Option<String> {
@@ -848,6 +879,18 @@ impl Store {
                             w::pill(ui, &m.to_string(), Color32::BLACK, col);
                             ui.end_row();
                         }
+                        if let Some(n) = self.current_players(id) {
+                            ui.label(w::text_bold(t!("PLAYING NOW"), 10.5, t.text_faint));
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                let (dot, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                                ui.painter().circle_filled(dot.center(), 4.0, t.play);
+                                ui.label(w::text_semibold(thousands(n as u64), 13.5, t.text));
+                            })
+                            .response
+                            .on_hover_text(t!("People playing on Steam right now. Updates every minute."));
+                            ui.end_row();
+                        }
                         fact(ui, t, t!("Release"), &d.release_date);
                         for (label, kind, names) in [(t!("Developer"), "developer", &d.developers), (t!("Publisher"), "publisher", &d.publishers)] {
                             if names.is_empty() {
@@ -1159,7 +1202,7 @@ fn fact(ui: &mut Ui, t: &Theme, label: &str, value: &str) {
     ui.end_row();
 }
 
-fn thousands(n: u64) -> String {
+pub(crate) fn thousands(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {

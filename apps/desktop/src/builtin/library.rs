@@ -214,6 +214,8 @@ pub struct Library {
     reports: HashMap<AppId, VerifyReport>,
     pending: Option<String>,
     events: HashMap<AppId, news::EventsSlot>,
+    /// People playing each game right now: (last asked, count).
+    players: HashMap<AppId, (std::time::Instant, news::PlayersSlot)>,
     reader: Option<Reader>,
     props: Option<props::Props>,
     install_dialog: Option<InstallDialog>,
@@ -1586,6 +1588,18 @@ impl Library {
                 ui.label(w::text_bold(t!("APP ID"), 10.5, t.text_faint));
                 ui.label(w::text(id.to_string(), 13.0, t.text));
                 ui.end_row();
+                if let Some(n) = self.current_players(id) {
+                    ui.label(w::text_bold(t!("PLAYING NOW"), 10.5, t.text_faint));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let (dot, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                        ui.painter().circle_filled(dot.center(), 4.0, t.play);
+                        ui.label(w::text(super::store::thousands(n as u64), 13.0, t.text));
+                    })
+                    .response
+                    .on_hover_text(t!("People playing on Steam right now. Updates every minute."));
+                    ui.end_row();
+                }
                 if let Some(g) = installed {
                     let (build, branch) = local::manage::installed_build(g);
                     ui.label(w::text_bold(t!("BUILD"), 10.5, t.text_faint));
