@@ -1003,8 +1003,10 @@ impl Library {
                     }
                     let icon = Rect::from_min_size(rect.min + vec2(6.0, 5.0), vec2(24.0, 24.0));
                     let url = e.owned.and_then(|o| o.icon.as_deref()).map(|h| art::icon(e.app_id, h));
-                    let ok = url.as_deref().is_some_and(|u| w::paint_cover(ui, icon, u, CornerRadius::same(4)));
-                    if !ok && !w::paint_cover(ui, icon, &art::header(e.app_id), CornerRadius::same(4)) {
+                    // The big header only when the game has no icon at all.
+                    let header = art::header(e.app_id);
+                    let urls: Vec<&str> = url.as_deref().into_iter().chain([header.as_str()]).collect();
+                    if !w::paint_cover_first(ui, icon, &urls, CornerRadius::same(4)) {
                         ui.painter().rect_filled(icon, CornerRadius::same(4), t.surface_hover);
                     }
                     let setup = setup_state(ctx, e.app_id, e.installed.is_some());
@@ -1165,7 +1167,7 @@ impl Library {
                     let width = ui.available_width();
                     let (rect, resp) = ui.allocate_exact_size(vec2(width, 300.0), Sense::click());
                     let r = t.corner();
-                    if !w::paint_cover(ui, rect, &art::hero(g.app_id), r) && !w::paint_cover(ui, rect, &art::header(g.app_id), r) {
+                    if !w::paint_cover_first(ui, rect, &[&art::hero(g.app_id), &art::header(g.app_id)], r) {
                         w::skeleton(ui, t, rect, r);
                     }
                     w::fade_right(ui, rect, Color32::from_black_alpha(200), 0.65);
@@ -1281,7 +1283,7 @@ impl Library {
             // Hero with logo.
             let full = ui.available_width();
             let (hero, _) = ui.allocate_exact_size(vec2(full, 340.0), Sense::hover());
-            if !w::paint_cover(ui, hero, &props::hero(id), CornerRadius::ZERO) && !w::paint_cover(ui, hero, &art::header(id), CornerRadius::ZERO) {
+            if !w::paint_cover_first(ui, hero, &[&props::hero(id), &art::header(id)], CornerRadius::ZERO) {
                 w::placeholder(ui, t, hero, "", CornerRadius::ZERO);
             }
             w::fade_down(ui, hero, t.bg, 0.5);

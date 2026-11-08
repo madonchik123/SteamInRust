@@ -138,6 +138,20 @@ pub fn paint_cover(ui: &Ui, rect: Rect, url: &str, radius: CornerRadius) -> bool
     true
 }
 
+/// Draw the first of `urls` that exists, covering `rect`. A later URL is only
+/// fetched once the earlier ones failed for good, not while they're still
+/// loading, so a fallback never competes with the image it stands in for.
+pub fn paint_cover_first(ui: &Ui, rect: Rect, urls: &[&str], radius: CornerRadius) -> bool {
+    for url in urls {
+        match load(ui, url, rect.size()) {
+            (_, Some(_)) => return paint_cover(ui, rect, url, radius),
+            (ImageState::Missing, _) => continue,
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Draw a remote image as large as fits in `rect`, anchored by `align`.
 pub fn paint_contain(ui: &Ui, rect: Rect, url: &str, align: Align2) -> bool {
     let (_, Some(texture)) = load(ui, url, rect.size()) else {
@@ -483,7 +497,7 @@ pub fn game_tile(ui: &mut Ui, t: &Theme, url: &str, fallback_url: &str, title: &
     if hover > 0.0 {
         ui.painter().rect_filled(img.translate(vec2(0.0, 8.0 * hover)), r, Color32::from_black_alpha((90.0 * hover) as u8));
     }
-    if !paint_cover(ui, img, url, r) && !paint_cover(ui, img, fallback_url, r) {
+    if !paint_cover_first(ui, img, &[url, fallback_url], r) {
         placeholder(ui, t, img, title, r);
     }
     let p = ui.painter();
