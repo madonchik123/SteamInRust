@@ -131,5 +131,5 @@ fn chat(app: &mut SteamApp, ui: &mut Ui, actions: &mut Vec<Action>) {
     });
     ui.separator();
     let h = ui.available_height();
-    crate::builtin::community::chat_body(ui, &t, &app.state, &app.client, id, &mut app.friends_window.input, h);
+    actions.extend(crate::builtin::community::chat_body(ui, &t, &app.state, &app.client, id, &mut app.friends_window.input, h));
 }

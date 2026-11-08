@@ -7,6 +7,7 @@ mod chrome;
 mod demo;
 mod friends_window;
 mod image_cache;
+mod ingame;
 mod launch_popup;
 mod links;
 mod login;

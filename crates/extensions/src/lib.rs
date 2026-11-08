@@ -112,6 +112,9 @@ pub enum Action {
     /// Re-scan the local Steam library (after an uninstall, for example).
     ReloadLocal,
     ToggleOverlay,
+    /// Accept a game invite: start the game with `connect` (its launch
+    /// arguments, e.g. `+connect_lobby 123`), or install it first.
+    JoinGame { app_id: model::AppId, connect: String },
     /// Switch the interface language (`"en"`, `"ru"`).
     SetLanguage(String),
 }
