@@ -86,6 +86,14 @@ impl Tray {
         Self { _icon: icon, rx, tx: Arc::new(Mutex::new(tx)), menu: Arc::new(Mutex::new(menu)), created: false }
     }
 
+    /// Open the menu with its bottom-right corner at `at` (for previews).
+    pub fn open_menu(&self, at: Pos2) {
+        let mut m = self.menu.lock().unwrap();
+        m.anchor = at;
+        m.open = true;
+        m.had_focus = false;
+    }
+
     pub fn poll(&mut self, ctx: &egui::Context) -> Vec<TrayCmd> {
         let mut out = Vec::new();
         for cmd in self.rx.try_iter() {
@@ -122,7 +130,6 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
     let builder = ViewportBuilder::default()
         .with_title("SteamInRust")
         .with_decorations(false)
-        .with_transparent(true)
         .with_always_on_top()
         .with_taskbar(false)
         .with_resizable(false)
@@ -149,10 +156,11 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
         let t = data.theme.clone();
         let mut picked = None;
         let mut used = 0.0;
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::TRANSPARENT)).show(ui, |ui| {
-            let rect = ui.max_rect().shrink(2.0);
-            ui.painter().rect_filled(rect, CornerRadius::same(10), t.chrome);
-            ui.painter().rect_stroke(rect, CornerRadius::same(10), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+        // Fill the whole window (Windows rounds its corners itself); a rounded
+        // shape inside a see-through window left light edges at the corners.
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.chrome)).show(ui, |ui| {
+            let rect = ui.max_rect();
+            ui.painter().rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
             let mut c = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(8.0)).layout(egui::Layout::top_down(egui::Align::Min)));
             picked = contents(&data, &mut c, &t);
             used = c.min_rect().height() + 20.0;
@@ -207,23 +215,27 @@ fn contents(d: &MenuData, ui: &mut Ui, t: &Theme) -> Option<TrayCmd> {
     });
     if d.signed_in {
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for (s, color) in [(PersonaState::Online, t.online), (PersonaState::Away, t.away), (PersonaState::Busy, t.danger), (PersonaState::Invisible, t.text_faint)] {
-                let on = d.me.state == s;
-                let (r, resp) = ui.allocate_exact_size(vec2(58.0, 26.0), Sense::click());
-                let hover = resp.hovered();
-                ui.painter().rect_filled(r, CornerRadius::same(13), if on { color.gamma_multiply(0.2) } else if hover { t.surface_hover } else { t.raised });
-                ui.painter().circle_filled(pos2(r.left() + 12.0, r.center().y), 4.0, color);
-                let label = i18n::tr_dyn(s.label());
-                let short: String = label.chars().take(5).collect();
-                ui.painter().text(pos2(r.left() + 20.0, r.center().y), Align2::LEFT_CENTER, short, w::font_medium(11.0), if on { t.text } else { t.text_dim });
-                if resp.on_hover_text(label).clicked() {
-                    picked = Some(TrayCmd::Status(s));
+        // Statuses in a 2×2 grid, with their full names.
+        let states = [(PersonaState::Online, t.online), (PersonaState::Away, t.away), (PersonaState::Busy, t.danger), (PersonaState::Invisible, t.text_faint)];
+        for pair in states.chunks(2) {
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let cell = (ui.available_width() - 8.0) / 2.0;
+                for (s, color) in pair {
+                    let on = d.me.state == *s;
+                    let (r, resp) = ui.allocate_exact_size(vec2(cell, 26.0), Sense::click());
+                    let hover = resp.hovered();
+                    ui.painter().rect_filled(r, CornerRadius::same(13), if on { color.gamma_multiply(0.2) } else if hover { t.surface_hover } else { t.raised });
+                    ui.painter().circle_filled(pos2(r.left() + 12.0, r.center().y), 4.0, *color);
+                    let label = i18n::tr_dyn(s.label());
+                    ui.painter().text(pos2(r.left() + 22.0, r.center().y), Align2::LEFT_CENTER, &label, w::font_medium(11.5), if on { t.text } else { t.text_dim });
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        picked = Some(TrayCmd::Status(*s));
+                    }
                 }
-            }
-        });
+            });
+        }
     }
     ui.add_space(6.0);
     separator(ui, t);

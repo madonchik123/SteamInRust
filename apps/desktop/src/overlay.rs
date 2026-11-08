@@ -53,6 +53,12 @@ pub struct Overlay {
     manager: Option<GlobalHotKeyManager>,
     hotkey: HotKey,
     registered: bool,
+    /// The overlay is turned on for the running game.
+    enabled: bool,
+    /// When the foreground window was last checked.
+    checked: Option<Instant>,
+    /// The game's window was in front at the last check.
+    game_front: bool,
     pressed: Arc<AtomicBool>,
     game: Option<(AppId, Instant)>,
     chat_with: Option<SteamId>,
@@ -103,6 +109,9 @@ impl Overlay {
             manager,
             hotkey: HotKey::new(Some(Modifiers::SHIFT), Code::Tab),
             registered: false,
+            enabled: false,
+            checked: None,
+            game_front: false,
             pressed,
             game: None,
             chat_with: None,
@@ -122,15 +131,31 @@ impl Overlay {
         }
     }
 
-    /// Shift+Tab is only grabbed while a game we launched is running, so it
-    /// keeps working normally in every other app.
+    /// Shift+Tab is only grabbed while the game's own window is in front
+    /// (see `sync_hotkey`), so it keeps working normally everywhere else
+    /// and the overlay never pops up over other apps.
     pub fn game_started(&mut self, app_id: AppId, enabled: bool) {
         self.game = Some((app_id, Instant::now()));
         self.asked = false;
-        if enabled && !self.registered {
-            if let Some(m) = &self.manager {
-                self.registered = m.register(self.hotkey).map_err(|e| tracing::warn!("Shift+Tab: {e}")).is_ok();
-            }
+        self.enabled = enabled;
+        self.checked = None;
+    }
+
+    /// Register Shift+Tab only while the game is the focused window (or the
+    /// overlay is open, so Shift+Tab can close it).
+    fn sync_hotkey(&mut self, game_dir: Option<&std::path::Path>) {
+        if self.checked.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(400)) {
+            return;
+        }
+        self.checked = Some(Instant::now());
+        self.game_front = self.game.is_some() && game_dir.is_some_and(foreground_is_in);
+        let want = self.enabled && self.game.is_some() && (self.open || self.game_front);
+        let Some(m) = &self.manager else { return };
+        if want && !self.registered {
+            self.registered = m.register(self.hotkey).map_err(|e| tracing::warn!("Shift+Tab: {e}")).is_ok();
+        } else if !want && self.registered {
+            let _ = m.unregister(self.hotkey);
+            self.registered = false;
         }
     }
 
@@ -189,6 +214,43 @@ fn foreground_window() -> isize {
     0
 }
 
+/// The focused window belongs to a program inside `dir` (the game's folder).
+#[cfg(windows)]
+fn foreground_is_in(dir: &std::path::Path) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 || pid == std::process::id() {
+            return false;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, buf.as_mut_ptr(), &mut len) != 0;
+        CloseHandle(process);
+        if !ok {
+            return false;
+        }
+        let exe = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase().replace('/', "\\");
+        let dir = dir.display().to_string().to_lowercase().replace('/', "\\");
+        exe.starts_with(dir.trim_end_matches('\\'))
+    }
+}
+#[cfg(not(windows))]
+fn foreground_is_in(_: &std::path::Path) -> bool {
+    false
+}
+
 #[cfg(windows)]
 fn give_focus(window: isize) {
     if window != 0 {
@@ -199,11 +261,18 @@ fn give_focus(window: isize) {
 fn give_focus(_: isize) {}
 
 pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    // Shift+Tab belongs to the game only while the game is in front.
+    if let Some((id, _)) = app.overlay.game {
+        let dir = app.local.games.iter().find(|g| g.app_id == id).map(|g| g.install_dir.clone());
+        app.overlay.sync_hotkey(dir.as_deref());
+        ctx.request_repaint_after(std::time::Duration::from_millis(400));
+    }
     if app.overlay.pressed.swap(false, Ordering::Relaxed) {
         app.overlay.toggle();
     }
     let active = app.overlay.open;
-    if !active && !app.overlay.any_pinned() {
+    // Pinned windows only float over the game, not over other apps.
+    if !active && !(app.overlay.any_pinned() && app.overlay.game_front) {
         app.overlay.passthrough = None;
         return;
     }
@@ -259,7 +328,7 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         }
         let close = active && ui.input(|i| i.key_pressed(Key::Escape) || (i.modifiers.shift && i.key_pressed(Key::Tab)) || i.viewport().close_requested());
         // Dim the game, like Steam does (nothing but pinned windows when closed).
-        let fill = if active { Color32::from_black_alpha(205) } else { Color32::TRANSPARENT };
+        let fill = if active { Color32::from_black_alpha(150) } else { Color32::TRANSPARENT };
         egui::CentralPanel::default().frame(egui::Frame::new().fill(fill)).show(ui, |ui| {
             if active {
                 top_strip(app, ui, &t);
