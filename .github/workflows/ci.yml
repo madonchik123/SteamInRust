@@ -80,7 +80,7 @@ jobs:
           # Use the MSYS2 that ships with the runner instead of downloading it
           # (the download often fails with HTTP 504).
           release: false
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-i686-gcc mingw-w64-i686-binutils
 
       - name: Put MinGW on PATH
         shell: pwsh
@@ -91,6 +91,9 @@ jobs:
 
       - name: Package
         shell: pwsh
+        env:
+          # 32-bit MinGW, so the setup includes steamclient32.dll for 32-bit games.
+          SIR_MINGW32: ${{ steps.msys2.outputs.msys2-location }}\mingw32\bin
         run: cargo xtask package
 
       - uses: actions/upload-artifact@v4
