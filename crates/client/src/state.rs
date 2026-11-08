@@ -249,6 +249,8 @@ impl State {
                 merged.extend(chat.iter().filter(|m| m.time > newest_loaded).cloned());
                 *chat = merged;
             }
+            // A developer attaching a game by hand: nothing to show.
+            Event::GameAttached { .. } => {}
             Event::GameStarted { app_id } => {
                 self.playing = Some(*app_id);
                 // Show it on our own status right away, like Steam.

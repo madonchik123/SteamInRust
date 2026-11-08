@@ -1,5 +1,4 @@
-//! Leaderboards, global achievement percentages, avatars, ISteamHTTP and
-//! installed Workshop items.
+//! Leaderboards, global achievement percentages, avatars and ISteamHTTP.
 
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
@@ -38,10 +37,7 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
         ("ISteamUtils", "GetImageSize") => f!(image_size),
         ("ISteamUtils", "GetImageRGBA") => f!(image_rgba),
         ("ISteamHTTP", m) => http_imp(m),
-        ("ISteamUGC", "GetNumSubscribedItems") => f!(ugc_count),
-        ("ISteamUGC", "GetSubscribedItems") => f!(ugc_items),
-        ("ISteamUGC", "GetItemState") => f!(ugc_state),
-        ("ISteamUGC", "GetItemInstallInfo") => f!(ugc_install_info),
+        ("ISteamUGC", m) => crate::ugc::imp(m),
         _ => None,
     }
 }
@@ -473,54 +469,6 @@ extern "C" fn http_timed_out(_t: This, h: u32, out: *mut bool) -> bool {
 }
 
 // ------------------------------------------- installed Workshop items
-
-/// `<library>/steamapps/workshop/content/<app>`: where Steam (and
-/// SteamInRust) put a game's subscribed Workshop items.
-fn workshop_dir() -> Option<std::path::PathBuf> {
-    let g = lock();
-    let s = g.session.as_ref()?;
-    let dir = std::path::PathBuf::from(&s.install_dir);
-    let steamapps = dir.parent()?.parent()?;
-    Some(steamapps.join("workshop").join("content").join(s.app_id.to_string()))
-}
-
-fn installed_items() -> Vec<u64> {
-    let Some(dir) = workshop_dir() else { return Vec::new() };
-    let mut out: Vec<u64> = std::fs::read_dir(dir)
-        .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).filter_map(|e| e.file_name().to_str()?.parse().ok()).collect())
-        .unwrap_or_default();
-    out.sort_unstable();
-    out
-}
-
-extern "C" fn ugc_count(_t: This) -> u32 {
-    installed_items().len() as u32
-}
-extern "C" fn ugc_items(_t: This, out: *mut u64, max: u32) -> u32 {
-    let items = installed_items();
-    let n = items.len().min(max as usize);
-    for (i, id) in items.iter().take(n).enumerate() {
-        if !out.is_null() {
-            unsafe { out.add(i).write_unaligned(*id) };
-        }
-    }
-    n as u32
-}
-/// EItemState: 1 subscribed, 4 installed.
-extern "C" fn ugc_state(_t: This, item: u64) -> u32 {
-    if installed_items().contains(&item) { 1 | 4 } else { 0 }
-}
-extern "C" fn ugc_install_info(_t: This, item: u64, size: *mut u64, folder: *mut c_char, folder_size: u32, stamp: *mut u32) -> bool {
-    let Some(dir) = workshop_dir().map(|d| d.join(item.to_string())).filter(|d| d.is_dir()) else { return false };
-    fn total(p: &std::path::Path) -> u64 {
-        std::fs::read_dir(p).map(|rd| rd.flatten().map(|e| if e.path().is_dir() { total(&e.path()) } else { e.metadata().map(|m| m.len()).unwrap_or(0) }).sum()).unwrap_or(0)
-    }
-    put(size, total(&dir));
-    copy_out(&dir.to_string_lossy(), folder, folder_size as usize);
-    let t = std::fs::metadata(&dir).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as u32).unwrap_or(0);
-    put(stamp, t);
-    true
-}
 
 #[cfg(test)]
 mod tests {

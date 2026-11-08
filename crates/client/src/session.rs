@@ -586,6 +586,11 @@ async fn online(
                     st.persona_state = s;
                     let _ = set_persona(&conn, s);
                 }
+                Some(Command::AttachGame { app_id, install_dir }) => {
+                    st.launched_dirs.insert(app_id, install_dir);
+                    let token = st.ipc.register(app_id);
+                    sink(Event::GameAttached { app_id, env: st.ipc.env_value(&token) });
+                }
                 Some(Command::Launch { app_id, install_dir, args }) => {
                     // Like Steam: subscribed Workshop items are downloaded
                     // (or updated) before the game starts, then cloud saves.
@@ -2249,6 +2254,38 @@ impl Online {
                         None => Reply::Err { message: "avatar unavailable".into() },
                     };
                     let _ = reply.send(r);
+                });
+            }
+            Request::UgcQuery(q) => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_ugc::query(&conn, app_id, &q).await);
+                });
+            }
+            Request::UgcSubscribed => {
+                tokio::spawn(async move {
+                    let _ = reply.send(Reply::UgcIds { ids: crate::game_ugc::subscribed(&conn, app_id, me).await });
+                });
+            }
+            Request::UgcSubscribe { id, list, on } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(Reply::Result { eresult: crate::game_ugc::subscribe(&conn, app_id, id, list, on).await });
+                });
+            }
+            Request::UgcVote { id, up } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(Reply::Result { eresult: crate::game_ugc::vote(&conn, id, up).await });
+                });
+            }
+            Request::UgcGetVote { id } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_ugc::get_vote(&conn, id).await);
+                });
+            }
+            Request::UgcDownload { id } => {
+                let dir = self.launched_dirs.get(&app_id).cloned().unwrap_or_default();
+                let cell = self.download_cell.unwrap_or(self.cell_id);
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_ugc::download(&conn, app_id, me, id, &dir, cell).await);
                 });
             }
             Request::Http { method, url, headers, params, body, timeout_ms } => {

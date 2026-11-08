@@ -597,11 +597,11 @@ impl Net {
                 self.set_state(h, PROBLEM, END_NAT, why);
             }
         }
-        if let Some(s) = self.sessions.get_mut(&peer) {
-            if !s.failed {
-                s.failed = true;
-                self.session_failed(peer, END_NAT, why);
-            }
+        if let Some(s) = self.sessions.get_mut(&peer)
+            && !s.failed
+        {
+            s.failed = true;
+            self.session_failed(peer, END_NAT, why);
         }
     }
 

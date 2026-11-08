@@ -82,6 +82,96 @@ pub enum Request {
     Avatar { steam_id: u64, size: u8 },
     /// An HTTP request for ISteamHTTP. `method`: EHTTPMethod (1 GET, 2 HEAD, 3 POST, 4 PUT, 5 DELETE…).
     Http { method: i32, url: String, headers: Vec<(String, String)>, params: Vec<(String, String)>, body: Option<(String, Vec<u8>)>, timeout_ms: u32 },
+    /// A Workshop query (ISteamUGC): answered with [`Reply::UgcResults`].
+    UgcQuery(Box<UgcQuery>),
+    /// The player's subscribed Workshop items for this game.
+    UgcSubscribed,
+    /// Subscribe (or unsubscribe) the player; `list` 1 subscriptions, 2 favorites.
+    UgcSubscribe { id: u64, list: u32, on: bool },
+    UgcVote { id: u64, up: bool },
+    /// The player's vote: answered with [`Reply::UgcVote`].
+    UgcGetVote { id: u64 },
+    /// Download (or update) an item into the game's Workshop folder.
+    UgcDownload { id: u64 },
+}
+
+/// What ISteamUGC's query builder collected.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UgcQuery {
+    /// 0 a user's list, 1 all items (EUGCQuery), 2 these ids.
+    pub kind: u8,
+    pub account: u32,
+    /// EUserUGCList and EUserUGCListSortOrder.
+    pub list: i32,
+    pub sort: i32,
+    /// EUGCQuery.
+    pub query: i32,
+    /// EUGCMatchingUGCType.
+    pub matching: i32,
+    pub creator_app: u32,
+    pub consumer_app: u32,
+    pub page: u32,
+    pub cursor: Option<String>,
+    pub ids: Vec<u64>,
+    pub required_tags: Vec<String>,
+    pub excluded_tags: Vec<String>,
+    pub tag_groups: Vec<Vec<String>>,
+    pub match_any: bool,
+    pub search: String,
+    pub trend_days: u32,
+    pub kv: Vec<(String, String)>,
+    pub language: String,
+    pub cloud_filename: String,
+    pub only_ids: bool,
+    pub total_only: bool,
+    pub long_description: bool,
+    pub metadata: bool,
+    pub children: bool,
+    pub previews: bool,
+    pub kv_tags: bool,
+    pub playtime_days: u32,
+    pub created: (u32, u32),
+    pub updated: (u32, u32),
+    pub max_age: u32,
+}
+
+/// One Workshop item, everything SteamUGCDetails_t and the query getters return.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UgcItem {
+    pub id: u64,
+    pub result: i32,
+    /// EWorkshopFileType.
+    pub file_type: i32,
+    pub creator_app: u32,
+    pub consumer_app: u32,
+    pub title: String,
+    pub description: String,
+    pub owner: u64,
+    pub created: u32,
+    pub updated: u32,
+    pub visibility: i32,
+    pub banned: bool,
+    pub accepted: bool,
+    /// (tag, display name).
+    pub tags: Vec<(String, String)>,
+    /// The content manifest (UGCHandle) and preview handle.
+    pub file: u64,
+    pub preview_file: u64,
+    pub file_name: String,
+    pub file_size: u64,
+    pub preview_size: u64,
+    pub url: String,
+    pub votes_up: u32,
+    pub votes_down: u32,
+    pub score: f32,
+    pub children: Vec<u64>,
+    pub preview_url: String,
+    pub metadata: String,
+    pub kv: Vec<(String, String)>,
+    /// Additional previews: (URL or video id, EItemPreviewType, original file name).
+    pub previews: Vec<(String, i32, String)>,
+    /// (EItemStatistic, value).
+    pub stats: Vec<(i32, u64)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -154,6 +244,11 @@ pub enum Reply {
     LobbyJoined { response: i32, lobby: Option<Lobby> },
     LobbyList { lobbies: Vec<Lobby> },
     Result { eresult: i32 },
+    UgcResults { eresult: i32, total: u32, items: Vec<UgcItem>, cursor: String },
+    UgcIds { ids: Vec<u64> },
+    UgcVote { eresult: i32, up: bool, down: bool, skipped: bool },
+    /// EResult, the item's folder, size on disk and last update time.
+    UgcDownloaded { eresult: i32, folder: String, size: u64, updated: u32 },
     LbFound { found: bool, id: i32, count: i32, sort: i32, display: i32, name: String },
     LbEntries { total: i32, entries: Vec<LbEntry> },
     LbUploaded { ok: bool, changed: bool, rank_new: i32, rank_prev: i32 },

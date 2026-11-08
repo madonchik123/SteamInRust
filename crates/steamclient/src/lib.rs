@@ -20,6 +20,13 @@
 
 pub mod protocol;
 
+/// Vtable slot of an interface method (for test tools that call the DLL
+/// directly, like the probe example).
+#[doc(hidden)]
+pub fn slot_of(version: &str, method: &str) -> Option<usize> {
+    vt::layout(version)?.1.iter().position(|m| *m == method)
+}
+
 mod extras;
 mod ifaces;
 mod ipc;
@@ -30,6 +37,7 @@ mod state;
 mod tables;
 #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
 mod tables32;
+mod ugc;
 mod vt;
 mod win;
 

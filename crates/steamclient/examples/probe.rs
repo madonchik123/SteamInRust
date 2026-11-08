@@ -289,9 +289,121 @@ fn direct(dll: &str, host: bool, peer: u64) -> ! {
     std::process::exit(if ok { 0 } else { 1 });
 }
 
+/// `--direct <steamclient.dll> --test ugc`: Workshop through our DLL against
+/// a signed-in SteamInRust (the client crate's `steamclient_attach`
+/// example). Read-only on the account: queries, the subscription list, and
+/// one item downloaded into the game's Workshop folder.
+fn ugc_test(dll: &str) -> ! {
+    let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {dll}");
+    let api = Api(module);
+    let create: extern "C" fn(*const c_char, *mut i32) -> usize = unsafe { std::mem::transmute(api.f("CreateInterface").unwrap()) };
+    let client = create(c"SteamClient021".as_ptr(), std::ptr::null_mut());
+    let pipe: extern "C" fn(usize) -> i32 = unsafe { std::mem::transmute(slot(client, 0)) };
+    let pipe = pipe(client);
+    let connect: extern "C" fn(usize, i32) -> i32 = unsafe { std::mem::transmute(slot(client, 2)) };
+    let user = connect(client, pipe);
+    let generic: extern "C" fn(usize, i32, i32, *const c_char) -> usize = unsafe { std::mem::transmute(slot(client, 12)) };
+    const V: &str = "STEAMUGC_INTERFACE_VERSION021";
+    let ugc = generic(client, user, pipe, c"STEAMUGC_INTERFACE_VERSION021".as_ptr());
+    assert!(ugc != 0);
+    let m = |name: &str| slot(ugc, steamclient::slot_of(V, name).unwrap_or_else(|| panic!("{name}")));
+    let get_callback: extern "C" fn(i32, *mut CallbackMsg) -> bool = unsafe { std::mem::transmute(api.f("Steam_BGetCallback").unwrap()) };
+    let free_callback: extern "C" fn(i32) -> bool = unsafe { std::mem::transmute(api.f("Steam_FreeLastCallback").unwrap()) };
+    let call_result: extern "C" fn(i32, u64, *mut u8, i32, i32, *mut bool) -> bool = unsafe { std::mem::transmute(api.f("Steam_GetAPICallResult").unwrap()) };
+    // Wait for a callback (or the API call `call` to finish); returns its bytes.
+    let wait = |want: i32, call: u64, size: usize| -> Option<Vec<u8>> {
+        let until = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < until {
+            let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
+            while get_callback(pipe, &mut msg) {
+                let b = unsafe { std::slice::from_raw_parts(msg.param, msg.size as usize) }.to_vec();
+                free_callback(pipe);
+                if call != 0 && msg.callback == 703 && u64::from_le_bytes(b[0..8].try_into().unwrap()) == call {
+                    let mut out = vec![0u8; size];
+                    let mut failed = false;
+                    call_result(pipe, call, out.as_mut_ptr(), size as i32, want, &mut failed);
+                    return Some(out);
+                }
+                if call == 0 && msg.callback == want {
+                    return Some(b);
+                }
+                println!("  (callback {})", msg.callback);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    };
+
+    type Create = extern "C" fn(usize, i32, i32, u32, u32, u32) -> u64;
+    type SetBool = extern "C" fn(usize, u64, bool) -> bool;
+    type Send = extern "C" fn(usize, u64) -> u64;
+    type GetResult = extern "C" fn(usize, u64, u32, *mut u8) -> bool;
+    type GetString = extern "C" fn(usize, u64, u32, *mut c_char, u32) -> bool;
+    type Statistic = extern "C" fn(usize, u64, u32, i32, *mut u64) -> bool;
+    let create_all: Create = unsafe { std::mem::transmute(m("CreateQueryAllUGCRequestPage")) };
+    let long_desc: SetBool = unsafe { std::mem::transmute(m("SetReturnLongDescription")) };
+    let send: Send = unsafe { std::mem::transmute(m("SendQueryUGCRequest")) };
+    let get: GetResult = unsafe { std::mem::transmute(m("GetQueryUGCResult")) };
+    let preview: GetString = unsafe { std::mem::transmute(m("GetQueryUGCPreviewURL")) };
+    let statistic: Statistic = unsafe { std::mem::transmute(m("GetQueryUGCStatistic")) };
+    let num_tags: extern "C" fn(usize, u64, u32) -> u32 = unsafe { std::mem::transmute(m("GetQueryUGCNumTags")) };
+
+    // Most subscribed items (EUGCQuery 9), items only.
+    let q = create_all(ugc, 9, 0, 480, 480, 1);
+    long_desc(ugc, q, true);
+    let call = send(ugc, q);
+    let done = wait(3401, call, 280).expect("query timed out");
+    let (result, n, total) = (i32::from_le_bytes(done[8..12].try_into().unwrap()), u32::from_le_bytes(done[12..16].try_into().unwrap()), u32::from_le_bytes(done[16..20].try_into().unwrap()));
+    println!("query: result {result}, {n} of {total} items");
+    let mut pick: Option<(u64, i32)> = None;
+    for i in 0..n {
+        let mut d = vec![0u8; 9784];
+        if !get(ugc, q, i, d.as_mut_ptr()) {
+            continue;
+        }
+        let id = u64::from_le_bytes(d[0..8].try_into().unwrap());
+        let title = s(d[24..].as_ptr().cast());
+        let owner = u64::from_le_bytes(d[8160..8168].try_into().unwrap());
+        let file = u64::from_le_bytes(d[9216..9224].try_into().unwrap());
+        let size = i32::from_le_bytes(d[9492..9496].try_into().unwrap());
+        let up = u32::from_le_bytes(d[9756..9760].try_into().unwrap());
+        let mut url = [0 as c_char; 256];
+        preview(ugc, q, i, url.as_mut_ptr(), 256);
+        let mut subs = 0u64;
+        statistic(ugc, q, i, 0, &mut subs);
+        if i < 5 {
+            println!("  #{i} {id} {title:?} by {owner}: {size} bytes, manifest {file}, {up} up, {subs} subscribers, {} tags, preview {}", num_tags(ugc, q, i), s(url.as_ptr()));
+        }
+        if file != 0 && size > 0 && pick.is_none_or(|(_, s)| size < s) {
+            pick = Some((id, size));
+        }
+    }
+    let count: extern "C" fn(usize, bool) -> u32 = unsafe { std::mem::transmute(m("GetNumSubscribedItems")) };
+    println!("subscribed: {}", count(ugc, false));
+    let Some((id, size)) = pick else {
+        println!("no item with content to download");
+        std::process::exit(if result == 1 { 0 } else { 1 });
+    };
+    let download: extern "C" fn(usize, u64, bool) -> bool = unsafe { std::mem::transmute(m("DownloadItem")) };
+    let state: extern "C" fn(usize, u64) -> u32 = unsafe { std::mem::transmute(m("GetItemState")) };
+    let info: extern "C" fn(usize, u64, *mut u64, *mut c_char, u32, *mut u32) -> bool = unsafe { std::mem::transmute(m("GetItemInstallInfo")) };
+    println!("DownloadItem({id}, {size} bytes) = {}", download(ugc, id, true));
+    let r = wait(3406, 0, 24).map(|b| i32::from_le_bytes(b[16..20].try_into().unwrap()));
+    let mut folder = [0 as c_char; 512];
+    let (mut on_disk, mut stamp) = (0u64, 0u32);
+    let ok = info(ugc, id, &mut on_disk, folder.as_mut_ptr(), 512, &mut stamp);
+    println!("download result {r:?}; state {}; install info {ok}: {} ({on_disk} bytes)", state(ugc, id), s(folder.as_ptr()));
+    std::process::exit(if result == 1 && r == Some(1) && ok { 0 } else { 1 });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+    if let (Some(dll), Some("ugc")) = (arg("--direct"), arg("--test").as_deref()) {
+        ugc_test(&dll);
+    }
     if let Some(dll) = arg("--direct") {
         direct(&dll, arg("--role").as_deref() == Some("host"), arg("--peer").and_then(|p| p.parse().ok()).unwrap_or(0));
     }
