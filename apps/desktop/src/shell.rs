@@ -739,6 +739,58 @@ pub fn status_color(t: &Theme, p: &Persona) -> egui::Color32 {
     }
 }
 
+/// What a friend can be invited to while you play, like Steam's friend menu.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Invite {
+    /// The game's matchmaking lobby.
+    Lobby(model::AppId, u64),
+    /// The game itself, with its join string (rich presence `connect`).
+    Game(model::AppId, String),
+    /// Just start the game (it says nothing about how to join).
+    Play(model::AppId),
+}
+
+/// The invites that make sense right now, best first, with their labels.
+pub fn invite_options(state: &client::State) -> Vec<(Invite, String)> {
+    let Some(app) = state.playing else { return Vec::new() };
+    let mut out = Vec::new();
+    if let Some(lobby) = state.game_lobby {
+        out.push((Invite::Lobby(app, lobby), t!("Invite to lobby").to_string()));
+    }
+    if let Some(connect) = state.game_connect.clone() {
+        out.push((Invite::Game(app, connect), t!("Invite to game").to_string()));
+    }
+    if out.is_empty() {
+        let game = state.app_name(app).unwrap_or_default().to_string();
+        out.push((Invite::Play(app), t!("Invite to play {game}", game = game).to_string()));
+    }
+    out
+}
+
+/// Send an invite. Lobby invites are Steam's own (every client shows them).
+/// The others are a `steam://run` link with the join arguments: Steam
+/// strips invite markup that doesn't come from its own client, and any Steam
+/// client opens the link. Ours shows it as an invite card.
+pub fn send_invite(app: &mut SteamApp, to: &Persona, invite: Invite, actions: &mut Vec<Action>) {
+    let friend = to.steam_id;
+    let game = |id| app.state.app_name(id).unwrap_or_default().to_string();
+    match invite {
+        Invite::Lobby(app_id, lobby) => app.client.send(Command::InviteToLobby { app_id, lobby, friend }),
+        Invite::Game(app_id, connect) => {
+            let link = model::GameInvite { app_id, connect }.link();
+            let text = t!("Join me in {game}! {link}", game = game(app_id), link = link).to_string();
+            app.client.send(Command::SendMessage { to: friend, text });
+        }
+        Invite::Play(app_id) => {
+            let link = model::GameInvite { app_id, connect: String::new() }.link();
+            let text = t!("Play {game} with me! {link}", game = game(app_id), link = link).to_string();
+            app.client.send(Command::SendMessage { to: friend, text });
+        }
+    }
+    let offline = to.state == PersonaState::Offline;
+    actions.push(Action::Toast(if offline { t!("Invite sent. {name} will see it when they come online.", name = to.name) } else { t!("Invite sent to {name}", name = to.name) }));
+}
+
 /// Where a game opens: your library if you own it, else its store page.
 pub fn game_page(state: &client::State, app: model::AppId) -> Action {
     let owned = state.apps.as_ref().is_some_and(|a| a.contains_key(&app));
@@ -916,12 +968,10 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
                 ui.close();
             }
         }
-        // While you're in a game: invite them to it (a link that starts it for them).
-        if let Some(mine) = app.state.playing {
-            let game = app.state.app_name(mine).unwrap_or_default().to_string();
-            if ui.button(format!("{}  {}", icons::USER_PLUS, t!("Invite to play {game}", game = game))).clicked() {
-                app.client.send(Command::SendMessage { to: persona.steam_id, text: t!("Play {game} with me! steam://run/{id}", game = game, id = mine) });
-                actions.push(Action::Toast(t!("Invite sent to {name}", name = persona.name)));
+        // While you're in a game: invite them to it, its lobby or its match.
+        for (invite, label) in invite_options(&app.state) {
+            if ui.button(format!("{}  {}", icons::USER_PLUS, label)).clicked() {
+                send_invite(app, &persona, invite, actions);
                 ui.close();
             }
         }

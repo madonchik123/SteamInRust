@@ -11,6 +11,7 @@
 pub mod download;
 pub mod workshop;
 pub mod hub;
+pub mod ingame;
 pub mod ipc;
 mod launch;
 pub mod market;
@@ -71,6 +72,9 @@ pub enum Command {
     /// Close a running game (and the processes it started).
     StopGame { app_id: AppId },
     SendMessage { to: SteamId, text: String },
+    /// Invite a friend into the running game's lobby: lets them in (private
+    /// lobbies) and sends a game invite that joins it.
+    InviteToLobby { app_id: AppId, lobby: u64, friend: SteamId },
     /// Send a friend request, or accept one you received.
     AddFriend { steam_id: SteamId },
     /// Remove a friend, or ignore a friend request.
@@ -210,6 +214,12 @@ pub enum Event {
     /// wasn't started because of conflicts (its launch arguments).
     CloudReport { report: model::CloudReport, held_launch: Option<String> },
     GameStopped { app_id: AppId },
+    /// The running game entered (`Some`) or left a matchmaking lobby, so
+    /// friends can be invited to it.
+    GameLobby { app_id: AppId, lobby: Option<u64> },
+    /// The running game's join string (rich presence `connect`), so friends
+    /// can be invited to the game itself.
+    GameConnect { app_id: AppId, connect: Option<String> },
     /// A chat message, incoming or sent by you (`from == your SteamID`).
     Message(ChatMessage),
     Typing { from: SteamId },

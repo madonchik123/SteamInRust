@@ -4,10 +4,12 @@
 //! can move, resize and pin. A pinned window stays over the game after the
 //! overlay closes, at the opacity you pick, and lets clicks through to it.
 //!
-//! It is a separate always-on-top window, *not* injected into the game:
-//! injection is how cheats work and anti-cheat (VAC, EAC, BattlEye) treats it
-//! that way. So it shows over windowed and borderless-fullscreen games, not
-//! exclusive fullscreen.
+//! For D3D11 games we start with our steamclient DLL it is drawn inside the
+//! game, like Steam's (see `ingame.rs` and `crates/steamclient/src/overlay`),
+//! so it works in exclusive fullscreen and the game keeps focus. Other games
+//! (other graphics APIs, anti-cheat games real Steam runs) get it as a
+//! separate always-on-top window, which shows over windowed and
+//! borderless-fullscreen games only.
 
 use i18n::t;
 use crate::app::SteamApp;
@@ -60,7 +62,7 @@ pub struct Overlay {
     /// The game's window was in front at the last check.
     game_front: bool,
     pressed: Arc<AtomicBool>,
-    game: Option<(AppId, Instant)>,
+    pub game: Option<(AppId, Instant)>,
     chat_with: Option<SteamId>,
     input: String,
     notes: String,
@@ -86,6 +88,10 @@ pub struct Overlay {
     /// `--overlay-open=guides|discussions|hub|store|achievements`: a window to
     /// open for previews.
     preview: Option<String>,
+    /// The running game draws the overlay itself.
+    pub ingame: Option<crate::ingame::Session>,
+    /// Actions from in-game overlay frames, for the main window to apply.
+    pending: Vec<Action>,
 }
 
 impl Overlay {
@@ -99,6 +105,9 @@ impl Overlay {
                 repaint.request_repaint();
             }
         }));
+        // A game's in-game overlay sent something: run the UI.
+        let main = ctx.clone();
+        client::ingame::set_waker(move || crate::ingame::wake(&main, std::time::Duration::ZERO));
         let closed = WinState { open: false, pinned: false, opacity: 0.85 };
         let mut wins = [closed; 7];
         // Like Steam: the game overview and friends open by default.
@@ -128,6 +137,8 @@ impl Overlay {
             achievements: Default::default(),
             store_app: None,
             preview: std::env::args().find_map(|a| a.strip_prefix("--overlay-open=").map(String::from)),
+            ingame: None,
+            pending: Vec::new(),
         }
     }
 
@@ -149,7 +160,9 @@ impl Overlay {
         }
         self.checked = Some(Instant::now());
         self.game_front = self.game.is_some() && game_dir.is_some_and(foreground_is_in);
-        let want = self.enabled && self.game.is_some() && (self.open || self.game_front);
+        // A game drawing the overlay itself handles Shift+Tab; grabbing it
+        // here would keep it from the game.
+        let want = self.enabled && self.game.is_some() && self.ingame.is_none() && (self.open || self.game_front);
         let Some(m) = &self.manager else { return };
         if want && !self.registered {
             self.registered = m.register(self.hotkey).map_err(|e| tracing::warn!("Shift+Tab: {e}")).is_ok();
@@ -161,6 +174,7 @@ impl Overlay {
 
     pub fn game_stopped(&mut self) {
         self.game = None;
+        self.ingame = None;
         self.open = false;
         for w in &mut self.wins {
             w.pinned = false;
@@ -260,7 +274,129 @@ fn give_focus(window: isize) {
 #[cfg(not(windows))]
 fn give_focus(_: isize) {}
 
+/// Pick up games that draw the overlay themselves and read what they sent.
+fn poll_ingame(app: &mut SteamApp, ctx: &egui::Context) {
+    for conn in client::ingame::take_new() {
+        if app.overlay.game.is_some_and(|(id, _)| id != conn.app_id) {
+            tracing::info!("in-game overlay from app {} while {:?} runs; using it anyway", conn.app_id, app.overlay.game);
+        }
+        app.overlay.ingame = Some(crate::ingame::Session::new(conn, ctx, &app._rt, &app.prefs.theme));
+        // Let go of Shift+Tab now: the game handles it.
+        app.overlay.checked = None;
+        app.overlay.open = false;
+    }
+    let enabled = app.overlay.enabled;
+    let Some(s) = app.overlay.ingame.as_mut() else { return };
+    let (alive, opened) = s.poll();
+    if !alive {
+        tracing::info!("in-game overlay connection closed");
+        app.overlay.ingame = None;
+        app.overlay.open = false;
+        app.overlay.checked = None;
+        return;
+    }
+    match opened {
+        // Overlay turned off for this game: don't open.
+        Some(true) if !enabled => s.set_open(false),
+        Some(open) => {
+            app.overlay.open = open;
+            // No window to focus: the game keeps focus.
+            app.overlay.focused = true;
+            app.overlay.game_window = 0;
+        }
+        None => {}
+    }
+}
+
+/// What the overview and achievements need, once per game session.
+fn load_once(app: &mut SteamApp) {
+    if !app.overlay.open || app.overlay.asked {
+        return;
+    }
+    app.overlay.asked = true;
+    if let Some((id, _)) = app.overlay.game {
+        if !app.state.achievement_list.contains_key(&id) {
+            app.client.send(Command::LoadAchievements { app_id: id, language: i18n::language().steam_name().into() });
+        }
+        let me = app.state.steam_id;
+        if me != 0 && !app.state.player_games.contains_key(&me) {
+            app.client.send(Command::LoadPlayerGames { steam_id: me, language: i18n::language().steam_name().into() });
+        }
+    }
+}
+
+/// One in-game overlay frame, when one is due: the game's input in, the UI
+/// run, the triangles out to the game.
+fn ingame_frame(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    load_once(app);
+    let Some(mut s) = app.overlay.ingame.take() else { return };
+    let t = app.prefs.theme.clone();
+    s.theme(&t);
+    // Opened or closed here (tray, a game's dialog request): tell the game.
+    s.set_open(app.overlay.open);
+    let active = app.overlay.open;
+    let draw = active || app.overlay.any_pinned();
+    let mut close = false;
+    s.run(ctx, draw, |ui| close |= content(app, ui, &t, actions, active));
+    if close {
+        app.overlay.open = false;
+    }
+    s.set_open(app.overlay.open);
+    app.overlay.ingame = Some(s);
+}
+
+/// eframe runs the main window's frames at most every 100 ms while it's
+/// minimized or in the tray, which is how it usually is during a game: the
+/// in-game overlay would run at 10 fps. So a 1×1 helper window that never
+/// takes focus or shows in the taskbar gets the frames instead, and runs the
+/// in-game overlay at full speed.
+fn keep_ticking(app: &mut SteamApp, ctx: &egui::Context) {
+    // Without real windows the callback would run inside this frame, while
+    // `app` is borrowed: the main window's frames have to do then.
+    if ctx.embed_viewports() {
+        return;
+    }
+    struct AppPtr(*mut SteamApp);
+    // SAFETY: only used on the UI thread (see below).
+    unsafe impl Send for AppPtr {}
+    unsafe impl Sync for AppPtr {}
+    impl AppPtr {
+        fn get(&self) -> *mut SteamApp {
+            self.0
+        }
+    }
+    let app = AppPtr(app);
+    let builder = egui::ViewportBuilder::default()
+        .with_title("SteamInRust overlay timer")
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_taskbar(false)
+        .with_active(false)
+        .with_resizable(false)
+        .with_mouse_passthrough(true)
+        .with_position(egui::pos2(0.0, 0.0))
+        .with_inner_size(egui::vec2(1.0, 1.0));
+    ctx.show_viewport_deferred(crate::ingame::tick(), builder, move |ui, _| {
+        // SAFETY: eframe calls a deferred viewport's callback on the UI
+        // thread in its own frame, never inside `App::ui` (viewports aren't
+        // embedded, checked above), and the app outlives its viewports.
+        let app = unsafe { &mut *app.get() };
+        let ctx = ui.ctx().clone();
+        poll_ingame(app, &ctx);
+        // Window commands from here would go to this helper window, so
+        // actions wait for the main window's next frame.
+        let mut actions = std::mem::take(&mut app.overlay.pending);
+        ingame_frame(app, &ctx, &mut actions);
+        app.overlay.pending = actions;
+        if !app.overlay.pending.is_empty() {
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+        }
+    });
+}
+
 pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    actions.append(&mut app.overlay.pending);
+    poll_ingame(app, ctx);
     // Shift+Tab belongs to the game only while the game is in front.
     if let Some((id, _)) = app.overlay.game {
         let dir = app.local.games.iter().find(|g| g.app_id == id).map(|g| g.install_dir.clone());
@@ -271,24 +407,13 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         app.overlay.toggle();
     }
     let active = app.overlay.open;
+    let ingame = app.overlay.ingame.is_some();
     // Pinned windows only float over the game, not over other apps.
-    if !active && !(app.overlay.any_pinned() && app.overlay.game_front) {
+    if !ingame && !active && !(app.overlay.any_pinned() && app.overlay.game_front) {
         app.overlay.passthrough = None;
         return;
     }
-    // What the overview and achievements need, once per game session.
-    if active && !app.overlay.asked {
-        app.overlay.asked = true;
-        if let Some((id, _)) = app.overlay.game {
-            if !app.state.achievement_list.contains_key(&id) {
-                app.client.send(Command::LoadAchievements { app_id: id, language: i18n::language().steam_name().into() });
-            }
-            let me = app.state.steam_id;
-            if me != 0 && !app.state.player_games.contains_key(&me) {
-                app.client.send(Command::LoadPlayerGames { steam_id: me, language: i18n::language().steam_name().into() });
-            }
-        }
-    }
+    load_once(app);
     if let (Some(what), Some((id, _))) = (app.overlay.preview.take(), app.overlay.game) {
         use crate::builtin::hub::{HubTab, View};
         match what.as_str() {
@@ -300,6 +425,12 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         }
     }
     let t = app.prefs.theme.clone();
+    // Drawn inside the game: run the overlay's UI on the game's input.
+    if app.overlay.ingame.is_some() {
+        ingame_frame(app, ctx, actions);
+        keep_ticking(app, ctx);
+        return;
+    }
     let viewport = egui::ViewportId::from_hash_of("steam-rs-overlay");
     // Not true fullscreen: Windows turns a window that exactly covers the
     // screen into exclusive fullscreen, which drops transparency (the game
@@ -326,27 +457,34 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
             app.overlay.focused = true;
         }
-        let close = active && ui.input(|i| i.key_pressed(Key::Escape) || (i.modifiers.shift && i.key_pressed(Key::Tab)) || i.viewport().close_requested());
-        // Dim the game, like Steam does (nothing but pinned windows when closed).
-        let fill = if active { Color32::from_black_alpha(150) } else { Color32::TRANSPARENT };
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(fill)).show(ui, |ui| {
-            if active {
-                top_strip(app, ui, &t);
-            }
-        });
-        let ctx = ui.ctx().clone();
-        overview_window(app, &ctx, &t);
-        achievements_window(app, &ctx, &t);
-        friends_window(app, &ctx, &t, actions);
-        chat_window(app, &ctx, &t, actions);
-        notes_window(app, &ctx, &t);
-        community_window(app, &ctx, &t, actions);
-        store_window(app, &ctx, &t, actions);
-        if close {
+        if content(app, ui, &t, actions, active) {
             app.overlay.close();
         }
-        ctx.request_repaint_after(std::time::Duration::from_secs(1));
     });
+}
+
+/// The overlay itself: the dimmed game, the top bar and the windows. Shared
+/// by the window overlay and the in-game one. Returns true to close.
+fn content(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>, active: bool) -> bool {
+    let close = active && ui.input(|i| i.key_pressed(Key::Escape) || (i.modifiers.shift && i.key_pressed(Key::Tab)) || i.viewport().close_requested());
+    // Dim the game, like Steam does (nothing but pinned windows when closed).
+    let fill = if active { Color32::from_black_alpha(150) } else { Color32::TRANSPARENT };
+    egui::CentralPanel::default().frame(egui::Frame::new().fill(fill)).show(ui, |ui| {
+        if active {
+            top_strip(app, ui, t);
+        }
+    });
+    let ctx = ui.ctx().clone();
+    overview_window(app, &ctx, t);
+    achievements_window(app, &ctx, t);
+    friends_window(app, &ctx, t, actions);
+    chat_window(app, &ctx, t, actions);
+    notes_window(app, &ctx, t);
+    community_window(app, &ctx, t, actions);
+    store_window(app, &ctx, t, actions);
+    // The clock and session time.
+    ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    close
 }
 
 /// Local time as HH:MM.
@@ -761,7 +899,10 @@ fn friends_window(app: &mut SteamApp, ctx: &egui::Context, t: &Theme, actions: &
 
 fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: &mut Vec<Action>) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
-    let hover = resp.hovered() || resp.context_menu_opened();
+    // The pointer anywhere on the row, its quick buttons included: those take
+    // the hover from the row, and checking the row alone made them flicker.
+    let over = ui.rect_contains_pointer(rect);
+    let hover = over || resp.hovered() || resp.context_menu_opened();
     if hover || app.overlay.chat_with == Some(p.steam_id) {
         ui.painter().rect_filled(rect, t.corner_small(), t.surface_hover);
     }
@@ -783,10 +924,11 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
         ui.painter().circle_filled(c, 9.0, t.accent);
         ui.painter().text(c, Align2::CENTER_CENTER, unread.to_string(), w::font_bold(10.5), Color32::WHITE);
     }
-    // Quick actions on hover, like Steam's overlay.
-    let game = app.overlay.game.map(|g| g.0);
-    let mut invite = false;
-    if resp.hovered() && unread == 0 {
+    // Quick actions on hover, like Steam's overlay. The invite matches what
+    // the game reports: its lobby, its match (join string), or just the game.
+    let options = crate::shell::invite_options(&app.state);
+    let mut invite = None;
+    if over && unread == 0 {
         let mut x = rect.right() - 6.0;
         let mut button = |ui: &mut Ui, icon: &str, tip: &str| -> bool {
             let r = Rect::from_center_size(pos2(x - 14.0, rect.center().y), vec2(28.0, 28.0));
@@ -796,8 +938,10 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
             ui.painter().text(r.center(), Align2::CENTER_CENTER, icon, w::font(14.0), if b.hovered() { t.on_accent } else { t.text });
             b.on_hover_text(tip).clicked()
         };
-        if game.is_some() && button(ui, icons::USER_PLUS, t!("Invite to play")) {
-            invite = true;
+        if let Some((best, label)) = options.first() {
+            if button(ui, icons::USER_PLUS, label) {
+                invite = Some(best.clone());
+            }
         }
         if button(ui, icons::CHAT, t!("Send a message")) {
             open_chat(app, p.steam_id, actions);
@@ -812,24 +956,19 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
             open_chat(app, p.steam_id, actions);
             ui.close();
         }
-        if game.is_some() && ui.button(format!("{}  {}", icons::USER_PLUS, t!("Invite to play"))).clicked() {
-            invite = true;
-            ui.close();
+        for (option, label) in &options {
+            if ui.button(format!("{}  {}", icons::USER_PLUS, label)).clicked() {
+                invite = Some(option.clone());
+                ui.close();
+            }
         }
         if ui.button(format!("{}  {}", icons::USER_CIRCLE, t!("View profile"))).clicked() {
             actions.push(Action::Navigate { page: "profile".into(), arg: Some(p.steam_id.to_string()) });
             ui.close();
         }
     });
-    if invite {
-        if let Some(id) = game {
-            // Steam's own invites come from inside the game (its lobby); this
-            // sends a link that starts the game for them.
-            let name = app.state.app_name(id).unwrap_or("").to_string();
-            let text = t!("Play {game} with me! steam://run/{id}", game = name, id = id);
-            app.client.send(Command::SendMessage { to: p.steam_id, text });
-            actions.push(Action::Toast(if offline { t!("Invite sent. {name} will see it when they come online.", name = p.name) } else { t!("Invite sent to {name}", name = p.name) }));
-        }
+    if let Some(invite) = invite {
+        crate::shell::send_invite(app, p, invite, actions);
     }
 }
 
@@ -853,7 +992,7 @@ fn chat_window(app: &mut SteamApp, ctx: &egui::Context, t: &Theme, actions: &mut
         ui.add_space(6.0);
         // Exactly the space the window has, so it never grows by itself.
         let h = ui.available_height();
-        crate::builtin::community::chat_body(ui, t, &app.state, &app.client, id, &mut app.overlay.input, h);
+        actions.extend(crate::builtin::community::chat_body(ui, t, &app.state, &app.client, id, &mut app.overlay.input, h));
     });
     if !app.overlay.win(Win::Chat).open {
         app.overlay.chat_with = None;

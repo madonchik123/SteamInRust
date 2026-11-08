@@ -1209,6 +1209,178 @@ pub struct ChatMessage {
     pub text: String,
     /// Unix seconds.
     pub time: u64,
+    /// A game invite (Steam's `[gameinvite]`, or an older SteamInRust
+    /// "steam://run" link), shown as a card with a Join button.
+    #[serde(default)]
+    pub invite: Option<GameInvite>,
+}
+
+/// "Come play with me": which game, and how to join the inviter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameInvite {
+    pub app_id: AppId,
+    /// Launch arguments that join the inviter (`+connect_lobby 123`,
+    /// `+invite 456 …`); empty to just start the game.
+    pub connect: String,
+}
+
+impl GameInvite {
+    /// A link that starts the game with the join arguments, for invites in
+    /// chat. (Steam strips `[gameinvite]` markup that doesn't come from its
+    /// own client, so we can't send that; lobby invites go through the
+    /// lobby itself and Steam writes their chat message.) Any Steam client
+    /// opens it; ours shows it as an invite card.
+    pub fn link(&self) -> String {
+        if self.connect.is_empty() {
+            return format!("steam://run/{}", self.app_id);
+        }
+        let mut args = String::new();
+        for b in self.connect.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'+' | b':' => args.push(b as char),
+                _ => args.push_str(&format!("%{b:02X}")),
+            }
+        }
+        format!("steam://run/{}//{args}", self.app_id)
+    }
+}
+
+/// Steam chat markup ("BBCode") to plain text plus a game invite, if any.
+pub mod chat {
+    use super::GameInvite;
+
+    /// `name="value"` (or `name=value`) from inside a tag.
+    fn attr(tag: &str, name: &str) -> Option<String> {
+        let mut from = 0;
+        while let Some(i) = tag[from..].find(name).map(|i| i + from) {
+            from = i + name.len();
+            let starts_word = tag[..i].chars().last().is_none_or(|c| c.is_whitespace());
+            let Some(v) = tag[from..].strip_prefix('=') else { continue };
+            if !starts_word {
+                continue;
+            }
+            return Some(match v.strip_prefix('"') {
+                Some(q) => q.split('"').next().unwrap_or("").to_string(),
+                None => v.split(char::is_whitespace).next().unwrap_or("").to_string(),
+            });
+        }
+        None
+    }
+
+    fn invite_from(tag: &str) -> Option<GameInvite> {
+        let app_id = attr(tag, "appid")?.parse().ok()?;
+        let mut connect = attr(tag, "connect").unwrap_or_default();
+        if connect.is_empty() {
+            if let Some(lobby) = attr(tag, "lobbyid").filter(|l| !l.is_empty() && l != "0") {
+                connect = format!("+connect_lobby {lobby}");
+            }
+        }
+        Some(GameInvite { app_id, connect })
+    }
+
+    /// Plain text for display, and the invite in it. Tags are dropped and
+    /// their inside kept (emoticons become `:name:`).
+    pub fn parse(raw: &str) -> (String, Option<GameInvite>) {
+        let mut out = String::new();
+        let mut invite = None;
+        let mut rest = raw;
+        while let Some(c) = rest.chars().next() {
+            // Steam escapes a literal "[" as "\[".
+            if let Some(after) = rest.strip_prefix("\\[").or_else(|| rest.strip_prefix("\\\\")) {
+                out.push(rest.as_bytes()[1] as char);
+                rest = after;
+                continue;
+            }
+            if c == '[' {
+                if let Some(end) = rest.find(']') {
+                    let tag = &rest[1..end];
+                    let closing = tag.starts_with('/');
+                    let name = tag.trim_start_matches('/').split(|c: char| c.is_whitespace() || c == '=').next().unwrap_or("");
+                    if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                        match name {
+                            "gameinvite" | "lobbyinvite" if !closing => invite = invite.or_else(|| invite_from(tag)),
+                            "emoticon" => out.push(':'),
+                            "sticker" if !closing => out.push_str(&format!("[{}]", attr(tag, "type").unwrap_or_else(|| "sticker".into()))),
+                            _ => {}
+                        }
+                        rest = &rest[end + 1..];
+                        continue;
+                    }
+                }
+            }
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+        let text = out.trim().to_string();
+        // SteamInRust's invites: "Play X with me! steam://run/123//+args".
+        if invite.is_none() {
+            invite = link_invite(&text);
+        }
+        (text, invite)
+    }
+
+    /// The invite in a `steam://run/<app>[//<args>]` link, if any.
+    fn link_invite(text: &str) -> Option<GameInvite> {
+        let at = text.find("steam://run/")?;
+        let rest = &text[at + 12..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let app_id = digits.parse().ok()?;
+        let args = rest[digits.len()..].strip_prefix("//").unwrap_or("");
+        let args = args.split(char::is_whitespace).next().unwrap_or("");
+        // Percent-decoded launch arguments.
+        let mut bytes = Vec::new();
+        let raw = args.as_bytes();
+        let mut i = 0;
+        while i < raw.len() {
+            match (raw[i], raw.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok())) {
+                (b'%', Some(b)) => {
+                    bytes.push(b);
+                    i += 3;
+                }
+                (b, _) => {
+                    bytes.push(b);
+                    i += 1;
+                }
+            }
+        }
+        Some(GameInvite { app_id, connect: String::from_utf8_lossy(&bytes).into_owned() })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn steam_invites() {
+            let (text, inv) = parse(r#"[gameinvite  appid="570" connect="+invite 30095787509687845 -launchsource2"][/gameinvite]"#);
+            assert_eq!(text, "");
+            assert_eq!(inv, Some(GameInvite { app_id: 570, connect: "+invite 30095787509687845 -launchsource2".into() }));
+            let (_, inv) = parse(r#"[lobbyinvite appid="477160" lobbyid="109775241000000001"][/lobbyinvite]"#);
+            assert_eq!(inv.unwrap().connect, "+connect_lobby 109775241000000001");
+        }
+
+        #[test]
+        fn links() {
+            let me = GameInvite { app_id: 10, connect: "+connect_lobby 1234 -x \"a b\"".into() };
+            assert_eq!(me.link(), "steam://run/10//+connect_lobby%201234%20-x%20%22a%20b%22");
+            assert_eq!(parse(&format!("Join me! {}", me.link())).1, Some(me));
+            let plain = GameInvite { app_id: 477160, connect: String::new() };
+            assert_eq!(plain.link(), "steam://run/477160");
+            assert_eq!(parse("Play it with me! steam://run/477160 now").1, Some(plain));
+        }
+
+        #[test]
+        fn plain_text() {
+            assert_eq!(parse("hi [emoticon]steamhappy[/emoticon] there").0, "hi :steamhappy: there");
+            assert_eq!(parse(r"a \[b] c").0, "a [b] c");
+            assert_eq!(parse("[url=https://x.y]link[/url]").0, "link");
+            assert_eq!(parse("1 [ 2").0, "1 [ 2");
+            assert_eq!(parse("no tags").1, None);
+            let (text, inv) = parse("Сыграем в Human Fall Flat? steam://run/477160");
+            assert_eq!(text, "Сыграем в Human Fall Flat? steam://run/477160");
+            assert_eq!(inv, Some(GameInvite { app_id: 477160, connect: String::new() }));
+        }
+    }
 }
 
 /// Image URLs on Valve's public CDN.
