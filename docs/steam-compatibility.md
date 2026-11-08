@@ -43,15 +43,19 @@ example a game the official client starts while the registry briefly points
 at us), it loads Valve's real `steamclient64.dll` and forwards every call, so
 that game talks to real Steam.
 
-Interface layouts were taken from the flat-API thunks of real
-`steam_api64.dll` files (SDK 1.57 and 1.62), slot by slot, including MSVC's
-reversed order for overloads (`GetStatFloat` before `GetStatInt32`).
-Supported versions: `SteamClient017/020/021`, `SteamUser021/023`,
-`SteamFriends017/018`, `SteamUtils010`, `STEAMAPPS…008`,
-`STEAMUSERSTATS…012/013`, `STEAMREMOTESTORAGE…014/016`,
-`SteamMatchMaking009`, `SteamNetworking006`, `SteamNetworkingUtils003/004`,
-`STEAMHTTP…003`, `STEAMUGC…015/016/021` and the rest of those SDKs as stubs.
-Other versions of a known interface use the nearest known layout.
+Interface layouts were read from the flat-API wrappers
+(`SteamAPI_ISteamX_Method` → `call [vtable+offset]`) of the `steam_api.dll`
+and `steam_api64.dll` of 22 Steamworks SDK releases (the redistributables
+Steamworks.NET ships with each release, SDK 1.3x to 1.6x) and games on the
+dev PC: 91 interface versions, every one with the same slots on both
+bitnesses and, for 32-bit, the bytes each method pops. Two details matter:
+MSVC puts overloads in reverse order (`GetStatFloat` before
+`GetStatInt32`), and a few exports are inline helpers that call another
+method (`InitRelayNetworkAccess` calls `CheckPingDataUpToDate`,
+`SetGlobalConfigValue*` call `SetConfigValue`), so the slot belongs to the
+method they call. Valve sometimes appended methods without a new version
+number; the tables keep the longest list. Versions older than all of these
+(`SteamClient014–016`) use the nearest layout.
 
 ### 32-bit games
 
@@ -153,9 +157,48 @@ While developing, the launcher also finds
 - **HTTP** (`ISteamHTTP`): requests made by SteamInRust for the game (GET,
   POST, …; headers, parameters, raw bodies, timeouts; body and headers of
   the answer; `HTTPRequestCompleted_t`).
-- **Installed Workshop items** (`ISteamUGC`): the subscribed list, item
-  state and install folder from `steamapps/workshop/content/<app>`, so games
-  that load mods that way find them.
+- **Networking sockets and messages** (`ISteamNetworkingSockets`,
+  `ISteamNetworkingMessages`, the networking utils games wait on): P2P
+  connections by Steam ID and virtual port (listen, connect, accept, close,
+  status callbacks, reliable and unreliable messages up to 512 KB, poll
+  groups, real-time status with measured ping, socket pairs, connecting to
+  yourself) and per-user message sessions with their request/failed
+  callbacks, over the same direct UDP link as `ISteamNetworking`.
+  GameNetworkingSockets-style config callbacks (function pointers set with
+  `SetConfigValue`) run during `SteamAPI_RunCallbacks`. Tested with two
+  processes and two made-up players (`p2p_pair` example), including a
+  200 KB message.
+- **Workshop** (`ISteamUGC`): queries (a user's lists, all items ranked or
+  by text, tags, tag groups, key-value tags, dates, page or cursor, details
+  by id) with every result getter; the player's subscriptions;
+  subscribe/unsubscribe, favorites and votes; item downloads into
+  `steamapps/workshop/content/<app>/<item>` from the content servers (or a
+  legacy item's file URL) with `DownloadItemResult_t` / `ItemInstalled_t`.
+  Subscribed items missing on disk download when the game first asks for
+  its subscriptions, like Steam does. Tested on Spacewar's Workshop: 50 of
+  6325 items with details, one downloaded.
+- **Inventory** (`ISteamInventory`): the player's items (all, or by id) with
+  their properties, playtime drops, promo items, consuming, crafting
+  (`ExchangeItems`), stack splits and merges, dynamic property updates,
+  `SerializeResult`. Tested: Spacewar's 7 items on the test account.
+- **Server browser** (`ISteamMatchmakingServers`): internet lists from
+  Steam's master server, each server then asked for its state and ping with
+  A2S_INFO; LAN lists by broadcast; ping, player and rules queries. Results
+  reach the game's response objects on its thread. Tested: 2185 Team
+  Fortress 2 servers, 1770 answering with real pings; players and rules of
+  one server.
+- **Screenshots** (`ISteamScreenshots`): `WriteScreenshot` and
+  `AddScreenshotToLibrary` save a JPEG and thumbnail into
+  `userdata/<account>/760/remote/<app>/screenshots`; `TriggerScreenshot`
+  asks the game when it hooked screenshots, else captures the game's window.
+- **Steam Input** (`ISteamInput`, `ISteamController`): Xbox-style pads
+  through XInput, mapped to the game's actions by its Steam Input bindings:
+  the player's own config, their Workshop choice per controller type, a
+  config the game ships, or the game's official configs from its app info.
+  Action sets and layers, digital and analog actions, origins, rumble.
+  Without bindings no controller is reported, so the game keeps its own
+  controller support. Tested: Spacewar's bindings found and parsed (no pad
+  was connected for a button test).
 - **Callbacks and call results**: both the `Steam_BGetCallback` path
   (steam_api's manual dispatch) and `ISteamUtils::GetAPICallResult`.
 
@@ -170,12 +213,35 @@ While developing, the launcher also finds
   `P2PSessionConnectFail_t` (timeout). Between two SteamInRust players it
   works directly; behind two strict (symmetric) NATs hole punching can fail,
   and there's no relay to fall back on.
-- **ISteamNetworkingSockets / ISteamNetworkingMessages** (the newer
-  networking APIs): stubs ("invalid handle"). Games built only on these
-  can't connect yet.
-- **Workshop queries and publishing, inventory, screenshots, Steam Input,
-  the overlay**: stubs. Global stats (`RequestGlobalStats`): "failed".
-- **Game servers** started in-process get an anonymous, offline server.
+  Why there's no way around it: on Steam, P2P connections are set up and
+  carried through Valve's relays and authenticated with certificates
+  Valve signs; the client side of that relay protocol isn't published, and
+  an official client never tries a direct link to an endpoint that doesn't
+  speak it.
+- **Connecting by IP address** (`ConnectByIPAddress`, dedicated servers):
+  Steam's sockets speak Valve's encrypted UDP protocol to those servers;
+  SteamInRust doesn't implement it, so these connections fail at once with
+  a clear end reason instead of hanging. Listen sockets by IP get only P2P
+  connections.
+- **Game servers** (`ISteamGameServer`): hosting a server Steam lists needs
+  its own anonymous game-server sign-in to Steam and callbacks routed to the
+  server's pipe; not done yet, so in-process servers stay anonymous and
+  offline.
+- **Workshop publishing** (`CreateItem`, `SubmitItemUpdate`) fails with
+  k_EResultFail.
+- **Inventory**: item definitions need a digest Steam's Inventory service
+  refuses to a client session (tested while playing too), so
+  `GetItemDefinitionIDs` finds none yet; buying items needs Steam's overlay
+  checkout; another player's serialized result can't be checked (Valve's
+  signature), so `DeserializeResult` reports k_EResultFail.
+- **Screenshots** stay on this PC: Steam's client uploads them and lists
+  them in its own index.
+- **Steam Input**: gyro, trackpads, mouse modes, haptics other than rumble
+  and the binding panel (Steam's overlay configurator).
+- **Server browser**: friends, favorites, history and spectator lists come
+  back empty.
+- **The overlay**: SteamInRust's own Shift+Tab overlay, not Steam's. Global
+  stats (`RequestGlobalStats`): "failed".
 - **Joining from the friends list** (`GameLobbyJoinRequested_t`,
   `+connect_lobby`) isn't wired to SteamInRust's friends list yet; join from
   the game's own lobby browser.
@@ -245,7 +311,17 @@ start the game" (Steam may be showing an update or EULA prompt).
 - `crates/steamclient/examples/probe.rs`: a fake game that loads a real
   `steam_api64.dll` (or `steam_api.dll` when built for 32-bit) and prints
   what Steam answers. `--lobby`, `--ticket`, `--extras` (leaderboards,
-  percentages, avatar, HTTP), `--unlock`, `--stat`, `--cloud`.
+  percentages, avatar, HTTP), `--unlock`, `--stat`, `--cloud`,
+  `--sockets`. With `--direct <steamclient.dll> --test ugc|inventory|servers|input`
+  it loads our DLL without steam_api and checks one area through the
+  vtables (read-only on the account, except one Workshop item download).
+- `crates/client/examples/steamclient_attach.rs <appid> <dir> <probe> [args]`:
+  signs in and attaches the probe with `Command::AttachGame`, without
+  launching a game or reporting one as played (so a game running on
+  another PC isn't disturbed).
+- `crates/client/examples/p2p_pair.rs <probe> <dll>`: plays Steam for two
+  made-up players and runs two probes against each other over real UDP
+  (networking sockets and messages); no account needed.
 - `crates/client/examples/steamclient_test.rs <appid> <install dir>`: signs
   in with the saved account and starts a game exactly like the Play button.
   `STEAMINRUST_STEAMCLIENT64=<dll>` picks the DLL,

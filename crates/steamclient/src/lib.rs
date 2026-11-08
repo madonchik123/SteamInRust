@@ -20,16 +20,29 @@
 
 pub mod protocol;
 
+/// Vtable slot of an interface method (for test tools that call the DLL
+/// directly, like the probe example).
+#[doc(hidden)]
+pub fn slot_of(version: &str, method: &str) -> Option<usize> {
+    vt::layout(version)?.1.iter().position(|m| *m == method)
+}
+
 mod extras;
 mod ifaces;
+mod input;
+mod inventory;
 mod ipc;
 mod lobby;
 pub mod overlay;
 mod p2p;
+mod screenshots;
+mod servers;
+mod sns;
 mod state;
 mod tables;
 #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
 mod tables32;
+mod ugc;
 mod vt;
 mod win;
 
@@ -140,6 +153,9 @@ fn get_callback(_pipe: usize, msg: usize) -> usize {
     if msg.is_null() {
         return 0;
     }
+    // Networking callbacks the game set as functions run here, on its thread.
+    sns::run_callbacks();
+    state::run_game_thread_tasks();
     let mut g = state::lock();
     let Some((callback, data)) = g.queue.pop_front() else { return 0 };
     g.current = Some(data);
