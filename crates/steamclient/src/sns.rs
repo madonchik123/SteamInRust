@@ -1,34 +1,30 @@
 //! ISteamNetworkingSockets, ISteamNetworkingMessages and the parts of
-//! ISteamNetworkingUtils games wait on, between players who both run
-//! SteamInRust.
+//! ISteamNetworkingUtils games wait on.
 //!
-//! Valve's client carries these over the Steam Datagram Relay with
-//! Valve-signed certificates; that relay protocol is closed, so players on
-//! the official client can't be reached. Here connections ride on the same
-//! direct UDP endpoint as ISteamNetworking ([`crate::p2p`]), on two reserved
-//! channels:
-//!
-//! - sockets: CONNECT (their handle, virtual port) → ACCEPT or CLOSE, then
-//!   DATA addressed to the receiver's connection handle;
-//! - messages: DATA (channel) per user, sessions accepted like Steam does.
+//! Connections to other players speak Valve's own protocol ([`crate::gns`]):
+//! a Valve-signed certificate, ConnectRequest / ConnectOK in rendezvous
+//! signals through Steam, then encrypted SNP packets over ICE. So players
+//! on Valve's official client and SteamInRust players can connect to each
+//! other either way.
 //!
 //! Connecting to yourself (a host joining its own game) and socket pairs
 //! stay in-process. Connections by IP address (dedicated servers) would need
-//! Valve's encrypted UDP protocol and fail cleanly instead.
+//! Valve's UDP connect protocol and fail cleanly instead.
 
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+use crate::gns::conn::{Conn as Proto, Io, State as PState, VPORT_MESSAGES};
+use crate::gns::crypto::LocalCert;
+use crate::gns::engine::{self, Engine};
+use crate::gns::msg::Rendezvous;
 use crate::ifaces::{This, copy_out, put, slice};
 use crate::state::Bytes;
 use crate::vt::Fp;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_void};
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::net::SocketAddr;
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-
-/// Endpoint channels (far from the small numbers games use with ISteamNetworking).
-pub const CH_SOCKETS: i32 = 0x5349_4E53;
-pub const CH_MESSAGES: i32 = 0x5349_4E4D;
 
 // Callback ids and sizes (Windows packing).
 const CB_CONN_STATUS: i32 = 1221;
@@ -44,6 +40,7 @@ const REALTIME_STATUS: usize = 120;
 // ESteamNetworkingConnectionState
 const NONE: i32 = 0;
 const CONNECTING: i32 = 1;
+const FINDING_ROUTE: i32 = 2;
 const CONNECTED: i32 = 3;
 const CLOSED_BY_PEER: i32 = 4;
 const PROBLEM: i32 = 5;
@@ -51,13 +48,10 @@ const PROBLEM: i32 = 5;
 // ESteamNetConnectionEnd
 const END_APP: i32 = 1000;
 const END_MISC_GENERIC: i32 = 5001;
-const END_TIMEOUT: i32 = 5003;
-const END_REMOTE_TIMEOUT: i32 = 4001;
-const END_NAT: i32 = 5009;
-const END_NO_CONNECTION: i32 = 5010;
 
 // EResult
 const OK: i32 = 1;
+const FAIL: i32 = 2;
 const NO_CONNECTION: i32 = 3;
 const INVALID_PARAM: i32 = 8;
 const INVALID_STATE: i32 = 11;
@@ -66,16 +60,8 @@ const LIMIT_EXCEEDED: i32 = 25;
 /// ESteamNetworkingAvailability::Current.
 const AVAILABLE: i32 = 100;
 const SEND_RELIABLE: i32 = 8;
+const SEND_AUTO_RESTART: i32 = 32;
 const MAX_MESSAGE: usize = 512 * 1024;
-/// An unreliable message that fits one datagram; bigger ones go reliably.
-const MAX_UNRELIABLE: usize = 1000;
-/// How long an incoming connection waits for its listen socket.
-const LISTEN_WAIT: Duration = Duration::from_secs(10);
-
-const W_CONNECT: u8 = 1;
-const W_ACCEPT: u8 = 2;
-const W_CLOSE: u8 = 3;
-const W_DATA: u8 = 4;
 
 // ESteamNetworkingConfigValue callbacks and scopes.
 const CFG_CONN_STATUS: i32 = 201;
@@ -86,9 +72,6 @@ const CFG_SESSION_FAILED: i32 = 205;
 const SCOPE_LISTEN: i32 = 3;
 const SCOPE_CONNECTION: i32 = 4;
 const TYPE_PTR: i32 = 5;
-
-/// A datagram for the endpoint: (peer, channel, reliable, bytes).
-pub type Out = (u64, i32, bool, Vec<u8>);
 
 /// A received message, before it becomes a SteamNetworkingMessage_t.
 #[derive(Debug, Clone, PartialEq)]
@@ -105,8 +88,6 @@ pub struct Received {
 #[derive(Default)]
 struct Conn {
     peer: u64,
-    /// The other side's handle for this connection (0 until known).
-    remote: u32,
     vport: i32,
     listen: u32,
     state: i32,
@@ -119,10 +100,10 @@ struct Conn {
     /// The other end of a socket pair or of a connection to ourselves.
     local: u32,
     inbox: VecDeque<Received>,
-    outbox: VecDeque<(bool, Vec<u8>)>,
     sent: i64,
     received: i64,
-    since: Option<Instant>,
+    /// Valve's protocol, for a connection to another player.
+    proto: Option<Box<Proto>>,
 }
 
 struct Listen {
@@ -138,6 +119,7 @@ struct Session {
     received: i64,
     /// Messages per local channel; held back until the session is accepted.
     inbox: HashMap<i32, VecDeque<Received>>,
+    proto: Option<Box<Proto>>,
 }
 
 /// Global config callbacks, by ESteamNetworkingConfigValue.
@@ -157,12 +139,13 @@ pub struct Net {
     conns: HashMap<u32, Conn>,
     listens: HashMap<u32, Listen>,
     groups: HashMap<u32, ()>,
-    /// Incoming CONNECTs waiting for a listen socket: (peer, their handle, vport, since).
-    waiting: Vec<(u64, u32, i32, Instant)>,
     sessions: HashMap<u64, Session>,
     callbacks: Callbacks,
     /// Callbacks for the game: (callback id, bytes, config function or 0).
     pub events: Vec<(i32, Vec<u8>, usize)>,
+    engine: Option<Engine>,
+    /// Rendezvous signals to send once the lock is released.
+    signals: Vec<(u64, Vec<u8>)>,
 }
 
 fn reliable(flags: i32) -> bool {
@@ -195,8 +178,52 @@ fn steam_id_of(p: *const u8) -> u64 {
     if i32_at(d, 0) == Some(16) { u64::from_le_bytes(d[8..16].try_into().unwrap()) } else { 0 }
 }
 
+fn app_state(s: PState) -> i32 {
+    match s {
+        PState::Connecting => CONNECTING,
+        PState::FindingRoute => FINDING_ROUTE,
+        PState::Connected => CONNECTED,
+        PState::ClosedByPeer => CLOSED_BY_PEER,
+        PState::Problem => PROBLEM,
+        PState::Closed => NONE,
+    }
+}
+
+/// The 5-byte header ISteamNetworkingMessages puts on every message.
+fn messages_frame(channel: i32, data: &[u8]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(data.len() + 5);
+    m.push(1);
+    m.extend_from_slice(&channel.to_le_bytes());
+    m.extend_from_slice(data);
+    m
+}
+
+/// SteamNetworkingIPAddr (IPv6-mapped address, port) at 148 in SteamNetConnectionInfo_t.
+fn put_addr(b: &mut Bytes, a: Option<SocketAddr>) {
+    if let Some(SocketAddr::V4(a)) = a {
+        let mut ip = [0u8; 18];
+        ip[10] = 0xff;
+        ip[11] = 0xff;
+        ip[12..16].copy_from_slice(&a.ip().octets());
+        ip[16..].copy_from_slice(&a.port().to_le_bytes());
+        b.put_bytes(148, &ip);
+    }
+}
+
+/// SteamNetConnectionInfo_t for a session (ISteamNetworkingMessages).
+fn session_info(peer: u64, state: i32, reason: i32, debug: &str, p: Option<&Proto>) -> Vec<u8> {
+    let mut b = Bytes::new(INFO);
+    b.put_bytes(0, &identity(peer)).i32(176, state).i32(180, reason).str(184, 128, debug);
+    if let Some(p) = p {
+        b.str(312, 128, &format!("#{} P2P steamid:{} (messages)", p.local_id, peer));
+        put_addr(&mut b, p.remote_addr());
+        b.i32(440, if p.remote_trusted { 0 } else { 2 });
+    }
+    b.0
+}
+
 impl Net {
-    pub fn new(me: u64) -> Self {
+    pub fn new(me: u64, with_network: bool) -> Self {
         Net {
             me,
             next: 0x51_0000 + (std::process::id() & 0xFFFF),
@@ -204,10 +231,11 @@ impl Net {
             conns: HashMap::new(),
             listens: HashMap::new(),
             groups: HashMap::new(),
-            waiting: Vec::new(),
             sessions: HashMap::new(),
             callbacks: Callbacks::default(),
             events: Vec::new(),
+            engine: with_network.then(Engine::start),
+            signals: Vec::new(),
         }
     }
 
@@ -225,10 +253,22 @@ impl Net {
             b.put_bytes(0, &identity(c.peer));
             b.u64(136, c.user_data as u64).u32(144, c.listen);
             b.i32(176, c.state).i32(180, c.end_reason).str(184, 128, &c.end_debug);
-            let desc = if c.name.is_empty() { format!("#{h} P2P steamid:{} vport {}", c.peer, c.vport) } else { c.name.clone() };
+            let desc = if !c.name.is_empty() {
+                c.name.clone()
+            } else if let Some(p) = &c.proto {
+                format!("#{} P2P steamid:{} vport {}", p.local_id, c.peer, c.vport)
+            } else {
+                format!("#{h} P2P steamid:{} vport {}", c.peer, c.vport)
+            };
             b.str(312, 128, &desc);
-            // Unencrypted: the link is direct UDP, not Valve's encrypted transport.
-            b.i32(440, 2);
+            put_addr(&mut b, c.proto.as_ref().and_then(|p| p.remote_addr()));
+            // Flags: 2 = unauthenticated (peer's cert isn't Valve's), 4 = unencrypted.
+            let flags = match &c.proto {
+                Some(p) if p.remote_trusted => 0,
+                Some(_) => 2,
+                None => 2 | 4,
+            };
+            b.i32(440, flags);
         }
         b.0
     }
@@ -252,34 +292,122 @@ impl Net {
     }
 
     fn session_failed(&mut self, peer: u64, reason: i32, debug: &str) {
-        let mut b = Bytes::new(INFO);
-        b.put_bytes(0, &identity(peer)).i32(176, PROBLEM).i32(180, reason).str(184, 128, debug);
-        self.events.push((CB_SESSION_FAILED, b.0, self.callbacks.session_failed));
+        let info = session_info(peer, PROBLEM, reason, debug, None);
+        self.events.push((CB_SESSION_FAILED, info, self.callbacks.session_failed));
+    }
+
+    /// Pass a protocol connection's news (state, messages) to the app.
+    fn sync(&mut self, h: u32) {
+        let Some(c) = self.conns.get_mut(&h) else { return };
+        let Some(p) = c.proto.as_mut() else { return };
+        let msgs: Vec<_> = p.snp.inbox.drain(..).collect();
+        let news = std::mem::take(&mut p.changed).then(|| (app_state(p.state), p.end_reason as i32, p.end_debug.clone()));
+        for m in msgs {
+            self.arrival += 1;
+            c.received += 1;
+            if c.inbox.len() < 65536 {
+                c.inbox.push_back(Received { conn: h, peer: c.peer, data: m.data, number: m.num, channel: 0, user_data: c.user_data, arrival: self.arrival });
+            }
+        }
+        if let Some((state, reason, debug)) = news {
+            self.set_state(h, state, reason, &debug);
+        }
+    }
+
+    fn sync_session(&mut self, peer: u64) {
+        let Some(s) = self.sessions.get_mut(&peer) else { return };
+        let Some(p) = s.proto.as_mut() else { return };
+        for m in p.snp.inbox.drain(..) {
+            if m.data.len() < 5 {
+                continue;
+            }
+            let ch = i32::from_le_bytes(m.data[1..5].try_into().unwrap());
+            self.arrival += 1;
+            s.received += 1;
+            let q = s.inbox.entry(ch).or_default();
+            if q.len() < 65536 {
+                q.push_back(Received { conn: 0, peer, data: m.data[5..].to_vec(), number: m.num, channel: ch, user_data: 0, arrival: self.arrival });
+            }
+        }
+        let ended = std::mem::take(&mut p.changed) && matches!(p.state, PState::ClosedByPeer | PState::Problem);
+        let (r, d) = (p.end_reason as i32, p.end_debug.clone());
+        let ask = !s.accepted && !s.asked && p.state == PState::Connecting && !p.client;
+        let fail = ended && !s.failed;
+        if fail {
+            s.failed = true;
+        }
+        if ask {
+            s.asked = true;
+        }
+        if fail {
+            crate::log!("sns: messages session with {peer} ended ({r} {d})");
+            self.session_failed(peer, r, &d);
+        }
+        if ask {
+            self.events.push((CB_SESSION_REQUEST, identity(peer), self.callbacks.session_request));
+        }
+    }
+
+    /// Run a protocol step on connection `h` with the network at hand.
+    fn on_proto(&mut self, h: u32, f: impl FnOnce(&mut Proto, &mut dyn Io)) {
+        let Net { conns, engine, signals, .. } = self;
+        let (Some(c), Some(e)) = (conns.get_mut(&h), engine.as_ref()) else { return };
+        if let Some(p) = c.proto.as_mut() {
+            f(p, &mut e.io(signals));
+        }
+        self.sync(h);
+    }
+
+    fn on_session(&mut self, peer: u64, f: impl FnOnce(&mut Proto, &mut dyn Io)) {
+        let Net { sessions, engine, signals, .. } = self;
+        let (Some(s), Some(e)) = (sessions.get_mut(&peer), engine.as_ref()) else { return };
+        if let Some(p) = s.proto.as_mut() {
+            f(p, &mut e.io(signals));
+        }
+        self.sync_session(peer);
     }
 
     // ------------------------------------------------------------ sockets
 
-    pub fn listen(&mut self, vport: i32, callback: usize) -> (u32, Vec<Out>) {
+    pub fn listen(&mut self, vport: i32, callback: usize) -> u32 {
         let h = self.handle();
         self.listens.insert(h, Listen { vport, callback });
-        // Connections that arrived before the socket existed.
-        let mut out = Vec::new();
-        let ready: Vec<(u64, u32, i32, Instant)> = self.waiting.iter().filter(|w| w.2 == vport).cloned().collect();
-        self.waiting.retain(|w| w.2 != vport);
-        for (peer, theirs, vport, _) in ready {
-            out.extend(self.incoming(peer, theirs, vport));
-        }
-        (h, out)
+        h
     }
 
-    pub fn connect(&mut self, peer: u64, vport: i32, callback: usize) -> (u32, Vec<Out>) {
+    pub fn connect(&mut self, peer: u64, vport: i32, callback: usize, cert: Option<Arc<LocalCert>>) -> u32 {
         let h = self.handle();
-        self.conns.insert(h, Conn { peer, vport, callback, since: Some(Instant::now()), ..Default::default() });
+        if peer == self.me {
+            return self.connect_self(h, vport, callback);
+        }
+        let now = Instant::now();
+        let proto = cert.map(|c| Box::new(Proto::connect(self.me, peer, vport, vport, c, now)));
+        let has = proto.is_some();
+        self.conns.insert(h, Conn { peer, vport, callback, proto, ..Default::default() });
         self.set_state(h, CONNECTING, 0, "");
-        let mut m = vec![W_CONNECT];
-        m.extend_from_slice(&h.to_le_bytes());
-        m.extend_from_slice(&vport.to_le_bytes());
-        (h, vec![(peer, CH_SOCKETS, true, m)])
+        if !has || self.engine.is_none() {
+            self.set_state(h, PROBLEM, END_MISC_GENERIC, "networking isn't available");
+            return h;
+        }
+        self.on_proto(h, |p, io| p.poll(now, io));
+        h
+    }
+
+    /// A host connecting to its own listen socket: two linked local ends.
+    fn connect_self(&mut self, h: u32, vport: i32, callback: usize) -> u32 {
+        let me = self.me;
+        self.conns.insert(h, Conn { peer: me, vport, callback, ..Default::default() });
+        self.set_state(h, CONNECTING, 0, "");
+        let Some((&lh, l)) = self.listens.iter().find(|(_, l)| l.vport == vport) else {
+            self.set_state(h, PROBLEM, 5010, "no listen socket on that virtual port");
+            return h;
+        };
+        let lcb = l.callback;
+        let other = self.handle();
+        self.conns.insert(other, Conn { peer: me, vport, listen: lh, callback: lcb, local: h, ..Default::default() });
+        self.conns.get_mut(&h).unwrap().local = other;
+        self.set_state(other, CONNECTING, 0, "");
+        h
     }
 
     /// A connection that can't work (by IP address): reports and fails.
@@ -291,67 +419,52 @@ impl Net {
         h
     }
 
-    fn incoming(&mut self, peer: u64, theirs: u32, vport: i32) -> Vec<Out> {
-        let Some((&lh, l)) = self.listens.iter().find(|(_, l)| l.vport == vport) else {
-            self.waiting.push((peer, theirs, vport, Instant::now()));
-            return Vec::new();
-        };
-        let callback = l.callback;
-        // The same CONNECT again (their retry): nothing new.
-        if self.conns.values().any(|c| c.peer == peer && c.remote == theirs) {
-            return Vec::new();
-        }
-        let h = self.handle();
-        self.conns.insert(h, Conn { peer, remote: theirs, vport, listen: lh, callback, since: Some(Instant::now()), ..Default::default() });
-        self.set_state(h, CONNECTING, 0, "");
-        Vec::new()
-    }
-
-    pub fn accept(&mut self, h: u32) -> (i32, Vec<Out>) {
-        let Some(c) = self.conns.get(&h) else { return (INVALID_PARAM, Vec::new()) };
+    pub fn accept(&mut self, h: u32) -> i32 {
+        let Some(c) = self.conns.get(&h) else { return INVALID_PARAM };
         if c.listen == 0 || c.state != CONNECTING {
-            return (INVALID_STATE, Vec::new());
+            return INVALID_STATE;
         }
-        let (peer, remote) = (c.peer, c.remote);
-        self.set_state(h, CONNECTED, 0, "");
-        let mut m = vec![W_ACCEPT];
-        m.extend_from_slice(&remote.to_le_bytes());
-        m.extend_from_slice(&h.to_le_bytes());
-        let mut out = vec![(peer, CH_SOCKETS, true, m)];
-        out.extend(self.flush(h));
-        (OK, out)
+        if c.local != 0 {
+            let other = c.local;
+            self.set_state(h, CONNECTED, 0, "");
+            self.set_state(other, CONNECTED, 0, "");
+            return OK;
+        }
+        let now = Instant::now();
+        let mut r = OK;
+        self.on_proto(h, |p, io| {
+            if let Err(e) = p.accept(now) {
+                crate::log!("sns: accept failed: {e}");
+                r = FAIL;
+            }
+            p.poll(now, io);
+        });
+        r
     }
 
-    pub fn close(&mut self, h: u32, reason: i32, debug: &str) -> (bool, Vec<Out>) {
-        let Some(c) = self.conns.remove(&h) else { return (false, Vec::new()) };
-        let mut out = Vec::new();
+    pub fn close(&mut self, h: u32, reason: i32, debug: &str) -> bool {
+        let Some(mut c) = self.conns.remove(&h) else { return false };
+        let reason = if reason == 0 { END_APP } else { reason };
         if c.local != 0 {
-            let reason = if reason == 0 { END_APP } else { reason };
             self.set_state(c.local, CLOSED_BY_PEER, reason, debug);
             if let Some(o) = self.conns.get_mut(&c.local) {
                 o.local = 0;
             }
-        } else if c.remote != 0 && matches!(c.state, CONNECTING | CONNECTED) || c.listen == 0 && c.state == CONNECTING {
-            let mut m = vec![W_CLOSE];
-            m.extend_from_slice(&c.remote.to_le_bytes());
-            m.extend_from_slice(&h.to_le_bytes());
-            m.extend_from_slice(&(if reason == 0 { END_APP } else { reason }).to_le_bytes());
-            m.extend_from_slice(debug.as_bytes());
-            out.push((c.peer, CH_SOCKETS, true, m));
+        } else if let (Some(p), Some(e)) = (c.proto.as_mut(), self.engine.as_ref()) {
+            p.close(reason as u32, debug, &mut e.io(&mut self.signals));
         }
-        (true, out)
+        true
     }
 
-    pub fn close_listen(&mut self, h: u32) -> (bool, Vec<Out>) {
+    pub fn close_listen(&mut self, h: u32) -> bool {
         if self.listens.remove(&h).is_none() {
-            return (false, Vec::new());
+            return false;
         }
         let accepted: Vec<u32> = self.conns.iter().filter(|(_, c)| c.listen == h).map(|(h, _)| *h).collect();
-        let mut out = Vec::new();
         for c in accepted {
-            out.extend(self.close(c, END_APP, "listen socket closed").1);
+            self.close(c, END_APP, "listen socket closed");
         }
-        (true, out)
+        true
     }
 
     /// A pair of connected sockets inside this process.
@@ -363,41 +476,35 @@ impl Net {
         (a, b)
     }
 
-    pub fn send(&mut self, h: u32, data: &[u8], flags: i32) -> (i32, i64, Vec<Out>) {
+    pub fn send(&mut self, h: u32, data: &[u8], flags: i32) -> (i32, i64) {
         if data.len() > MAX_MESSAGE {
-            return (INVALID_PARAM, 0, Vec::new());
+            return (INVALID_PARAM, 0);
         }
-        let Some(c) = self.conns.get_mut(&h) else { return (INVALID_PARAM, 0, Vec::new()) };
+        let Some(c) = self.conns.get_mut(&h) else { return (INVALID_PARAM, 0) };
         match c.state {
-            CONNECTING | CONNECTED => {}
-            CLOSED_BY_PEER | PROBLEM => return (NO_CONNECTION, 0, Vec::new()),
-            _ => return (INVALID_STATE, 0, Vec::new()),
+            CONNECTING | FINDING_ROUTE | CONNECTED => {}
+            CLOSED_BY_PEER | PROBLEM => return (NO_CONNECTION, 0),
+            _ => return (INVALID_STATE, 0),
         }
-        c.sent += 1;
-        let number = c.sent;
         if c.local != 0 {
-            let to = c.local;
+            if c.state != CONNECTED {
+                return (OK, 0);
+            }
+            c.sent += 1;
+            let (to, n) = (c.local, c.sent);
             self.deliver(to, data.to_vec());
-            return (OK, number, Vec::new());
+            return (OK, n);
         }
-        let rel = reliable(flags) || data.len() > MAX_UNRELIABLE;
-        if c.state == CONNECTING || c.remote == 0 {
-            if c.outbox.len() >= 4096 {
-                return (LIMIT_EXCEEDED, 0, Vec::new());
+        let Some(p) = c.proto.as_mut() else { return (INVALID_STATE, 0) };
+        match p.send(data, reliable(flags)) {
+            Ok(n) => {
+                let now = Instant::now();
+                self.on_proto(h, |p, io| p.poll(now, io));
+                (OK, n)
             }
-            // Unreliable ones are dropped while connecting, like Steam does.
-            if rel {
-                c.outbox.push_back((rel, data.to_vec()));
-            }
-            return (OK, number, Vec::new());
+            Err(8) => (LIMIT_EXCEEDED, 0),
+            Err(e) => (e, 0),
         }
-        (OK, number, vec![(c.peer, CH_SOCKETS, rel, data_message(c.remote, data))])
-    }
-
-    fn flush(&mut self, h: u32) -> Vec<Out> {
-        let Some(c) = self.conns.get_mut(&h) else { return Vec::new() };
-        let (peer, remote) = (c.peer, c.remote);
-        c.outbox.drain(..).map(|(rel, d)| (peer, CH_SOCKETS, rel, data_message(remote, &d))).collect()
     }
 
     fn deliver(&mut self, h: u32, data: Vec<u8>) {
@@ -449,39 +556,74 @@ impl Net {
 
     // ----------------------------------------------------------- messages
 
-    pub fn send_to_user(&mut self, peer: u64, data: &[u8], flags: i32, channel: i32) -> (i32, Vec<Out>) {
+    pub fn send_to_user(&mut self, peer: u64, data: &[u8], flags: i32, channel: i32, cert: Option<Arc<LocalCert>>) -> i32 {
         if peer == 0 {
-            return (INVALID_PARAM, Vec::new());
+            return INVALID_PARAM;
         }
         if data.len() > MAX_MESSAGE {
-            return (LIMIT_EXCEEDED, Vec::new());
+            return LIMIT_EXCEEDED;
         }
+        if peer == self.me {
+            // Messages to ourselves stay in-process.
+            self.arrival += 1;
+            let arrival = self.arrival;
+            let s = self.sessions.entry(peer).or_default();
+            s.accepted = true;
+            s.received += 1;
+            let m = Received { conn: 0, peer, data: data.to_vec(), number: s.received, channel, user_data: 0, arrival };
+            s.inbox.entry(channel).or_default().push_back(m);
+            return OK;
+        }
+        let now = Instant::now();
+        let me = self.me;
         let s = self.sessions.entry(peer).or_default();
-        if s.failed && flags & 32 == 0 {
-            // k_nSteamNetworkingSend_AutoRestartBrokenSession not set.
-            return (NO_CONNECTION, Vec::new());
+        let alive = s.proto.as_ref().is_some_and(|p| p.state.active());
+        if !alive {
+            if s.failed && flags & SEND_AUTO_RESTART == 0 {
+                return NO_CONNECTION;
+            }
+            let Some(cert) = cert else { return NO_CONNECTION };
+            s.failed = false;
+            s.proto = Some(Box::new(Proto::connect(me, peer, VPORT_MESSAGES, VPORT_MESSAGES, cert, now)));
         }
-        s.failed = false;
         s.accepted = true;
-        let mut m = vec![W_DATA];
-        m.extend_from_slice(&channel.to_le_bytes());
-        m.extend_from_slice(data);
-        let rel = reliable(flags) || data.len() > MAX_UNRELIABLE;
-        (OK, vec![(peer, CH_MESSAGES, rel, m)])
+        let p = s.proto.as_mut().unwrap();
+        if !p.client && p.state == PState::Connecting {
+            // They asked first and we answer by sending: that accepts.
+            let _ = p.accept(now);
+        }
+        // Before the connection is up, Steam sends everything reliably.
+        let rel = reliable(flags) || p.state != PState::Connected;
+        let r = p.send(&messages_frame(channel, data), rel);
+        self.on_session(peer, |p, io| p.poll(now, io));
+        match r {
+            Ok(_) => OK,
+            Err(e) => e,
+        }
     }
 
     pub fn accept_session(&mut self, peer: u64) -> bool {
-        match self.sessions.get_mut(&peer) {
-            Some(s) => {
-                s.accepted = true;
-                true
-            }
-            None => false,
+        let Some(s) = self.sessions.get_mut(&peer) else { return false };
+        s.accepted = true;
+        let now = Instant::now();
+        let pending = s.proto.as_ref().is_some_and(|p| !p.client && p.state == PState::Connecting);
+        if pending {
+            self.on_session(peer, |p, io| {
+                if let Err(e) = p.accept(now) {
+                    crate::log!("sns: accept session failed: {e}");
+                }
+                p.poll(now, io);
+            });
         }
+        true
     }
 
     pub fn close_session(&mut self, peer: u64) -> bool {
-        self.sessions.remove(&peer).is_some()
+        let Some(mut s) = self.sessions.remove(&peer) else { return false };
+        if let (Some(p), Some(e)) = (s.proto.as_mut(), self.engine.as_ref()) {
+            p.close(END_APP as u32, "session closed", &mut e.io(&mut self.signals));
+        }
+        true
     }
 
     pub fn close_channel(&mut self, peer: u64, channel: i32) -> bool {
@@ -507,127 +649,133 @@ impl Net {
         all
     }
 
-    /// (state, connected address known) for GetSessionConnectionInfo.
+    /// ESteamNetworkingConnectionState of a messages session.
     pub fn session_state(&self, peer: u64) -> i32 {
         match self.sessions.get(&peer) {
             None => NONE,
             Some(s) if s.failed => PROBLEM,
-            Some(_) => CONNECTED,
+            Some(_) if peer == self.me => CONNECTED,
+            Some(s) => s.proto.as_ref().map(|p| app_state(p.state)).unwrap_or(NONE),
         }
     }
 
-    // --------------------------------------------------------------- wire
+    // ------------------------------------------------------------ network
 
-    /// Bytes from a player on one of our channels.
-    pub fn on_wire(&mut self, from: u64, channel: i32, d: &[u8]) -> Vec<Out> {
-        if channel == CH_MESSAGES {
-            if d.first() == Some(&W_DATA) && d.len() >= 5 {
-                let ch = i32_at(d, 1).unwrap_or(0);
-                self.arrival += 1;
-                let arrival = self.arrival;
-                let s = self.sessions.entry(from).or_default();
-                s.received += 1;
-                let m = Received { conn: 0, peer: from, data: d[5..].to_vec(), number: s.received, channel: ch, user_data: 0, arrival };
-                let q = s.inbox.entry(ch).or_default();
-                if q.len() < 65536 {
-                    q.push_back(m);
-                }
-                if !s.accepted && !s.asked {
-                    s.asked = true;
-                    self.events.push((CB_SESSION_REQUEST, identity(from), self.callbacks.session_request));
-                }
-            }
-            return Vec::new();
+    /// A rendezvous signal from another player.
+    pub fn on_signal(&mut self, from: u64, m: &Rendezvous, cert: Option<Arc<LocalCert>>) {
+        let now = Instant::now();
+        let id_to = m.to_connection_id();
+        let id_from = m.from_connection_id();
+        // A connection we know, by our id or theirs.
+        let find = |p: &Proto| p.peer == from && ((id_to != 0 && p.local_id == id_to) || (id_to == 0 && id_from != 0 && p.remote_id == id_from));
+        if let Some(h) = self.conns.iter().find(|(_, c)| c.proto.as_deref().is_some_and(find)).map(|(h, _)| *h) {
+            self.on_proto(h, |p, io| p.on_signal(m, now, io));
+            return;
         }
-        if channel != CH_SOCKETS || d.is_empty() {
-            return Vec::new();
+        if self.sessions.get(&from).and_then(|s| s.proto.as_deref()).is_some_and(find) {
+            self.on_session(from, |p, io| p.on_signal(m, now, io));
+            return;
         }
-        match d[0] {
-            W_CONNECT => {
-                let (Some(theirs), Some(vport)) = (u32_at(d, 1), i32_at(d, 5)) else { return Vec::new() };
-                self.incoming(from, theirs, vport)
-            }
-            W_ACCEPT => {
-                let (Some(mine), Some(theirs)) = (u32_at(d, 1), u32_at(d, 5)) else { return Vec::new() };
-                let ok = self.conns.get(&mine).is_some_and(|c| c.peer == from && c.listen == 0 && c.state == CONNECTING);
-                if !ok {
-                    return Vec::new();
+        if id_to != 0 || m.connect_request.is_none() {
+            crate::log!("sns: signal from {from} for unknown connection #{id_to} (theirs #{id_from}), ignored");
+            return;
+        }
+        let Some(cert) = cert else {
+            crate::log!("sns: connect request from {from} before our cert is ready; they'll retry");
+            return;
+        };
+        let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let vport = m.connect_request.as_ref().and_then(|r| r.to_virtual_port).map(|v| v as i32).unwrap_or(-1);
+        if vport == VPORT_MESSAGES {
+            let s = self.sessions.entry(from).or_default();
+            if let Some(p) = s.proto.as_mut().filter(|p| p.state.active()) {
+                // Both sides started a session at once: one becomes the server.
+                if p.client && p.state == PState::Connecting && p.symmetric_should_accept(m) {
+                    crate::log!("sns: symmetric messages session with {from}: we accept theirs");
+                    if let Err((r, e)) = p.become_server(m, now, unix) {
+                        crate::log!("sns: couldn't switch roles: {r} {e}");
+                    }
+                    self.on_session(from, |p, io| {
+                        p.on_signal(m, now, io);
+                        p.poll(now, io);
+                    });
                 }
-                if let Some(c) = self.conns.get_mut(&mine) {
-                    c.remote = theirs;
-                }
-                self.set_state(mine, CONNECTED, 0, "");
-                self.flush(mine)
+                return;
             }
-            W_CLOSE => {
-                let (Some(mine), Some(theirs), Some(reason)) = (u32_at(d, 1), u32_at(d, 5), i32_at(d, 9)) else { return Vec::new() };
-                let debug = String::from_utf8_lossy(d.get(13..).unwrap_or_default()).into_owned();
-                // Addressed by our handle, or (before ACCEPT) by theirs.
-                let target = if self.conns.get(&mine).is_some_and(|c| c.peer == from) {
-                    Some(mine)
-                } else {
-                    self.conns.iter().find(|(_, c)| c.peer == from && c.remote == theirs).map(|(h, _)| *h)
-                };
-                self.waiting.retain(|w| !(w.0 == from && w.1 == theirs));
-                if let Some(h) = target {
-                    self.set_state(h, CLOSED_BY_PEER, reason, &debug);
+            match Proto::incoming(self.me, m, cert, now, unix) {
+                Ok(p) => {
+                    crate::log!("sns: messages session request from {from}");
+                    s.failed = false;
+                    s.asked = false;
+                    let accepted = s.accepted;
+                    s.proto = Some(Box::new(p));
+                    self.on_session(from, |p, io| p.on_signal(m, now, io));
+                    if accepted {
+                        self.accept_session(from);
+                    }
                 }
-                Vec::new()
+                Err((r, e)) => crate::log!("sns: bad messages request from {from}: {r} {e}"),
             }
-            W_DATA => {
-                let Some(mine) = u32_at(d, 1) else { return Vec::new() };
-                if self.conns.get(&mine).is_some_and(|c| c.peer == from && matches!(c.state, CONNECTING | CONNECTED)) {
-                    self.deliver(mine, d[5..].to_vec());
-                }
-                Vec::new()
+            return;
+        }
+        let Some((&lh, l)) = self.listens.iter().find(|(_, l)| l.vport == vport || l.vport == -1) else {
+            crate::log!("sns: connect request from {from} to port {vport}, but we don't listen there");
+            return;
+        };
+        let lcb = l.callback;
+        match Proto::incoming(self.me, m, cert, now, unix) {
+            Ok(p) => {
+                let h = self.handle();
+                self.conns.insert(h, Conn { peer: from, vport, listen: lh, callback: lcb, proto: Some(Box::new(p)), ..Default::default() });
+                self.set_state(h, CONNECTING, 0, "");
+                self.on_proto(h, |p, io| p.on_signal(m, now, io));
             }
-            _ => Vec::new(),
+            Err((r, e)) => crate::log!("sns: bad connect request from {from}: {r} {e}"),
         }
     }
 
-    /// We couldn't reach a player, or lost them.
-    pub fn peer_failed(&mut self, peer: u64) {
-        let why = "couldn't reach the player directly (both players need SteamInRust)";
-        let hs: Vec<(u32, i32)> =
-            self.conns.iter().filter(|(_, c)| c.peer == peer && c.local == 0 && matches!(c.state, CONNECTING | CONNECTED)).map(|(h, c)| (*h, c.state)).collect();
-        for (h, state) in hs {
-            if state == CONNECTED {
-                self.set_state(h, PROBLEM, END_REMOTE_TIMEOUT, "the other player stopped answering");
-            } else {
-                self.set_state(h, PROBLEM, END_NAT, why);
+    /// A UDP datagram on our ICE socket.
+    pub fn on_udp(&mut self, d: &[u8], from: SocketAddr) {
+        let now = Instant::now();
+        if let Some(m) = crate::gns::ice::Stun::parse(d) {
+            if self.engine.as_mut().is_some_and(|e| e.on_stun(&m)) {
+                return;
             }
+            if let Some(h) = self.conns.iter().find(|(_, c)| c.proto.as_ref().is_some_and(|p| p.ice.owns(&m))).map(|(h, _)| *h) {
+                self.on_proto(h, |p, io| p.on_stun(d, &m, from, io));
+            } else if let Some(peer) = self.sessions.iter().find(|(_, s)| s.proto.as_ref().is_some_and(|p| p.ice.owns(&m))).map(|(k, _)| *k) {
+                self.on_session(peer, |p, io| p.on_stun(d, &m, from, io));
+            }
+            return;
         }
-        if let Some(s) = self.sessions.get_mut(&peer)
-            && !s.failed
-        {
-            s.failed = true;
-            self.session_failed(peer, END_NAT, why);
+        if d.len() < 5 {
+            return;
+        }
+        // Data packets name our connection; closed / no-connection ones are
+        // matched by where they came from.
+        let to = if d[0] & 0x80 != 0 { u32::from_le_bytes(d[1..5].try_into().unwrap()) } else { 0 };
+        let target = |p: &Proto| if to != 0 { p.local_id == to } else { p.remote_addr() == Some(from) };
+        if let Some(h) = self.conns.iter().find(|(_, c)| c.proto.as_deref().is_some_and(target)).map(|(h, _)| *h) {
+            self.on_proto(h, |p, io| p.on_packet(d, from, now, io));
+        } else if let Some(peer) = self.sessions.iter().find(|(_, s)| s.proto.as_deref().is_some_and(target)).map(|(k, _)| *k) {
+            self.on_session(peer, |p, io| p.on_packet(d, from, now, io));
         }
     }
 
-    /// Timeouts: connects nobody listens for, and connects that never got an answer.
-    pub fn tick(&mut self) -> Vec<Out> {
-        let mut out = Vec::new();
-        let expired: Vec<(u64, u32, i32, Instant)> = self.waiting.iter().filter(|w| w.3.elapsed() > LISTEN_WAIT).cloned().collect();
-        self.waiting.retain(|w| w.3.elapsed() <= LISTEN_WAIT);
-        for (peer, theirs, _, _) in expired {
-            let mut m = vec![W_CLOSE];
-            m.extend_from_slice(&theirs.to_le_bytes());
-            m.extend_from_slice(&0u32.to_le_bytes());
-            m.extend_from_slice(&END_NO_CONNECTION.to_le_bytes());
-            m.extend_from_slice(b"no listen socket on that virtual port");
-            out.push((peer, CH_SOCKETS, true, m));
+    /// Timers for every connection.
+    pub fn tick(&mut self) {
+        let now = Instant::now();
+        if let Some(e) = self.engine.as_mut() {
+            e.poll_stun(now);
         }
-        let stuck: Vec<u32> = self
-            .conns
-            .iter()
-            .filter(|(_, c)| c.state == CONNECTING && c.listen == 0 && c.local == 0 && c.since.is_some_and(|s| s.elapsed() > LISTEN_WAIT + Duration::from_secs(10)))
-            .map(|(h, _)| *h)
-            .collect();
-        for h in stuck {
-            self.set_state(h, PROBLEM, END_TIMEOUT, "the other player didn't answer");
+        let hs: Vec<u32> = self.conns.iter().filter(|(_, c)| c.proto.is_some()).map(|(h, _)| *h).collect();
+        for h in hs {
+            self.on_proto(h, |p, io| p.poll(now, io));
         }
-        out
+        let peers: Vec<u64> = self.sessions.iter().filter(|(_, s)| s.proto.is_some()).map(|(k, _)| *k).collect();
+        for peer in peers {
+            self.on_session(peer, |p, io| p.poll(now, io));
+        }
     }
 
     /// Set a config callback by ESteamNetworkingConfigValue and scope.
@@ -658,14 +806,14 @@ impl Net {
             _ => false,
         }
     }
-}
 
-fn data_message(remote: u32, data: &[u8]) -> Vec<u8> {
-    let mut m = Vec::with_capacity(data.len() + 5);
-    m.push(W_DATA);
-    m.extend_from_slice(&remote.to_le_bytes());
-    m.extend_from_slice(data);
-    m
+    fn ping(&self, h: u32) -> i32 {
+        self.conns.get(&h).and_then(|c| c.proto.as_ref()).map(|p| p.ping_ms()).unwrap_or(0)
+    }
+
+    fn pending(&self, h: u32) -> usize {
+        self.conns.get(&h).and_then(|c| c.proto.as_ref()).map(|p| p.snp.pending_bytes).unwrap_or(0)
+    }
 }
 
 trait PutBytes {
@@ -684,16 +832,49 @@ impl PutBytes for Bytes {
 // ------------------------------------------------------- the game's side
 
 static NET: LazyLock<Mutex<Net>> = LazyLock::new(|| {
-    let me = crate::state::lock().me();
-    std::thread::spawn(|| {
-        loop {
-            std::thread::sleep(Duration::from_millis(500));
-            let out = net().tick();
-            send_all(out);
-        }
-    });
-    Mutex::new(Net::new(me))
+    let (me, app) = {
+        let s = crate::state::lock();
+        (s.me(), s.app_id())
+    };
+    let n = Net::new(me, true);
+    if me != 0 {
+        engine::fetch_cert(me, app);
+    }
+    let sock = n.engine.as_ref().and_then(|e| e.sock.clone());
+    std::thread::spawn(move || network_loop(sock));
+    Mutex::new(n)
 });
+
+/// Receives on the ICE socket and runs every connection's timers.
+fn network_loop(sock: Option<Arc<std::net::UdpSocket>>) {
+    if let Some(s) = &sock {
+        let _ = s.set_read_timeout(Some(Duration::from_millis(10)));
+    }
+    let mut buf = vec![0u8; 2048];
+    let mut last_tick = Instant::now();
+    loop {
+        let got = match &sock {
+            Some(s) => s.recv_from(&mut buf).ok(),
+            None => {
+                std::thread::sleep(Duration::from_millis(20));
+                None
+            }
+        };
+        let due = last_tick.elapsed() >= Duration::from_millis(10);
+        if got.is_none() && !due {
+            continue;
+        }
+        let mut n = net();
+        if let Some((len, from)) = got {
+            n.on_udp(&buf[..len], from);
+        }
+        if due {
+            n.tick();
+            last_tick = Instant::now();
+        }
+        finish(&mut n);
+    }
+}
 
 /// Config callbacks to call on the game's thread: (function, bytes).
 static PENDING: Mutex<Vec<(usize, Vec<u8>)>> = Mutex::new(Vec::new());
@@ -706,9 +887,10 @@ fn net() -> MutexGuard<'static, Net> {
     n
 }
 
-/// Hand events to the game: config callbacks wait for RunCallbacks, the
-/// rest go into Steam's callback queue.
-fn publish(n: &mut Net) {
+/// Hand events to the game (config callbacks wait for RunCallbacks, the
+/// rest go into Steam's callback queue) and send collected signals.
+fn finish(n: &mut Net) {
+    engine::send_signals(std::mem::take(&mut n.signals));
     if n.events.is_empty() {
         return;
     }
@@ -720,46 +902,34 @@ fn publish(n: &mut Net) {
     }
 }
 
-/// Send to players; to ourselves, deliver in-process.
-fn send_all(out: Vec<Out>) {
-    let me = net().me;
-    for (peer, ch, rel, data) in out {
-        if peer == me {
-            let more = {
-                let mut n = net();
-                let more = n.on_wire(me, ch, &data);
-                publish(&mut n);
-                more
-            };
-            send_all(more);
-        } else if !crate::p2p::send_raw(peer, &data, rel, ch) {
-            crate::log!("sns: no P2P endpoint for {peer}");
-        }
-    }
-}
-
-/// Run `f` on the network state, then publish its events and send its datagrams.
-fn with<R>(f: impl FnOnce(&mut Net) -> (R, Vec<Out>)) -> R {
-    let (r, out) = {
-        let mut n = net();
-        let res = f(&mut n);
-        publish(&mut n);
-        res
-    };
-    send_all(out);
+/// Run `f` on the network state, then publish its events and signals.
+fn with<R>(f: impl FnOnce(&mut Net) -> R) -> R {
+    let mut n = net();
+    let r = f(&mut n);
+    finish(&mut n);
     r
 }
 
-/// Bytes from a player on [`CH_SOCKETS`] or [`CH_MESSAGES`] (endpoint thread).
-pub fn on_wire(from: u64, channel: i32, data: &[u8]) {
-    with(|n| ((), n.on_wire(from, channel, data)));
+/// Our certificate for a new connection (waits briefly for Steam the first time).
+fn my_cert() -> Arc<LocalCert> {
+    if let Some(c) = engine::cert_ready() {
+        return c;
+    }
+    let (me, app) = {
+        let s = crate::state::lock();
+        (s.me(), s.app_id())
+    };
+    engine::cert(me, app, Duration::from_secs(5))
 }
 
-pub fn peer_failed(peer: u64) {
-    with(|n| {
-        n.peer_failed(peer);
-        ((), Vec::new())
-    });
+/// A SteamNetworkingSockets rendezvous from another player (through Steam).
+pub fn rendezvous(from: u64, data: &[u8]) {
+    let Some(m) = crate::gns::msg::decode::<Rendezvous>(data) else {
+        crate::log!("sns: unreadable rendezvous from {from}");
+        return;
+    };
+    let cert = if m.connect_request.is_some() && m.to_connection_id.is_none() { Some(my_cert()) } else { None };
+    with(|n| n.on_signal(from, &m, cert));
 }
 
 thread_local! {
@@ -961,7 +1131,7 @@ extern "C" fn s_listen_ip(_t: This, _addr: *const u8, n: i32, options: *const u8
 
 extern "C" fn s_connect_ip(_t: This, _addr: *const u8, n: i32, options: *const u8) -> u32 {
     crate::log!("sns: connect by IP isn't possible");
-    with(|net| (net.connect_unsupported(option_callback(n, options), "connecting by IP address needs Valve's encrypted protocol; SteamInRust connects players over P2P only"), Vec::new()))
+    with(|net| net.connect_unsupported(option_callback(n, options), "connecting by IP address needs Valve's UDP connect protocol; SteamInRust connects players over P2P only"))
 }
 
 extern "C" fn s_listen_p2p(_t: This, vport: i32, n: i32, options: *const u8) -> u32 {
@@ -973,9 +1143,10 @@ extern "C" fn s_connect_p2p(_t: This, who: *const u8, vport: i32, n: i32, option
     let peer = steam_id_of(who);
     crate::log!("sns: connect to {peer} port {vport}");
     if peer == 0 {
-        return with(|net| (net.connect_unsupported(option_callback(n, options), "only Steam ID identities are supported"), Vec::new()));
+        return with(|net| net.connect_unsupported(option_callback(n, options), "only Steam ID identities are supported"));
     }
-    with(|net| net.connect(peer, vport, option_callback(n, options)))
+    let cert = my_cert();
+    with(|net| net.connect(peer, vport, option_callback(n, options), Some(cert)))
 }
 
 extern "C" fn s_accept(_t: This, h: u32) -> i32 {
@@ -1015,10 +1186,7 @@ extern "C" fn s_name(_t: This, h: u32, buf: *mut c_char, len: i32) -> bool {
 
 extern "C" fn s_send(_t: This, h: u32, data: *const u8, len: u32, flags: i32, number: *mut i64) -> i32 {
     let data = slice(data, len as usize).to_vec();
-    let (r, num) = with(|n| {
-        let (r, num, out) = n.send(h, &data, flags);
-        ((r, num), out)
-    });
+    let (r, num) = with(|n| n.send(h, &data, flags));
     put(number, num);
     r
 }
@@ -1030,10 +1198,7 @@ extern "C" fn s_send_messages(_t: This, count: i32, msgs: *const *mut Message, r
             continue;
         }
         let (conn, data, flags) = unsafe { ((*m).conn, slice((*m).data, (*m).size.max(0) as usize).to_vec(), (*m).flags) };
-        let (r, num) = with(|n| {
-            let (r, num, out) = n.send(conn, &data, flags);
-            ((r, num), out)
-        });
+        let (r, num) = with(|n| n.send(conn, &data, flags));
         if !results.is_null() {
             unsafe { *results.add(i) = if r == OK { num } else { -(r as i64) } };
         }
@@ -1070,8 +1235,7 @@ extern "C" fn s_info(_t: This, h: u32, out: *mut u8) -> bool {
 
 /// SteamNetConnectionRealTimeStatus_t (and the older QuickConnectionStatus,
 /// same layout).
-fn realtime(state: i32, peer: u64, pending: usize) -> Vec<u8> {
-    let ping = crate::p2p::rtt_ms(peer).unwrap_or(-1);
+fn realtime(state: i32, ping: i32, pending: usize) -> Vec<u8> {
     let mut b = Bytes::new(REALTIME_STATUS);
     b.i32(0, state).i32(4, ping);
     let one = 1.0f32.to_le_bytes();
@@ -1085,7 +1249,7 @@ extern "C" fn s_status(_t: This, h: u32, out: *mut u8) -> i32 {
     // 0 for a bad handle: false for GetQuickConnectionStatus, not OK for
     // GetConnectionRealTimeStatus.
     let Some(c) = n.conns.get(&h) else { return 0 };
-    let status = realtime(c.state, c.peer, c.outbox.len());
+    let status = realtime(c.state, n.ping(h), n.pending(h));
     if !out.is_null() {
         unsafe { std::ptr::copy_nonoverlapping(status.as_ptr(), out, REALTIME_STATUS) };
     }
@@ -1097,7 +1261,9 @@ extern "C" fn s_status(_t: This, h: u32, out: *mut u8) -> i32 {
 extern "C" fn s_detailed(_t: This, h: u32, buf: *mut c_char, len: i32) -> i32 {
     let n = net();
     let Some(c) = n.conns.get(&h) else { return -1 };
-    let text = format!("SteamInRust P2P to {} (state {}, ping {} ms)\n", c.peer, c.state, crate::p2p::rtt_ms(c.peer).unwrap_or(-1));
+    let route = c.proto.as_ref().and_then(|p| p.remote_addr()).map(|a| a.to_string()).unwrap_or_else(|| "none".into());
+    let text = format!("SteamInRust P2P to {} (state {}, ping {} ms, route {route})
+", c.peer, c.state, n.ping(h));
     if buf.is_null() || (len as usize) < text.len() + 1 {
         return text.len() as i32 + 1;
     }
@@ -1176,7 +1342,8 @@ extern "C" fn s_run_callbacks(_t: This) {
 extern "C" fn m_send(_t: This, who: *const u8, data: *const u8, len: u32, flags: i32, channel: i32) -> i32 {
     let peer = steam_id_of(who);
     let data = slice(data, len as usize).to_vec();
-    with(|n| n.send_to_user(peer, &data, flags, channel))
+    let cert = (peer != 0).then(my_cert);
+    with(|n| n.send_to_user(peer, &data, flags, channel, cert))
 }
 
 extern "C" fn m_receive(_t: This, channel: i32, out: *mut *mut Message, max: i32) -> i32 {
@@ -1201,22 +1368,18 @@ extern "C" fn m_close_channel(_t: This, who: *const u8, channel: i32) -> bool {
 
 extern "C" fn m_info(_t: This, who: *const u8, info: *mut u8, status: *mut u8) -> i32 {
     let peer = steam_id_of(who);
-    let mut state = net().session_state(peer);
-    if state == CONNECTED {
-        state = match crate::p2p::link(peer) {
-            Some((true, _)) => CONNECTED,
-            Some((false, true)) => CONNECTING,
-            Some((false, false)) => PROBLEM,
-            None => CONNECTING,
-        };
-    }
+    let n = net();
+    let state = n.session_state(peer);
+    let p = n.sessions.get(&peer).and_then(|s| s.proto.as_deref());
     if !info.is_null() {
-        let mut b = Bytes::new(INFO);
-        b.put_bytes(0, &identity(peer)).i32(176, state).i32(440, 2);
-        unsafe { std::ptr::copy_nonoverlapping(b.0.as_ptr(), info, INFO) };
+        let (r, d) = p.map(|p| (p.end_reason as i32, p.end_debug.clone())).unwrap_or_default();
+        let b = session_info(peer, state, r, &d, p);
+        unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), info, INFO) };
     }
     if !status.is_null() {
-        unsafe { std::ptr::copy_nonoverlapping(realtime(state, peer, 0).as_ptr(), status, REALTIME_STATUS) };
+        let ping = p.map(|p| p.ping_ms()).unwrap_or(-1);
+        let pending = p.map(|p| p.snp.pending_bytes).unwrap_or(0);
+        unsafe { std::ptr::copy_nonoverlapping(realtime(state, ping, pending).as_ptr(), status, REALTIME_STATUS) };
     }
     state
 }
@@ -1306,17 +1469,6 @@ extern "C" fn u_set_config(_t: This, value: i32, scope: i32, object: isize, kind
 mod tests {
     use super::*;
 
-    /// Carry datagrams between two in-process players until nothing moves.
-    fn pump(a: &mut Net, b: &mut Net, mut out: Vec<Out>, from_a: bool) {
-        let mut queue: VecDeque<(bool, Out)> = out.drain(..).map(|o| (from_a, o)).collect();
-        while let Some((from_a, (_, ch, _, d))) = queue.pop_front() {
-            let (to, from) = if from_a { (&mut *b, a.me) } else { (&mut *a, b.me) };
-            for o in to.on_wire(from, ch, &d) {
-                queue.push_back((!from_a, o));
-            }
-        }
-    }
-
     fn states(n: &mut Net) -> Vec<(u32, i32, i32)> {
         n.events
             .drain(..)
@@ -1326,94 +1478,32 @@ mod tests {
     }
 
     #[test]
-    fn connect_accept_send_close() {
-        let (ai, bi) = (76561198000000001, 76561198000000002);
-        let (mut a, mut b) = (Net::new(ai), Net::new(bi));
-        let (_ls, out) = b.listen(7, 0);
-        assert!(out.is_empty());
-        let (ca, out) = a.connect(bi, 7, 0);
-        assert_eq!(states(&mut a), vec![(ca, CONNECTING, NONE)]);
-        // Reliable data sent while connecting waits for the connection.
-        assert_eq!(a.send(ca, b"early", SEND_RELIABLE).0, OK);
-        pump(&mut a, &mut b, out, true);
-        let incoming = states(&mut b);
-        assert_eq!(incoming.len(), 1);
-        let cb = incoming[0].0;
-        assert_eq!(incoming[0].1, CONNECTING);
-        let (r, out) = b.accept(cb);
-        assert_eq!(r, OK);
-        pump(&mut a, &mut b, out, false);
-        assert_eq!(states(&mut a), vec![(ca, CONNECTED, CONNECTING)]);
-        assert_eq!(b.receive(cb, 10).unwrap().iter().map(|m| m.data.clone()).collect::<Vec<_>>(), vec![b"early".to_vec()]);
-
-        // Both ways, in order, through a poll group on b.
-        let g = b.new_group();
-        assert!(b.set_group(cb, g));
-        for i in 0..5u8 {
-            let (r, n, out) = a.send(ca, &[i], if i % 2 == 0 { SEND_RELIABLE } else { 0 });
-            assert_eq!((r, n), (OK, i as i64 + 2));
-            pump(&mut a, &mut b, out, true);
-        }
-        let got = b.receive_group(g, 100).unwrap();
-        assert_eq!(got.iter().map(|m| m.data[0]).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
-        assert!(got.iter().all(|m| m.conn == cb && m.peer == ai));
-        let (_, _, out) = b.send(cb, b"pong", SEND_RELIABLE);
-        pump(&mut a, &mut b, out, false);
-        assert_eq!(a.receive(ca, 1).unwrap()[0].data, b"pong");
-
-        // b closes: a hears ClosedByPeer with the reason.
-        let (ok, out) = b.close(cb, 1234, "bye");
-        assert!(ok);
-        pump(&mut a, &mut b, out, false);
-        assert_eq!(states(&mut a), vec![(ca, CLOSED_BY_PEER, CONNECTED)]);
-        assert_eq!(a.conns[&ca].end_reason, 1234);
-        assert_eq!(a.send(ca, b"x", SEND_RELIABLE).0, NO_CONNECTION);
-    }
-
-    #[test]
-    fn connect_before_listen_and_failures() {
-        let (ai, bi) = (1u64 << 56 | 1, 1u64 << 56 | 2);
-        let (mut a, mut b) = (Net::new(ai), Net::new(bi));
-        let (ca, out) = a.connect(bi, 3, 0);
-        pump(&mut a, &mut b, out, true);
-        assert!(states(&mut b).is_empty(), "no listen socket yet");
-        let (_, out) = b.listen(3, 0);
-        assert!(out.is_empty());
-        assert_eq!(states(&mut b).len(), 1, "the waiting connect arrives");
-        states(&mut a);
-        a.peer_failed(bi);
-        assert_eq!(states(&mut a), vec![(ca, PROBLEM, CONNECTING)]);
-        let h = a.connect_unsupported(0, "no");
-        assert_eq!(states(&mut a), vec![(h, CONNECTING, NONE), (h, PROBLEM, CONNECTING)]);
-    }
-
-    #[test]
-    fn messages_sessions() {
-        let (ai, bi) = (1u64 << 56 | 3, 1u64 << 56 | 4);
-        let (mut a, mut b) = (Net::new(ai), Net::new(bi));
-        let (r, out) = a.send_to_user(bi, b"hi", SEND_RELIABLE, 5);
-        assert_eq!(r, OK);
-        pump(&mut a, &mut b, out, true);
-        // A request first; nothing readable until accepted.
-        assert_eq!(b.events.iter().filter(|e| e.0 == CB_SESSION_REQUEST).count(), 1);
-        assert!(b.receive_channel(5, 10).is_empty());
-        assert!(b.accept_session(ai));
-        let got = b.receive_channel(5, 10);
-        assert_eq!((got[0].peer, got[0].channel, got[0].data.as_slice()), (ai, 5, &b"hi"[..]));
-        // Replies need no accept on a's side (a started the session).
-        let (_, out) = b.send_to_user(ai, b"yo", 0, 5);
-        pump(&mut a, &mut b, out, false);
-        assert_eq!(a.receive_channel(5, 10)[0].data, b"yo");
-        assert!(a.events.iter().all(|e| e.0 != CB_SESSION_REQUEST));
-        a.peer_failed(bi);
-        assert_eq!(a.events.iter().filter(|e| e.0 == CB_SESSION_FAILED).count(), 1);
-        assert_eq!(a.send_to_user(bi, b"x", 0, 5).0, NO_CONNECTION);
-        assert_eq!(a.send_to_user(bi, b"x", 32, 5).0, OK);
+    fn connect_to_ourselves_and_unsupported() {
+        let me = 76561198000000001;
+        let mut n = Net::new(me, false);
+        let ls = n.listen(7, 0);
+        let c = n.connect(me, 7, 0, None);
+        let incoming = states(&mut n);
+        assert_eq!(incoming.len(), 2);
+        let theirs = incoming[1].0;
+        assert_eq!(n.conns[&theirs].listen, ls);
+        assert_eq!(n.accept(theirs), OK);
+        assert_eq!(states(&mut n).len(), 2);
+        assert_eq!(n.send(c, b"hi", SEND_RELIABLE).0, OK);
+        assert_eq!(n.receive(theirs, 4).unwrap()[0].data, b"hi");
+        n.close(c, 0, "");
+        assert_eq!(states(&mut n), vec![(theirs, CLOSED_BY_PEER, CONNECTED)]);
+        let h = n.connect_unsupported(0, "no");
+        assert_eq!(states(&mut n), vec![(h, CONNECTING, NONE), (h, PROBLEM, CONNECTING)]);
+        // Without a network, remote connections fail cleanly.
+        let r = n.connect(5, 1, 0, Some(Arc::new(LocalCert::unsigned(LocalCert::new_key(), me, 480))));
+        assert_eq!(states(&mut n).last().unwrap().1, PROBLEM);
+        assert!(n.conns.contains_key(&r));
     }
 
     #[test]
     fn socket_pair_and_layouts() {
-        let mut n = Net::new(9);
+        let mut n = Net::new(9, false);
         let (x, y) = n.pair();
         assert_eq!(n.send(x, b"loop", 0).0, OK);
         assert_eq!(n.receive(y, 4).unwrap()[0].data, b"loop");
@@ -1439,5 +1529,9 @@ mod tests {
             ((*m).release)(m);
         }
         assert_eq!(steam_id_of(identity(76561197960287930).as_ptr()), 76561197960287930);
+        // Remote address lands in SteamNetConnectionInfo_t.m_addrRemote.
+        let mut b = Bytes::new(INFO);
+        put_addr(&mut b, Some("1.2.3.4:27015".parse().unwrap()));
+        assert_eq!(&b.0[158..166], &[0xff, 0xff, 1, 2, 3, 4, 0x87, 0x69]);
     }
 }

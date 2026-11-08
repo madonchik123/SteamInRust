@@ -184,11 +184,35 @@ While developing, the launcher also finds
   status callbacks, reliable and unreliable messages up to 512 KB, poll
   groups, real-time status with measured ping, socket pairs, connecting to
   yourself) and per-user message sessions with their request/failed
-  callbacks, over the same direct UDP link as `ISteamNetworking`.
-  GameNetworkingSockets-style config callbacks (function pointers set with
-  `SetConfigValue`) run during `SteamAPI_RunCallbacks`. Tested with two
-  processes and two made-up players (`p2p_pair` example), including a
-  200 KB message.
+  callbacks. Connections to other players speak Valve's own
+  SteamNetworkingSockets protocol, ported from the open-source
+  GameNetworkingSockets (`crates/steamclient/src/gns/`), so they work with
+  players on the official client as well as between SteamInRust players:
+  - a certificate Steam signs for our Ed25519 key
+    (`ClientNetworkingCertRequest`, EMsg 5621, raw 32-byte public key and
+    the game's app id), fetched once per game in about 0.3 s;
+  - ConnectRequest / ConnectOK and ICE details in
+    `CMsgSteamNetworkingP2PRendezvous` signals through Steam
+    (`ClientP2PConnectionInfo.rendezvous`), with their reliable-message acks;
+  - X25519 key exchange signed with the certificate key, Valve's
+    HMAC-SHA256 key derivation, AES-256-GCM packets;
+  - SNP inside the packets: reliable stream with message framing,
+    unreliable segments, acks with nack blocks, stop-waiting, retransmits;
+  - ICE for the direct path the way Steam's WebRTC-based ICE runs it (ufrag
+    from the connection id, 5-character password, SDP candidate lines,
+    STUN checks with MESSAGE-INTEGRITY and FINGERPRINT; the side that
+    accepts is the controlling agent). Our public address comes from Valve's
+    STUN server.
+  ISteamNetworkingMessages sessions are P2P connections on virtual port
+  0x7fffffff with Valve's 5-byte channel header; when both players start a
+  session at once, one side becomes the server the same way Valve resolves
+  it. GameNetworkingSockets-style config callbacks (function pointers set
+  with `SetConfigValue`) run during `SteamAPI_RunCallbacks`. Tested: unit
+  tests for the crypto, SNP (with loss), ICE (including the RFC 5769 STUN
+  vectors) and a full connection; two processes over real UDP (`p2p_pair`
+  example: sockets, a messages session, a 200 KB message, closing); a real
+  Valve-signed certificate for Spacewar and for Content Warning. Not yet
+  tried against a player on the official client (see below).
 - **Workshop** (`ISteamUGC`): queries (a user's lists, all items ranked or
   by text, tags, tag groups, key-value tags, dates, page or cursor, details
   by id) with every result getter; the player's subscriptions;
@@ -225,23 +249,17 @@ While developing, the launcher also finds
 
 ### What doesn't (yet)
 
-- **Networking sockets and messages with players on the official client**
-  (`ISteamNetworkingSockets`, `ISteamNetworkingMessages`, used by newer
-  games; `ISteamNetworking` above works). For these Valve's client uses
-  SteamNetworkingSockets: signals in `ClientP2PConnectionInfo.rendezvous`,
-  Valve-signed certificates (`ClientNetworkingCertRequest`, EMsg 5621),
-  Ed25519/X25519/AES-GCM, the SNP framing, and either direct ICE (open
-  source in GameNetworkingSockets) or the Steam Datagram Relay. Not done
-  yet: SteamInRust doesn't answer those signals, so such a connection ends
-  with a timeout. It isn't ruled out: the SDR client code isn't open
-  source, but Valve's `steamclient64.dll` carries all of it with its debug
-  strings, the relay list is public (`ISteamApps/GetSDRConfig`), and the
-  official client with default settings relays rather than sharing IPs
-  with strangers, so the relay path is the one that matters.
-  Between two SteamInRust players everything works directly; behind two
-  strict (symmetric) NATs hole punching can fail, with no relay to fall
-  back on (official players' libjingle relays carry `ISteamNetworking`
-  traffic to them, not between two SteamInRust players).
+- **Networking sockets and messages through Valve's relays** (Steam
+  Datagram Relay). Connections to official-client players work when the
+  direct (ICE) path is allowed. The official client's default "Steam
+  Networking" setting shares IP addresses with friends but usually routes
+  strangers through Valve's relays, and SteamInRust has no relay client: a
+  connection that needs a relay ends after the route search with a NAT
+  traversal end reason. Two players who are both behind strict
+  (symmetric) NATs have the same problem, since there's no relay to fall
+  back on. Untested so far: a live connection with an official-client
+  player (Content Warning's random games run on Photon and never use Steam
+  networking; a friend lobby is needed).
 - **Connecting by IP address** (`ConnectByIPAddress`, dedicated servers):
   Steam's sockets speak Valve's encrypted UDP protocol to those servers;
   SteamInRust doesn't implement it, so these connections fail at once with
@@ -339,6 +357,9 @@ start the game" (Steam may be showing an update or EULA prompt).
   `--sockets`. With `--direct <steamclient.dll> --test ugc|inventory|servers|input|lobbies`
   it loads our DLL without steam_api and checks one area through the
   vtables (read-only on the account, except one Workshop item download).
+- `probe --direct <steamclient.dll> --test cert` (attached with
+  `steamclient_attach`): asks Steam for a networking certificate; the DLL
+  log shows the result.
 - `crates/client/examples/steamclient_attach.rs <appid> <dir> <probe> [args]`:
   signs in and attaches the probe with `Command::AttachGame`, without
   launching a game or reporting one as played (so a game running on
@@ -350,3 +371,5 @@ start the game" (Steam may be showing an update or EULA prompt).
   in with the saved account and starts a game exactly like the Play button.
   `STEAMINRUST_STEAMCLIENT64=<dll>` picks the DLL,
   `STEAMINRUST_STEAMCLIENT_LOG=<file>` logs every interface the game asks for.
+  A Steam Cloud conflict holds the launch like in the app;
+  `STEAMINRUST_TEST_CLOUD=local` (or `cloud`) settles it that way.

@@ -63,6 +63,12 @@ fn main() {
                             server.push_to(other, GameEvent::Signal { from: me, data });
                             Reply::Ok
                         }
+                        Request::Rendezvous { data, .. } => {
+                            server.push_to(other, GameEvent::Rendezvous { from: me, data });
+                            Reply::Ok
+                        }
+                        // No account here: the DLL falls back to unsigned certs.
+                        Request::NetworkingCert { .. } => Reply::Err { message: "no account in this test".into() },
                         _ => Reply::Err { message: "not in this test".into() },
                     };
                     let _ = call.reply.send(reply);
