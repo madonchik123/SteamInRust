@@ -21,11 +21,12 @@ const FILES: &[&str] = &[
     "steammessages_contentsystem.steamclient.proto",
     "steammessages_econ.steamclient.proto",
     "steammessages_cloud.steamclient.proto",
+    "steammessages_credentials.steamclient.proto",
 ];
 
 /// Web UI services (cart, wishlist, store query). Separate module because
 /// they redefine some client types.
-const WEBUI: &[&str] = &["service_accountcart.proto", "service_wishlist.proto", "service_storequery.proto", "service_steamnotification.proto", "service_cloudconfigstore.proto"];
+const WEBUI: &[&str] = &["service_accountcart.proto", "service_wishlist.proto", "service_storequery.proto", "service_steamnotification.proto", "service_cloudconfigstore.proto", "service_familygroups.proto"];
 
 fn main() {
     println!("cargo:rerun-if-changed=protos");

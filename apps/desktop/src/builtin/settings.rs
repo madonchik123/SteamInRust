@@ -68,6 +68,8 @@ pub type SharedFlags = std::sync::Arc<std::sync::Mutex<AppFlags>>;
 
 pub struct Settings {
     section: Section,
+    /// Account details, purchase history, licenses, family.
+    acct: super::settings_account::AccountPages,
     flags: SharedFlags,
     /// Cached "are we the steam:// handler?" (registry lookups are slow).
     handler: Option<bool>,
@@ -75,7 +77,7 @@ pub struct Settings {
 
 impl Settings {
     pub fn new(flags: SharedFlags) -> Self {
-        Self { section: Section::default(), flags, handler: None }
+        Self { section: Section::default(), acct: Default::default(), flags, handler: None }
     }
 }
 
@@ -89,8 +91,19 @@ impl Extension for Settings {
     }
 
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
-        if arg == Some("plugins") {
-            self.section = Section::Plugins;
+        use super::settings_account::AccountView;
+        match arg {
+            Some("plugins") => self.section = Section::Plugins,
+            Some("family") => self.section = Section::Family,
+            Some(a @ ("history" | "licenses" | "account-details")) => {
+                self.section = Section::Account;
+                self.acct.open(match a {
+                    "history" => AccountView::Purchases,
+                    "licenses" => AccountView::Licenses,
+                    _ => AccountView::Details,
+                });
+            }
+            _ => {}
         }
     }
 
@@ -121,6 +134,7 @@ impl Extension for Settings {
                         ui.painter().text(egui::pos2(r.left() + 40.0, r.center().y), egui::Align2::LEFT_CENTER, i18n::tr_dyn(label), w::font_medium(14.0), if on { t.text } else { t.text_dim });
                         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             self.section = s;
+                            self.acct.open(Default::default());
                         }
                     }
                 });
@@ -129,10 +143,11 @@ impl Extension for Settings {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.add_space(28.0);
                 w::centered(ui, 820.0, 32.0, |ui| match self.section {
-                    Section::Account => account(ui, &t, ctx),
+                    Section::Account if self.acct.view != Default::default() => self.acct.show(ui, &t, ctx),
+                    Section::Account => account(ui, &t, ctx, &mut self.acct),
                     Section::Friends => friends_chat(ui, &t, ctx),
-                    Section::Family => family(ui, &t),
-                    Section::Security => security(ui, &t, ctx),
+                    Section::Family => self.acct.family(ui, &t, ctx),
+                    Section::Security => security(ui, &t, ctx, &mut self.acct),
                     Section::Notifications => notifications(ui, &t, &self.flags),
                     Section::Library => library(ui, &t, ctx),
                     Section::Downloads => downloads(ui, &t, ctx, &self.flags),
@@ -162,7 +177,7 @@ impl Extension for Settings {
 }
 
 /// A row like Steam's settings: label, value, and a button on the right.
-fn info_row(ui: &mut Ui, t: &Theme, label: &str, value: &str, button: Option<&str>) -> bool {
+pub(super) fn info_row(ui: &mut Ui, t: &Theme, label: &str, value: &str, button: Option<&str>) -> bool {
     let mut clicked = false;
     egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -193,12 +208,13 @@ fn tile(ui: &mut Ui, t: &Theme, icon: &str, title: &str, sub: &str, width: f32) 
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
-fn web(url: &str) {
+pub(super) fn web(url: &str) {
     let _ = open::that_detached(url);
 }
 
 /// Like Steam's Account page.
-fn account(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+fn account(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pages: &mut super::settings_account::AccountPages) {
+    use super::settings_account::AccountView;
     w::page_title(ui, t, t!("Account"), None);
     let me = ctx.state.persona(ctx.state.steam_id);
     let name = if ctx.state.persona_name.is_empty() { me.name.clone() } else { ctx.state.persona_name.clone() };
@@ -226,11 +242,17 @@ fn account(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
         if tile(ui, t, icons::EYE_SLASH, t!("Privacy settings"), t!("Profile, games, inventory and more"), width) {
             web(&format!("https://steamcommunity.com/profiles/{}/edit/settings", ctx.state.steam_id));
         }
-        if tile(ui, t, icons::NOTE, t!("Account details"), t!("Store, security, family settings, devices"), width) {
-            web("https://store.steampowered.com/account/");
+        if tile(ui, t, icons::NOTE, t!("Account details"), t!("Contact, Steam Guard, password, devices"), width) {
+            pages.open(AccountView::Details);
         }
     });
     ui.add_space(10.0);
+    if info_row(ui, t, t!("Purchase history"), t!("Purchases, gifts, refunds, wallet and Market"), Some(t!("View"))) {
+        pages.open(AccountView::Purchases);
+    }
+    if info_row(ui, t, t!("Licenses and product key activations"), t!("Everything on your account and how you got it"), Some(t!("View"))) {
+        pages.open(AccountView::Licenses);
+    }
     let code = (ctx.state.steam_id & 0xFFFF_FFFF).to_string();
     if info_row(ui, t, t!("Your friend code"), &code, Some(t!("Add friends"))) {
         ctx.navigate("community", None);
@@ -273,22 +295,34 @@ fn friends_chat(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
     }
 }
 
-fn family(ui: &mut Ui, t: &Theme) {
-    w::page_title(ui, t, t!("Family"), Some(t!("Steam Families: share games and set limits for children. Managed on Steam's website.")));
-    if info_row(ui, t, t!("Steam Family"), "", Some(t!("Manage family"))) {
-        web("https://store.steampowered.com/account/familymanagement");
-    }
-}
 
-fn security(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+fn security(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pages: &mut super::settings_account::AccountPages) {
     w::page_title(ui, t, t!("Security"), None);
-    if info_row(ui, t, t!("Steam Guard"), t!("Protects your account with codes from the Steam Mobile app"), Some(t!("Manage Steam Guard"))) {
+    pages.ask_security(ctx);
+    let (guard, password) = match &ctx.state.account_security {
+        Some(Ok(s)) => (
+            if s.authenticator {
+                t!("Steam Guard Mobile Authenticator is on").to_string()
+            } else if s.steam_guard {
+                t!("Codes by email are on").to_string()
+            } else {
+                t!("Off: your account isn't protected").to_string()
+            },
+            match (s.password_changed, s.password_reset) {
+                (Some(c), _) => t!("Last changed: {date}", date = ui::date(c)).to_string(),
+                (None, Some(r)) => t!("Last reset: {date}", date = ui::date(r)).to_string(),
+                _ => String::new(),
+            },
+        ),
+        _ => (t!("Protects your account with codes from the Steam Mobile app").to_string(), String::new()),
+    };
+    if info_row(ui, t, t!("Steam Guard"), &guard, Some(t!("Manage Steam Guard"))) {
         web("https://store.steampowered.com/twofactor/manage");
     }
     if info_row(ui, t, t!("Authorized devices"), t!("See and remove devices signed in to your account"), Some(t!("Manage devices"))) {
         web("https://store.steampowered.com/account/authorizeddevices");
     }
-    if info_row(ui, t, t!("Password"), "", Some(t!("Change password"))) {
+    if info_row(ui, t, t!("Password"), &password, Some(t!("Change password"))) {
         web("https://help.steampowered.com/wizard/HelpChangePassword");
     }
     if info_row(ui, t, t!("This PC"), t!("Saved sign-in for this account is stored on this PC"), Some(t!("Sign out"))) {

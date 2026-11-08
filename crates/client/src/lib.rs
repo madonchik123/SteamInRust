@@ -18,6 +18,7 @@ pub mod social;
 pub mod cloud;
 pub mod regions;
 pub mod a2s;
+pub mod account;
 mod notify;
 pub mod offline;
 pub mod support;
@@ -114,6 +115,14 @@ pub enum Command {
     LoadSupportTickets,
     /// The messages in one support request.
     LoadSupportTicket { id: String, url: String },
+    /// Steam Guard, authenticator, phone, remembered devices (read only).
+    LoadAccountSecurity,
+    /// Purchase history: the first page, or the next after `cursor`.
+    LoadPurchases { language: String, cursor: Option<String> },
+    /// Licenses and product key activations.
+    LoadLicenses { language: String },
+    /// Your Steam Family and its shared library.
+    LoadFamily { language: String },
     CancelListing { listing_id: u64 },
     CancelBuyOrder { order_id: u64 },
     /// Fetch the games on someone's profile with their playtime.
@@ -231,6 +240,11 @@ pub enum Event {
     NotificationsArrived(Vec<model::Notification>),
     SupportTickets(Result<Vec<model::SupportTicket>, String>),
     SupportTicket { id: String, result: Result<Vec<model::SupportMessage>, String> },
+    AccountSecurity(Result<model::AccountSecurity, String>),
+    /// A page of purchase history; `more` is true when it continues the list.
+    Purchases { more: bool, result: Result<model::PurchasePage, String> },
+    LicenseList(Result<Vec<model::License>, String>),
+    Family(Result<model::FamilyStatus, String>),
     /// Community Market fee rules for your wallet currency.
     FeeRules(model::fees::Rules),
     ListingCancelled { listing_id: u64, result: Result<(), String> },

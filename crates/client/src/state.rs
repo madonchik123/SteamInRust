@@ -43,6 +43,11 @@ pub struct State {
     pub badges: HashMap<SteamId, Result<model::Badges, String>>,
     pub notifications: Option<model::Notifications>,
     pub support_tickets: Option<Result<Vec<model::SupportTicket>, String>>,
+    pub account_security: Option<Result<model::AccountSecurity, String>>,
+    /// Purchase history loaded so far (pages appended).
+    pub purchases: Option<Result<model::PurchasePage, String>>,
+    pub licenses: Option<Result<Vec<model::License>, String>>,
+    pub family: Option<Result<model::FamilyStatus, String>>,
     pub support_messages: HashMap<String, Result<Vec<model::SupportMessage>, String>>,
     /// Market fee rules for your wallet currency (USD-style until Steam says).
     pub fee_rules: model::fees::Rules,
@@ -174,6 +179,16 @@ impl State {
             Event::Notifications(n) => self.notifications = Some(n.clone()),
             Event::NotificationsArrived(_) => {}
             Event::SupportTickets(r) => self.support_tickets = Some(r.clone()),
+            Event::AccountSecurity(r) => self.account_security = Some(r.clone()),
+            Event::Purchases { more, result } => match (more, &mut self.purchases, result) {
+                (true, Some(Ok(page)), Ok(next)) => {
+                    page.rows.extend(next.rows.iter().cloned());
+                    page.more = next.more.clone();
+                }
+                _ => self.purchases = Some(result.clone()),
+            },
+            Event::LicenseList(r) => self.licenses = Some(r.clone()),
+            Event::Family(r) => self.family = Some(r.clone()),
             Event::SupportTicket { id, result } => {
                 self.support_messages.insert(id.clone(), result.clone());
             }

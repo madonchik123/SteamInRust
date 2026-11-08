@@ -9,7 +9,7 @@ Steam's website" still works; it just isn't native yet.
 
 | Area | Score | Main gaps |
 | --- | ---: | --- |
-| Sign-in and accounts | 0.75 | Tokens are in a per-user file, not the Windows credential store; account details open Steam's website |
+| Sign-in and accounts | 0.75 | Tokens are in a per-user file, not the Windows credential store; changing email, password or phone opens Steam's website |
 | Offline mode and reconnecting | 1 | Whether Steam counts playtime recorded offline is unconfirmed |
 | Library | 0.75 | Collection edits aren't saved back to Steam; dynamic collections are skipped |
 | Downloads and installs | 0.75 | No drag to reorder the queue; no taskbar progress |
@@ -34,7 +34,11 @@ Steam's website" still works; it just isn't native yet.
 | QR code from the Steam Mobile app | Done |
 | Remember me, several saved accounts, switch account, ask at startup | Done |
 | Refresh token storage | Per-user file in app data. Moving it to the Windows credential store is planned |
-| Account details, purchase history, Steam Families | Open Steam's website |
+| Account details: email, phone, Steam Guard and authenticator with dates, password and email change dates, store country, wallet, VAC | Done, native (Credentials service) |
+| Purchase history with "load more", refunds marked | Done, native (read from Steam's history page, like Steam's client) |
+| Licenses and product key activations, searchable | Done, native |
+| Steam Families: members, roles, cooldowns, invites, shared library with owners | Done, native (FamilyGroups service). Inviting, removing and limits open Steam's website |
+| Changing email, password, phone, Steam Guard | Open Steam's website (they need Steam's own confirmation) |
 
 ## Offline mode and reconnecting
 
