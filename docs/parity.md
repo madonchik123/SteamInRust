@@ -18,7 +18,7 @@ Steam's website" still works; it just isn't native yet.
 | Community | 0.5 | Reading only for discussions; badge pages, groups and someone's reviews open Steam's website |
 | Inventory and Market | 0.75 | Trade offers open Steam's website; no Market search page |
 | Steam Cloud | 1 | Can't delete files from the cloud |
-| Steam features inside games | 0.75 | P2P with players on the official client; `ISteamNetworkingSockets`; game servers |
+| Steam features inside games | 0.75 | P2P with players on the official client; hosting game servers; inventory item definitions |
 | Shift+Tab overlay | 0.75 | Not shown over exclusive full-screen games; no in-game web browser or screenshots |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | English and Russian only; Windows only |
@@ -146,10 +146,16 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | User, apps, achievements, stats, cloud, friends, auth tickets, encrypted app tickets | Done |
 | Lobbies (`ISteamMatchmaking`) through Steam's matchmaking service | Done |
 | P2P (`ISteamNetworking`) between SteamInRust players | Done, with UDP hole punching |
-| Leaderboards, global achievement percentages, avatars, `ISteamHTTP`, installed Workshop items | Done |
+| Leaderboards, global achievement percentages, avatars, `ISteamHTTP` | Done |
+| Exact interface layouts for SDK 1.3x–1.6x (91 versions, both bitnesses) | Done |
 | P2P with players on the official client | Not possible: Valve routes it over the Steam Datagram Relay, whose protocol isn't public |
-| `ISteamNetworkingSockets`, `ISteamNetworkingMessages`, game servers | Stubs |
-| Inventory, screenshots, Steam Input, Workshop queries | Stubs |
+| `ISteamNetworkingSockets`, `ISteamNetworkingMessages` between SteamInRust players | Done (P2P; connecting by IP to dedicated servers isn't possible) |
+| Workshop (`ISteamUGC`): queries, subscriptions, votes, favorites, downloads | Done. Publishing items isn't supported |
+| Inventory (`ISteamInventory`): items, drops, promos, crafting, properties | Done. Item definitions don't load yet; no purchases |
+| Server browser (`ISteamMatchmakingServers`): internet and LAN lists, ping, players, rules | Done |
+| Screenshots (`ISteamScreenshots`) into the Steam screenshot folder | Done. Not uploaded |
+| Steam Input on Xbox-style pads with the game's bindings | Done. No gyro, trackpads or binding panel |
+| Hosting game servers (`ISteamGameServer`) | Not yet: needs a game-server sign-in to Steam |
 
 ## Shift+Tab overlay
 
