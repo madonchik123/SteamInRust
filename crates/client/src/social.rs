@@ -85,6 +85,20 @@ pub async fn post_comment(web: &Web, steam_id: SteamId, text: &str) -> Result<mo
     page(&v)
 }
 
+/// Block (or unblock) all communication with someone, like the profile's
+/// "Block all communication".
+pub async fn block_user(web: &Web, steam_id: SteamId, block: bool) -> Result<bool, String> {
+    let resp = web
+        .http
+        .post(format!("{COMMUNITY}/actions/BlockUserAjax"))
+        .header("Referer", format!("{COMMUNITY}/profiles/{steam_id}/"))
+        .form(&[("sessionid", web.session_id.clone()), ("steamid", steam_id.to_string()), ("block", if block { "1" } else { "0" }.to_string())])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.status().is_success() { Ok(block) } else { Err(format!("Steam said {}", resp.status())) }
+}
+
 /// Delete a comment. Steam allows it on your own profile and for your own comments.
 pub async fn delete_comment(web: &Web, steam_id: SteamId, comment_id: u64) -> Result<model::Comments, String> {
     let v: Value = web
