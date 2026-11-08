@@ -82,6 +82,176 @@ pub enum Request {
     Avatar { steam_id: u64, size: u8 },
     /// An HTTP request for ISteamHTTP. `method`: EHTTPMethod (1 GET, 2 HEAD, 3 POST, 4 PUT, 5 DELETE…).
     Http { method: i32, url: String, headers: Vec<(String, String)>, params: Vec<(String, String)>, body: Option<(String, Vec<u8>)>, timeout_ms: u32 },
+    /// A Workshop query (ISteamUGC): answered with [`Reply::UgcResults`].
+    UgcQuery(Box<UgcQuery>),
+    /// The player's subscribed Workshop items for this game.
+    UgcSubscribed,
+    /// Subscribe (or unsubscribe) the player; `list` 1 subscriptions, 2 favorites.
+    UgcSubscribe { id: u64, list: u32, on: bool },
+    UgcVote { id: u64, up: bool },
+    /// The player's vote: answered with [`Reply::UgcVote`].
+    UgcGetVote { id: u64 },
+    /// Download (or update) an item into the game's Workshop folder.
+    UgcDownload { id: u64 },
+    /// Read or change the player's items for this game (ISteamInventory):
+    /// answered with [`Reply::Inventory`].
+    Inventory(InventoryOp),
+    /// The game's item definitions: answered with [`Reply::ItemDefs`].
+    ItemDefs,
+    /// Promo items this player can still get.
+    PromoItems,
+    /// Game servers from Steam's master server: `filter` in Steam's
+    /// "\key\value" form. Answered with [`Reply::Servers`].
+    ServerList { filter: String, max: u32 },
+    /// Steam Input bindings for an Xbox-style pad: answered with [`Reply::InputConfig`].
+    InputConfig,
+    /// The game asked for Steam's overlay: `dialog` is "invite" (target: lobby
+    /// id), "invite_connect" (target: connect string), one of
+    /// ActivateGameOverlay's names ("friends", "players", "community"…), or
+    /// "user:<name>" (ActivateGameOverlayToUser; target: Steam ID).
+    Overlay { dialog: String, target: String },
+    /// Invite a friend to play with this connect string (ISteamFriends::InviteUserToGame).
+    GameInvite { friend: u64, connect: String },
+}
+
+/// A game server as Steam's server browser lists it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GameServer {
+    pub ip: u32,
+    pub query_port: u16,
+    pub game_port: u16,
+    pub steam_id: u64,
+    pub app_id: u32,
+    pub name: String,
+    pub map: String,
+    pub game_dir: String,
+    pub description: String,
+    pub tags: String,
+    pub version: u32,
+    pub players: u32,
+    pub max_players: u32,
+    pub bots: u32,
+    pub password: bool,
+    pub secure: bool,
+    pub ping: u32,
+}
+
+/// What ISteamInventory asked for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum InventoryOp {
+    All,
+    ByIds(Vec<u64>),
+    Consume { item: u64, quantity: u32 },
+    /// Destroy (item, quantity) to make one of `generate`.
+    Exchange { generate: i32, destroy: Vec<(u64, u32)> },
+    /// Move `quantity` to `dest` (another stack), or split into a new stack (dest 0).
+    Transfer { source: u64, quantity: u32, dest: u64 },
+    /// A playtime drop from this drop list.
+    Drop { def: i32 },
+    /// Grant these promo items (empty: every eligible one).
+    Promo(Vec<i32>),
+    /// Developers only: make items.
+    Generate(Vec<(i32, u32)>),
+    /// Dynamic property changes: (item, name, value; None removes it).
+    Modify(Vec<(u64, String, Option<PropValue>)>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PropValue {
+    Str(String),
+    Bool(bool),
+    Int(i64),
+    Float(f32),
+}
+
+/// One item as SteamItemDetails_t plus its JSON properties.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InvItem {
+    pub id: u64,
+    pub def: i32,
+    pub quantity: u16,
+    /// ESteamItemFlags: 1 no trade, 0x100 removed, 0x200 consumed.
+    pub flags: u16,
+    pub props: Vec<(String, String)>,
+}
+
+/// What ISteamUGC's query builder collected.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UgcQuery {
+    /// 0 a user's list, 1 all items (EUGCQuery), 2 these ids.
+    pub kind: u8,
+    pub account: u32,
+    /// EUserUGCList and EUserUGCListSortOrder.
+    pub list: i32,
+    pub sort: i32,
+    /// EUGCQuery.
+    pub query: i32,
+    /// EUGCMatchingUGCType.
+    pub matching: i32,
+    pub creator_app: u32,
+    pub consumer_app: u32,
+    pub page: u32,
+    pub cursor: Option<String>,
+    pub ids: Vec<u64>,
+    pub required_tags: Vec<String>,
+    pub excluded_tags: Vec<String>,
+    pub tag_groups: Vec<Vec<String>>,
+    pub match_any: bool,
+    pub search: String,
+    pub trend_days: u32,
+    pub kv: Vec<(String, String)>,
+    pub language: String,
+    pub cloud_filename: String,
+    pub only_ids: bool,
+    pub total_only: bool,
+    pub long_description: bool,
+    pub metadata: bool,
+    pub children: bool,
+    pub previews: bool,
+    pub kv_tags: bool,
+    pub playtime_days: u32,
+    pub created: (u32, u32),
+    pub updated: (u32, u32),
+    pub max_age: u32,
+}
+
+/// One Workshop item, everything SteamUGCDetails_t and the query getters return.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UgcItem {
+    pub id: u64,
+    pub result: i32,
+    /// EWorkshopFileType.
+    pub file_type: i32,
+    pub creator_app: u32,
+    pub consumer_app: u32,
+    pub title: String,
+    pub description: String,
+    pub owner: u64,
+    pub created: u32,
+    pub updated: u32,
+    pub visibility: i32,
+    pub banned: bool,
+    pub accepted: bool,
+    /// (tag, display name).
+    pub tags: Vec<(String, String)>,
+    /// The content manifest (UGCHandle) and preview handle.
+    pub file: u64,
+    pub preview_file: u64,
+    pub file_name: String,
+    pub file_size: u64,
+    pub preview_size: u64,
+    pub url: String,
+    pub votes_up: u32,
+    pub votes_down: u32,
+    pub score: f32,
+    pub children: Vec<u64>,
+    pub preview_url: String,
+    pub metadata: String,
+    pub kv: Vec<(String, String)>,
+    /// Additional previews: (URL or video id, EItemPreviewType, original file name).
+    pub previews: Vec<(String, i32, String)>,
+    /// (EItemStatistic, value).
+    pub stats: Vec<(i32, u64)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -134,6 +304,10 @@ pub enum GameEvent {
     LobbyGameServer { lobby: u64, ip: u32, port: u16, server: u64 },
     /// A P2P signalling message from another player.
     Signal { from: u64, data: Vec<u8> },
+    /// The player accepted an invite (or picked "Join game") while the game
+    /// runs: GameLobbyJoinRequested_t for a lobby, else
+    /// GameRichPresenceJoinRequested_t with the connect string.
+    JoinRequested { lobby: u64, friend: u64, connect: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +328,18 @@ pub enum Reply {
     LobbyJoined { response: i32, lobby: Option<Lobby> },
     LobbyList { lobbies: Vec<Lobby> },
     Result { eresult: i32 },
+    UgcResults { eresult: i32, total: u32, items: Vec<UgcItem>, cursor: String },
+    UgcIds { ids: Vec<u64> },
+    UgcVote { eresult: i32, up: bool, down: bool, skipped: bool },
+    Inventory { eresult: i32, items: Vec<InvItem>, ticket: Vec<u8> },
+    /// Item definitions: (id, properties).
+    ItemDefs { defs: Vec<(i32, Vec<(String, String)>)> },
+    PromoItems { eresult: i32, defs: Vec<i32> },
+    Servers { servers: Vec<GameServer> },
+    /// A controller_mappings VDF (empty: none found) and where it came from.
+    InputConfig { bindings: String, source: String },
+    /// EResult, the item's folder, size on disk and last update time.
+    UgcDownloaded { eresult: i32, folder: String, size: u64, updated: u32 },
     LbFound { found: bool, id: i32, count: i32, sort: i32, display: i32, name: String },
     LbEntries { total: i32, entries: Vec<LbEntry> },
     LbUploaded { ok: bool, changed: bool, rank_new: i32, rank_prev: i32 },

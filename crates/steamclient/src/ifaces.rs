@@ -23,7 +23,7 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
             Some($f as Fp)
         };
     }
-    if let Some(f) = crate::extras::imp(kind, name) {
+    if let Some(f) = crate::extras::imp(kind, name).or_else(|| crate::sns::imp(kind, name)) {
         return Some(f);
     }
     match (kind, name) {
@@ -95,6 +95,11 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
         ("ISteamFriends", "GetFriendSteamLevel") => f!(fr_level),
         ("ISteamFriends", "HasFriend") => f!(fr_has_friend),
         ("ISteamFriends", "ActivateGameOverlayToWebPage") => f!(fr_overlay_web),
+        ("ISteamFriends", "ActivateGameOverlay") => f!(fr_overlay),
+        ("ISteamFriends", "ActivateGameOverlayToUser") => f!(fr_overlay_user),
+        ("ISteamFriends", "ActivateGameOverlayInviteDialog") => f!(fr_overlay_invite),
+        ("ISteamFriends", "ActivateGameOverlayInviteDialogConnectString") => f!(fr_overlay_invite_connect),
+        ("ISteamFriends", "InviteUserToGame") => f!(fr_invite_to_game),
         ("ISteamFriends", "ActivateGameOverlayToStore") => f!(fr_overlay_store),
         ("ISteamFriends", "SetRichPresence") => f!(fr_set_rich_presence),
         ("ISteamFriends", "ClearRichPresence") => f!(fr_clear_rich_presence),
@@ -157,8 +162,6 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
 
         // ISteamNetworkingUtils
         ("ISteamNetworkingUtils", "GetLocalTimestamp") => f!(nu_timestamp),
-        ("ISteamNetworkingUtils", "GetRelayNetworkStatus") => f!(nu_relay_status),
-        ("ISteamNetworkingUtils", "SetGlobalConfigValueString" | "SetConfigValue") => f!(yes),
         ("ISteamNetworkingUtils", "GetConfigValue") => f!(minus_one),
         _ => None,
     }
@@ -581,6 +584,34 @@ extern "C" fn fr_has_friend(_t: This, id: u64, flags: i32) -> bool {
 /// No overlay: open the page in the browser instead.
 extern "C" fn fr_overlay_web(_t: This, url: *const c_char, _mode: i32) {
     crate::win::open_url(&unsafe { text(url) });
+}
+/// Ask SteamInRust to open its overlay on a dialog (without blocking the game).
+fn overlay(dialog: String, target: String) {
+    crate::log!("overlay: {dialog} {target}");
+    std::thread::spawn(move || {
+        crate::ipc::request(Request::Overlay { dialog, target });
+    });
+}
+extern "C" fn fr_overlay(_t: This, dialog: *const c_char) {
+    overlay(unsafe { text(dialog) }.to_lowercase(), String::new());
+}
+extern "C" fn fr_overlay_user(_t: This, dialog: *const c_char, user: u64) {
+    overlay(format!("user:{}", unsafe { text(dialog) }.to_lowercase()), user.to_string());
+}
+extern "C" fn fr_overlay_invite(_t: This, lobby: u64) {
+    overlay("invite".into(), lobby.to_string());
+}
+extern "C" fn fr_overlay_invite_connect(_t: This, connect: *const c_char) {
+    overlay("invite_connect".into(), unsafe { text(connect) });
+}
+/// InviteUserToGame: an invite link in chat (what reaches official clients).
+extern "C" fn fr_invite_to_game(_t: This, friend: u64, connect: *const c_char) -> bool {
+    let connect = unsafe { text(connect) };
+    crate::log!("invite {friend} with {connect:?}");
+    std::thread::spawn(move || {
+        crate::ipc::request(Request::GameInvite { friend, connect });
+    });
+    friend != 0
 }
 extern "C" fn fr_overlay_store(_t: This, app: u32, _flag: i32) {
     crate::win::open_url(&format!("https://store.steampowered.com/app/{app}/"));
@@ -1178,10 +1209,6 @@ extern "C" fn rs_quota(_t: This, total: *mut u64, available: *mut u64) -> bool {
 
 extern "C" fn nu_timestamp(_t: This) -> i64 {
     lock().started.elapsed().as_micros() as i64 + 1
-}
-/// ESteamNetworkingAvailability: -102 "can't try" (no relay network).
-extern "C" fn nu_relay_status(_t: This, _details: *mut c_void) -> i32 {
-    -102
 }
 
 #[cfg(test)]

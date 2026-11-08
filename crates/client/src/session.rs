@@ -586,6 +586,15 @@ async fn online(
                     st.persona_state = s;
                     let _ = set_persona(&conn, s);
                 }
+                Some(Command::JoinRunningGame { app_id, friend, connect }) => {
+                    let lobby = lobby_of(&connect);
+                    st.ipc.push(app_id, crate::ipc::protocol::GameEvent::JoinRequested { lobby, friend, connect });
+                }
+                Some(Command::AttachGame { app_id, install_dir }) => {
+                    st.launched_dirs.insert(app_id, install_dir);
+                    let token = st.ipc.register(app_id);
+                    sink(Event::GameAttached { app_id, env: st.ipc.env_value(&token) });
+                }
                 Some(Command::Launch { app_id, install_dir, args }) => {
                     // Like Steam: subscribed Workshop items are downloaded
                     // (or updated) before the game starts, then cloud saves.
@@ -2305,6 +2314,80 @@ impl Online {
                     let _ = reply.send(r);
                 });
             }
+            Request::UgcQuery(q) => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_ugc::query(&conn, app_id, &q).await);
+                });
+            }
+            Request::UgcSubscribed => {
+                tokio::spawn(async move {
+                    let _ = reply.send(Reply::UgcIds { ids: crate::game_ugc::subscribed(&conn, app_id, me).await });
+                });
+            }
+            Request::UgcSubscribe { id, list, on } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(Reply::Result { eresult: crate::game_ugc::subscribe(&conn, app_id, id, list, on).await });
+                });
+            }
+            Request::UgcVote { id, up } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(Reply::Result { eresult: crate::game_ugc::vote(&conn, id, up).await });
+                });
+            }
+            Request::UgcGetVote { id } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_ugc::get_vote(&conn, id).await);
+                });
+            }
+            Request::Inventory(op) => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_inventory::run(&conn, app_id, me, op).await);
+                });
+            }
+            Request::ItemDefs => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_inventory::item_defs(&conn, app_id).await);
+                });
+            }
+            Request::InputConfig => {
+                // Steam's own folder holds the player's Steam Input choices.
+                let root = self
+                    .steam_root
+                    .clone()
+                    .or_else(|| launch::reg_string("Software\\Valve\\Steam", "SteamPath").map(|p| std::path::PathBuf::from(p.replace('/', "\\"))))
+                    .unwrap_or_default();
+                let dir = self.launched_dirs.get(&app_id).cloned().unwrap_or_default();
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::input_config::config(&conn, app_id, me, &root, &dir).await);
+                });
+            }
+            Request::Overlay { dialog, target } => {
+                _sink(Event::GameOverlay { app_id, dialog, target });
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::GameInvite { friend, connect } => {
+                // Official clients drop invite markup from other clients; a
+                // steam://run link arrives as a normal, clickable message.
+                self.send_message(friend, invite_link(app_id, &connect), _sink);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::ServerList { filter, max } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_servers::list(&conn, app_id, &filter, max).await);
+                });
+            }
+            Request::PromoItems => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_inventory::promo_items(&conn, app_id, me).await);
+                });
+            }
+            Request::UgcDownload { id } => {
+                let dir = self.launched_dirs.get(&app_id).cloned().unwrap_or_default();
+                let cell = self.download_cell.unwrap_or(self.cell_id);
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_ugc::download(&conn, app_id, me, id, &dir, cell).await);
+                });
+            }
             Request::Http { method, url, headers, params, body, timeout_ms } => {
                 tokio::spawn(async move {
                     let _ = reply.send(crate::ipc::http_request(method, &url, &headers, &params, body, timeout_ms).await);
@@ -2747,4 +2830,34 @@ async fn sync_installed(conn: Connection, me: SteamId, cell: u32, root: Option<s
     let Some(library) = library else { return };
     let result = crate::workshop::sync(&conn, me, app_id, &library, cell, items).await;
     sink(Event::WorkshopSync { app_id, result });
+}
+
+/// "+connect_lobby <id>" in a connect string or command line → the lobby.
+fn lobby_of(connect: &str) -> u64 {
+    let mut words = connect.split_whitespace();
+    while let Some(w) = words.next() {
+        if w == "+connect_lobby" {
+            return words.next().and_then(|id| id.parse().ok()).unwrap_or(0);
+        }
+    }
+    0
+}
+
+/// `steam://run/<app>//<args>`: Steam starts the game with these arguments.
+fn invite_link(app_id: AppId, connect: &str) -> String {
+    let args: String = connect
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~+".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect();
+    format!("steam://run/{app_id}//{args}")
+}
+
+#[cfg(test)]
+mod invite_tests {
+    #[test]
+    fn connect_strings() {
+        assert_eq!(super::lobby_of("+connect_lobby 109775243904435019"), 109775243904435019);
+        assert_eq!(super::lobby_of("-dev +connect 1.2.3.4"), 0);
+        assert_eq!(super::invite_link(477160, "+connect_lobby 5"), "steam://run/477160//+connect_lobby%205");
+    }
 }

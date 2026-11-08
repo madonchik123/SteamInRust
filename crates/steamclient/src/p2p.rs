@@ -63,6 +63,13 @@ const CHUNK: usize = 1100;
 const MAX_UNRELIABLE: usize = 1200;
 const MAX_RELIABLE: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// A SteamInRust player answers our signal through Steam within about a
+/// second. No answer means the other side isn't SteamInRust (an official
+/// client, which only talks over Valve's relays to strangers): fail the
+/// session like Steam does, so the game shows its own "couldn't connect".
+const NO_ANSWER_TIMEOUT: Duration = Duration::from_secs(6);
+/// PINGs go every 2 s; this long without an answer means the link is gone.
+const LINK_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What a game asked for in SendP2PPacket's EP2PSend.
 fn reliable(send_type: i32) -> bool {
@@ -91,12 +98,16 @@ struct Peer {
     channels: HashMap<i32, Channel>,
     failed: bool,
     announced: bool,
+    /// Their signal (or a packet) reached us: they run SteamInRust.
+    answered: bool,
+    /// Round trip of the last answered PING.
+    rtt: Option<Duration>,
 }
 
 impl Peer {
     fn new() -> Self {
         let now = Instant::now();
-        Peer { token: 0, candidates: Vec::new(), addr: None, since: now, last_ping: now - Duration::from_secs(1), last_heard: None, waiting: VecDeque::new(), channels: HashMap::new(), failed: false, announced: false }
+        Peer { token: 0, candidates: Vec::new(), addr: None, since: now, last_ping: now - Duration::from_secs(1), last_heard: None, waiting: VecDeque::new(), channels: HashMap::new(), failed: false, announced: false, answered: false, rtt: None }
     }
 }
 
@@ -106,6 +117,11 @@ pub trait Outside: Send + Sync {
     fn signal(&self, to: u64, payload: Vec<u8>);
     fn session_request(&self, from: u64);
     fn connect_failed(&self, to: u64);
+    /// Channels another module handles (networking sockets / messages):
+    /// true if consumed, so they don't reach ISteamNetworking.
+    fn route(&self, _from: u64, _channel: i32, _data: &[u8]) -> bool {
+        false
+    }
 }
 
 pub struct Endpoint {
@@ -193,6 +209,7 @@ impl Endpoint {
                 p.since = Instant::now();
             }
             p.token = token;
+            p.answered = true;
             p.candidates = candidates;
             p.last_ping = Instant::now() - Duration::from_secs(1);
         }
@@ -216,6 +233,7 @@ impl Endpoint {
             }
         };
         if new {
+            crate::log!("p2p: connecting to {to}");
             self.outside.signal(to, self.signal_payload(false));
         }
     }
@@ -372,7 +390,7 @@ impl Endpoint {
                     let b = self.header(PONG, src, their_token);
                     let _ = self.socket.send_to(&b, from);
                 }
-                PONG => {}
+                PONG => p.rtt = Some(p.last_ping.elapsed()),
                 UNRELIABLE if body.len() >= 4 => {
                     deliver.push((i32::from_le_bytes(body[..4].try_into().unwrap()), body[4..].to_vec()));
                 }
@@ -409,7 +427,12 @@ impl Endpoint {
                 }
                 _ => {}
             }
-            if !deliver.is_empty() && !p.announced {
+        }
+        // Networking sockets / messages take their own channels.
+        deliver.retain(|(ch, data)| !self.outside.route(src, *ch, data));
+        if !deliver.is_empty() {
+            let mut peers = self.peers.lock().unwrap();
+            if let Some(p) = peers.get_mut(&src).filter(|p| !p.announced) {
                 p.announced = true;
                 request = true;
             }
@@ -445,9 +468,21 @@ impl Endpoint {
                     let _ = self.socket.send_to(&b, a);
                 }
             }
-            if p.addr.is_none() && !p.failed && p.since.elapsed() > CONNECT_TIMEOUT {
+            let waited = p.since.elapsed();
+            if p.addr.is_none() && !p.failed && (waited > CONNECT_TIMEOUT || !p.answered && waited > NO_ANSWER_TIMEOUT) {
+                if !p.answered {
+                    crate::log!("p2p: {id} never answered (not on SteamInRust?)");
+                }
                 p.failed = true;
                 p.waiting.clear();
+                failed.push(*id);
+            }
+            // Connected, but nothing heard for a while (they quit or the
+            // path broke): drop the link so it reconnects on the next send.
+            if p.addr.is_some() && p.last_heard.is_some_and(|t| t.elapsed() > LINK_TIMEOUT) {
+                p.addr = None;
+                p.failed = true;
+                p.channels.clear();
                 failed.push(*id);
             }
             let Some(addr) = p.addr else { continue };
@@ -556,7 +591,15 @@ impl Outside for Steam {
         b.u64(0, from);
         lock().post(P2P_SESSION_REQUEST, b.0);
     }
+    fn route(&self, from: u64, channel: i32, data: &[u8]) -> bool {
+        if channel == crate::sns::CH_SOCKETS || channel == crate::sns::CH_MESSAGES {
+            crate::sns::on_wire(from, channel, data);
+            return true;
+        }
+        false
+    }
     fn connect_failed(&self, to: u64) {
+        crate::sns::peer_failed(to);
         // P2PSessionConnectFail_t: remote, EP2PSessionError (4 = timeout).
         let mut b = Bytes::new(16);
         b.u64(0, to).u8(8, 4);
@@ -590,6 +633,23 @@ pub fn signal(from: u64, payload: &[u8]) {
     if let Some(e) = ep() {
         e.on_signal(from, payload);
     }
+}
+
+/// Send on a channel for another module (networking sockets / messages).
+pub fn send_raw(to: u64, data: &[u8], reliable: bool, channel: i32) -> bool {
+    ep().is_some_and(|e| e.send(to, data, if reliable { 2 } else { 0 }, channel))
+}
+
+/// Round trip to a player in ms, once measured.
+pub fn rtt_ms(peer: u64) -> Option<i32> {
+    let e = ep()?;
+    let peers = e.peers.lock().unwrap();
+    peers.get(&peer)?.rtt.map(|d| d.as_millis().min(i32::MAX as u128) as i32)
+}
+
+/// (connected, still connecting) for a player we've talked to.
+pub fn link(peer: u64) -> Option<(bool, bool)> {
+    ep()?.state(peer).map(|(connected, connecting, ..)| (connected, connecting))
 }
 
 pub fn lobby_changed(_lobby: u64) {}

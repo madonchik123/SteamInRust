@@ -19,6 +19,10 @@ pub mod social;
 pub mod cloud;
 pub mod regions;
 pub mod a2s;
+pub mod game_ugc;
+pub mod game_inventory;
+pub mod game_servers;
+mod input_config;
 pub mod account;
 mod notify;
 pub mod offline;
@@ -71,6 +75,15 @@ pub enum Command {
     CloudSync { app_id: AppId, install_dir: PathBuf, mode: cloud::Mode, keep_local: Vec<String>, keep_cloud: Vec<String>, then_launch: Option<String> },
     /// Close a running game (and the processes it started).
     StopGame { app_id: AppId },
+    /// For developers: let a game started by hand (a debugger, a test probe)
+    /// use this session's Steam features. Answered with
+    /// [`Event::GameAttached`]; nothing is reported to Steam as played.
+    AttachGame { app_id: AppId, install_dir: PathBuf },
+    /// The player accepted an invite (or "Join game") for a game that's
+    /// running: hand it to the game like Steam does (GameLobbyJoinRequested_t
+    /// for "+connect_lobby <id>", else GameRichPresenceJoinRequested_t).
+    /// Start a game that isn't running with `connect` as its arguments instead.
+    JoinRunningGame { app_id: AppId, friend: SteamId, connect: String },
     SendMessage { to: SteamId, text: String },
     /// Invite a friend into the running game's lobby: lets them in (private
     /// lobbies) and sends a game invite that joins it.
@@ -205,6 +218,11 @@ pub enum Event {
     /// Names of games outside your library (e.g. what friends are playing).
     AppNames(Vec<(AppId, String)>),
     GameStarted { app_id: AppId },
+    /// The `STEAMINRUST_IPC` value for a game started by hand ([`Command::AttachGame`]).
+    GameAttached { app_id: AppId, env: String },
+    /// A game asked for Steam's overlay (see `ipc::protocol::Request::Overlay`
+    /// for `dialog` and `target`): SteamInRust's overlay should open there.
+    GameOverlay { app_id: AppId, dialog: String, target: String },
     /// How a game is being started: with SteamInRust's steamclient, through
     /// the official Steam client (anti-cheat), or without Steam features.
     LaunchMode { app_id: AppId, mode: LaunchMode },

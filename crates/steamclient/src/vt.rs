@@ -19,8 +19,9 @@ use std::sync::{LazyLock, Mutex};
 
 pub type Fp = *const c_void;
 
-/// ISteamClient017 (SDK 1.37–1.41), from the SDK headers: older games ask
-/// for it. Only slot positions matter; getters are resolved by version.
+/// ISteamClient017 (SDK 1.37–1.41), from the SDK headers, used for the even
+/// older SteamClient014–016 the tables don't have. Only slot positions
+/// matter; getters are resolved by version.
 const CLIENT017: &[&str] = &[
     "CreateSteamPipe", "BReleaseSteamPipe", "ConnectToGlobalUser", "CreateLocalUser", "ReleaseUser", "GetISteamUser",
     "GetISteamGameServer", "SetLocalIPBinding", "GetISteamFriends", "GetISteamUtils", "GetISteamMatchmaking",
@@ -299,6 +300,33 @@ mod tests {
         assert_eq!(m[12], ("GetAnalogActionData", 20));
         let (_, m) = layout32("STEAMUSERSTATS_INTERFACE_VERSION011").unwrap();
         assert_eq!(&m[1..3], &[("GetStatFloat", 8), ("GetStatInt32", 8)]);
+        // A struct return counts its hidden pointer once: GetMotionData(u64).
+        let (_, m) = layout32("SteamController005").unwrap();
+        assert_eq!(m[21], ("GetMotionData", 12));
+        let (_, m) = layout32("SteamGameServer013").unwrap();
+        assert_eq!(m[0], ("InitGameServer", 24));
+        assert_eq!(m[36], ("GetPublicIP", 4));
+        // Every slot of every version has a name and a known size.
+        for (v, _, methods) in crate::tables32::LAYOUTS32 {
+            assert!(methods.iter().all(|(n, b)| !n.is_empty() && *b != UNKNOWN), "{v}");
+        }
+    }
+
+    #[test]
+    fn old_versions_have_their_own_layout() {
+        // 64-bit games on old SDKs get their exact version, not a neighbour's.
+        assert_eq!(layout("SteamUser019").unwrap().1.len(), 29);
+        assert_eq!(layout("SteamFriends015").unwrap().1.len(), 72);
+        assert_eq!(layout("STEAMUGC_INTERFACE_VERSION010").unwrap().1[1], "CreateQueryAllUGCRequestPage");
+        // Slots the first tables had wrong.
+        assert_eq!(layout("SteamInput006").unwrap().1[31], "TriggerVibrationExtended");
+        assert_eq!(layout("STEAMHTMLSURFACE_INTERFACE_VERSION_005").unwrap().1[27], "Find");
+        // Both bitnesses list the same methods in the same slots.
+        for (v, _, names) in LAYOUTS {
+            if let Some((_, _, m32)) = crate::tables32::LAYOUTS32.iter().find(|(x, _, _)| x == v) {
+                assert_eq!(names.to_vec(), m32.iter().map(|(n, _)| *n).collect::<Vec<_>>(), "{v}");
+            }
+        }
     }
 
     #[test]

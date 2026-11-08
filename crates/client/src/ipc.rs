@@ -102,6 +102,14 @@ impl Server {
         }
     }
 
+    /// Queue an event for one launch only.
+    pub fn push_to(&self, token: &str, event: GameEvent) {
+        if let Some(slot) = self.tokens.lock().unwrap().get_mut(token) {
+            slot.events.push_back(event);
+            slot.notify.notify_one();
+        }
+    }
+
     /// Games running right now (for routing Steam's pushes).
     pub fn running_apps(&self) -> Vec<AppId> {
         let mut apps: Vec<AppId> = self.tokens.lock().unwrap().values().map(|s| s.app_id).collect();
@@ -157,8 +165,10 @@ async fn serve_one(pipe: tokio::net::windows::named_pipe::NamedPipeServer, token
                 Some(_) if matches!(env.req, Request::Poll) => Reply::Events { events: poll(&tokens, &env.token).await },
                 Some(app_id) => {
                     let (rtx, rrx) = oneshot::channel();
+                    // Workshop downloads can take long (big levels); the rest answer quickly.
+                    let wait = if matches!(env.req, Request::UgcDownload { .. }) { Duration::from_secs(3600) } else { Duration::from_secs(40) };
                     let _ = tx.send(Call { app_id, token: env.token, pid: env.pid, req: env.req, reply: rtx });
-                    match tokio::time::timeout(Duration::from_secs(40), rrx).await {
+                    match tokio::time::timeout(wait, rrx).await {
                         Ok(Ok(r)) => r,
                         _ => Reply::Err { message: "SteamInRust didn't answer".into() },
                     }

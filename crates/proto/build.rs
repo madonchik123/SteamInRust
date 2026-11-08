@@ -21,6 +21,9 @@ const FILES: &[&str] = &[
     "steammessages_contentsystem.steamclient.proto",
     "steammessages_econ.steamclient.proto",
     "steammessages_cloud.steamclient.proto",
+    "steammessages_inventory.steamclient.proto",
+    "steammessages_clientserver_gameservers.proto",
+    "steammessages_gameservers.steamclient.proto",
     "steammessages_credentials.steamclient.proto",
 ];
 

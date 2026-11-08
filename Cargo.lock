@@ -4349,8 +4349,10 @@ dependencies = [
 name = "steamclient"
 version = "0.3.0"
 dependencies = [
+ "image",
  "serde",
  "serde_json",
+ "vdf",
  "windows",
 ]
 
