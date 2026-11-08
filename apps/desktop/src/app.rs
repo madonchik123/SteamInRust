@@ -37,6 +37,9 @@ pub struct Prefs {
     pub wants_offline: bool,
     /// Start in offline mode by itself when Steam can't be reached.
     pub auto_offline: bool,
+    /// Friends pinned to the top of the list ("Favorites"), like Steam.
+    #[serde(default)]
+    pub favorite_friends: Vec<u64>,
 }
 
 fn yes() -> bool {
@@ -63,6 +66,7 @@ impl Default for Prefs {
             toast_notifications: true,
             wants_offline: false,
             auto_offline: false,
+            favorite_friends: Vec::new(),
         }
     }
 }
@@ -92,6 +96,9 @@ pub struct SteamApp {
     pub login: crate::login::LoginForm,
     pub toasts: Vec<Toast>,
     pub friend_filter: String,
+    /// An open friend dialog (nickname, server info, remove, block) and the
+    /// window it belongs to.
+    pub friend_dialog: Option<(egui::ViewportId, crate::shell::FriendDialog)>,
     pub search: String,
     /// Back/forward navigation stacks of (page, arg).
     pub back: Vec<(String, Option<String>)>,
@@ -205,6 +212,7 @@ impl SteamApp {
             login: Default::default(),
             toasts: Vec::new(),
             friend_filter: String::new(),
+            friend_dialog: None,
             search: String::new(),
             back: Vec::new(),
             forward: Vec::new(),
@@ -234,6 +242,10 @@ impl SteamApp {
         }
         app.login.signing_in = auto_account;
         // `--overlay` opens the Shift+Tab overlay right away (for previews).
+        // `--friends` opens the Friends & Chat window right away (for previews).
+        if std::env::args().any(|a| a == "--friends") {
+            app.friends_window.open = true;
+        }
         if std::env::args().any(|a| a == "--overlay") {
             if demo {
                 // A pretend running game, so the preview has an overview.
@@ -624,6 +636,7 @@ impl eframe::App for SteamApp {
         if signed_in {
             crate::shell::show(self, ui, &mut actions);
             crate::shell::activate_dialog(self, &ctx);
+            crate::shell::friend_dialogs(self, &ctx);
             crate::friends_window::show(self, &ctx, &mut actions);
             crate::overlay::show(self, &ctx, &mut actions);
             crate::launch_popup::show(self, &ctx);

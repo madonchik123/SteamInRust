@@ -98,6 +98,37 @@ pub fn border(ctx: &egui::Context, t: &Theme) {
         return;
     }
     let rect = ctx.content_rect();
-    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::unique("window-border")))
+    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::unique(("window-border", ctx.viewport_id()))))
         .rect_stroke(rect, egui::CornerRadius::ZERO, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+}
+
+/// Resize handles drawn into `ui` itself (for child windows such as Friends &
+/// Chat, where separate areas end up swallowing clicks). Call it last, so the
+/// thin edge strips sit on top of the window's content.
+pub fn resize_edges(ui: &mut Ui) {
+    let ctx = ui.ctx().clone();
+    if ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
+        return;
+    }
+    let screen = ctx.content_rect();
+    let (e, c) = (5.0, 12.0);
+    let (l, r, tp, b) = (screen.left(), screen.right(), screen.top(), screen.bottom());
+    let buttons = 3.0 * 46.0 + 8.0;
+    let handles = [
+        (Rect::from_min_max(egui::pos2(l + c, tp), egui::pos2(r - buttons, tp + e)), ResizeDirection::North, CursorIcon::ResizeVertical),
+        (Rect::from_min_max(egui::pos2(l + c, b - e), egui::pos2(r - c, b)), ResizeDirection::South, CursorIcon::ResizeVertical),
+        (Rect::from_min_max(egui::pos2(l, tp + c), egui::pos2(l + e, b - c)), ResizeDirection::West, CursorIcon::ResizeHorizontal),
+        (Rect::from_min_max(egui::pos2(r - e, tp + 40.0), egui::pos2(r, b - c)), ResizeDirection::East, CursorIcon::ResizeHorizontal),
+        (Rect::from_min_size(egui::pos2(l, b - c), Vec2::splat(c)), ResizeDirection::SouthWest, CursorIcon::ResizeNeSw),
+        (Rect::from_min_size(egui::pos2(r - c, b - c), Vec2::splat(c)), ResizeDirection::SouthEast, CursorIcon::ResizeNwSe),
+    ];
+    for (i, (rect, dir, cursor)) in handles.into_iter().enumerate() {
+        let resp = ui.interact(rect, Id::unique(("resize-edge", ctx.viewport_id(), i)), Sense::drag());
+        if resp.hovered() || resp.dragged() {
+            ctx.set_cursor_icon(cursor);
+        }
+        if resp.drag_started() {
+            ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
+        }
+    }
 }
