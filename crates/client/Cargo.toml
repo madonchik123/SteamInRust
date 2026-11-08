@@ -26,7 +26,8 @@ futures-util.workspace = true
 sha1 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 fs4 = "1"
+# Finding where a game is installed (Workshop downloads).
+local.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
-local.workspace = true

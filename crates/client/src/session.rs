@@ -474,6 +474,8 @@ async fn online(
     let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<AppId>();
     // Launches that waited for a Steam Cloud download.
     let (launch_tx, mut launch_rx) = mpsc::unbounded_channel::<(AppId, std::path::PathBuf, String)>();
+    // Launches that waited for Workshop downloads (Steam Cloud comes next).
+    let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<(AppId, std::path::PathBuf, String)>();
     // Reconnect attempts, and checks of a connection that went quiet.
     let (rc_tx, mut rc_rx) = mpsc::unbounded_channel::<Result<(Connection, net::connection::Events, Logon), Error>>();
     let (probe_tx, mut probe_rx) = mpsc::unbounded_channel::<(u64, bool)>();
@@ -504,6 +506,39 @@ async fn online(
             events = rx;
             quiet_tx = Some(tx);
             retry_at = Some(tokio::time::Instant::now() + Duration::from_secs(backoff(1) as u64));
+        }};
+    }
+
+    // Launch with Steam Cloud first, like Steam: bring down newer cloud
+    // saves (games the official client runs get its own cloud sync).
+    macro_rules! launch_cloud {
+        ($app_id:expr, $install_dir:expr, $args:expr) => {{
+            let (app_id, install_dir, args): (AppId, std::path::PathBuf, String) = ($app_id, $install_dir, $args);
+                // Like Steam: bring down newer cloud saves first (games the
+                // official client runs get its own cloud sync instead).
+                let official = st.apps.get(&app_id).is_some_and(|a| matches!(launch::mode(a, &install_dir), crate::LaunchMode::OfficialSteam { .. }));
+                match st.cloud_target(app_id, &install_dir).filter(|_| !official) {
+                    // Offline: play with the saves on this PC; they go up once online.
+                    Some(_) if st.link != Link::Online && !st.running.contains_key(&app_id) => {
+                        sink(Event::CloudSkipped { app_id });
+                        let _ = st.launch(app_id, &install_dir, &args, sink, &exit_tx);
+                    }
+                    Some(target) if !st.running.contains_key(&app_id) => {
+                        sink(Event::CloudSyncing { app_id });
+                        let (conn, sink, tx) = (st.conn.clone(), sink.clone(), launch_tx.clone());
+                        tokio::spawn(async move {
+                            let report = crate::cloud::sync(&conn, &target, crate::cloud::Mode::Download, &[], &[]).await;
+                            let blocked = !report.conflicts.is_empty();
+                            sink(Event::CloudReport { report, held_launch: blocked.then(|| args.clone()) });
+                            if !blocked {
+                                let _ = tx.send((app_id, install_dir, args));
+                            }
+                        });
+                    }
+                    _ => {
+                        let _ = st.launch(app_id, &install_dir, &args, sink, &exit_tx);
+                    }
+                }
         }};
     }
 
@@ -552,32 +587,25 @@ async fn online(
                     let _ = set_persona(&conn, s);
                 }
                 Some(Command::Launch { app_id, install_dir, args }) => {
-                    // Like Steam: bring down newer cloud saves first (games the
-                    // official client runs get its own cloud sync instead).
+                    // Like Steam: subscribed Workshop items are downloaded
+                    // (or updated) before the game starts, then cloud saves.
                     let official = st.apps.get(&app_id).is_some_and(|a| matches!(launch::mode(a, &install_dir), crate::LaunchMode::OfficialSteam { .. }));
-                    match st.cloud_target(app_id, &install_dir).filter(|_| !official) {
-                        // Offline: play with the saves on this PC; they go up once online.
-                        Some(_) if st.link != Link::Online && !st.running.contains_key(&app_id) => {
-                            sink(Event::CloudSkipped { app_id });
-                            let _ = st.launch(app_id, &install_dir, &args, sink, &exit_tx);
-                        }
-                        Some(target) if !st.running.contains_key(&app_id) => {
-                            sink(Event::CloudSyncing { app_id });
-                            let (conn, sink, tx) = (conn.clone(), sink.clone(), launch_tx.clone());
+                    let library = crate::workshop::library_of(&install_dir).filter(|_| !official && st.link == Link::Online && !st.running.contains_key(&app_id));
+                    match library {
+                        Some(library) => {
+                            let (conn, sink, tx, me, cell) = (st.conn.clone(), sink.clone(), ws_tx.clone(), st.me, st.download_cell.unwrap_or(st.cell_id));
                             tokio::spawn(async move {
-                                let report = crate::cloud::sync(&conn, &target, crate::cloud::Mode::Download, &[], &[]).await;
-                                let blocked = !report.conflicts.is_empty();
-                                sink(Event::CloudReport { report, held_launch: blocked.then(|| args.clone()) });
-                                if !blocked {
-                                    let _ = tx.send((app_id, install_dir, args));
+                                let result = crate::workshop::sync(&conn, me, app_id, &library, cell, Vec::new()).await;
+                                if !matches!(&result, Ok(r) if r.downloaded.is_empty() && r.failed.is_empty()) {
+                                    sink(Event::WorkshopSync { app_id, result });
                                 }
+                                let _ = tx.send((app_id, install_dir, args));
                             });
                         }
-                        _ => {
-                            let _ = st.launch(app_id, &install_dir, &args, sink, &exit_tx);
-                        }
+                        None => launch_cloud!(app_id, install_dir, args),
                     }
                 }
+                Some(Command::SyncWorkshop { app_id }) => st.sync_workshop(app_id, Vec::new(), sink),
                 Some(Command::LaunchWithoutCloud { app_id, install_dir, args }) => {
                     let _ = st.launch(app_id, &install_dir, &args, sink, &exit_tx);
                 }
@@ -812,6 +840,7 @@ async fn online(
             Some((app_id, dir, args)) = launch_rx.recv() => {
                 let _ = st.launch(app_id, &dir, &args, sink, &exit_tx);
             }
+            Some((app_id, dir, args)) = ws_rx.recv() => launch_cloud!(app_id, dir, args),
             Some(call) = ipc_rx.recv() => st.ipc_call(call, sink),
             Some(app_id) = exit_rx.recv() => {
                 st.running.remove(&app_id);
@@ -1441,7 +1470,7 @@ impl Online {
     }
 
     fn workshop_subscribe(&self, app_id: AppId, file_id: u64, sink: &Sink) {
-        let (conn, sink) = (self.conn.clone(), sink.clone());
+        let (conn, sink, me, cell, root) = (self.conn.clone(), sink.clone(), self.me, self.download_cell.unwrap_or(self.cell_id), self.steam_root.clone());
         tokio::spawn(async move {
             let r: Result<CPublishedFileSubscribeResponse, _> = conn
                 .call(
@@ -1449,8 +1478,19 @@ impl Online {
                     &CPublishedFileSubscribeRequest { publishedfileid: Some(file_id), list_type: Some(1), appid: Some(app_id as i32), notify_client: Some(true), include_dependencies: Some(true) },
                 )
                 .await;
+            let ok = r.is_ok();
             sink(Event::WorkshopSubscribed { file_id, result: r.map(|_| ()).map_err(|e| e.to_string()) });
+            // Like Steam: an installed game gets the item right away.
+            if ok {
+                sync_installed(conn, me, cell, root, app_id, vec![file_id], sink).await;
+            }
         });
+    }
+
+    /// Download `items` (or every subscribed item) for an installed game.
+    fn sync_workshop(&self, app_id: AppId, items: Vec<u64>, sink: &Sink) {
+        let (conn, sink, me, cell, root) = (self.conn.clone(), sink.clone(), self.me, self.download_cell.unwrap_or(self.cell_id), self.steam_root.clone());
+        tokio::spawn(sync_installed(conn, me, cell, root, app_id, items, sink));
     }
 
     fn load_wishlist(&self, sink: &Sink) {
@@ -2662,4 +2702,12 @@ fn logon_id() -> u32 {
         let mixed = mixed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         ((mixed >> 32) as u32).max(1)
     })
+}
+
+/// Workshop downloads for a game, if it's installed (found in the Steam libraries).
+async fn sync_installed(conn: Connection, me: SteamId, cell: u32, root: Option<std::path::PathBuf>, app_id: AppId, items: Vec<u64>, sink: Sink) {
+    let library = tokio::task::spawn_blocking(move || local::load(root).ok().and_then(|l| l.games.into_iter().find(|g| g.app_id == app_id)).map(|g| g.library)).await.ok().flatten();
+    let Some(library) = library else { return };
+    let result = crate::workshop::sync(&conn, me, app_id, &library, cell, items).await;
+    sink(Event::WorkshopSync { app_id, result });
 }

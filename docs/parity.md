@@ -12,7 +12,7 @@ Steam's website" still works; it just isn't native yet.
 | Sign-in and accounts | 0.75 | Tokens are in a per-user file, not the Windows credential store; account details open Steam's website |
 | Offline mode and reconnecting | 1 | Whether Steam counts playtime recorded offline is unconfirmed |
 | Library | 0.75 | Collection edits aren't saved back to Steam; dynamic collections are skipped |
-| Downloads and installs | 0.75 | No drag to reorder the queue; no taskbar progress; Workshop items aren't downloaded |
+| Downloads and installs | 0.75 | No drag to reorder the queue; no taskbar progress |
 | Store | 0.75 | Checkout happens on Steam's website (Steam requires it); no discovery queue; can't write reviews |
 | Friends and chat | 0.75 | No group chats or voice chat |
 | Community | 0.5 | Reading only for discussions; badge pages, groups and someone's reviews open Steam's website |
@@ -74,7 +74,7 @@ Steam's website" still works; it just isn't native yet.
 | Bandwidth limit, update schedule, downloads while playing, automatic updates | Done |
 | Ask before quitting during a download | Done |
 | Reorder the queue by dragging, taskbar progress | Not yet |
-| Workshop item downloads | Not yet. Subscribing works; games that download items themselves are fine |
+| Workshop items | Downloaded when you subscribe (installed games) and before each launch, like Steam; legacy single-file items too |
 
 ## Store
 

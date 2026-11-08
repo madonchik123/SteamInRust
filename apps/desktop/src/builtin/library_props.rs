@@ -533,6 +533,13 @@ impl Library {
                 if w::button(ui, t, Some(icons::STORE), t!("Browse the Workshop"), w::Kind::Secondary, w::Size::Sm).clicked() {
                     ctx.act(Action::Navigate { page: "workshop".into(), arg: Some(app.to_string()) });
                 }
+                if w::button(ui, t, Some(icons::DOWNLOAD), t!("Download subscribed items"), w::Kind::Secondary, w::Size::Sm)
+                    .on_hover_text(t!("Downloads every item you subscribe to that's missing or out of date. This also happens before the game starts."))
+                    .clicked()
+                {
+                    ctx.send(Command::SyncWorkshop { app_id: app });
+                    ctx.toast(t!("Checking your Workshop subscriptions…"));
+                }
             });
         });
         ui.add_space(8.0);
