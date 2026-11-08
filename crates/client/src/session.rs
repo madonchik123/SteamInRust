@@ -660,6 +660,12 @@ async fn online(
                 }
                 Some(Command::ForgetAccount { account }) => store::remove(&account),
                 Some(Command::SendMessage { to, text }) => st.send_message(to, text, sink),
+                Some(Command::InviteToLobby { app_id, lobby, friend }) => {
+                    // Steam's own lobby invite: it lets them in (private and
+                    // friends-only lobbies) and Steam writes the [lobbyinvite]
+                    // chat message every client shows.
+                    crate::ipc::lobby_invite(&st.conn, app_id, lobby, friend);
+                }
                 Some(Command::LoadHistory { friend }) => st.load_history(friend, sink),
                 Some(Command::LoadProfile { steam_id }) => st.load_profile(steam_id, sink),
                 Some(Command::AddFriend { steam_id }) => {
@@ -743,6 +749,43 @@ async fn online(
                 Some(Command::LoadNotifications) => st.load_notifications(sink),
                 Some(Command::MarkNotificationsRead { ids }) => st.mark_read(ids, sink),
                 Some(Command::LoadSupportTickets) => st.support_tickets(sink),
+                Some(Command::LoadAccountSecurity) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move { sink(Event::AccountSecurity(crate::account::security(&conn).await)) });
+                }
+                Some(Command::LoadFamily { language }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        let r = crate::account::family(&conn, me, &language).await;
+                        // Names and avatars for members who aren't friends.
+                        if let Ok(f) = &r {
+                            let mut ids: Vec<SteamId> = f.invites.iter().map(|i| i.1).collect();
+                            if let Some(g) = &f.family {
+                                ids.extend(g.members.iter().map(|m| m.steam_id).chain(g.invites.iter().map(|i| i.0)));
+                            }
+                            ids.retain(|id| *id != me && *id != 0);
+                            if !ids.is_empty() {
+                                let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: ids });
+                            }
+                        }
+                        sink(Event::Family(r));
+                    });
+                }
+                Some(Command::LoadPurchases { language, cursor }) => st.with_web(sink, move |web, sink| async move {
+                    let more = cursor.is_some();
+                    let result = match web {
+                        Ok(w) => crate::account::purchases(&w, &language, cursor).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::Purchases { more, result });
+                }),
+                Some(Command::LoadLicenses { language }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::account::licenses(&w, &language).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::LicenseList(result));
+                }),
                 Some(Command::LoadSupportTicket { id, url }) => st.support_ticket(id, url, sink),
                 Some(Command::CancelListing { listing_id }) => st.cancel_listing(listing_id, sink),
                 Some(Command::CancelBuyOrder { order_id }) => st.cancel_buy_order(order_id, sink),
@@ -1222,16 +1265,18 @@ impl Online {
                 } else if name.starts_with("FriendMessagesClient.IncomingMessage") {
                     let n: CFriendMessagesIncomingMessageNotification = p.body()?;
                     match n.chat_entry_type() {
-                        1 => sink(Event::Message(model::ChatMessage {
-                            friend: n.steamid_friend(),
-                            from: if n.local_echo() { self.me } else { n.steamid_friend() },
-                            text: if n.message_no_bbcode().is_empty() {
-                                n.message().into()
-                            } else {
-                                n.message_no_bbcode().into()
-                            },
-                            time: n.rtime32_server_timestamp() as u64,
-                        })),
+                        1 => {
+                            // The markup keeps invites (game, lobby); the plain text loses them.
+                            let (text, invite) = model::chat::parse(n.message());
+                            let text = if text.is_empty() && invite.is_none() { n.message_no_bbcode().to_string() } else { text };
+                            sink(Event::Message(model::ChatMessage {
+                                friend: n.steamid_friend(),
+                                from: if n.local_echo() { self.me } else { n.steamid_friend() },
+                                text,
+                                time: n.rtime32_server_timestamp() as u64,
+                                invite,
+                            }))
+                        }
                         2 => sink(Event::Typing { from: n.steamid_friend() }),
                         _ => {}
                     }
@@ -1281,12 +1326,10 @@ impl Online {
                 )
                 .await;
             match r {
-                Ok(r) => sink(Event::Message(model::ChatMessage {
-                    friend: to,
-                    from: me,
-                    text: if r.modified_message().is_empty() { text } else { r.modified_message().into() },
-                    time: r.server_timestamp() as u64,
-                })),
+                Ok(r) => {
+                    let (text, invite) = model::chat::parse(if r.modified_message().is_empty() { &text } else { r.modified_message() });
+                    sink(Event::Message(model::ChatMessage { friend: to, from: me, text, time: r.server_timestamp() as u64, invite }))
+                }
                 Err(e) => sink(Event::Error(format!("Message not sent: {e}"))),
             }
         });
@@ -1924,7 +1967,8 @@ impl Online {
                         steamid2: Some(friend),
                         count: Some(50),
                         most_recent_conversation: Some(false),
-                        bbcode_format: Some(false),
+                        // With markup, so invites keep their game and lobby.
+                        bbcode_format: Some(true),
                         ..Default::default()
                     },
                 )
@@ -1935,11 +1979,9 @@ impl Online {
                     let mut messages: Vec<model::ChatMessage> = r
                         .messages
                         .iter()
-                        .map(|m| model::ChatMessage {
-                            friend,
-                            from: base | m.accountid() as u64,
-                            text: m.message().to_string(),
-                            time: m.timestamp() as u64,
+                        .map(|m| {
+                            let (text, invite) = model::chat::parse(m.message());
+                            model::ChatMessage { friend, from: base | m.accountid() as u64, text, time: m.timestamp() as u64, invite }
                         })
                         .collect();
                     messages.sort_by_key(|m| m.time);
@@ -2127,6 +2169,9 @@ impl Online {
                 });
             }
             Request::RichPresence { pairs } => {
+                // "connect" is how friends join the game ("Invite to game").
+                let connect = pairs.iter().find(|(k, _)| k.eq_ignore_ascii_case("connect")).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
+                _sink(Event::GameConnect { app_id, connect });
                 crate::ipc::rich_presence(&conn, &pairs);
                 let _ = reply.send(Reply::Ok);
             }
@@ -2176,23 +2221,32 @@ impl Online {
             }
             Request::LobbyCreate { kind, max_members } => {
                 let name = self.my_name();
+                let sink = _sink.clone();
                 tokio::spawn(async move {
                     let (eresult, lobby) = crate::ipc::lobby_create(&conn, app_id, kind, max_members, &name).await;
                     tracing::info!("game {app_id} created lobby {lobby}: result {eresult}");
                     if eresult == eresult::OK {
                         crate::ipc::lobby_refresh(&conn, app_id, lobby);
+                        sink(Event::GameLobby { app_id, lobby: Some(lobby) });
                     }
                     let _ = reply.send(Reply::LobbyCreated { eresult, lobby });
                 });
             }
             Request::LobbyJoin { lobby } => {
                 let name = self.my_name();
+                let sink = _sink.clone();
                 tokio::spawn(async move {
+                    let id = lobby;
                     let (response, lobby) = crate::ipc::lobby_join(&conn, app_id, lobby, &name).await;
+                    // EChatRoomEnterResponse 1 = success.
+                    if response == 1 {
+                        sink(Event::GameLobby { app_id, lobby: Some(id) });
+                    }
                     let _ = reply.send(Reply::LobbyJoined { response, lobby });
                 });
             }
             Request::LobbyLeave { lobby } => {
+                _sink(Event::GameLobby { app_id, lobby: None });
                 crate::ipc::lobby_leave(&conn, app_id, lobby);
                 let _ = reply.send(Reply::Ok);
             }

@@ -85,7 +85,7 @@ pub struct Toast {
 }
 
 pub struct SteamApp {
-    _rt: tokio::runtime::Runtime,
+    pub(crate) _rt: tokio::runtime::Runtime,
     pub client: Client,
     events: mpsc::Receiver<Event>,
     pub state: State,
@@ -407,6 +407,18 @@ impl SteamApp {
                     self.state.unread.remove(&id);
                 }
                 Action::ToggleOverlay => self.overlay.toggle(),
+                Action::JoinGame { app_id, connect } => {
+                    let now = ctx.input(|i| i.time);
+                    if self.overlay.game.is_some_and(|(id, _)| id == app_id) {
+                        // A second copy would just fight the first one.
+                        self.toast(now, i18n::tr("The game is already running"), i18n::tr("Join from the game's own menu."));
+                    } else if let Some(g) = self.local.games.iter().find(|g| g.app_id == app_id) {
+                        self.launch_popup = Some(crate::launch_popup::LaunchPopup::new(app_id, g.name.clone(), now));
+                        self.client.send(Command::Launch { app_id, install_dir: g.install_dir.clone(), args: connect });
+                    } else {
+                        self.navigate("library".into(), Some(format!("install:{app_id}")));
+                    }
+                }
                 Action::SetLanguage(code) => {
                     if let Some(lang) = i18n::Lang::from_code(&code) {
                         i18n::set_language(lang);

@@ -11,6 +11,7 @@
 pub mod download;
 pub mod workshop;
 pub mod hub;
+pub mod ingame;
 pub mod ipc;
 mod launch;
 pub mod market;
@@ -22,6 +23,7 @@ pub mod game_ugc;
 pub mod game_inventory;
 pub mod game_servers;
 mod input_config;
+pub mod account;
 mod notify;
 pub mod offline;
 pub mod support;
@@ -83,6 +85,9 @@ pub enum Command {
     /// Start a game that isn't running with `connect` as its arguments instead.
     JoinRunningGame { app_id: AppId, friend: SteamId, connect: String },
     SendMessage { to: SteamId, text: String },
+    /// Invite a friend into the running game's lobby: lets them in (private
+    /// lobbies) and sends a game invite that joins it.
+    InviteToLobby { app_id: AppId, lobby: u64, friend: SteamId },
     /// Send a friend request, or accept one you received.
     AddFriend { steam_id: SteamId },
     /// Remove a friend, or ignore a friend request.
@@ -127,6 +132,14 @@ pub enum Command {
     LoadSupportTickets,
     /// The messages in one support request.
     LoadSupportTicket { id: String, url: String },
+    /// Steam Guard, authenticator, phone, remembered devices (read only).
+    LoadAccountSecurity,
+    /// Purchase history: the first page, or the next after `cursor`.
+    LoadPurchases { language: String, cursor: Option<String> },
+    /// Licenses and product key activations.
+    LoadLicenses { language: String },
+    /// Your Steam Family and its shared library.
+    LoadFamily { language: String },
     CancelListing { listing_id: u64 },
     CancelBuyOrder { order_id: u64 },
     /// Fetch the games on someone's profile with their playtime.
@@ -219,6 +232,12 @@ pub enum Event {
     /// wasn't started because of conflicts (its launch arguments).
     CloudReport { report: model::CloudReport, held_launch: Option<String> },
     GameStopped { app_id: AppId },
+    /// The running game entered (`Some`) or left a matchmaking lobby, so
+    /// friends can be invited to it.
+    GameLobby { app_id: AppId, lobby: Option<u64> },
+    /// The running game's join string (rich presence `connect`), so friends
+    /// can be invited to the game itself.
+    GameConnect { app_id: AppId, connect: Option<String> },
     /// A chat message, incoming or sent by you (`from == your SteamID`).
     Message(ChatMessage),
     Typing { from: SteamId },
@@ -249,6 +268,11 @@ pub enum Event {
     NotificationsArrived(Vec<model::Notification>),
     SupportTickets(Result<Vec<model::SupportTicket>, String>),
     SupportTicket { id: String, result: Result<Vec<model::SupportMessage>, String> },
+    AccountSecurity(Result<model::AccountSecurity, String>),
+    /// A page of purchase history; `more` is true when it continues the list.
+    Purchases { more: bool, result: Result<model::PurchasePage, String> },
+    LicenseList(Result<Vec<model::License>, String>),
+    Family(Result<model::FamilyStatus, String>),
     /// Community Market fee rules for your wallet currency.
     FeeRules(model::fees::Rules),
     ListingCancelled { listing_id: u64, result: Result<(), String> },

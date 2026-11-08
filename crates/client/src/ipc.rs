@@ -69,8 +69,14 @@ impl Server {
         let name = format!(r"\\.\pipe\steaminrust-{}-{}", std::process::id(), &random_hex()[..12]);
         let tokens: Tokens = Arc::default();
         let (tx, rx) = mpsc::unbounded_channel();
+        // Also the in-game overlay's pipe, which checks the same launch tokens.
         #[cfg(windows)]
-        let task = Some(tokio::spawn(accept(name.clone(), tokens.clone(), tx)).abort_handle());
+        let task = {
+            let t = tokens.clone();
+            let overlay = crate::ingame::accept(name.clone(), move |token| t.lock().unwrap().get(token).map(|s| s.app_id));
+            let games = accept(name.clone(), tokens.clone(), tx);
+            Some(tokio::spawn(async move { tokio::join!(games, overlay) }).abort_handle())
+        };
         #[cfg(not(windows))]
         let task = {
             drop(tx);
