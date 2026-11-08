@@ -1644,3 +1644,4 @@
 "{n} games can be shared" = "Можно поделиться играми: {n}"
 "{n} licenses" = "Лицензий: {n}"
 "{n} members" = "Участников: {n}"
+"Uninstalling… {pct}%" = "Удаление… {pct}%"

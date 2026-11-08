@@ -370,7 +370,7 @@ impl Extension for Inventory {
             }
 
             let side = 360.0_f32.min(ui.available_width() * 0.42);
-            let grid_w = ui.available_width() - side - 18.0;
+            let grid_w = (ui.available_width() - side - 18.0).max(0.0);
             let height = ui.available_height();
             let currency = wallet_currency(ctx);
             ui.horizontal_top(|ui| {

@@ -260,7 +260,7 @@ fn message(ui: &mut Ui, t: &Theme, state: &State, m: &model::ChatMessage, join: 
         .corner_radius(t.corner())
         .inner_margin(Margin::same(8))
         .show(ui, |ui| {
-            ui.set_width(width - 16.0);
+            ui.set_width((width - 16.0).max(0.0));
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(107.0, 50.0), Sense::hover());
                 w::image_or_title(ui, t, r, &art::header(inv.app_id), &name, t.corner_small());
