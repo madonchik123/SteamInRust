@@ -916,7 +916,7 @@ impl Store {
                                     .on_hover_text(t!("You already own this; buying it again makes a gift for a friend."))
                                     .clicked()
                                 {
-                                    self.gift = Some(more::Gift { app: id, package: pkg, name: d.name.clone(), to: None, checks: Default::default() });
+                                    self.gift = Some(more::Gift { app: id, package: pkg, name: d.name.clone(), to: None, search: String::new(), checks: Default::default() });
                                 }
                             }
                         } else if d.is_free {

@@ -333,6 +333,8 @@ struct Online {
     official: HashMap<AppId, std::path::PathBuf>,
     /// Two-letter country of this connection.
     country: String,
+    /// The wallet's Steam currency code, once known (prices and cart country).
+    wallet_currency: Option<i32>,
     /// Auth session tickets for games with our steamclient.
     auth: crate::ipc::SharedAuth,
     /// Online, offline mode or reconnecting.
@@ -443,6 +445,7 @@ async fn online(
         launch_tokens: HashMap::new(),
         official: HashMap::new(),
         country: String::new(),
+        wallet_currency: None,
         auth: crate::ipc::Auth::new(info.public_ip),
         link: if offline_start { Link::Offline } else { Link::Online },
         want_online: !offline_start,
@@ -1117,6 +1120,7 @@ impl Online {
                 if w.has_wallet() {
                     let balance = w.balance64.unwrap_or(w.balance() as i64);
                     let pending = w.balance64_delayed.unwrap_or(w.balance_delayed() as i64);
+                    self.wallet_currency = Some(w.currency());
                     sink(Event::Wallet { balance, currency: w.currency(), pending });
                 }
             }
@@ -1330,11 +1334,17 @@ impl Online {
         });
     }
 
+    /// The country the cart prices in: the wallet's (like Steam's client),
+    /// else where Steam sees us. Steam needs it to add anything.
+    fn cart_country(&self) -> Option<String> {
+        model::store_country(self.wallet_currency, &self.country).map(|c| c.to_uppercase())
+    }
+
     fn load_cart(&self, sink: &Sink) {
-        let (conn, sink) = (self.conn.clone(), sink.clone());
+        let (conn, sink, country) = (self.conn.clone(), sink.clone(), self.cart_country());
         tokio::spawn(async move {
             use proto::webui::*;
-            match conn.call::<_, CAccountCartGetCartResponse>("AccountCart.GetCart#1", &CAccountCartGetCartRequest { user_country: None }).await {
+            match conn.call::<_, CAccountCartGetCartResponse>("AccountCart.GetCart#1", &CAccountCartGetCartRequest { user_country: country }).await {
                 Ok(r) => sink(Event::Cart(cart_lines(r.cart))),
                 Err(e) => sink(Event::StoreError(e.to_string())),
             }
@@ -1342,7 +1352,7 @@ impl Online {
     }
 
     fn cart_add(&self, package_id: u32, gift_to: Option<SteamId>, sink: &Sink) {
-        let (conn, sink) = (self.conn.clone(), sink.clone());
+        let (conn, sink, country) = (self.conn.clone(), sink.clone(), self.cart_country());
         tokio::spawn(async move {
             use proto::webui::*;
             let item = CAccountCartAddItemsToCartRequestItemToAdd {
@@ -1350,18 +1360,28 @@ impl Online {
                 gift_info: gift_to.map(|id| CartGiftInfo { accountid_giftee: Some(model::account_id(id) as i32), ..Default::default() }),
                 ..Default::default()
             };
-            match conn.call::<_, CAccountCartAddItemsToCartResponse>("AccountCart.AddItemsToCart#1", &CAccountCartAddItemsToCartRequest { items: vec![item], ..Default::default() }).await {
-                Ok(r) => sink(Event::Cart(cart_lines(r.cart))),
-                Err(e) => sink(Event::StoreError(e.to_string())),
+            let req = CAccountCartAddItemsToCartRequest { user_country: country, items: vec![item], ..Default::default() };
+            match conn.call::<_, CAccountCartAddItemsToCartResponse>("AccountCart.AddItemsToCart#1", &req).await {
+                Ok(r) => {
+                    let lines = cart_lines(r.cart);
+                    // Steam can answer "OK" without adding anything: check.
+                    let added = lines.iter().any(|l| l.package_id == package_id && l.gift_to == gift_to.map(|g| model::account_id(g) as u32));
+                    if !added {
+                        tracing::warn!("cart: package {package_id} not added (line items {:?})", r.line_item_ids);
+                        sink(Event::StoreError("Steam didn't add it to your cart. It may not be sold in your region, or gifting it isn't allowed.".into()));
+                    }
+                    sink(Event::Cart(lines));
+                }
+                Err(e) => sink(Event::StoreError(format!("Couldn't add it to your cart: {e}"))),
             }
         });
     }
 
     fn cart_remove(&self, line_item_id: u64, sink: &Sink) {
-        let (conn, sink) = (self.conn.clone(), sink.clone());
+        let (conn, sink, country) = (self.conn.clone(), sink.clone(), self.cart_country());
         tokio::spawn(async move {
             use proto::webui::*;
-            match conn.call::<_, CAccountCartRemoveItemFromCartResponse>("AccountCart.RemoveItemFromCart#1", &CAccountCartRemoveItemFromCartRequest { line_item_id: Some(line_item_id), user_country: None }).await {
+            match conn.call::<_, CAccountCartRemoveItemFromCartResponse>("AccountCart.RemoveItemFromCart#1", &CAccountCartRemoveItemFromCartRequest { line_item_id: Some(line_item_id), user_country: country }).await {
                 Ok(r) => sink(Event::Cart(cart_lines(r.cart))),
                 Err(e) => sink(Event::StoreError(e.to_string())),
             }

@@ -103,6 +103,8 @@ pub struct SteamApp {
     pub activate: Option<Activate>,
     /// Set by "Exit" so closing really quits instead of hiding to the tray.
     pub exiting: bool,
+    /// Items in the Steam cart last time we heard (for "added" toasts).
+    cart_count: Option<usize>,
     window_mode: Option<WindowMode>,
     pub tray: crate::tray::Tray,
     flags: crate::builtin::settings::SharedFlags,
@@ -210,6 +212,7 @@ impl SteamApp {
             search_open: false,
             activate: None,
             exiting: false,
+            cart_count: None,
             window_mode: None,
             tray: crate::tray::Tray::new(&cc.egui_ctx),
             flags,
@@ -273,6 +276,17 @@ impl SteamApp {
                         self.prefs.auto_login = None;
                     }
                     self.saved = client::store::load();
+                }
+                // Store actions that failed (they used to be silent).
+                Event::StoreError(e) => self.toast(now, i18n::tr_dyn(e), ""),
+                // Confirm cart additions only when the cart really grew.
+                Event::Cart(lines) => {
+                    let before = self.cart_count;
+                    self.cart_count = Some(lines.len());
+                    if before.is_some_and(|b| lines.len() > b) {
+                        let gift = lines.last().is_some_and(|l| l.gift_to.is_some());
+                        self.toast(now, if gift { i18n::tr("Gift added to your cart") } else { i18n::tr("Added to your cart") }, "");
+                    }
                 }
                 Event::LoginFailed(_) => {
                     self.prefs.auto_login = None;

@@ -1494,3 +1494,5 @@
 "Steam will most likely refuse: it's {diff} cheaper in {name}'s region ({theirs} vs {yours}). A Steam gift card works instead." = "Скорее всего, Steam откажет: в регионе {name} игра дешевле на {diff} ({theirs} против {yours}). Вместо неё можно подарить подарочную карту Steam."
 "{name} hasn't set a country on their profile, so the region can't be checked." = "{name} не указал страну в профиле, поэтому регион проверить нельзя."
 "Can't compare prices for {name}'s region. Steam decides at checkout." = "Не удалось сравнить цены для региона {name}. Steam решит при оформлении."
+"Steam didn't add it to your cart. It may not be sold in your region, or gifting it isn't allowed." = "Steam не добавил игру в корзину. Возможно, она не продаётся в вашем регионе или её нельзя подарить."
+"Friend {id}" = "Друг {id}"
