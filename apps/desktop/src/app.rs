@@ -246,6 +246,10 @@ impl SteamApp {
         if std::env::args().any(|a| a == "--friends") {
             app.friends_window.open = true;
         }
+        // `--tray-menu` opens the tray menu near the screen corner (previews).
+        if std::env::args().any(|a| a == "--tray-menu") {
+            app.tray.open_menu(egui::pos2(900.0, 700.0));
+        }
         if std::env::args().any(|a| a == "--overlay") {
             if demo {
                 // A pretend running game, so the preview has an overview.

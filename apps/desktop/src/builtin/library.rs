@@ -1421,13 +1421,7 @@ impl Library {
     }
 
     fn download_bar(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, d: &model::DownloadStatus) {
-        let label = match d.phase {
-            model::DownloadPhase::Queued | model::DownloadPhase::Preparing => t!("Preparing…"),
-            model::DownloadPhase::Checking => t!("Checking files…"),
-            model::DownloadPhase::Finishing => t!("Finishing…"),
-            _ if d.paused => t!("Paused"),
-            _ => t!("Downloading"),
-        };
+        let label = i18n::tr_dyn(d.activity());
         ui.vertical(|ui| {
             ui.set_width(380.0);
             ui.horizontal(|ui| {
@@ -1438,7 +1432,9 @@ impl Library {
             });
             let frac = d.disk_done as f32 / d.disk_total.max(1) as f32;
             w::progress(ui, t, frac, 380.0);
-            ui.label(w::text(format!("{}/s", ui::bytes(d.speed)), 12.0, t.text_faint));
+            // Network and disk separately (they differ a lot: reused data
+            // and buffered writes hit the disk without coming over the network).
+            ui.label(w::text(t!("Network {net}/s · Disk {disk}/s", net = ui::bytes(d.speed), disk = ui::bytes(d.disk_speed)), 12.0, t.text_faint));
         });
         if d.paused {
             if w::icon_button(ui, t, icons::PLAY, t!("Resume"), false, 0).clicked() {

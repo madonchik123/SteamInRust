@@ -134,6 +134,7 @@ pub fn status(app_id: AppId, p: &depot::Progress, speed: u64) -> DownloadStatus 
         reused: 0,
         notes: p.notes.lock().map(|n| n.clone()).unwrap_or_default(),
         install_dir: None,
+        disk_speed: 0,
     }
 }
 
