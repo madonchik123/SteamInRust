@@ -12,7 +12,7 @@ pub mod protocol;
 
 use model::AppId;
 use net::Connection;
-use protocol::{Achievement, Reply, Request, Stat, Stats};
+use protocol::{Achievement, GameEvent, Reply, Request, Stat, Stats};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
@@ -28,9 +28,18 @@ pub struct Call {
 
 pub struct Server {
     name: String,
-    tokens: Arc<Mutex<HashMap<String, AppId>>>,
+    tokens: Tokens,
     task: Option<tokio::task::AbortHandle>,
 }
+
+/// One running launch: its game and the events waiting for its next Poll.
+struct Slot {
+    app_id: AppId,
+    events: std::collections::VecDeque<GameEvent>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+type Tokens = Arc<Mutex<HashMap<String, Slot>>>;
 
 impl Drop for Server {
     fn drop(&mut self) {
@@ -58,7 +67,7 @@ impl Server {
     /// Start listening. Must run inside the tokio runtime.
     pub fn start() -> (Server, mpsc::UnboundedReceiver<Call>) {
         let name = format!(r"\\.\pipe\steaminrust-{}-{}", std::process::id(), &random_hex()[..12]);
-        let tokens: Arc<Mutex<HashMap<String, AppId>>> = Arc::default();
+        let tokens: Tokens = Arc::default();
         let (tx, rx) = mpsc::unbounded_channel();
         #[cfg(windows)]
         let task = Some(tokio::spawn(accept(name.clone(), tokens.clone(), tx)).abort_handle());
@@ -73,8 +82,26 @@ impl Server {
     /// A new token for a game about to start.
     pub fn register(&self, app_id: AppId) -> String {
         let token = random_hex();
-        self.tokens.lock().unwrap().insert(token.clone(), app_id);
+        self.tokens.lock().unwrap().insert(token.clone(), Slot { app_id, events: Default::default(), notify: Arc::default() });
         token
+    }
+
+    /// Queue an event for every running copy of `app_id`.
+    pub fn push(&self, app_id: AppId, event: GameEvent) {
+        for slot in self.tokens.lock().unwrap().values_mut().filter(|s| s.app_id == app_id) {
+            if slot.events.len() < 4096 {
+                slot.events.push_back(event.clone());
+            }
+            slot.notify.notify_one();
+        }
+    }
+
+    /// Games running right now (for routing Steam's pushes).
+    pub fn running_apps(&self) -> Vec<AppId> {
+        let mut apps: Vec<AppId> = self.tokens.lock().unwrap().values().map(|s| s.app_id).collect();
+        apps.sort_unstable();
+        apps.dedup();
+        apps
     }
 
     pub fn forget(&self, token: &str) {
@@ -88,7 +115,7 @@ impl Server {
 }
 
 #[cfg(windows)]
-async fn accept(name: String, tokens: Arc<Mutex<HashMap<String, AppId>>>, tx: mpsc::UnboundedSender<Call>) {
+async fn accept(name: String, tokens: Tokens, tx: mpsc::UnboundedSender<Call>) {
     use tokio::net::windows::named_pipe::ServerOptions;
     let mut first = true;
     loop {
@@ -109,7 +136,7 @@ async fn accept(name: String, tokens: Arc<Mutex<HashMap<String, AppId>>>, tx: mp
 }
 
 #[cfg(windows)]
-async fn serve_one(pipe: tokio::net::windows::named_pipe::NamedPipeServer, tokens: Arc<Mutex<HashMap<String, AppId>>>, tx: mpsc::UnboundedSender<Call>) {
+async fn serve_one(pipe: tokio::net::windows::named_pipe::NamedPipeServer, tokens: Tokens, tx: mpsc::UnboundedSender<Call>) {
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let (r, mut w) = tokio::io::split(pipe);
@@ -118,9 +145,10 @@ async fn serve_one(pipe: tokio::net::windows::named_pipe::NamedPipeServer, token
     let read = tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut line)).await;
     let reply = match (read, serde_json::from_str::<protocol::Envelope>(line.trim())) {
         (Ok(Ok(_)), Ok(env)) => {
-            let app_id = tokens.lock().unwrap().get(&env.token).copied();
+            let app_id = tokens.lock().unwrap().get(&env.token).map(|s| s.app_id);
             match app_id {
                 None => Reply::Err { message: "unknown launch".into() },
+                Some(_) if matches!(env.req, Request::Poll) => Reply::Events { events: poll(&tokens, &env.token).await },
                 Some(app_id) => {
                     let (rtx, rrx) = oneshot::channel();
                     let _ = tx.send(Call { app_id, token: env.token, pid: env.pid, req: env.req, reply: rtx });
@@ -137,6 +165,25 @@ async fn serve_one(pipe: tokio::net::windows::named_pipe::NamedPipeServer, token
         out.push('\n');
         let _ = w.write_all(out.as_bytes()).await;
         let _ = w.flush().await;
+    }
+}
+
+/// Hand over queued events, waiting up to 20 s for the first one.
+#[cfg(windows)]
+async fn poll(tokens: &Tokens, token: &str) -> Vec<GameEvent> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let notify = {
+            let mut t = tokens.lock().unwrap();
+            let Some(slot) = t.get_mut(token) else { return Vec::new() };
+            if !slot.events.is_empty() {
+                return slot.events.drain(..).collect();
+            }
+            slot.notify.clone()
+        };
+        if tokio::time::timeout_at(deadline, notify.notified()).await.is_err() {
+            return Vec::new();
+        }
     }
 }
 
@@ -644,6 +691,252 @@ pub async fn encrypted_ticket(conn: &Connection, app_id: AppId, data: &[u8]) -> 
     Ok(prost::Message::encode_to_vec(&t))
 }
 
+// ------------------------------------------------- lobbies (matchmaking)
+
+pub const EMSG_MMS_CREATE_LOBBY: u32 = 6601;
+pub const EMSG_MMS_JOIN_LOBBY: u32 = 6603;
+pub const EMSG_MMS_LEAVE_LOBBY: u32 = 6605;
+pub const EMSG_MMS_GET_LOBBY_LIST: u32 = 6607;
+pub const EMSG_MMS_SET_LOBBY_DATA: u32 = 6609;
+pub const EMSG_MMS_GET_LOBBY_DATA: u32 = 6611;
+pub const EMSG_MMS_LOBBY_DATA: u32 = 6612;
+pub const EMSG_MMS_SEND_LOBBY_CHAT: u32 = 6613;
+pub const EMSG_MMS_LOBBY_CHAT: u32 = 6614;
+pub const EMSG_MMS_SET_LOBBY_OWNER: u32 = 6615;
+pub const EMSG_MMS_LOBBY_GAME_SERVER_SET: u32 = 6618;
+pub const EMSG_MMS_USER_JOINED_LOBBY: u32 = 6619;
+pub const EMSG_MMS_USER_LEFT_LOBBY: u32 = 6620;
+pub const EMSG_MMS_INVITE_TO_LOBBY: u32 = 6621;
+pub const EMSG_P2P_CONNECTION_INFO: u32 = 5434;
+
+use proto::webui::{
+    CMsgClientMmsCreateLobby, CMsgClientMmsCreateLobbyResponse, CMsgClientMmsGetLobbyData, CMsgClientMmsGetLobbyList, CMsgClientMmsGetLobbyListFilter,
+    CMsgClientMmsGetLobbyListResponse, CMsgClientMmsInviteToLobby, CMsgClientMmsJoinLobby, CMsgClientMmsJoinLobbyResponse, CMsgClientMmsLeaveLobby,
+    CMsgClientMmsLobbyChatMsg, CMsgClientMmsLobbyData, CMsgClientMmsLobbyGameServerSet, CMsgClientMmsSendLobbyChatMsg, CMsgClientMmsSetLobbyData,
+    CMsgClientMmsSetLobbyDataResponse, CMsgClientMmsSetLobbyOwner, CMsgClientMmsUserJoinedLobby, CMsgClientMmsUserLeftLobby, MmsKeyValuePair,
+};
+
+/// Matchmaking messages go to the game's own matchmaking service: Steam
+/// routes them by the app id in the header.
+async fn mms_request(conn: &Connection, app_id: AppId, emsg: u32, body: &impl prost::Message) -> net::Result<net::Packet> {
+    conn.request_with(emsg, proto::CMsgProtoBufHeader { routing_appid: Some(app_id), ..Default::default() }, body).await
+}
+
+fn mms_send(conn: &Connection, app_id: AppId, emsg: u32, body: &impl prost::Message) -> net::Result<()> {
+    conn.send_with(emsg, proto::CMsgProtoBufHeader { routing_appid: Some(app_id), ..Default::default() }, body)
+}
+
+/// Lobby metadata as Steam's matchmaking server stores it: binary
+/// KeyValues `"" { key value … }`.
+pub fn lobby_kv(pairs: &[(String, String)]) -> Vec<u8> {
+    let mut out = vec![0x00, 0x00];
+    for (k, v) in pairs {
+        out.push(0x01);
+        out.extend_from_slice(k.replace('\0', "").as_bytes());
+        out.push(0);
+        out.extend_from_slice(v.replace('\0', "").as_bytes());
+        out.push(0);
+    }
+    out.extend_from_slice(&[0x08, 0x08]);
+    out
+}
+
+/// Metadata from either form Steam may send (key/value list, or binary KV).
+fn lobby_pairs(pairs: &[MmsKeyValuePair], kv: Option<&[u8]>) -> Vec<(String, String)> {
+    if !pairs.is_empty() {
+        return pairs.iter().map(|p| (p.name().to_string(), p.value().to_string())).collect();
+    }
+    let Some(obj) = kv.filter(|b| !b.is_empty()).and_then(|b| vdf::binary::parse(b).ok()) else { return Vec::new() };
+    // Children of the (unnamed) root object.
+    let root = obj.iter().find_map(|(_, v)| v.as_obj()).unwrap_or(&obj);
+    root.iter().filter_map(|(k, v)| Some((k.to_string(), v.as_str()?.to_string()))).collect()
+}
+
+fn lobby_from_data(m: &CMsgClientMmsLobbyData) -> protocol::Lobby {
+    protocol::Lobby {
+        id: m.steam_id_lobby(),
+        owner: m.steam_id_owner(),
+        kind: m.lobby_type(),
+        flags: m.lobby_flags(),
+        max_members: m.max_members(),
+        num_members: m.num_members().max(m.members.len() as i32),
+        data: lobby_pairs(&m.metadata, m.metadata_kv.as_deref()),
+        members: m
+            .members
+            .iter()
+            .map(|x| protocol::LobbyMember { steam_id: x.steam_id(), name: x.persona_name().to_string(), data: lobby_pairs(&x.metadata, x.metadata_kv.as_deref()) })
+            .collect(),
+    }
+}
+
+pub async fn lobby_create(conn: &Connection, app_id: AppId, kind: i32, max_members: i32, name: &str) -> (i32, u64) {
+    let req = CMsgClientMmsCreateLobby {
+        app_id: Some(app_id),
+        max_members: Some(max_members),
+        lobby_type: Some(kind),
+        lobby_flags: Some(0),
+        persona_name_owner: Some(name.to_string()),
+        metadata_kv: Some(lobby_kv(&[])),
+        ..Default::default()
+    };
+    match mms_request(conn, app_id, EMSG_MMS_CREATE_LOBBY, &req).await.and_then(|p| p.body::<CMsgClientMmsCreateLobbyResponse>()) {
+        Ok(r) => (r.eresult(), r.steam_id_lobby()),
+        Err(e) => {
+            tracing::warn!("create lobby: {e}");
+            (3, 0)
+        }
+    }
+}
+
+pub async fn lobby_join(conn: &Connection, app_id: AppId, lobby: u64, name: &str) -> (i32, Option<protocol::Lobby>) {
+    let req = CMsgClientMmsJoinLobby { app_id: Some(app_id), steam_id_lobby: Some(lobby), persona_name: Some(name.to_string()), ..Default::default() };
+    match mms_request(conn, app_id, EMSG_MMS_JOIN_LOBBY, &req).await.and_then(|p| p.body::<CMsgClientMmsJoinLobbyResponse>()) {
+        Ok(r) => {
+            let response = r.chat_room_enter_response();
+            let info = (response == 1).then(|| protocol::Lobby {
+                id: lobby,
+                owner: r.steam_id_owner(),
+                kind: r.lobby_type(),
+                flags: r.lobby_flags(),
+                max_members: r.max_members(),
+                num_members: r.members.len() as i32,
+                data: lobby_pairs(&r.metadata, r.metadata_kv.as_deref()),
+                members: r
+                    .members
+                    .iter()
+                    .map(|x| protocol::LobbyMember { steam_id: x.steam_id(), name: x.persona_name().to_string(), data: lobby_pairs(&x.metadata, x.metadata_kv.as_deref()) })
+                    .collect(),
+            });
+            (response, info)
+        }
+        Err(e) => {
+            tracing::warn!("join lobby: {e}");
+            (5, None) // k_EChatRoomEnterResponseError
+        }
+    }
+}
+
+pub fn lobby_leave(conn: &Connection, app_id: AppId, lobby: u64) {
+    let _ = mms_send(conn, app_id, EMSG_MMS_LEAVE_LOBBY, &CMsgClientMmsLeaveLobby { app_id: Some(app_id), steam_id_lobby: Some(lobby) });
+}
+
+pub async fn lobby_list(conn: &Connection, app_id: AppId, filters: &[protocol::LobbyFilter], count: i32) -> Vec<protocol::Lobby> {
+    let req = CMsgClientMmsGetLobbyList {
+        app_id: Some(app_id),
+        num_lobbies_requested: Some(if count > 0 { count } else { 50 }),
+        filters: filters
+            .iter()
+            .map(|f| CMsgClientMmsGetLobbyListFilter { key: Some(f.key.clone()), value: Some(f.value.clone()), comparision: Some(f.cmp), filter_type: Some(f.kind) })
+            .collect(),
+        ..Default::default()
+    };
+    match mms_request(conn, app_id, EMSG_MMS_GET_LOBBY_LIST, &req).await.and_then(|p| p.body::<CMsgClientMmsGetLobbyListResponse>()) {
+        Ok(r) => r
+            .lobbies
+            .iter()
+            .map(|l| protocol::Lobby {
+                id: l.steam_id(),
+                owner: 0,
+                kind: l.lobby_type(),
+                flags: l.lobby_flags(),
+                max_members: l.max_members(),
+                num_members: l.num_members(),
+                data: lobby_pairs(&l.metadata, l.metadata_kv.as_deref()),
+                members: Vec::new(),
+            })
+            .collect(),
+        Err(e) => {
+            tracing::warn!("lobby list: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Replace the lobby's data, or (`member`) our own member data. EResult.
+pub async fn lobby_set_data(conn: &Connection, app_id: AppId, me: u64, lobby: u64, member: bool, data: &[(String, String)], max_members: i32, kind: i32, flags: i32) -> i32 {
+    let req = CMsgClientMmsSetLobbyData {
+        app_id: Some(app_id),
+        steam_id_lobby: Some(lobby),
+        steam_id_member: Some(if member { me } else { 0 }),
+        max_members: (!member).then_some(max_members),
+        lobby_type: (!member).then_some(kind),
+        lobby_flags: (!member).then_some(flags),
+        metadata_kv: Some(lobby_kv(data)),
+        ..Default::default()
+    };
+    match mms_request(conn, app_id, EMSG_MMS_SET_LOBBY_DATA, &req).await.and_then(|p| p.body::<CMsgClientMmsSetLobbyDataResponse>()) {
+        Ok(r) => r.eresult(),
+        Err(e) => {
+            tracing::warn!("set lobby data: {e}");
+            3
+        }
+    }
+}
+
+/// Ask for a lobby's data; it arrives as a `LobbyData` push.
+pub fn lobby_refresh(conn: &Connection, app_id: AppId, lobby: u64) {
+    let _ = mms_send(conn, app_id, EMSG_MMS_GET_LOBBY_DATA, &CMsgClientMmsGetLobbyData { app_id: Some(app_id), steam_id_lobby: Some(lobby) });
+}
+
+/// A lobby chat message, to everyone or (`target`) one member.
+pub fn lobby_chat(conn: &Connection, app_id: AppId, lobby: u64, target: u64, data: &[u8]) {
+    let _ = mms_send(conn, app_id, EMSG_MMS_SEND_LOBBY_CHAT,
+        &CMsgClientMmsSendLobbyChatMsg { app_id: Some(app_id), steam_id_lobby: Some(lobby), steam_id_target: Some(target), lobby_message: Some(data.to_vec()) },
+    );
+}
+
+pub fn lobby_set_owner(conn: &Connection, app_id: AppId, lobby: u64, owner: u64) {
+    let _ = mms_send(conn, app_id, EMSG_MMS_SET_LOBBY_OWNER, &CMsgClientMmsSetLobbyOwner { app_id: Some(app_id), steam_id_lobby: Some(lobby), steam_id_new_owner: Some(owner) });
+}
+
+pub fn lobby_invite(conn: &Connection, app_id: AppId, lobby: u64, user: u64) {
+    let _ = mms_send(conn, app_id, EMSG_MMS_INVITE_TO_LOBBY, &CMsgClientMmsInviteToLobby { app_id: Some(app_id), steam_id_lobby: Some(lobby), steam_id_user_invited: Some(user) });
+}
+
+/// A P2P signalling message for another player, carried by Steam
+/// (`ClientP2PConnectionInfo`, the message Steam's own P2P set-up uses).
+pub fn signal(conn: &Connection, app_id: AppId, me: u64, to: u64, data: &[u8], lobby: u64) {
+    let msg = proto::CMsgClientP2pConnectionInfo { steam_id_dest: Some(to), steam_id_src: Some(me), app_id: Some(app_id), candidate: Some(data.to_vec()), ..Default::default() };
+    let _ = conn.send(EMSG_P2P_CONNECTION_INFO, &msg);
+    if lobby != 0 {
+        let mut chat = protocol::SIGNAL_PREFIX.to_vec();
+        chat.extend_from_slice(data);
+        lobby_chat(conn, app_id, lobby, to, &chat);
+    }
+}
+
+/// A matchmaking / signalling push from Steam, as (game, event).
+pub fn game_event(p: &net::Packet) -> Option<(AppId, GameEvent)> {
+    Some(match p.emsg {
+        EMSG_MMS_LOBBY_DATA => {
+            let m: CMsgClientMmsLobbyData = p.body().ok()?;
+            (m.app_id(), GameEvent::LobbyData(lobby_from_data(&m)))
+        }
+        EMSG_MMS_LOBBY_CHAT => {
+            let m: CMsgClientMmsLobbyChatMsg = p.body().ok()?;
+            (m.app_id(), GameEvent::LobbyChat { lobby: m.steam_id_lobby(), sender: m.steam_id_sender(), data: m.lobby_message().to_vec() })
+        }
+        EMSG_MMS_USER_JOINED_LOBBY => {
+            let m: CMsgClientMmsUserJoinedLobby = p.body().ok()?;
+            (m.app_id(), GameEvent::LobbyMember { lobby: m.steam_id_lobby(), user: m.steam_id_user(), name: m.persona_name().to_string(), joined: true })
+        }
+        EMSG_MMS_USER_LEFT_LOBBY => {
+            let m: CMsgClientMmsUserLeftLobby = p.body().ok()?;
+            (m.app_id(), GameEvent::LobbyMember { lobby: m.steam_id_lobby(), user: m.steam_id_user(), name: m.persona_name().to_string(), joined: false })
+        }
+        EMSG_MMS_LOBBY_GAME_SERVER_SET => {
+            let m: CMsgClientMmsLobbyGameServerSet = p.body().ok()?;
+            let ip = m.game_server_ip.as_ref().and_then(|i| i.v4).unwrap_or(m.deprecated_game_server_ip());
+            (m.app_id(), GameEvent::LobbyGameServer { lobby: m.steam_id_lobby(), ip, port: m.game_server_port() as u16, server: m.game_server_steam_id() })
+        }
+        EMSG_P2P_CONNECTION_INFO => {
+            let m: proto::CMsgClientP2pConnectionInfo = p.body().ok()?;
+            (m.app_id(), GameEvent::Signal { from: m.steam_id_src(), data: m.candidate().to_vec() })
+        }
+        _ => return None,
+    })
+}
+
 /// Game language and branch from Steam's `appmanifest_<id>.acf` next to
 /// the install (`<library>/steamapps/common/<dir>`): (language, beta, build id).
 pub fn manifest_info(app_id: AppId, install_dir: &std::path::Path) -> (Option<String>, String, u32) {
@@ -727,6 +1020,16 @@ mod tests {
         assert_eq!(auth_part(&t).len(), 52, "Steam checks token + session header");
         assert_eq!(&t[24..28], &24u32.to_le_bytes());
         assert_eq!(crc32(b"123456789"), 0xCBF43926);
+    }
+
+    #[test]
+    fn lobby_metadata_round_trip() {
+        let pairs = vec![("name".to_string(), "Room".to_string()), ("version".to_string(), "1.4".to_string())];
+        let bytes = lobby_kv(&pairs);
+        assert_eq!(lobby_pairs(&[], Some(&bytes)), pairs);
+        assert!(lobby_pairs(&[], Some(&lobby_kv(&[]))).is_empty());
+        let listed = [MmsKeyValuePair { name: Some("a".into()), value: Some("b".into()) }];
+        assert_eq!(lobby_pairs(&listed, Some(&bytes)), vec![("a".to_string(), "b".to_string())]);
     }
 
     #[test]

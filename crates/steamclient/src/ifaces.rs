@@ -14,7 +14,7 @@ use crate::vt::Fp;
 use std::ffi::{CStr, c_char, c_void};
 use std::path::PathBuf;
 
-type This = *mut c_void;
+pub(crate) type This = *mut c_void;
 
 /// Our implementation of `kind::name`, if we have one.
 pub fn imp(kind: &str, name: &str) -> Option<Fp> {
@@ -156,11 +156,9 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
         ("ISteamRemoteStorage", "GetQuota") => f!(rs_quota),
         ("ISteamRemoteStorage", "GetLocalFileChange") => f!(empty_str),
 
-        // ISteamMatchmaking: no lobbies yet, but every call answers.
-        ("ISteamMatchmaking", "RequestLobbyList") => f!(mm_request_list),
-        ("ISteamMatchmaking", "CreateLobby") => f!(mm_create),
-        ("ISteamMatchmaking", "JoinLobby") => f!(mm_join),
-        ("ISteamMatchmaking", "GetLobbyData" | "GetLobbyMemberData") => f!(empty_str),
+        // ISteamMatchmaking: Steam lobbies (lobby.rs); P2P packets (p2p.rs).
+        ("ISteamMatchmaking", m) => crate::lobby::imp(m),
+        ("ISteamNetworking", m) => crate::p2p::imp(m),
 
         // ISteamNetworkingUtils
         ("ISteamNetworkingUtils", "GetLocalTimestamp") => f!(nu_timestamp),
@@ -173,12 +171,12 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
 
 // ---------------------------------------------------------------- helpers
 
-unsafe fn text(p: *const c_char) -> String {
+pub(crate) unsafe fn text(p: *const c_char) -> String {
     if p.is_null() { String::new() } else { unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned() }
 }
 
 /// Copy `s` plus a NUL into `buf` (`len` bytes). Returns bytes written.
-fn copy_out(s: &str, buf: *mut c_char, len: usize) -> usize {
+pub(crate) fn copy_out(s: &str, buf: *mut c_char, len: usize) -> usize {
     if buf.is_null() || len == 0 {
         return 0;
     }
@@ -190,7 +188,7 @@ fn copy_out(s: &str, buf: *mut c_char, len: usize) -> usize {
     n + 1
 }
 
-fn put<T>(p: *mut T, v: T) {
+pub(crate) fn put<T>(p: *mut T, v: T) {
     if !p.is_null() {
         unsafe { p.write_unaligned(v) };
     }
@@ -1056,7 +1054,7 @@ fn write_file(path: &std::path::Path, data: &[u8]) -> bool {
     std::fs::write(&tmp, data).and_then(|_| std::fs::rename(&tmp, path)).is_ok()
 }
 
-fn slice<'a>(p: *const u8, len: usize) -> &'a [u8] {
+pub(crate) fn slice<'a>(p: *const u8, len: usize) -> &'a [u8] {
     if p.is_null() || len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(p, len) } }
 }
 
@@ -1208,26 +1206,6 @@ extern "C" fn rs_quota(_t: This, total: *mut u64, available: *mut u64) -> bool {
     put(total, quota);
     put(available, quota.saturating_sub(used));
     true
-}
-
-// ------------------------------------------------------ ISteamMatchmaking
-
-extern "C" fn mm_request_list(_t: This) -> u64 {
-    lock().call_now(cb::LOBBY_MATCH_LIST, Bytes::new(4).0)
-}
-extern "C" fn mm_create(_t: This, _kind: i32, _max: i32) -> u64 {
-    let mut b = Bytes::new(16);
-    b.i32(0, state::RESULT_NO_CONNECTION);
-    let mut g = lock();
-    let call = g.call_now(cb::LOBBY_CREATED, b.0.clone());
-    g.post(cb::LOBBY_CREATED, b.0);
-    call
-}
-extern "C" fn mm_join(_t: This, lobby: u64) -> u64 {
-    // LobbyEnter_t: lobby, permissions, locked, response (5 = error).
-    let mut b = Bytes::new(24);
-    b.u64(0, lobby).u32(16, 5);
-    lock().call_now(cb::LOBBY_ENTER, b.0)
 }
 
 // -------------------------------------------------- ISteamNetworkingUtils

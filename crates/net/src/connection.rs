@@ -182,7 +182,7 @@ impl Connection {
         self.request_with(emsg, CMsgProtoBufHeader::default(), body).await
     }
 
-    async fn request_with(
+    pub async fn request_with(
         &self,
         emsg: u32,
         mut header: CMsgProtoBufHeader,

@@ -1133,6 +1133,17 @@ impl Online {
                     });
                 }
             }
+            crate::ipc::EMSG_MMS_LOBBY_DATA
+            | crate::ipc::EMSG_MMS_LOBBY_CHAT
+            | crate::ipc::EMSG_MMS_USER_JOINED_LOBBY
+            | crate::ipc::EMSG_MMS_USER_LEFT_LOBBY
+            | crate::ipc::EMSG_MMS_LOBBY_GAME_SERVER_SET
+            | crate::ipc::EMSG_P2P_CONNECTION_INFO => {
+                // Lobby changes, lobby chat and P2P signals for running games.
+                if let Some((app_id, event)) = crate::ipc::game_event(&p) {
+                    self.ipc.push(app_id, event);
+                }
+            }
             crate::ipc::EMSG_GAME_CONNECT_TOKENS => {
                 let m: CMsgClientGameConnectTokens = p.body()?;
                 self.auth.lock().unwrap().add_tokens(&m);
@@ -2110,6 +2121,63 @@ impl Online {
                 crate::ipc::end_auth(&conn, &self.auth, app_id, steam_id);
                 let _ = reply.send(Reply::Ok);
             }
+            Request::Poll => {
+                let _ = reply.send(Reply::Events { events: Vec::new() });
+            }
+            Request::LobbyCreate { kind, max_members } => {
+                let name = self.my_name();
+                tokio::spawn(async move {
+                    let (eresult, lobby) = crate::ipc::lobby_create(&conn, app_id, kind, max_members, &name).await;
+                    tracing::info!("game {app_id} created lobby {lobby}: result {eresult}");
+                    if eresult == eresult::OK {
+                        crate::ipc::lobby_refresh(&conn, app_id, lobby);
+                    }
+                    let _ = reply.send(Reply::LobbyCreated { eresult, lobby });
+                });
+            }
+            Request::LobbyJoin { lobby } => {
+                let name = self.my_name();
+                tokio::spawn(async move {
+                    let (response, lobby) = crate::ipc::lobby_join(&conn, app_id, lobby, &name).await;
+                    let _ = reply.send(Reply::LobbyJoined { response, lobby });
+                });
+            }
+            Request::LobbyLeave { lobby } => {
+                crate::ipc::lobby_leave(&conn, app_id, lobby);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::LobbyList { filters, count } => {
+                tokio::spawn(async move {
+                    let lobbies = crate::ipc::lobby_list(&conn, app_id, &filters, count).await;
+                    let _ = reply.send(Reply::LobbyList { lobbies });
+                });
+            }
+            Request::LobbySetData { lobby, member, data, max_members, kind, flags } => {
+                tokio::spawn(async move {
+                    let eresult = crate::ipc::lobby_set_data(&conn, app_id, me, lobby, member, &data, max_members, kind, flags).await;
+                    let _ = reply.send(Reply::Result { eresult });
+                });
+            }
+            Request::LobbyRefresh { lobby } => {
+                crate::ipc::lobby_refresh(&conn, app_id, lobby);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::LobbyChat { lobby, data } => {
+                crate::ipc::lobby_chat(&conn, app_id, lobby, 0, &data);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::LobbySetOwner { lobby, owner } => {
+                crate::ipc::lobby_set_owner(&conn, app_id, lobby, owner);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::LobbyInvite { lobby, user } => {
+                crate::ipc::lobby_invite(&conn, app_id, lobby, user);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::Signal { to, data, lobby } => {
+                crate::ipc::signal(&conn, app_id, me, to, &data, lobby);
+                let _ = reply.send(Reply::Ok);
+            }
             Request::EncryptedTicket { data } => {
                 tokio::spawn(async move {
                     let r = match crate::ipc::encrypted_ticket(&conn, app_id, &data).await {
@@ -2120,6 +2188,10 @@ impl Online {
                 });
             }
         }
+    }
+
+    fn my_name(&self) -> String {
+        self.personas.get(&self.me).map(|p| p.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| self.account.clone())
     }
 
     /// What a game learns about the player at start-up.

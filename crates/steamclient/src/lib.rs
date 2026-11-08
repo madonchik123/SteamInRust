@@ -22,6 +22,8 @@ pub mod protocol;
 
 mod ifaces;
 mod ipc;
+mod lobby;
+mod p2p;
 mod state;
 mod tables;
 mod vt;

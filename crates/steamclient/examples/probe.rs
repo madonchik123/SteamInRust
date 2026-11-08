@@ -163,9 +163,17 @@ fn main() {
         println!("RequestEncryptedAppTicket = call {r}");
     }
     let mut begun = false;
+    let lobby_test = args.iter().any(|a| a == "--lobby");
+    let mm = api.iface("SteamMatchmaking", &["v009"]);
+    let mut my_lobby = 0u64;
+    let mut searched_at: Option<Instant> = None;
+    if lobby_test {
+        let call = call!(api, "SteamAPI_ISteamMatchmaking_CreateLobby", fn(usize, i32, i32) -> u64, mm, 2, 4);
+        println!("CreateLobby = call {call}");
+    }
 
     // Pump callbacks for a few seconds, like a game's frame loop.
-    let until = Instant::now() + Duration::from_secs(if wrote || tickets { 25 } else { 5 });
+    let until = Instant::now() + Duration::from_secs(if wrote || tickets || lobby_test { 25 } else { 5 });
     while Instant::now() < until {
         call!(api, "SteamAPI_ManualDispatch_RunFrame", fn(i32) -> (), pipe);
         let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
@@ -184,12 +192,41 @@ fn main() {
                     let got = call!(api, "SteamAPI_ISteamUser_GetEncryptedAppTicket", fn(usize, *mut u8, i32, *mut u32) -> bool, user, tb.as_mut_ptr(), 2048, &mut n);
                     line += &format!(" EncryptedAppTicket result={} got={got} {n} bytes", i32::from_le_bytes(buf[0..4].try_into().unwrap()));
                 }
+                if expected == 513 {
+                    let r = i32::from_le_bytes(buf[0..4].try_into().unwrap());
+                    my_lobby = u64::from_le_bytes(buf[8..16].try_into().unwrap());
+                    let (k, v) = (CString::new("sir_probe").unwrap(), CString::new("hello").unwrap());
+                    let set = call!(api, "SteamAPI_ISteamMatchmaking_SetLobbyData", fn(usize, u64, *const c_char, *const c_char) -> bool, mm, my_lobby, k.as_ptr(), v.as_ptr());
+                    line += &format!(" LobbyCreated result={r} lobby={my_lobby}; SetLobbyData={set}");
+                    searched_at = Some(Instant::now());
+                }
+                if expected == 510 {
+                    let n = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+                    line += &format!(" LobbyMatchList {n} lobbies:");
+                    for i in 0..n {
+                        let id = call!(api, "SteamAPI_ISteamMatchmaking_GetLobbyByIndex", fn(usize, i32) -> u64, mm, i as i32);
+                        let k = CString::new("sir_probe").unwrap();
+                        let v = call!(api, "SteamAPI_ISteamMatchmaking_GetLobbyData", fn(usize, u64, *const c_char) -> *const c_char, mm, id, k.as_ptr());
+                        line += &format!(" {id}{}(sir_probe={:?})", if id == my_lobby { "*" } else { "" }, s(v));
+                    }
+                    call!(api, "SteamAPI_ISteamMatchmaking_LeaveLobby", fn(usize, u64) -> (), mm, my_lobby);
+                    line += "; left";
+                }
                 if call_id == players && expected == 1107 {
                     line += &format!(" players={}", i32::from_le_bytes(buf[4..8].try_into().unwrap()));
                 }
             } else if msg.callback == 1102 || msg.callback == 1101 {
                 let r = unsafe { (msg.param.add(8) as *const i32).read_unaligned() };
                 line += &format!(" result={r}");
+            } else if msg.callback == 504 || msg.callback == 505 || msg.callback == 506 {
+                let lobby = unsafe { (msg.param as *const u64).read_unaligned() };
+                line += &format!(" lobby {lobby}");
+                if msg.callback == 505 && lobby_test {
+                    let k = CString::new("sir_probe").unwrap();
+                    let v = call!(api, "SteamAPI_ISteamMatchmaking_GetLobbyData", fn(usize, u64, *const c_char) -> *const c_char, mm, lobby, k.as_ptr());
+                    let n = call!(api, "SteamAPI_ISteamMatchmaking_GetNumLobbyMembers", fn(usize, u64) -> i32, mm, lobby);
+                    line += &format!(" data sir_probe={:?} members={n}", s(v));
+                }
             } else if msg.callback == 163 {
                 let r = unsafe { (msg.param.add(4) as *const i32).read_unaligned() };
                 line += &format!(" GetAuthSessionTicketResponse result={r}");
@@ -209,6 +246,14 @@ fn main() {
             }
             println!("{line}");
             call!(api, "SteamAPI_ManualDispatch_FreeLastCallback", fn(i32) -> (), pipe);
+        }
+        if searched_at.is_some_and(|t| t.elapsed() > Duration::from_secs(3)) {
+            searched_at = None;
+            let (k, v) = (CString::new("sir_probe").unwrap(), CString::new("hello").unwrap());
+            call!(api, "SteamAPI_ISteamMatchmaking_AddRequestLobbyListStringFilter", fn(usize, *const c_char, *const c_char, i32) -> (), mm, k.as_ptr(), v.as_ptr(), 0);
+            call!(api, "SteamAPI_ISteamMatchmaking_AddRequestLobbyListDistanceFilter", fn(usize, i32) -> (), mm, 3);
+            let c = call!(api, "SteamAPI_ISteamMatchmaking_RequestLobbyList", fn(usize) -> u64, mm);
+            println!("RequestLobbyList = call {c}");
         }
         std::thread::sleep(Duration::from_millis(50));
     }
