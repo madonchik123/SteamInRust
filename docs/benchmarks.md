@@ -40,15 +40,14 @@ repo to keep it all Rust; they're kept in its history at
 
 | | |
 |---|---|
-| PC | AMD Ryzen 5 5600 (6 cores / 12 threads), 16 GB RAM, NVIDIA RTX 3060, one 1920×1080 165 Hz display |
+| PC | AMD Ryzen 5 5600 (6 cores / 12 threads), 16 GB RAM, NVIDIA RTX 3060 |
 | OS | Windows 11 Home 10.0.26300 |
-| Steam | steam.exe 11.15.70.27, client package `1792618285`. Millennium (a third-party Steam mod) was uninstalled before testing, so this is stock Steam. |
+| Steam | steam.exe 11.15.70.27, client package `1792618285`, unmodified |
 | SteamInRust | release build of commit `af8a0ac` (v0.1.0) |
-| Network | home connection; all HTTP(S) goes through a local proxy on this PC (same for both clients) |
+| Network | the same connection for both clients |
 
-The PC was in everyday use: Roblox Studio, Discord, a browser and the Claude app
-were open. Each trial waited until total CPU load was under 25 % for 4 seconds
-before starting, and the order of the two clients alternated every round, so
+Other apps were open, as on a normal day. Each trial waited until total CPU
+load was under 25 % for 4 seconds before starting, and the order of the two clients alternated every round, so
 both saw the same conditions.
 
 ## Method
@@ -74,8 +73,8 @@ and records three moments:
 Notification pop-ups that a client shows after its main window is up are left
 where the client puts them, outside the measured region.
 
-**Cold vs warm.** There's no admin access on this PC, so a cold start can't
-come from a reboot or RAMMap. Instead, before each cold run the harness fills
+**Cold vs warm.** Cold starts don't come from a reboot. Instead, before each
+cold run the harness fills
 all free and standby memory (about 7.5 GB) and frees it again, which makes
 Windows drop its file cache. A warm run starts right after the previous run
 closed. Before each run both clients are fully closed: Steam with
@@ -92,12 +91,10 @@ processes:
 - CPU time used during the 60 s.
 
 Steam's processes are steam.exe and steamwebhelper.exe. SteamService.exe runs
-as a Windows service and can't be read without admin rights, so it isn't
-counted. SteamInRust is the single steam-rs.exe.
+as a Windows service and isn't counted. SteamInRust is the single steam-rs.exe.
 
 **Opening pages** ([`nav.py`](https://github.com/madonchik123/SteamInRust/blob/29d9fa1/tools/bench/nav.py)). With the client idle on
-the library, the harness clicks the Store tab, a game in the library list
-(*7 Days to Die*, first in both lists) and the Friends & Chat button. The clock
+the library, the harness clicks the Store tab, the first game in the library list (the same game in both) and the Friends & Chat button. The clock
 starts on the mouse-button release, since both clients act on release. Both
 clients open Friends & Chat as a separate window, and that window is what gets
 timed. "First reaction" is the first frame that differs; "settled" uses the same
@@ -116,8 +113,7 @@ isn't counted here.
 
 ### A mistake caught along the way
 
-In the first full run, the harness also pulled Steam's notification toast (a
-"9 new friend invites" pop-up, a separate window) into the middle of the
+In the first full run, the harness also pulled a Steam notification pop-up (a separate window) into the middle of the
 measured region. Its disappearance about 5 s later became the "last change",
 which made Steam look about 5 s slower than it is. That run was thrown away,
 the harness was fixed to leave windows that appear after start-up alone, and
