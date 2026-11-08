@@ -10,7 +10,10 @@ use store::query::{QueryItem, Sort};
 use ui::{Theme, icons, widgets as w};
 
 /// Popular tags offered as quick filters (Steam tag ids).
-const TAGS: &[u32] = &[19, 21, 122, 9, 597, 599, 492, 1664, 1667, 1774, 1695, 3810, 1662, 4182, 3859, 1685, 701, 699, 1742, 3964, 128, 3871];
+const TAGS: &[u32] = &[
+    19, 21, 122, 9, 597, 599, 492, 1664, 1667, 1774, 1695, 3810, 1662, 4182, 3859, 1685, 701, 699,
+    1742, 3964, 128, 3871,
+];
 
 pub struct Gift {
     pub app: AppId,
@@ -37,7 +40,11 @@ impl Store {
     pub(super) fn browse_page(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
         let mut f = self.filters.clone();
         f.hidden_descriptors = self.hidden.iter().copied().collect();
-        if self.query.as_ref().is_none_or(|(key, page, _)| *key != f || *page != self.browse_page) {
+        if self
+            .query
+            .as_ref()
+            .is_none_or(|(key, page, _)| *key != f || *page != self.browse_page)
+        {
             let (api, ff, start) = (self.api.clone(), f.clone(), self.browse_page * 48);
             let slot = self.fetch(async move { api.query(&ff, start, 48).await });
             self.query = Some((f.clone(), self.browse_page, slot));
@@ -49,13 +56,20 @@ impl Store {
                 self.filter_panel(ui, t);
             });
             ui.vertical(|ui| {
-                let Some((_, _, slot)) = &self.query else { return };
+                let Some((_, _, slot)) = &self.query else {
+                    return;
+                };
                 match snapshot(slot) {
                     None => w::loading(ui, t, t!("Searching…")),
                     Some(Err(e)) => w::empty(ui, t, icons::WARNING, t!("Search failed"), &e),
                     Some(Ok((items, total))) => {
-                        let owned = |id: &AppId| ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(id));
-                        let items: Vec<QueryItem> = items.into_iter().filter(|i| !self.hide_owned || !owned(&i.app_id)).collect();
+                        let owned = |id: &AppId| {
+                            ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(id))
+                        };
+                        let items: Vec<QueryItem> = items
+                            .into_iter()
+                            .filter(|i| !self.hide_owned || !owned(&i.app_id))
+                            .collect();
                         ui.label(w::text(t!("{n} results", n = total), 13.5, t.text_dim));
                         ui.add_space(8.0);
                         for it in &items {
@@ -67,13 +81,39 @@ impl Store {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.add_enabled_ui(self.browse_page > 0, |ui| {
-                                if w::button(ui, t, Some(icons::BACK), t!("Previous"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                                if w::button(
+                                    ui,
+                                    t,
+                                    Some(icons::BACK),
+                                    t!("Previous"),
+                                    w::Kind::Secondary,
+                                    w::Size::Sm,
+                                )
+                                .clicked()
+                                {
                                     self.browse_page -= 1;
                                 }
                             });
-                            ui.label(w::text(t!("Page {page} of {pages}", page = self.browse_page + 1, pages = pages), 13.0, t.text_dim));
+                            ui.label(w::text(
+                                t!(
+                                    "Page {page} of {pages}",
+                                    page = self.browse_page + 1,
+                                    pages = pages
+                                ),
+                                13.0,
+                                t.text_dim,
+                            ));
                             ui.add_enabled_ui(self.browse_page + 1 < pages, |ui| {
-                                if w::button(ui, t, Some(icons::CARET_RIGHT), t!("Next"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                                if w::button(
+                                    ui,
+                                    t,
+                                    Some(icons::CARET_RIGHT),
+                                    t!("Next"),
+                                    w::Kind::Secondary,
+                                    w::Size::Sm,
+                                )
+                                .clicked()
+                                {
                                     self.browse_page += 1;
                                 }
                             });
@@ -90,11 +130,14 @@ impl Store {
         w::card(t).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(w::text_bold(t!("SORT BY"), 11.0, t.text_faint));
-            egui::ComboBox::from_id_salt("browse-sort").selected_text(i18n::tr_dyn(f.sort.label())).width(200.0).show_ui(ui, |ui| {
-                for s in Sort::ALL {
-                    ui.selectable_value(&mut f.sort, s, i18n::tr_dyn(s.label()));
-                }
-            });
+            egui::ComboBox::from_id_salt("browse-sort")
+                .selected_text(i18n::tr_dyn(f.sort.label()))
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    for s in Sort::ALL {
+                        ui.selectable_value(&mut f.sort, s, i18n::tr_dyn(s.label()));
+                    }
+                });
             ui.add_space(10.0);
             ui.label(w::text_bold(t!("PRICE"), 11.0, t.text_faint));
             let options: [(Option<u32>, bool, &str); 6] = [
@@ -115,7 +158,11 @@ impl Store {
             w::check(ui, t, &mut f.only_discounted, t!("Special offers only"));
             ui.add_space(10.0);
             ui.label(w::text_bold(t!("REVIEWS"), 11.0, t.text_faint));
-            for (min, label) in [(None, "Any reviews"), (Some(7), "Mostly positive and up"), (Some(8), "Very positive and up")] {
+            for (min, label) in [
+                (None, "Any reviews"),
+                (Some(7), "Mostly positive and up"),
+                (Some(8), "Very positive and up"),
+            ] {
                 if w::radio(ui, t, f.min_review_score == min, i18n::tr_dyn(label)).clicked() {
                     f.min_review_score = min;
                 }
@@ -154,7 +201,11 @@ impl Store {
                     }
                 }
             });
-            if !self.filters.tags.is_empty() && ui.link(w::text(t!("Clear tags"), 12.5, t.text_dim)).clicked() {
+            if !self.filters.tags.is_empty()
+                && ui
+                    .link(w::text(t!("Clear tags"), 12.5, t.text_dim))
+                    .clicked()
+            {
                 self.filters.tags.clear();
             }
         });
@@ -169,22 +220,53 @@ impl Store {
         if !ui.is_rect_visible(rect) {
             return false;
         }
-        let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
-        ui.painter().rect_filled(rect, t.corner_small(), w::mix(t.surface, t.surface_hover, hover));
+        let hover = ui
+            .ctx()
+            .animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+        ui.painter().rect_filled(
+            rect,
+            t.corner_small(),
+            w::mix(t.surface, t.surface_hover, hover),
+        );
         let img = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(124.0, 58.0));
         w::image_or_skeleton(ui, t, img, &it.header, t.corner_small());
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(pos2(img.right() + 14.0, rect.top()), rect.max - vec2(14.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
+        let mut c = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    pos2(img.right() + 14.0, rect.top()),
+                    rect.max - vec2(14.0, 0.0),
+                ))
+                .layout(Layout::left_to_right(Align::Center)),
+        );
         c.vertical(|ui| {
             ui.add_space(10.0);
             ui.add(egui::Label::new(w::text_semibold(&it.name, 15.0, t.text)).truncate());
             ui.horizontal(|ui| {
                 let (win, mac, lin) = it.platforms;
-                let p: String = [(win, icons::WINDOWS), (mac, icons::APPLE), (lin, icons::LINUX)].iter().filter(|x| x.0).map(|x| x.1).collect::<Vec<_>>().join(" ");
+                let p: String = [
+                    (win, icons::WINDOWS),
+                    (mac, icons::APPLE),
+                    (lin, icons::LINUX),
+                ]
+                .iter()
+                .filter(|x| x.0)
+                .map(|x| x.1)
+                .collect::<Vec<_>>()
+                .join(" ");
                 ui.label(w::text(p, 12.5, t.text_faint));
                 if let Some(l) = &it.review_label {
-                    ui.label(w::text(format!("{}  {}%", i18n::tr_dyn(l), it.review_percent), 12.5, super::review_color(t, it.review_score)));
+                    ui.label(w::text(
+                        format!("{}  {}%", i18n::tr_dyn(l), it.review_percent),
+                        12.5,
+                        super::review_color(t, it.review_score),
+                    ));
                 }
-                if ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(&it.app_id)) {
+                if ctx
+                    .state
+                    .apps
+                    .as_ref()
+                    .is_some_and(|a| a.contains_key(&it.app_id))
+                {
                     w::pill(ui, t!("In library"), t.play, t.play.gamma_multiply(0.15));
                 }
             });
@@ -197,7 +279,8 @@ impl Store {
                 }
             }
         });
-        resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
     }
 
     // ---------- wishlist ----------
@@ -209,7 +292,13 @@ impl Store {
             return;
         };
         if list.is_empty() {
-            w::empty(ui, t, icons::HEART, t!("Your wishlist is empty"), t!("Add games from their store pages and you'll be told when they go on sale."));
+            w::empty(
+                ui,
+                t,
+                icons::HEART,
+                t!("Your wishlist is empty"),
+                t!("Add games from their store pages and you'll be told when they go on sale."),
+            );
             return;
         }
         let ids: Vec<AppId> = list.iter().map(|x| x.0).collect();
@@ -223,7 +312,15 @@ impl Store {
             return;
         };
         let on_sale = items.iter().filter(|i| i.price.discount > 0).count();
-        ui.label(w::text(t!("{n} games · {sale} on sale now", n = items.len(), sale = on_sale), 13.5, t.text_dim));
+        ui.label(w::text(
+            t!(
+                "{n} games · {sale} on sale now",
+                n = items.len(),
+                sale = on_sale
+            ),
+            13.5,
+            t.text_dim,
+        ));
         ui.add_space(8.0);
         let mut sorted = items.clone();
         sorted.sort_by_key(|i| std::cmp::Reverse(i.price.discount));
@@ -239,11 +336,18 @@ impl Store {
                     ui.add_space(20.0);
                     ui.horizontal(|ui| {
                         if let Some(pkg) = it.package_id {
-                            if w::icon_button(ui, t, icons::CART, t!("Add to cart"), false, 0).clicked() {
-                                ctx.send(Command::CartAdd { package_id: pkg, gift_to: None });
+                            if w::icon_button(ui, t, icons::CART, t!("Add to cart"), false, 0)
+                                .clicked()
+                            {
+                                ctx.send(Command::CartAdd {
+                                    package_id: pkg,
+                                    gift_to: None,
+                                });
                             }
                         }
-                        if w::icon_button(ui, t, icons::TRASH, t!("Remove from wishlist"), false, 0).clicked() {
+                        if w::icon_button(ui, t, icons::TRASH, t!("Remove from wishlist"), false, 0)
+                            .clicked()
+                        {
                             ctx.send(Command::WishlistRemove { app_id: it.app_id });
                         }
                     });
@@ -262,7 +366,13 @@ impl Store {
             return;
         };
         if lines.is_empty() {
-            w::empty(ui, t, icons::CART, t!("Your cart is empty"), t!("Add games from the store; it's the same cart as on Steam's website."));
+            w::empty(
+                ui,
+                t,
+                icons::CART,
+                t!("Your cart is empty"),
+                t!("Add games from the store; it's the same cart as on Steam's website."),
+            );
             return;
         }
         let pkgs: Vec<u32> = lines.iter().map(|l| l.package_id).collect();
@@ -271,10 +381,19 @@ impl Store {
             let slot = self.fetch(async move { api.packages(&p2).await });
             self.cart_names = Some((pkgs.clone(), slot));
         }
-        let names = self.cart_names.as_ref().and_then(|(_, s)| snapshot(s)).and_then(|r| r.ok()).unwrap_or_default();
+        let names = self
+            .cart_names
+            .as_ref()
+            .and_then(|(_, s)| snapshot(s))
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
         let base = ctx.state.steam_id & 0xFFFF_FFFF_0000_0000;
         for l in &lines {
-            let (name, art) = names.iter().find(|n| n.0 == l.package_id).map(|n| (n.1.clone(), n.2.clone())).unwrap_or_else(|| (format!("#{}", l.package_id), String::new()));
+            let (name, art) = names
+                .iter()
+                .find(|n| n.0 == l.package_id)
+                .map(|n| (n.1.clone(), n.2.clone()))
+                .unwrap_or_else(|| (format!("#{}", l.package_id), String::new()));
             w::card(t).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -285,7 +404,15 @@ impl Store {
                         match l.gift_to {
                             Some(acc) => {
                                 let friend = ctx.state.persona(base | acc as u64);
-                                ui.label(w::text(format!("{}  {}", icons::USER, t!("Gift for {name}", name = friend.name)), 13.0, t.accent));
+                                ui.label(w::text(
+                                    format!(
+                                        "{}  {}",
+                                        icons::USER,
+                                        t!("Gift for {name}", name = friend.name)
+                                    ),
+                                    13.0,
+                                    t.accent,
+                                ));
                             }
                             None => {
                                 ui.label(w::text(t!("For your account"), 13.0, t.text_dim));
@@ -294,7 +421,9 @@ impl Store {
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if w::icon_button(ui, t, icons::TRASH, t!("Remove"), false, 0).clicked() {
-                            ctx.send(Command::CartRemove { line_item_id: l.line_item_id });
+                            ctx.send(Command::CartRemove {
+                                line_item_id: l.line_item_id,
+                            });
                         }
                         ui.label(w::text_semibold(&l.price, 15.0, t.text));
                     });
@@ -304,41 +433,125 @@ impl Store {
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            let r = w::button(ui, t, Some(icons::CART), t!("Continue to checkout"), w::Kind::Primary, w::Size::Lg)
-                .on_hover_text(t!("Steam only takes payment on its website, so checkout opens in your browser."));
+            let r = w::button(
+                ui,
+                t,
+                Some(icons::CART),
+                t!("Continue to checkout"),
+                w::Kind::Primary,
+                w::Size::Lg,
+            )
+            .on_hover_text(t!(
+                "Steam only takes payment on its website, so checkout opens in your browser."
+            ));
             if r.clicked() {
                 let _ = open::that_detached("https://store.steampowered.com/cart");
             }
-            ui.label(w::text(t!("Payment happens on Steam's checkout page. Your cart is already there."), 12.5, t.text_faint));
+            ui.label(w::text(
+                t!("Payment happens on Steam's checkout page. Your cart is already there."),
+                12.5,
+                t.text_faint,
+            ));
         });
     }
 
     // ---------- purchase box helpers ----------
 
-    pub(super) fn purchase_actions(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, package: Option<u32>, name: &str) {
-        let wished = ctx.state.wishlist.as_ref().is_some_and(|w| w.iter().any(|x| x.0 == id));
-        let heart = w::button(ui, t, Some(icons::HEART), if wished { t!("On wishlist") } else { t!("Add to wishlist") }, w::Kind::Secondary, w::Size::Lg);
+    pub(super) fn purchase_actions(
+        &mut self,
+        ui: &mut Ui,
+        t: &Theme,
+        ctx: &mut Ctx,
+        id: AppId,
+        package: Option<u32>,
+        name: &str,
+    ) {
+        let wished = ctx
+            .state
+            .wishlist
+            .as_ref()
+            .is_some_and(|w| w.iter().any(|x| x.0 == id));
+        let heart = w::button(
+            ui,
+            t,
+            Some(icons::HEART),
+            if wished {
+                t!("On wishlist")
+            } else {
+                t!("Add to wishlist")
+            },
+            w::Kind::Secondary,
+            w::Size::Lg,
+        );
         if heart.clicked() {
-            ctx.send(if wished { Command::WishlistRemove { app_id: id } } else { Command::WishlistAdd { app_id: id } });
+            ctx.send(if wished {
+                Command::WishlistRemove { app_id: id }
+            } else {
+                Command::WishlistAdd { app_id: id }
+            });
         }
         if let Some(pkg) = package {
-            let in_cart = ctx.state.cart.as_ref().is_some_and(|c| c.iter().any(|l| l.package_id == pkg && l.gift_to.is_none()));
+            let in_cart = ctx
+                .state
+                .cart
+                .as_ref()
+                .is_some_and(|c| c.iter().any(|l| l.package_id == pkg && l.gift_to.is_none()));
             if in_cart {
-                if w::button(ui, t, Some(icons::CART), t!("In cart"), w::Kind::Play, w::Size::Lg).clicked() {
+                if w::button(
+                    ui,
+                    t,
+                    Some(icons::CART),
+                    t!("In cart"),
+                    w::Kind::Play,
+                    w::Size::Lg,
+                )
+                .clicked()
+                {
                     self.open(View::Cart);
                 }
-            } else if w::button(ui, t, Some(icons::CART), t!("Add to cart"), w::Kind::Primary, w::Size::Lg).clicked() {
-                ctx.send(Command::CartAdd { package_id: pkg, gift_to: None });
+            } else if w::button(
+                ui,
+                t,
+                Some(icons::CART),
+                t!("Add to cart"),
+                w::Kind::Primary,
+                w::Size::Lg,
+            )
+            .clicked()
+            {
+                ctx.send(Command::CartAdd {
+                    package_id: pkg,
+                    gift_to: None,
+                });
             }
-            if w::button(ui, t, Some(icons::USER), t!("Buy as a gift…"), w::Kind::Secondary, w::Size::Lg).clicked() {
-                self.gift = Some(Gift { app: id, package: pkg, name: name.to_string(), to: None, search: String::new(), checks: Default::default() });
+            if w::button(
+                ui,
+                t,
+                Some(icons::USER),
+                t!("Buy as a gift…"),
+                w::Kind::Secondary,
+                w::Size::Lg,
+            )
+            .clicked()
+            {
+                self.gift = Some(Gift {
+                    app: id,
+                    package: pkg,
+                    name: name.to_string(),
+                    to: None,
+                    search: String::new(),
+                    checks: Default::default(),
+                });
             }
         }
     }
 
     pub(super) fn gift_dialog(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
         // Start the region check for the picked friend (once per friend).
-        let pending = self.gift.as_ref().and_then(|g| g.to.filter(|to| !g.checks.contains_key(to)).map(|to| (g.app, to)));
+        let pending = self.gift.as_ref().and_then(|g| {
+            g.to.filter(|to| !g.checks.contains_key(to))
+                .map(|to| (g.app, to))
+        });
         if let Some((app, to)) = pending {
             let (api, cc) = (self.api.clone(), self.locale.0.clone());
             let slot = self.fetch(async move { api.gift_check(app, &cc, to).await });
@@ -415,7 +628,10 @@ impl Store {
             });
         });
         if let Some((package, to)) = send {
-            ctx.send(Command::CartAdd { package_id: package, gift_to: Some(to) });
+            ctx.send(Command::CartAdd {
+                package_id: package,
+                gift_to: Some(to),
+            });
             close = true;
         }
         if close {
@@ -427,7 +643,10 @@ impl Store {
 
     /// Remember the prices we see, so there's a history even without IsThereAnyDeal.
     pub(super) fn log_price(&mut self, id: AppId, cents: u64) {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let entry = self.price_log.entry(id).or_default();
         if entry.last().is_none_or(|(_, c)| *c != cents) {
             entry.push((now, cents));
@@ -490,14 +709,27 @@ fn chart(ui: &mut Ui, t: &Theme, pts: &[(u64, f64)], currency: &str) {
     let p = ui.painter();
     p.rect_filled(rect, t.corner_small(), t.raised);
     let area = rect.shrink2(vec2(44.0, 16.0));
-    let (t0, t1) = (pts.first().unwrap().0, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).max(pts.last().unwrap().0 + 1));
+    let (t0, t1) = (
+        pts.first().unwrap().0,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .max(pts.last().unwrap().0 + 1),
+    );
     let max = pts.iter().map(|x| x.1).fold(0.0, f64::max).max(0.01) * 1.1;
     let x = |time: u64| area.left() + area.width() * ((time - t0) as f32 / (t1 - t0) as f32);
     let y = |v: f64| area.bottom() - area.height() * (v / max) as f32;
     for i in 0..=3 {
         let v = max * i as f64 / 3.0;
         p.hline(area.x_range(), y(v), Stroke::new(1.0, t.border));
-        p.text(pos2(rect.left() + 6.0, y(v)), Align2::LEFT_CENTER, format!("{v:.0}"), w::font(10.5), t.text_faint);
+        p.text(
+            pos2(rect.left() + 6.0, y(v)),
+            Align2::LEFT_CENTER,
+            format!("{v:.0}"),
+            w::font(10.5),
+            t.text_faint,
+        );
     }
     let mut line: Vec<Pos2> = Vec::new();
     for (i, (time, v)) in pts.iter().enumerate() {
@@ -510,26 +742,80 @@ fn chart(ui: &mut Ui, t: &Theme, pts: &[(u64, f64)], currency: &str) {
         let time = t0 + ((hover.x - area.left()) / area.width() * (t1 - t0) as f32).max(0.0) as u64;
         if let Some((_, v)) = pts.iter().rev().find(|(pt, _)| *pt <= time) {
             p.vline(hover.x, area.y_range(), Stroke::new(1.0, t.text_faint));
-            p.text(pos2(hover.x + 6.0, area.top()), Align2::LEFT_TOP, format!("{v:.2} {currency}  ·  {}", ui::date(time)), w::font_semibold(12.0), t.text);
+            p.text(
+                pos2(hover.x + 6.0, area.top()),
+                Align2::LEFT_TOP,
+                format!("{v:.2} {currency}  ·  {}", ui::date(time)),
+                w::font_semibold(12.0),
+                t.text,
+            );
         }
     }
     let _ = Color32::TRANSPARENT;
 }
 
 /// The region check, in words: (icon, text, color).
-fn gift_line(t: &Theme, c: &store::gift::GiftCheck, name: &str) -> (&'static str, String, egui::Color32) {
+fn gift_line(
+    t: &Theme,
+    c: &store::gift::GiftCheck,
+    name: &str,
+) -> (&'static str, String, egui::Color32) {
     use store::gift::Verdict;
-    let price = |p: &Option<(u64, String)>| p.as_ref().map(|(cents, cur)| store::Price::format(*cents, cur)).unwrap_or_default();
+    let price = |p: &Option<(u64, String)>| {
+        p.as_ref()
+            .map(|(cents, cur)| store::Price::format(*cents, cur))
+            .unwrap_or_default()
+    };
     match &c.verdict {
         Verdict::Ok => {
-            let diff = c.difference.map(|d| format!("{d:+.0}%")).unwrap_or_default();
-            (icons::CHECK, t!("{name} can receive it: {theirs} there vs {yours} for you ({diff}).", name = name, theirs = price(&c.theirs), yours = price(&c.yours), diff = diff), t.play)
+            let diff = c
+                .difference
+                .map(|d| format!("{d:+.0}%"))
+                .unwrap_or_default();
+            (
+                icons::CHECK,
+                t!(
+                    "{name} can receive it: {theirs} there vs {yours} for you ({diff}).",
+                    name = name,
+                    theirs = price(&c.theirs),
+                    yours = price(&c.yours),
+                    diff = diff
+                ),
+                t.play,
+            )
         }
         Verdict::Blocked => {
-            let diff = c.difference.map(|d| format!("{:.0}%", -d)).unwrap_or_default();
-            (icons::WARNING, t!("Steam will most likely refuse: it's {diff} cheaper in {name}'s region ({theirs} vs {yours}). A Steam gift card works instead.", diff = diff, name = name, theirs = price(&c.theirs), yours = price(&c.yours)), t.danger)
+            let diff = c
+                .difference
+                .map(|d| format!("{:.0}%", -d))
+                .unwrap_or_default();
+            (
+                icons::WARNING,
+                t!(
+                    "Steam will most likely refuse: it's {diff} cheaper in {name}'s region ({theirs} vs {yours}). A Steam gift card works instead.",
+                    diff = diff,
+                    name = name,
+                    theirs = price(&c.theirs),
+                    yours = price(&c.yours)
+                ),
+                t.danger,
+            )
         }
-        Verdict::Unknown(why) if why == "no country" => (icons::INFO, t!("{name} hasn't set a country on their profile, so the region can't be checked.", name = name), t.text_dim),
-        Verdict::Unknown(_) => (icons::INFO, t!("Can't compare prices for {name}'s region. Steam decides at checkout.", name = name), t.text_dim),
+        Verdict::Unknown(why) if why == "no country" => (
+            icons::INFO,
+            t!(
+                "{name} hasn't set a country on their profile, so the region can't be checked.",
+                name = name
+            ),
+            t.text_dim,
+        ),
+        Verdict::Unknown(_) => (
+            icons::INFO,
+            t!(
+                "Can't compare prices for {name}'s region. Steam decides at checkout.",
+                name = name
+            ),
+            t.text_dim,
+        ),
     }
 }

@@ -9,7 +9,10 @@
 
 use super::{ListState, file_query};
 use client::Event;
-use client::hub::{ChangeNote, FileEntry, FileKind, FilePage, Forum, Guide, Item, News, Post, Preview, Response, Section, Thread, Topic, TopicPage};
+use client::hub::{
+    ChangeNote, FileEntry, FileKind, FilePage, Forum, Guide, Item, News, Post, Preview, Response,
+    Section, Thread, Topic, TopicPage,
+};
 use model::art;
 
 pub const THREAD: &str = "https://steamcommunity.com/app/1145360/discussions/0/3001/";
@@ -17,7 +20,17 @@ const BASE: u64 = 76561197960265728;
 const HADES: u32 = 1145360;
 const STARDEW: u32 = 413150;
 
-fn entry(id: u64, app: u32, title: &str, pic: String, creator: u64, up: u32, down: u32, desc: &str, now: u64) -> FileEntry {
+fn entry(
+    id: u64,
+    app: u32,
+    title: &str,
+    pic: String,
+    creator: u64,
+    up: u32,
+    down: u32,
+    desc: &str,
+    now: u64,
+) -> FileEntry {
     FileEntry {
         id,
         app_id: app,
@@ -40,35 +53,150 @@ fn entry(id: u64, app: u32, title: &str, pic: String, creator: u64, up: u32, dow
 }
 
 pub fn events() -> Vec<Event> {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let lang = i18n::language().steam_name().to_string();
     let l = ListState::default();
     let friend = |i: u64| BASE + 100 + i;
     let pics = [HADES, STARDEW, 620, 292030, 570, 440, 730, 1203220];
     let mut out = Vec::new();
-    let files = |kind: FileKind, per: u32, items: Vec<FileEntry>| Event::Hub(Response::Files { key: file_query(HADES, kind, &l, per, 1, lang.clone()).key(), result: Ok(FilePage { total: items.len() as u64, items }) });
+    let files = |kind: FileKind, per: u32, items: Vec<FileEntry>| {
+        Event::Hub(Response::Files {
+            key: file_query(HADES, kind, &l, per, 1, lang.clone()).key(),
+            result: Ok(FilePage {
+                total: items.len() as u64,
+                items,
+            }),
+        })
+    };
 
-    let shots: Vec<FileEntry> = pics.iter().enumerate().map(|(i, p)| entry(500 + i as u64, HADES, ["Boss down on the first try", "Fishing spot", "The lounge after a long night", "", "Max heat run", "Garden view", "Final room", "Mirror build"][i], art::hero(*p), friend(i as u64 % 6), 300 - i as u32 * 20, 4, "", now)).collect();
-    let art_items: Vec<FileEntry> = pics.iter().rev().take(4).enumerate().map(|(i, p)| entry(600 + i as u64, HADES, ["Fan art: the house", "Sketchbook page", "Pixel tribute", "Charcoal study"][i], art::capsule(*p), friend(i as u64 + 1), 120 - i as u32 * 10, 2, "", now)).collect();
+    let shots: Vec<FileEntry> = pics
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            entry(
+                500 + i as u64,
+                HADES,
+                [
+                    "Boss down on the first try",
+                    "Fishing spot",
+                    "The lounge after a long night",
+                    "",
+                    "Max heat run",
+                    "Garden view",
+                    "Final room",
+                    "Mirror build",
+                ][i],
+                art::hero(*p),
+                friend(i as u64 % 6),
+                300 - i as u32 * 20,
+                4,
+                "",
+                now,
+            )
+        })
+        .collect();
+    let art_items: Vec<FileEntry> = pics
+        .iter()
+        .rev()
+        .take(4)
+        .enumerate()
+        .map(|(i, p)| {
+            entry(
+                600 + i as u64,
+                HADES,
+                [
+                    "Fan art: the house",
+                    "Sketchbook page",
+                    "Pixel tribute",
+                    "Charcoal study",
+                ][i],
+                art::capsule(*p),
+                friend(i as u64 + 1),
+                120 - i as u32 * 10,
+                2,
+                "",
+                now,
+            )
+        })
+        .collect();
     let guides: Vec<FileEntry> = [
-        ("Your first escape: a calm walkthrough", "Everything a new player needs for the first clear, step by step.", 980, 21),
-        ("Every weapon aspect, ranked", "Which aspects carry which builds, with sample runs.", 760, 40),
-        ("100% achievement checklist", "A route that picks up every achievement with the least grinding.", 540, 9),
-        ("Fishing locations by region", "Where every catch hides and which rod spot works best.", 310, 12),
-        ("Heat settings explained", "What each pact condition does and how to stack them.", 220, 30),
-        ("Keepsakes and when to swap them", "A short reference card for the keepsake rack.", 150, 6),
+        (
+            "Your first escape: a calm walkthrough",
+            "Everything a new player needs for the first clear, step by step.",
+            980,
+            21,
+        ),
+        (
+            "Every weapon aspect, ranked",
+            "Which aspects carry which builds, with sample runs.",
+            760,
+            40,
+        ),
+        (
+            "100% achievement checklist",
+            "A route that picks up every achievement with the least grinding.",
+            540,
+            9,
+        ),
+        (
+            "Fishing locations by region",
+            "Where every catch hides and which rod spot works best.",
+            310,
+            12,
+        ),
+        (
+            "Heat settings explained",
+            "What each pact condition does and how to stack them.",
+            220,
+            30,
+        ),
+        (
+            "Keepsakes and when to swap them",
+            "A short reference card for the keepsake rack.",
+            150,
+            6,
+        ),
     ]
     .iter()
     .enumerate()
-    .map(|(i, (title, desc, up, down))| entry(2001 + i as u64, HADES, title, art::header(pics[i % pics.len()]), friend(i as u64 % 6), *up, *down, desc, now))
+    .map(|(i, (title, desc, up, down))| {
+        entry(
+            2001 + i as u64,
+            HADES,
+            title,
+            art::header(pics[i % pics.len()]),
+            friend(i as u64 % 6),
+            *up,
+            *down,
+            desc,
+            now,
+        )
+    })
     .collect();
-    let mut video = entry(700, HADES, "Speedrun commentary", art::hero(1203220), friend(3), 88, 1, "", now);
+    let mut video = entry(
+        700,
+        HADES,
+        "Speedrun commentary",
+        art::hero(1203220),
+        friend(3),
+        88,
+        1,
+        "",
+        now,
+    );
     video.image = None;
     out.push(files(FileKind::Screenshots, 12, shots.clone()));
     out.push(files(FileKind::Screenshots, 24, shots));
     out.push(files(FileKind::Art, 8, art_items.clone()));
     out.push(files(FileKind::Art, 24, art_items));
-    out.push(files(FileKind::Guides, 4, guides.iter().take(4).cloned().collect()));
+    out.push(files(
+        FileKind::Guides,
+        4,
+        guides.iter().take(4).cloned().collect(),
+    ));
     out.push(files(FileKind::Guides, 20, guides.clone()));
     out.push(files(FileKind::Videos, 4, vec![video.clone()]));
     out.push(files(FileKind::Videos, 24, vec![video]));
@@ -76,8 +204,22 @@ pub fn events() -> Vec<Event> {
 
     // A guide with sections.
     let mut g = guides[0].clone();
-    g.tags = vec!["Gameplay Basics".into(), "Walkthroughs".into(), "English".into()];
-    out.push(Event::Hub(Response::Item { file_id: 2001, result: Ok(Item { entry: g, app_name: "Hades".into(), description: "Everything a new player needs for the first clear.".into(), file_type: 9, my_vote: Some(true), ..Default::default() }) }));
+    g.tags = vec![
+        "Gameplay Basics".into(),
+        "Walkthroughs".into(),
+        "English".into(),
+    ];
+    out.push(Event::Hub(Response::Item {
+        file_id: 2001,
+        result: Ok(Item {
+            entry: g,
+            app_name: "Hades".into(),
+            description: "Everything a new player needs for the first clear.".into(),
+            file_type: 9,
+            my_vote: Some(true),
+            ..Default::default()
+        }),
+    }));
     out.push(Event::Hub(Response::Guide {
         file_id: 2001,
         result: Ok(Guide {
@@ -93,10 +235,43 @@ pub fn events() -> Vec<Event> {
     }));
 
     // A Workshop item for Stardew Valley.
-    let mut item = entry(1001, STARDEW, "Cozy Farmhouse Interiors", art::hero(STARDEW), friend(0), 2_480, 61, "", now);
+    let mut item = entry(
+        1001,
+        STARDEW,
+        "Cozy Farmhouse Interiors",
+        art::hero(STARDEW),
+        friend(0),
+        2_480,
+        61,
+        "",
+        now,
+    );
     item.tags = vec!["Furniture".into(), "Decor".into(), "Content Patcher".into()];
     item.views = 182_440;
-    let required = vec![entry(1002, STARDEW, "Content Patcher", art::header(STARDEW), friend(2), 9_000, 40, "", now), entry(1003, STARDEW, "SMAPI Helpers", art::capsule(STARDEW), friend(3), 4_100, 22, "", now)];
+    let required = vec![
+        entry(
+            1002,
+            STARDEW,
+            "Content Patcher",
+            art::header(STARDEW),
+            friend(2),
+            9_000,
+            40,
+            "",
+            now,
+        ),
+        entry(
+            1003,
+            STARDEW,
+            "SMAPI Helpers",
+            art::capsule(STARDEW),
+            friend(3),
+            4_100,
+            22,
+            "",
+            now,
+        ),
+    ];
     out.push(Event::Hub(Response::Item {
         file_id: 1001,
         result: Ok(Item {
@@ -118,17 +293,53 @@ pub fn events() -> Vec<Event> {
 
     // Discussions.
     let forums = vec![
-        Forum { name: "General Discussions".into(), path: "discussions/0/".into(), threads: 18_204 },
-        Forum { name: "Bug Reports".into(), path: "discussions/1/".into(), threads: 2_301 },
-        Forum { name: "Trading".into(), path: "tradingforum/".into(), threads: 41 },
+        Forum {
+            name: "General Discussions".into(),
+            path: "discussions/0/".into(),
+            threads: 18_204,
+        },
+        Forum {
+            name: "Bug Reports".into(),
+            path: "discussions/1/".into(),
+            threads: 2_301,
+        },
+        Forum {
+            name: "Trading".into(),
+            path: "tradingforum/".into(),
+            threads: 41,
+        },
     ];
     let topics: Vec<Topic> = [
         ("Community guidelines", "Moderator", 0, true, true),
-        ("How do I unlock the third weapon?", "Pixel", 12, false, false),
-        ("Best keepsake for the final boss?", "Quartz", 31, false, false),
-        ("Controller vibration stops after an hour", "Juniper", 4, false, false),
+        (
+            "How do I unlock the third weapon?",
+            "Pixel",
+            12,
+            false,
+            false,
+        ),
+        (
+            "Best keepsake for the final boss?",
+            "Quartz",
+            31,
+            false,
+            false,
+        ),
+        (
+            "Controller vibration stops after an hour",
+            "Juniper",
+            4,
+            false,
+            false,
+        ),
         ("Finally beat 32 heat!", "Nova", 57, false, false),
-        ("Fishing is my favorite part, change my mind", "Marlow", 19, false, false),
+        (
+            "Fishing is my favorite part, change my mind",
+            "Marlow",
+            19,
+            false,
+            false,
+        ),
     ]
     .iter()
     .enumerate()
@@ -141,11 +352,30 @@ pub fn events() -> Vec<Event> {
         pinned: *pinned,
         locked: *locked,
         preview: "Short preview of the first post…".into(),
-        url: format!("https://steamcommunity.com/app/1145360/discussions/0/{}/", 3000 + i),
+        url: format!(
+            "https://steamcommunity.com/app/1145360/discussions/0/{}/",
+            3000 + i
+        ),
     })
     .collect();
-    out.push(Event::Hub(Response::Topics { key: client::hub::topics_key(HADES, "", 1), result: Ok(TopicPage { forum: "General Discussions".into(), total: 247, page_size: 15, topics, forums }) }));
-    let post = |who: u64, name: &str, ago: u64, html: &str| Post { id: ago, author: friend(who), name: name.into(), avatar: None, time: now - ago, html: html.into() };
+    out.push(Event::Hub(Response::Topics {
+        key: client::hub::topics_key(HADES, "", 1),
+        result: Ok(TopicPage {
+            forum: "General Discussions".into(),
+            total: 247,
+            page_size: 15,
+            topics,
+            forums,
+        }),
+    }));
+    let post = |who: u64, name: &str, ago: u64, html: &str| Post {
+        id: ago,
+        author: friend(who),
+        name: name.into(),
+        avatar: None,
+        time: now - ago,
+        html: html.into(),
+    };
     out.push(Event::Hub(Response::Thread {
         key: client::hub::thread_key(THREAD, 1),
         result: Ok(Thread {
@@ -176,10 +406,20 @@ pub fn events() -> Vec<Event> {
     out.push(Event::Hub(Response::Achievements {
         steam_id: friend(0),
         app_id: HADES,
-        result: Ok([("Escaped Tartarus", true, now - 86_400 * 20), ("Is There No Escape?", true, now - 86_400 * 9), ("Friends Forever", true, now - 86_400 * 2), ("Secret", false, 0)]
-            .into_iter()
-            .map(|(name, unlocked, time)| model::Achievement { name: name.into(), unlocked, unlock_time: time, ..Default::default() })
-            .collect()),
+        result: Ok([
+            ("Escaped Tartarus", true, now - 86_400 * 20),
+            ("Is There No Escape?", true, now - 86_400 * 9),
+            ("Friends Forever", true, now - 86_400 * 2),
+            ("Secret", false, 0),
+        ]
+        .into_iter()
+        .map(|(name, unlocked, time)| model::Achievement {
+            name: name.into(),
+            unlocked,
+            unlock_time: time,
+            ..Default::default()
+        })
+        .collect()),
     }));
     out
 }

@@ -47,12 +47,21 @@ pub struct ImageCache {
 
 /// Where pictures are kept: `<cache dir>/images`.
 pub fn dir() -> PathBuf {
-    directories::ProjectDirs::from("dev", "SteamInRust", "SteamInRust").map(|d| d.cache_dir().join("images")).unwrap_or_else(|| PathBuf::from("cache/images"))
+    directories::ProjectDirs::from("dev", "SteamInRust", "SteamInRust")
+        .map(|d| d.cache_dir().join("images"))
+        .unwrap_or_else(|| PathBuf::from("cache/images"))
 }
 
 /// Total size of the saved pictures.
 pub fn size() -> u64 {
-    std::fs::read_dir(dir()).map(|r| r.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0)
+    std::fs::read_dir(dir())
+        .map(|r| {
+            r.flatten()
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.len())
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 /// Delete every saved picture (Settings → Storage).
@@ -73,20 +82,36 @@ impl ImageCache {
         // Keep the folder under its limit (in the background, at start).
         let trim_dir = dir.clone();
         rt.spawn_blocking(move || trim(&trim_dir));
-        ctx.add_bytes_loader(Arc::new(Self { dir, rt, http, slots: Arc::new(tokio::sync::Semaphore::new(PARALLEL)), entries: Default::default() }));
+        ctx.add_bytes_loader(Arc::new(Self {
+            dir,
+            rt,
+            http,
+            slots: Arc::new(tokio::sync::Semaphore::new(PARALLEL)),
+            entries: Default::default(),
+        }));
     }
 
     fn key(uri: &str) -> String {
-        Sha256::digest(uri.as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect()
+        Sha256::digest(uri.as_bytes())
+            .iter()
+            .take(16)
+            .map(|b| format!("{b:02x}"))
+            .collect()
     }
 }
 
 fn read_meta(path: &PathBuf) -> Meta {
-    std::fs::read_to_string(path.with_extension("json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    std::fs::read_to_string(path.with_extension("json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 fn age(path: &PathBuf) -> Option<Duration> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|t| SystemTime::now().duration_since(t).ok())
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| SystemTime::now().duration_since(t).ok())
 }
 
 impl BytesLoader for ImageCache {
@@ -101,11 +126,18 @@ impl BytesLoader for ImageCache {
         if let Some(e) = self.entries.lock().unwrap().get(uri).cloned() {
             return match e {
                 Entry::Pending => Ok(BytesPoll::Pending { size: None }),
-                Entry::Ready(bytes, mime) => Ok(BytesPoll::Ready { size: None, bytes, mime }),
+                Entry::Ready(bytes, mime) => Ok(BytesPoll::Ready {
+                    size: None,
+                    bytes,
+                    mime,
+                }),
                 Entry::Failed(err) => Err(LoadError::Loading(err)),
             };
         }
-        self.entries.lock().unwrap().insert(uri.to_string(), Entry::Pending);
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(uri.to_string(), Entry::Pending);
         let (uri, ctx) = (uri.to_string(), ctx.clone());
         let path = self.dir.join(Self::key(&uri));
         let (http, slots, entries) = (self.http.clone(), self.slots.clone(), self.entries.clone());
@@ -143,14 +175,26 @@ impl BytesLoader for ImageCache {
                     }
                 }
                 Ok(resp) if resp.status().is_success() => {
-                    let header = |name| resp.headers().get(name).and_then(|v: &reqwest::header::HeaderValue| v.to_str().ok()).map(String::from);
-                    let meta = Meta { mime: header(reqwest::header::CONTENT_TYPE), etag: header(reqwest::header::ETAG), last_modified: header(reqwest::header::LAST_MODIFIED) };
+                    let header = |name| {
+                        resp.headers()
+                            .get(name)
+                            .and_then(|v: &reqwest::header::HeaderValue| v.to_str().ok())
+                            .map(String::from)
+                    };
+                    let meta = Meta {
+                        mime: header(reqwest::header::CONTENT_TYPE),
+                        etag: header(reqwest::header::ETAG),
+                        last_modified: header(reqwest::header::LAST_MODIFIED),
+                    };
                     match resp.bytes().await {
                         Ok(bytes) => {
                             let tmp = path.with_extension("part");
                             if std::fs::write(&tmp, &bytes).is_ok() {
                                 let _ = std::fs::rename(&tmp, &path);
-                                let _ = std::fs::write(path.with_extension("json"), serde_json::to_string(&meta).unwrap_or_default());
+                                let _ = std::fs::write(
+                                    path.with_extension("json"),
+                                    serde_json::to_string(&meta).unwrap_or_default(),
+                                );
                             }
                             done(Entry::Ready(Bytes::from(bytes.to_vec()), meta.mime));
                         }
@@ -158,7 +202,9 @@ impl BytesLoader for ImageCache {
                         Err(_) => {}
                     }
                 }
-                Ok(resp) if saved.is_none() => done(Entry::Failed(format!("HTTP {}", resp.status()))),
+                Ok(resp) if saved.is_none() => {
+                    done(Entry::Failed(format!("HTTP {}", resp.status())))
+                }
                 Err(e) if saved.is_none() => done(Entry::Failed(e.to_string())),
                 // Offline or the server hiccuped: keep showing the saved copy.
                 _ => {}
@@ -176,13 +222,26 @@ impl BytesLoader for ImageCache {
     }
 
     fn byte_size(&self) -> usize {
-        self.entries.lock().unwrap().values().map(|e| if let Entry::Ready(b, _) = e { b.len() } else { 0 }).sum()
+        self.entries
+            .lock()
+            .unwrap()
+            .values()
+            .map(|e| {
+                if let Entry::Ready(b, _) = e {
+                    b.len()
+                } else {
+                    0
+                }
+            })
+            .sum()
     }
 }
 
 /// Delete the oldest pictures until the folder is under 80% of the limit.
 fn trim(dir: &PathBuf) {
-    let Ok(read) = std::fs::read_dir(dir) else { return };
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut files: Vec<(SystemTime, u64, PathBuf)> = read
         .flatten()
         .filter(|e| e.path().extension().is_none())

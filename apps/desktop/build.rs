@@ -11,8 +11,12 @@ const STALE_AFTER: Duration = Duration::from_secs(3 * 24 * 60 * 60);
 fn main() {
     println!("cargo:rerun-if-changed=src");
     // OUT_DIR = target/<profile>/build/<pkg>/out -> target/<profile>
-    let Some(out) = std::env::var_os("OUT_DIR") else { return };
-    let Some(profile_dir) = Path::new(&out).ancestors().nth(3) else { return };
+    let Some(out) = std::env::var_os("OUT_DIR") else {
+        return;
+    };
+    let Some(profile_dir) = Path::new(&out).ancestors().nth(3) else {
+        return;
+    };
     trim(&profile_dir.join("incremental"));
     icon();
 }
@@ -35,12 +39,16 @@ fn icon() {
 }
 
 fn trim(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let now = SystemTime::now();
     for e in entries.flatten() {
         let path = e.path();
         let used = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        let old = used.and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age > STALE_AFTER);
+        let old = used
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age > STALE_AFTER);
         if old && path.is_dir() {
             let _ = std::fs::remove_dir_all(&path);
         }
