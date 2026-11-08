@@ -1,16 +1,14 @@
 //! Library: sidebar game list, library home with shelves, and game pages.
 
-use super::{Entry, entries};
 use i18n::t;
+use super::{Entry, entries};
 
 #[path = "library_news.rs"]
 mod news;
 #[path = "library_props.rs"]
 mod props;
 use client::Command;
-use egui::{
-    Align, Align2, Color32, CornerRadius, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2,
-};
+use egui::{Align, Align2, Color32, CornerRadius, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2};
 use extensions::{Ctx, Extension, Manifest, PageSpec};
 use local::manage::{Progress, VerifyReport};
 use model::{AppId, InstalledGame, art};
@@ -67,46 +65,20 @@ struct AdvFilters {
 
 impl AdvFilters {
     fn count(&self) -> usize {
-        self.play.len()
-            + self.kinds.len()
-            + self.genres.len()
-            + self.features.len()
-            + self.deck.len()
+        self.play.len() + self.kinds.len() + self.genres.len() + self.features.len() + self.deck.len()
     }
 }
 
 const GENRES: &[(u32, &str)] = &[
-    (1, "Action"),
-    (25, "Adventure"),
-    (4, "Casual"),
-    (23, "Indie"),
-    (29, "Massively Multiplayer"),
-    (9, "Racing"),
-    (3, "RPG"),
-    (28, "Simulation"),
-    (18, "Sports"),
-    (2, "Strategy"),
-    (37, "Free to Play"),
-    (70, "Early Access"),
-    (56, "Utilities"),
-    (59, "Game Development"),
-    (51, "Animation & Modeling"),
-    (57, "Video Production"),
+    (1, "Action"), (25, "Adventure"), (4, "Casual"), (23, "Indie"), (29, "Massively Multiplayer"), (9, "Racing"),
+    (3, "RPG"), (28, "Simulation"), (18, "Sports"), (2, "Strategy"), (37, "Free to Play"), (70, "Early Access"),
+    (56, "Utilities"), (59, "Game Development"), (51, "Animation & Modeling"), (57, "Video Production"),
 ];
 
 const FEATURES: &[(u32, &str)] = &[
-    (2, "Single-player"),
-    (1, "Multi-player"),
-    (9, "Co-op"),
-    (38, "Online co-op"),
-    (24, "Shared/split screen"),
-    (28, "Full controller support"),
-    (22, "Steam Achievements"),
-    (23, "Steam Cloud"),
-    (29, "Steam Trading Cards"),
-    (30, "Steam Workshop"),
-    (44, "Remote Play Together"),
-    (41, "Remote Play on TV"),
+    (2, "Single-player"), (1, "Multi-player"), (9, "Co-op"), (38, "Online co-op"), (24, "Shared/split screen"),
+    (28, "Full controller support"), (22, "Steam Achievements"), (23, "Steam Cloud"), (29, "Steam Trading Cards"),
+    (30, "Steam Workshop"), (44, "Remote Play Together"), (41, "Remote Play on TV"),
 ];
 
 /// A named group of games the player made, like Steam's collections.
@@ -208,22 +180,13 @@ pub(crate) enum Setup {
 }
 
 pub(crate) fn setup_state(ctx: &Ctx, id: AppId, installed: bool) -> Setup {
-    if let Some(d) = ctx.state.downloads.get(&id).filter(|d| {
-        !matches!(
-            d.phase,
-            model::DownloadPhase::Done | model::DownloadPhase::Failed
-        )
-    }) {
+    if let Some(d) = ctx.state.downloads.get(&id).filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)) {
         return Setup::Downloading(d.clone());
     }
     if ctx.state.download_queue.contains(&id) {
         return Setup::Queued;
     }
-    if installed {
-        Setup::Installed
-    } else {
-        Setup::NotInstalled
-    }
+    if installed { Setup::Installed } else { Setup::NotInstalled }
 }
 
 #[derive(Default)]
@@ -275,22 +238,11 @@ pub struct Library {
 
 impl Extension for Library {
     fn manifest(&self) -> Manifest {
-        Manifest {
-            id: "library",
-            name: "Library",
-            author: "SteamInRust",
-            description: "Your games, owned and installed",
-            core: true,
-            ..Manifest::DEFAULT
-        }
+        Manifest { id: "library", name: "Library", author: "SteamInRust", description: "Your games, owned and installed", core: true, ..Manifest::DEFAULT }
     }
 
     fn pages(&self) -> Vec<PageSpec> {
-        vec![
-            PageSpec::new("library", "Library", icons::BOOKS)
-                .main()
-                .order(20),
-        ]
+        vec![PageSpec::new("library", "Library", icons::BOOKS).main().order(20)]
     }
 
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
@@ -313,10 +265,7 @@ impl Extension for Library {
                 self.send_cloud_settings(ctx);
                 ctx.send(Command::LoadSteamCollections);
                 // Account-wide play history, for "Recent games".
-                ctx.send(Command::LoadPlayerGames {
-                    steam_id: *steam_id,
-                    language: i18n::language().steam_name().into(),
-                });
+                ctx.send(Command::LoadPlayerGames { steam_id: *steam_id, language: i18n::language().steam_name().into() });
             }
             client::Event::Apps(_) => {
                 self.send_cloud_settings(ctx);
@@ -324,28 +273,14 @@ impl Extension for Library {
             }
             client::Event::GameStopped { .. } => self.auto_update(ctx),
             client::Event::SteamCollections(Ok(list)) => self.merge_steam_collections(list),
-            client::Event::CloudReport {
-                report,
-                held_launch,
-            } => {
-                let name = ctx
-                    .state
-                    .app_name(report.app_id)
-                    .unwrap_or_default()
-                    .to_string();
+            client::Event::CloudReport { report, held_launch } => {
+                let name = ctx.state.app_name(report.app_id).unwrap_or_default().to_string();
                 if let Some(args) = held_launch {
-                    self.cloud_hold = Some(CloudHold {
-                        app: report.app_id,
-                        args: args.clone(),
-                        report: report.clone(),
-                    });
+                    self.cloud_hold = Some(CloudHold { app: report.app_id, args: args.clone(), report: report.clone() });
                 } else if report.uploaded > 0 {
                     ctx.toast(t!("{name}: saves uploaded to Steam Cloud", name = name));
                 } else if report.downloaded > 0 {
-                    ctx.toast(t!(
-                        "{name}: newer saves downloaded from Steam Cloud",
-                        name = name
-                    ));
+                    ctx.toast(t!("{name}: newer saves downloaded from Steam Cloud", name = name));
                 }
                 if let Some((_, e)) = report.errors.first() {
                     ctx.toast(t!("Steam Cloud: {error}", error = i18n::tr_dyn(e)));
@@ -358,10 +293,7 @@ impl Extension for Library {
                 self.seen_finished.insert(*app_id);
                 match result {
                     Ok(_) => {
-                        ctx.toast(t!(
-                            "{name} is ready to play",
-                            name = ctx.state.app_name(*app_id).unwrap_or_default()
-                        ));
+                        ctx.toast(t!("{name} is ready to play", name = ctx.state.app_name(*app_id).unwrap_or_default()));
                         ctx.act(extensions::Action::ReloadLocal);
                         self.shortcut_for_finished(ctx, *app_id);
                     }
@@ -373,18 +305,7 @@ impl Extension for Library {
 
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {
         let t = ctx.theme.clone();
-        self.downloading = ctx
-            .state
-            .downloads
-            .values()
-            .filter(|d| {
-                !matches!(
-                    d.phase,
-                    model::DownloadPhase::Done | model::DownloadPhase::Failed
-                )
-            })
-            .map(|d| (d.app_id, d.paused))
-            .collect();
+        self.downloading = ctx.state.downloads.values().filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).map(|d| (d.app_id, d.paused)).collect();
         self.queued = ctx.state.download_queue.iter().copied().collect();
         if self.tile == 0.0 {
             self.tile = 160.0;
@@ -392,20 +313,13 @@ impl Extension for Library {
         egui::Panel::left("library-list")
             .exact_size(280.0)
             .resizable(false)
-            .frame(egui::Frame::new().fill(t.chrome).inner_margin(Margin {
-                left: 12,
-                right: 6,
-                top: 14,
-                bottom: 8,
-            }))
+            .frame(egui::Frame::new().fill(t.chrome).inner_margin(Margin { left: 12, right: 6, top: 14, bottom: 8 }))
             .show(ui, |ui| self.sidebar(ui, &t, ctx));
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(t.bg))
-            .show(ui, |ui| match (self.custom_selected, self.selected) {
-                (Some(i), _) => self.custom_page(i, ui, &t, ctx),
-                (None, Some(id)) => self.game_page(id, ui, &t, ctx),
-                (None, None) => self.home(ui, &t, ctx),
-            });
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg)).show(ui, |ui| match (self.custom_selected, self.selected) {
+            (Some(i), _) => self.custom_page(i, ui, &t, ctx),
+            (None, Some(id)) => self.game_page(id, ui, &t, ctx),
+            (None, None) => self.home(ui, &t, ctx),
+        });
         self.add_dialog(ui, &t, ctx);
         self.reader(ui, &t, ctx);
         self.install_window(ui, &t, ctx);
@@ -446,9 +360,7 @@ impl Extension for Library {
 impl Library {
     /// Act on a link request once the library knows the game.
     fn run_pending(&mut self, ctx: &mut Ctx) {
-        let (Some(action), Some(id)) = (self.pending.clone(), self.selected) else {
-            return;
-        };
+        let (Some(action), Some(id)) = (self.pending.clone(), self.selected) else { return };
         if ctx.state.apps.is_none() && ctx.local.games.iter().all(|g| g.app_id != id) {
             return; // wait for the library to load
         }
@@ -459,13 +371,7 @@ impl Library {
             ("uninstall", Some(_)) => self.dialog = Some(Dialog::Uninstall),
             ("verify", Some(g)) => self.start_verify(ctx, &g),
             ("update", Some(g)) => self.queue_install(ctx, id, Some(g.library.clone())),
-            ("props", _) => {
-                self.props = Some(props::Props {
-                    app: id,
-                    tab: props::PropTab::General,
-                    ..Default::default()
-                })
-            }
+            ("props", _) => self.props = Some(props::Props { app: id, tab: props::PropTab::General, ..Default::default() }),
             ("news", _) => self.reader = Some(Reader { app: id, index: 0 }),
             ("resetargs", _) => {
                 if let Some(s) = self.games.get_mut(&id) {
@@ -481,28 +387,14 @@ impl Library {
     /// Steam Cloud turned off.
     pub(super) fn send_cloud_settings(&self, ctx: &Ctx) {
         // Settings → Cloud can turn it off for every game.
-        let all_off = self
-            .flags
-            .as_ref()
-            .is_some_and(|f| !f.lock().unwrap().cloud);
+        let all_off = self.flags.as_ref().is_some_and(|f| !f.lock().unwrap().cloud);
         let disabled = if all_off {
-            ctx.state
-                .apps
-                .as_ref()
-                .map(|a| a.keys().copied().collect())
-                .unwrap_or_default()
+            ctx.state.apps.as_ref().map(|a| a.keys().copied().collect()).unwrap_or_default()
         } else {
-            self.games
-                .iter()
-                .filter(|(_, s)| s.cloud_off)
-                .map(|(id, _)| *id)
-                .collect()
+            self.games.iter().filter(|(_, s)| s.cloud_off).map(|(id, _)| *id).collect()
         };
         let root = Some(ctx.local.steam_root.clone()).filter(|p| !p.as_os_str().is_empty());
-        ctx.send(Command::CloudSettings {
-            steam_root: root,
-            disabled,
-        });
+        ctx.send(Command::CloudSettings { steam_root: root, disabled });
     }
 
     /// Bring in the collections made in the official Steam client: Favorites
@@ -513,20 +405,12 @@ impl Library {
                 "favorite" => self.favorites.extend(c.games.iter().copied()),
                 "hidden" => self.hidden.extend(c.games.iter().copied()),
                 _ if c.dynamic => {}
-                _ => match self
-                    .collections
-                    .iter_mut()
-                    .find(|x| x.steam_id.as_deref() == Some(c.id.as_str()))
-                {
+                _ => match self.collections.iter_mut().find(|x| x.steam_id.as_deref() == Some(c.id.as_str())) {
                     Some(mine) => {
                         mine.name = c.name.clone();
                         mine.games = c.games.iter().copied().collect();
                     }
-                    None => self.collections.push(Collection {
-                        name: c.name.clone(),
-                        games: c.games.iter().copied().collect(),
-                        steam_id: Some(c.id.clone()),
-                    }),
+                    None => self.collections.push(Collection { name: c.name.clone(), games: c.games.iter().copied().collect(), steam_id: Some(c.id.clone()) }),
                 },
             }
         }
@@ -534,28 +418,13 @@ impl Library {
 
     /// Name a new collection, or rename one.
     fn naming_dialog(&mut self, ui: &mut Ui, t: &Theme) {
-        let Some((index, name, _)) = &mut self.naming else {
-            return;
-        };
+        let Some((index, name, _)) = &mut self.naming else { return };
         let mut done = None;
         egui::Modal::new(egui::Id::unique("collection-name")).show(ui.ctx(), |ui| {
             ui.set_width(360.0);
-            ui.label(w::text_bold(
-                if index.is_some() {
-                    t!("Rename collection")
-                } else {
-                    t!("New collection")
-                },
-                18.0,
-                t.text,
-            ));
+            ui.label(w::text_bold(if index.is_some() { t!("Rename collection") } else { t!("New collection") }, 18.0, t.text));
             ui.add_space(8.0);
-            let r = ui.add(
-                egui::TextEdit::singleline(name)
-                    .hint_text(t!("Name, e.g. Co-op with friends"))
-                    .desired_width(f32::INFINITY)
-                    .margin(vec2(10.0, 8.0)),
-            );
+            let r = ui.add(egui::TextEdit::singleline(name).hint_text(t!("Name, e.g. Co-op with friends")).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0)));
             if !r.has_focus() && name.is_empty() {
                 r.request_focus();
             }
@@ -563,19 +432,7 @@ impl Library {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 let ok = !name.trim().is_empty();
-                let save = ui
-                    .add_enabled_ui(ok, |ui| {
-                        w::button(
-                            ui,
-                            t,
-                            Some(icons::CHECK),
-                            t!("Save"),
-                            w::Kind::Primary,
-                            w::Size::Md,
-                        )
-                    })
-                    .inner
-                    .clicked();
+                let save = ui.add_enabled_ui(ok, |ui| w::button(ui, t, Some(icons::CHECK), t!("Save"), w::Kind::Primary, w::Size::Md)).inner.clicked();
                 if ok && (save || enter) {
                     done = Some(true);
                 }
@@ -595,11 +452,7 @@ impl Library {
                         }
                     }
                     None => {
-                        self.collections.push(Collection {
-                            name,
-                            games: game.into_iter().collect(),
-                            steam_id: None,
-                        });
+                        self.collections.push(Collection { name, games: game.into_iter().collect(), steam_id: None });
                         self.filter = Filter::Collection(self.collections.len() - 1);
                     }
                 }
@@ -615,18 +468,8 @@ impl Library {
         let Some(hold) = &self.cloud_hold else { return };
         let app = hold.app;
         let name = ctx.state.app_name(app).unwrap_or_default().to_string();
-        let dir = ctx
-            .local
-            .games
-            .iter()
-            .find(|g| g.app_id == app)
-            .map(|g| g.install_dir.clone());
-        let names: Vec<String> = hold
-            .report
-            .conflicts
-            .iter()
-            .map(|c| c.name.clone())
-            .collect();
+        let dir = ctx.local.games.iter().find(|g| g.app_id == app).map(|g| g.install_dir.clone());
+        let names: Vec<String> = hold.report.conflicts.iter().map(|c| c.name.clone()).collect();
         let mut choice = None;
         egui::Modal::new(egui::Id::unique(("cloud-conflict", app))).show(ui.ctx(), |ui| {
             ui.set_width(560.0);
@@ -678,56 +521,24 @@ impl Library {
         let hold = self.cloud_hold.take().expect("checked above");
         let Some(dir) = dir else { return };
         match choice {
-            1 => ctx.send(Command::CloudSync {
-                app_id: app,
-                install_dir: dir,
-                mode: client::cloud::Mode::Sync,
-                keep_local: vec![],
-                keep_cloud: names,
-                then_launch: Some(hold.args),
-            }),
-            2 => ctx.send(Command::CloudSync {
-                app_id: app,
-                install_dir: dir,
-                mode: client::cloud::Mode::Sync,
-                keep_local: names,
-                keep_cloud: vec![],
-                then_launch: Some(hold.args),
-            }),
-            3 => ctx.send(Command::LaunchWithoutCloud {
-                app_id: app,
-                install_dir: dir,
-                args: hold.args,
-            }),
+            1 => ctx.send(Command::CloudSync { app_id: app, install_dir: dir, mode: client::cloud::Mode::Sync, keep_local: vec![], keep_cloud: names, then_launch: Some(hold.args) }),
+            2 => ctx.send(Command::CloudSync { app_id: app, install_dir: dir, mode: client::cloud::Mode::Sync, keep_local: names, keep_cloud: vec![], then_launch: Some(hold.args) }),
+            3 => ctx.send(Command::LaunchWithoutCloud { app_id: app, install_dir: dir, args: hold.args }),
             _ => {}
         }
     }
 
     /// "What's new": the latest update posts from games you play, newest first.
-    fn whats_new(
-        &mut self,
-        ui: &mut Ui,
-        t: &Theme,
-        ctx: &mut Ctx,
-        recent: &[(AppId, String, u64)],
-    ) {
+    fn whats_new(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, recent: &[(AppId, String, u64)]) {
         let mut posts: Vec<(AppId, usize, store::events::GameEvent)> = Vec::new();
         let mut loading = false;
         for (id, _, _) in recent.iter().take(10) {
             match self.events(*id) {
-                Some(list) => posts.extend(
-                    list.into_iter()
-                        .enumerate()
-                        .take(3)
-                        .map(|(i, e)| (*id, i, e)),
-                ),
+                Some(list) => posts.extend(list.into_iter().enumerate().take(3).map(|(i, e)| (*id, i, e))),
                 None => loading = true,
             }
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         posts.retain(|p| now.saturating_sub(p.2.time) < 45 * 86_400);
         posts.sort_by_key(|p| std::cmp::Reverse(p.2.time));
         if posts.is_empty() && !loading {
@@ -735,102 +546,51 @@ impl Library {
         }
         w::section(ui, t, t!("What's new"), None);
         let card = vec2(300.0, 230.0);
-        egui::ScrollArea::horizontal()
-            .id_salt("whats-new")
-            .show(ui, |ui| {
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 16.0;
-                    if posts.is_empty() {
-                        for _ in 0..4 {
-                            let (r, _) = ui.allocate_exact_size(card, Sense::hover());
-                            w::skeleton(ui, t, r, t.corner());
-                        }
+        egui::ScrollArea::horizontal().id_salt("whats-new").show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                if posts.is_empty() {
+                    for _ in 0..4 {
+                        let (r, _) = ui.allocate_exact_size(card, Sense::hover());
+                        w::skeleton(ui, t, r, t.corner());
                     }
-                    for (id, index, e) in posts.iter().take(12) {
-                        let (r, resp) = ui.allocate_exact_size(card, Sense::click());
-                        let hover = ui
-                            .ctx()
-                            .animate_bool_with_time(resp.id, resp.hovered(), 0.12);
-                        let age = now.saturating_sub(e.time) / 86_400;
-                        let when = match age {
-                            0 => t!("Today").to_string(),
-                            1 => t!("Yesterday").to_string(),
-                            2..=6 => t!("This week").to_string(),
-                            _ => ui::date(e.time),
-                        };
-                        ui.painter().text(
-                            r.left_top(),
-                            Align2::LEFT_TOP,
-                            when,
-                            w::font(12.0),
-                            t.text_faint,
-                        );
-                        let img = Rect::from_min_size(r.min + vec2(0.0, 18.0), vec2(card.x, 150.0));
-                        match e.capsule.as_deref().or(e.header.as_deref()) {
-                            Some(u) => w::image_or_title(ui, t, img, u, &e.title, t.corner_small()),
-                            None => w::image_or_title(
-                                ui,
-                                t,
-                                img,
-                                &art::header(*id),
-                                &e.title,
-                                t.corner_small(),
-                            ),
-                        }
-                        if hover > 0.0 {
-                            ui.painter().rect_stroke(
-                                img,
-                                t.corner_small(),
-                                Stroke::new(2.0, t.accent.gamma_multiply(hover)),
-                                egui::StrokeKind::Inside,
-                            );
-                        }
-                        let text_rect =
-                            Rect::from_min_max(pos2(r.left(), img.bottom() + 6.0), r.max);
-                        let mut job = egui::text::LayoutJob::simple(
-                            e.title.clone(),
-                            w::font_semibold(13.5),
-                            t.text,
-                            card.x,
-                        );
-                        job.wrap.max_rows = 2;
-                        job.wrap.overflow_character = Some('…');
-                        let galley = ui.painter().layout_job(job);
-                        ui.painter().galley(text_rect.min, galley, t.text);
-                        let game = ctx.state.app_name(*id).unwrap_or_default().to_string();
-                        let icon = Rect::from_min_size(
-                            pos2(r.left(), r.bottom() - 18.0),
-                            vec2(16.0, 16.0),
-                        );
-                        let ok = ctx
-                            .state
-                            .apps
-                            .as_ref()
-                            .and_then(|a| a.get(id))
-                            .and_then(|o| o.icon.as_deref())
-                            .is_some_and(|h| {
-                                w::paint_cover(ui, icon, &art::icon(*id, h), CornerRadius::same(3))
-                            });
-                        let x = if ok { icon.right() + 6.0 } else { r.left() };
-                        ui.painter().text(
-                            pos2(x, icon.center().y),
-                            Align2::LEFT_CENTER,
-                            game,
-                            w::font(12.0),
-                            t.text_dim,
-                        );
-                        if resp
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
-                            self.reader = Some(Reader {
-                                app: *id,
-                                index: *index,
-                            });
-                        }
+                }
+                for (id, index, e) in posts.iter().take(12) {
+                    let (r, resp) = ui.allocate_exact_size(card, Sense::click());
+                    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+                    let age = now.saturating_sub(e.time) / 86_400;
+                    let when = match age {
+                        0 => t!("Today").to_string(),
+                        1 => t!("Yesterday").to_string(),
+                        2..=6 => t!("This week").to_string(),
+                        _ => ui::date(e.time),
+                    };
+                    ui.painter().text(r.left_top(), Align2::LEFT_TOP, when, w::font(12.0), t.text_faint);
+                    let img = Rect::from_min_size(r.min + vec2(0.0, 18.0), vec2(card.x, 150.0));
+                    match e.capsule.as_deref().or(e.header.as_deref()) {
+                        Some(u) => w::image_or_title(ui, t, img, u, &e.title, t.corner_small()),
+                        None => w::image_or_title(ui, t, img, &art::header(*id), &e.title, t.corner_small()),
                     }
-                });
+                    if hover > 0.0 {
+                        ui.painter().rect_stroke(img, t.corner_small(), Stroke::new(2.0, t.accent.gamma_multiply(hover)), egui::StrokeKind::Inside);
+                    }
+                    let text_rect = Rect::from_min_max(pos2(r.left(), img.bottom() + 6.0), r.max);
+                    let mut job = egui::text::LayoutJob::simple(e.title.clone(), w::font_semibold(13.5), t.text, card.x);
+                    job.wrap.max_rows = 2;
+                    job.wrap.overflow_character = Some('…');
+                    let galley = ui.painter().layout_job(job);
+                    ui.painter().galley(text_rect.min, galley, t.text);
+                    let game = ctx.state.app_name(*id).unwrap_or_default().to_string();
+                    let icon = Rect::from_min_size(pos2(r.left(), r.bottom() - 18.0), vec2(16.0, 16.0));
+                    let ok = ctx.state.apps.as_ref().and_then(|a| a.get(id)).and_then(|o| o.icon.as_deref()).is_some_and(|h| w::paint_cover(ui, icon, &art::icon(*id, h), CornerRadius::same(3)));
+                    let x = if ok { icon.right() + 6.0 } else { r.left() };
+                    ui.painter().text(pos2(x, icon.center().y), Align2::LEFT_CENTER, game, w::font(12.0), t.text_dim);
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        self.reader = Some(Reader { app: *id, index: *index });
+                    }
+                }
             });
+        });
         ui.add_space(26.0);
     }
 
@@ -851,94 +611,48 @@ impl Library {
                 item(ui, icons::STOP, t!("Stop"), MenuAct::Stop);
             } else if let Some(paused) = self.downloading.get(&id) {
                 if *paused {
-                    item(
-                        ui,
-                        icons::PLAY,
-                        t!("Resume download"),
-                        MenuAct::ResumeDownload,
-                    );
+                    item(ui, icons::PLAY, t!("Resume download"), MenuAct::ResumeDownload);
                 } else {
                     item(ui, "\u{E39E}", t!("Pause download"), MenuAct::PauseDownload);
                 }
                 item(ui, icons::X, t!("Cancel download"), MenuAct::CancelDownload);
             } else if self.queued.contains(&id) {
-                item(
-                    ui,
-                    icons::X,
-                    t!("Remove from download queue"),
-                    MenuAct::CancelDownload,
-                );
+                item(ui, icons::X, t!("Remove from download queue"), MenuAct::CancelDownload);
             } else if installed {
                 item(ui, icons::PLAY, t!("Play"), MenuAct::Play);
             } else {
                 item(ui, icons::DOWNLOAD, t!("Install"), MenuAct::Install);
             }
             ui.separator();
-            item(
-                ui,
-                icons::STAR,
-                if fav {
-                    t!("Remove from favorites")
-                } else {
-                    t!("Add to favorites")
-                },
-                MenuAct::Favorite,
-            );
-            item(
-                ui,
-                icons::EYE,
-                if hid {
-                    t!("Unhide")
-                } else {
-                    t!("Hide this game")
-                },
-                MenuAct::Hide,
-            );
+            item(ui, icons::STAR, if fav { t!("Remove from favorites") } else { t!("Add to favorites") }, MenuAct::Favorite);
+            item(ui, icons::EYE, if hid { t!("Unhide") } else { t!("Hide this game") }, MenuAct::Hide);
             if installed {
                 ui.menu_button(format!("{}   {}", icons::GEAR, t!("Manage")), |ui| {
                     ui.set_min_width(220.0);
                     let sub = item;
-                    sub(
-                        ui,
-                        icons::DESKTOP,
-                        t!("Add desktop shortcut"),
-                        MenuAct::Shortcut,
-                    );
+                    sub(ui, icons::DESKTOP, t!("Add desktop shortcut"), MenuAct::Shortcut);
                     sub(ui, icons::FOLDER, t!("Browse local files"), MenuAct::Browse);
                     sub(ui, icons::SHIELD, t!("Verify game files"), MenuAct::Verify);
                     sub(ui, icons::TRASH, t!("Uninstall…"), MenuAct::Uninstall);
                 });
             }
-            ui.menu_button(
-                format!("{}   {}", icons::STACK, t!("Add to collection")),
-                |ui| {
-                    ui.set_min_width(200.0);
-                    for (i, c) in self.collections.iter().enumerate() {
-                        let mut on = c.games.contains(&id);
-                        if ui.checkbox(&mut on, &c.name).clicked() {
-                            pick.set(Some(MenuAct::ToggleCollection(i)));
-                            ui.close();
-                        }
+            ui.menu_button(format!("{}   {}", icons::STACK, t!("Add to collection")), |ui| {
+                ui.set_min_width(200.0);
+                for (i, c) in self.collections.iter().enumerate() {
+                    let mut on = c.games.contains(&id);
+                    if ui.checkbox(&mut on, &c.name).clicked() {
+                        pick.set(Some(MenuAct::ToggleCollection(i)));
+                        ui.close();
                     }
-                    if !self.collections.is_empty() {
-                        ui.separator();
-                    }
-                    item(
-                        ui,
-                        icons::PLUS,
-                        t!("New collection…"),
-                        MenuAct::NewCollection,
-                    );
-                },
-            );
+                }
+                if !self.collections.is_empty() {
+                    ui.separator();
+                }
+                item(ui, icons::PLUS, t!("New collection…"), MenuAct::NewCollection);
+            });
             ui.separator();
             item(ui, icons::STORE, t!("Store page"), MenuAct::Store);
-            item(
-                ui,
-                icons::INFO,
-                t!("Get help with this game"),
-                MenuAct::Help,
-            );
+            item(ui, icons::INFO, t!("Get help with this game"), MenuAct::Help);
             item(ui, icons::SLIDERS, t!("Properties…"), MenuAct::Properties);
         });
         if let Some(act) = pick.get() {
@@ -951,16 +665,8 @@ impl Library {
         match act {
             MenuAct::Play => {
                 if let Some(g) = local {
-                    let args = self
-                        .games
-                        .get(&id)
-                        .map(|s| s.args.clone())
-                        .unwrap_or_default();
-                    ctx.send(Command::Launch {
-                        app_id: id,
-                        install_dir: g.install_dir.clone(),
-                        args,
-                    });
+                    let args = self.games.get(&id).map(|s| s.args.clone()).unwrap_or_default();
+                    ctx.send(Command::Launch { app_id: id, install_dir: g.install_dir.clone(), args });
                 }
             }
             MenuAct::Stop => ctx.send(Command::StopGame { app_id: id }),
@@ -1000,13 +706,7 @@ impl Library {
             }
             MenuAct::Store => ctx.navigate("store", Some(format!("app:{id}"))),
             MenuAct::Help => ctx.navigate("support", Some(format!("game:{id}"))),
-            MenuAct::Properties => {
-                self.props = Some(props::Props {
-                    app: id,
-                    tab: props::PropTab::General,
-                    ..Default::default()
-                })
-            }
+            MenuAct::Properties => self.props = Some(props::Props { app: id, tab: props::PropTab::General, ..Default::default() }),
             MenuAct::ToggleCollection(i) => {
                 if let Some(c) = self.collections.get_mut(i) {
                     if !c.games.remove(&id) {
@@ -1022,24 +722,10 @@ impl Library {
     /// Put a just-installed game on the desktop, if the install asked for it.
     /// Runs from the download event, so it works whatever page is open.
     fn shortcut_for_finished(&mut self, ctx: &mut Ctx, id: AppId) {
-        let Some(library) = self.shortcut_after_install.remove(&id) else {
-            return;
-        };
+        let Some(library) = self.shortcut_after_install.remove(&id) else { return };
         let owned = ctx.state.apps.as_ref().and_then(|a| a.get(&id));
-        let name = owned
-            .map(|o| o.name.clone())
-            .or_else(|| {
-                ctx.local
-                    .games
-                    .iter()
-                    .find(|g| g.app_id == id)
-                    .map(|g| g.name.clone())
-            })
-            .unwrap_or_else(|| id.to_string());
-        let folder = owned
-            .map(|o| o.install_dir.clone())
-            .filter(|d| !d.is_empty())
-            .unwrap_or_else(|| name.clone());
+        let name = owned.map(|o| o.name.clone()).or_else(|| ctx.local.games.iter().find(|g| g.app_id == id).map(|g| g.name.clone())).unwrap_or_else(|| id.to_string());
+        let folder = owned.map(|o| o.install_dir.clone()).filter(|d| !d.is_empty()).unwrap_or_else(|| name.clone());
         let dir = library.join("steamapps").join("common").join(folder);
         match crate::links::desktop_shortcut(id, &name, crate::links::game_icon(owned, &dir)) {
             Ok(_) => ctx.toast(t!("Shortcut added to your desktop")),
@@ -1047,27 +733,14 @@ impl Library {
         }
     }
 
-    pub fn new(
-        rt: tokio::runtime::Handle,
-        egui: egui::Context,
-        flags: super::settings::SharedFlags,
-    ) -> Self {
-        Self {
-            rt: Some(rt),
-            egui: Some(egui),
-            tile: 160.0,
-            flags: Some(flags),
-            ..Default::default()
-        }
+    pub fn new(rt: tokio::runtime::Handle, egui: egui::Context, flags: super::settings::SharedFlags) -> Self {
+        Self { rt: Some(rt), egui: Some(egui), tile: 160.0, flags: Some(flags), ..Default::default() }
     }
 
     /// Like Steam: queue games that need an update, unless auto-updates are
     /// off (globally, or "only when I launch it" for the game).
     fn auto_update(&mut self, ctx: &mut Ctx) {
-        let on = self
-            .flags
-            .as_ref()
-            .is_some_and(|f| f.lock().unwrap().auto_updates);
+        let on = self.flags.as_ref().is_some_and(|f| f.lock().unwrap().auto_updates);
         if !on || ctx.state.apps.is_none() {
             return;
         }
@@ -1077,10 +750,7 @@ impl Library {
             .iter()
             .filter(|g| g.state == model::InstallState::UpdateRequired)
             .filter(|g| self.games.get(&g.app_id).is_none_or(|s| s.auto_update != 1))
-            .filter(|g| {
-                !ctx.state.downloads.contains_key(&g.app_id)
-                    && !ctx.state.download_queue.contains(&g.app_id)
-            })
+            .filter(|g| !ctx.state.downloads.contains_key(&g.app_id) && !ctx.state.download_queue.contains(&g.app_id))
             .filter(|g| self.auto_queued.insert(g.app_id))
             .map(|g| (g.app_id, g.library.clone()))
             .collect();
@@ -1099,24 +769,16 @@ impl Library {
                     Filter::Installed => e.installed.is_some(),
                     Filter::Playing => e.installed.and_then(|g| g.last_played).is_some(),
                     Filter::Favorites => self.favorites.contains(&e.app_id),
-                    Filter::Collection(i) => self
-                        .collections
-                        .get(i)
-                        .is_some_and(|c| c.games.contains(&e.app_id)),
+                    Filter::Collection(i) => self.collections.get(i).is_some_and(|c| c.games.contains(&e.app_id)),
                 }
                 && (self.show_hidden || !self.hidden.contains(&e.app_id))
                 && self.adv_match(ctx, e)
         });
         match self.sort {
             Sort::Name => items.sort_by_key(|e| e.name.to_lowercase()),
-            Sort::Recent => {
-                items.sort_by_key(|e| std::cmp::Reverse(e.installed.and_then(|g| g.last_played)))
-            }
-            Sort::Playtime => items
-                .sort_by_key(|e| std::cmp::Reverse(e.installed.and_then(|g| g.playtime_minutes))),
-            Sort::Size => {
-                items.sort_by_key(|e| std::cmp::Reverse(e.installed.map(|g| g.size_on_disk)))
-            }
+            Sort::Recent => items.sort_by_key(|e| std::cmp::Reverse(e.installed.and_then(|g| g.last_played))),
+            Sort::Playtime => items.sort_by_key(|e| std::cmp::Reverse(e.installed.and_then(|g| g.playtime_minutes))),
+            Sort::Size => items.sort_by_key(|e| std::cmp::Reverse(e.installed.map(|g| g.size_on_disk))),
         }
         items
     }
@@ -1132,10 +794,7 @@ impl Library {
             .installed
             .and_then(|g| g.playtime_minutes)
             .or_else(|| match ctx.state.player_games.get(&ctx.state.steam_id) {
-                Some(Ok(list)) => list
-                    .iter()
-                    .find(|g| g.app_id == e.app_id)
-                    .map(|g| g.playtime_minutes),
+                Some(Ok(list)) => list.iter().find(|g| g.app_id == e.app_id).map(|g| g.playtime_minutes),
                 _ => None,
             })
             .unwrap_or(0);
@@ -1147,10 +806,8 @@ impl Library {
                 _ => minutes == 0,
             });
         let kind_ok = f.kinds.is_empty() || o.is_some_and(|o| f.kinds.contains(&o.kind));
-        let genre_ok =
-            f.genres.is_empty() || o.is_some_and(|o| o.genres.iter().any(|g| f.genres.contains(g)));
-        let feature_ok = f.features.is_empty()
-            || o.is_some_and(|o| f.features.iter().all(|c| o.categories.contains(c)));
+        let genre_ok = f.genres.is_empty() || o.is_some_and(|o| o.genres.iter().any(|g| f.genres.contains(g)));
+        let feature_ok = f.features.is_empty() || o.is_some_and(|o| f.features.iter().all(|c| o.categories.contains(c)));
         let deck_ok = f.deck.is_empty() || f.deck.contains(&o.map(|o| o.deck).unwrap_or(0));
         play_ok && kind_ok && genre_ok && feature_ok && deck_ok
     }
@@ -1158,19 +815,10 @@ impl Library {
     /// The filter popup, like Steam's library filters.
     fn adv_panel(&mut self, ui: &mut Ui, t: &Theme, ctx: &Ctx) {
         // Only offer what this library has.
-        let apps: Vec<&model::OwnedApp> = ctx
-            .state
-            .apps
-            .as_ref()
-            .map(|a| a.values().filter(|a| !a.is_dlc()).collect())
-            .unwrap_or_default();
+        let apps: Vec<&model::OwnedApp> = ctx.state.apps.as_ref().map(|a| a.values().filter(|a| !a.is_dlc()).collect()).unwrap_or_default();
         let has_genre = |g: u32| apps.iter().any(|a| a.genres.contains(&g));
         let has_feature = |c: u32| apps.iter().any(|a| a.categories.contains(&c));
-        let mut kinds: Vec<String> = apps
-            .iter()
-            .map(|a| a.kind.clone())
-            .filter(|k| !k.is_empty())
-            .collect();
+        let mut kinds: Vec<String> = apps.iter().map(|a| a.kind.clone()).filter(|k| !k.is_empty()).collect();
         kinds.sort();
         kinds.dedup();
         let group = |ui: &mut Ui, title: &str| {
@@ -1186,17 +834,10 @@ impl Library {
                 }
             });
         });
-        let toggle = |ui: &mut Ui, set_has: bool, label: &str| -> bool {
-            w::chip(ui, t, label, set_has).clicked()
-        };
+        let toggle = |ui: &mut Ui, set_has: bool, label: &str| -> bool { w::chip(ui, t, label, set_has).clicked() };
         group(ui, t!("Play state"));
         ui.horizontal_wrapped(|ui| {
-            for (v, label) in [
-                (0u8, t!("Ready to play")),
-                (1, t!("Not installed")),
-                (2, t!("Played")),
-                (3, t!("Never played")),
-            ] {
+            for (v, label) in [(0u8, t!("Ready to play")), (1, t!("Not installed")), (2, t!("Played")), (3, t!("Never played"))] {
                 if toggle(ui, f.play.contains(&v), label) && !f.play.remove(&v) {
                     f.play.insert(v);
                 }
@@ -1229,20 +870,14 @@ impl Library {
         group(ui, t!("Features"));
         ui.horizontal_wrapped(|ui| {
             for (c, label) in FEATURES.iter().filter(|(c, _)| has_feature(*c)) {
-                if toggle(ui, f.features.contains(c), &i18n::tr_dyn(label)) && !f.features.remove(c)
-                {
+                if toggle(ui, f.features.contains(c), &i18n::tr_dyn(label)) && !f.features.remove(c) {
                     f.features.insert(*c);
                 }
             }
         });
         group(ui, t!("Steam Deck"));
         ui.horizontal_wrapped(|ui| {
-            for (v, label) in [
-                (3u8, t!("Verified")),
-                (2, t!("Playable")),
-                (1, t!("Unsupported")),
-                (0, t!("Unknown")),
-            ] {
+            for (v, label) in [(3u8, t!("Verified")), (2, t!("Playable")), (1, t!("Unsupported")), (0, t!("Unknown"))] {
                 if toggle(ui, f.deck.contains(&v), label) && !f.deck.remove(&v) {
                     f.deck.insert(v);
                 }
@@ -1252,17 +887,7 @@ impl Library {
 
     fn sidebar(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
         ui.horizontal(|ui| {
-            let home = ui.add(
-                egui::Button::selectable(
-                    self.selected.is_none() && self.custom_selected.is_none(),
-                    w::text_semibold(
-                        format!("{}   {}", icons::HOUSE, t!("Library home")),
-                        14.0,
-                        t.text,
-                    ),
-                )
-                .min_size(vec2(ui.available_width() - 48.0, 36.0)),
-            );
+            let home = ui.add(egui::Button::selectable(self.selected.is_none() && self.custom_selected.is_none(), w::text_semibold(format!("{}   {}", icons::HOUSE, t!("Library home")), 14.0, t.text)).min_size(vec2(ui.available_width() - 48.0, 36.0)));
             if home.clicked() {
                 self.selected = None;
                 self.custom_selected = None;
@@ -1277,23 +902,14 @@ impl Library {
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            for (f, label) in [
-                (Filter::All, t!("All")),
-                (Filter::Installed, t!("Installed")),
-                (Filter::Favorites, icons::STAR),
-                (Filter::Playing, t!("Played")),
-            ] {
+            for (f, label) in [(Filter::All, t!("All")), (Filter::Installed, t!("Installed")), (Filter::Favorites, icons::STAR), (Filter::Playing, t!("Played"))] {
                 if w::chip(ui, t, label, self.filter == f).clicked() {
                     self.filter = f;
                 }
             }
             // Steam-style filters in a popup.
             let n = self.adv.count();
-            let label = if n > 0 {
-                format!("{}  {} ({n})", icons::FUNNEL, t!("Filters"))
-            } else {
-                format!("{}  {}", icons::FUNNEL, t!("Filters"))
-            };
+            let label = if n > 0 { format!("{}  {} ({n})", icons::FUNNEL, t!("Filters")) } else { format!("{}  {}", icons::FUNNEL, t!("Filters")) };
             let r = w::chip(ui, t, &label, n > 0);
             egui::Popup::from_toggle_button_response(&r)
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -1306,45 +922,22 @@ impl Library {
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
             let mut remove = None;
             for (i, c) in self.collections.iter().enumerate() {
-                let r = w::chip(
-                    ui,
-                    t,
-                    &format!("{}  {}  {}", icons::STACK, c.name, c.games.len()),
-                    self.filter == Filter::Collection(i),
-                );
+                let r = w::chip(ui, t, &format!("{}  {}  {}", icons::STACK, c.name, c.games.len()), self.filter == Filter::Collection(i));
                 if r.clicked() {
-                    self.filter = if self.filter == Filter::Collection(i) {
-                        Filter::All
-                    } else {
-                        Filter::Collection(i)
-                    };
+                    self.filter = if self.filter == Filter::Collection(i) { Filter::All } else { Filter::Collection(i) };
                 }
                 r.context_menu(|ui| {
-                    if ui
-                        .button(format!("{}   {}", icons::NOTE, t!("Rename")))
-                        .clicked()
-                    {
+                    if ui.button(format!("{}   {}", icons::NOTE, t!("Rename"))).clicked() {
                         self.naming = Some((Some(i), c.name.clone(), None));
                         ui.close();
                     }
-                    if ui
-                        .button(format!("{}   {}", icons::TRASH, t!("Delete collection")))
-                        .clicked()
-                    {
+                    if ui.button(format!("{}   {}", icons::TRASH, t!("Delete collection"))).clicked() {
                         remove = Some(i);
                         ui.close();
                     }
                 });
             }
-            if w::chip(
-                ui,
-                t,
-                &format!("{}  {}", icons::PLUS, t!("Collection")),
-                false,
-            )
-            .on_hover_text(t!("Make a new collection"))
-            .clicked()
-            {
+            if w::chip(ui, t, &format!("{}  {}", icons::PLUS, t!("Collection")), false).on_hover_text(t!("Make a new collection")).clicked() {
                 self.naming = Some((None, String::new(), None));
             }
             if let Some(i) = remove {
@@ -1354,21 +947,11 @@ impl Library {
         });
         ui.add_space(8.0);
         let items = self.filtered(ctx);
-        let favs: Vec<&Entry> = items
-            .iter()
-            .filter(|e| self.favorites.contains(&e.app_id))
-            .collect();
-        let (installed, rest): (Vec<_>, Vec<_>) = items
-            .iter()
-            .filter(|e| !self.favorites.contains(&e.app_id))
-            .partition(|e| e.installed.is_some());
+        let favs: Vec<&Entry> = items.iter().filter(|e| self.favorites.contains(&e.app_id)).collect();
+        let (installed, rest): (Vec<_>, Vec<_>) = items.iter().filter(|e| !self.favorites.contains(&e.app_id)).partition(|e| e.installed.is_some());
         let mut groups: Vec<(String, Vec<&Entry>)> = Vec::new();
         if let Filter::Collection(i) = self.filter {
-            let name = self
-                .collections
-                .get(i)
-                .map(|c| c.name.clone())
-                .unwrap_or_default();
+            let name = self.collections.get(i).map(|c| c.name.clone()).unwrap_or_default();
             groups.push((format!("{name} — {}", items.len()), items.iter().collect()));
         } else if !favs.is_empty() {
             groups.push((t!("Favorites — {n}", n = favs.len()), favs));
@@ -1385,189 +968,83 @@ impl Library {
                 ui.label(w::text(t!("Loading owned games…"), 12.0, t.text_faint));
             });
         }
-        egui::ScrollArea::vertical()
-            .id_salt("lib-side")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if items.is_empty() && ctx.state.apps.is_none() {
-                    for i in 0..10 {
-                        let (r, _) = ui.allocate_exact_size(
-                            vec2(ui.available_width() - 6.0, 30.0),
-                            Sense::hover(),
-                        );
-                        w::skeleton(
-                            ui,
-                            t,
-                            Rect::from_min_size(r.min + vec2(6.0, 3.0), vec2(24.0, 24.0)),
-                            CornerRadius::same(4),
-                        );
-                        w::skeleton(
-                            ui,
-                            t,
-                            Rect::from_min_size(
-                                r.min + vec2(40.0, 9.0),
-                                vec2(80.0 + (i * 37 % 90) as f32, 12.0),
-                            ),
-                            CornerRadius::same(4),
-                        );
+        egui::ScrollArea::vertical().id_salt("lib-side").auto_shrink([false, false]).show(ui, |ui| {
+            if items.is_empty() && ctx.state.apps.is_none() {
+                for i in 0..10 {
+                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width() - 6.0, 30.0), Sense::hover());
+                    w::skeleton(ui, t, Rect::from_min_size(r.min + vec2(6.0, 3.0), vec2(24.0, 24.0)), CornerRadius::same(4));
+                    w::skeleton(ui, t, Rect::from_min_size(r.min + vec2(40.0, 9.0), vec2(80.0 + (i * 37 % 90) as f32, 12.0)), CornerRadius::same(4));
+                }
+            }
+            for (title, list) in groups {
+                w::caption(ui, t, &title);
+                ui.add_space(2.0);
+                for e in list {
+                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width() - 6.0, 34.0), Sense::click());
+                    if !ui.is_rect_visible(rect) {
+                        continue;
+                    }
+                    let sel = self.selected == Some(e.app_id);
+                    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+                    if sel {
+                        ui.painter().rect_filled(rect, t.corner_small(), t.accent.gamma_multiply(0.16));
+                    } else if hover > 0.0 {
+                        ui.painter().rect_filled(rect, t.corner_small(), w::mix(Color32::TRANSPARENT, t.surface, hover));
+                    }
+                    let icon = Rect::from_min_size(rect.min + vec2(6.0, 5.0), vec2(24.0, 24.0));
+                    let url = e.owned.and_then(|o| o.icon.as_deref()).map(|h| art::icon(e.app_id, h));
+                    let ok = url.as_deref().is_some_and(|u| w::paint_cover(ui, icon, u, CornerRadius::same(4)));
+                    if !ok && !w::paint_cover(ui, icon, &art::header(e.app_id), CornerRadius::same(4)) {
+                        ui.painter().rect_filled(icon, CornerRadius::same(4), t.surface_hover);
+                    }
+                    let setup = setup_state(ctx, e.app_id, e.installed.is_some());
+                    let busy = matches!(setup, Setup::Downloading(_) | Setup::Queued);
+                    let color = if busy { t.accent } else if sel { t.text } else if e.installed.is_some() { w::mix(t.text_dim, t.text, hover) } else { t.text_faint };
+                    let galley = ui.painter().layout(e.name.to_string(), w::font_medium(13.5), color, rect.width() - 50.0);
+                    let galley = if galley.rows.len() > 1 {
+                        let mut job = egui::text::LayoutJob::simple_singleline(e.name.to_string(), w::font_medium(13.5), color);
+                        job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 50.0);
+                        ui.painter().layout_job(job)
+                    } else {
+                        galley
+                    };
+                    ui.painter().galley(pos2(icon.right() + 10.0, rect.center().y - galley.size().y / 2.0), galley, color);
+                    if ctx.state.playing == Some(e.app_id) {
+                        ui.painter().circle_filled(rect.right_center() - vec2(10.0, 0.0), 4.0, t.in_game);
+                    }
+                    // Installing: a thin bar along the bottom of the row, like Steam.
+                    if let Setup::Downloading(d) = &setup {
+                        let frac = (d.disk_done as f32 / d.disk_total.max(1) as f32).clamp(0.0, 1.0);
+                        let track = Rect::from_min_max(pos2(icon.right() + 10.0, rect.bottom() - 4.0), pos2(rect.right() - 8.0, rect.bottom() - 2.0));
+                        ui.painter().rect_filled(track, CornerRadius::same(1), t.raised);
+                        let fill = Rect::from_min_size(track.min, vec2(track.width() * frac, track.height()));
+                        ui.painter().rect_filled(fill, CornerRadius::same(1), if d.paused { t.text_faint } else { t.accent });
+                    }
+                    let id = e.app_id;
+                    self.game_menu(&resp, id, e.installed.is_some(), ctx.state.playing == Some(id));
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        self.selected = Some(id);
+                        self.custom_selected = None;
                     }
                 }
-                for (title, list) in groups {
-                    w::caption(ui, t, &title);
-                    ui.add_space(2.0);
-                    for e in list {
-                        let (rect, resp) = ui.allocate_exact_size(
-                            vec2(ui.available_width() - 6.0, 34.0),
-                            Sense::click(),
-                        );
-                        if !ui.is_rect_visible(rect) {
-                            continue;
-                        }
-                        let sel = self.selected == Some(e.app_id);
-                        let hover = ui
-                            .ctx()
-                            .animate_bool_with_time(resp.id, resp.hovered(), 0.1);
-                        if sel {
-                            ui.painter().rect_filled(
-                                rect,
-                                t.corner_small(),
-                                t.accent.gamma_multiply(0.16),
-                            );
-                        } else if hover > 0.0 {
-                            ui.painter().rect_filled(
-                                rect,
-                                t.corner_small(),
-                                w::mix(Color32::TRANSPARENT, t.surface, hover),
-                            );
-                        }
-                        let icon = Rect::from_min_size(rect.min + vec2(6.0, 5.0), vec2(24.0, 24.0));
-                        let url = e
-                            .owned
-                            .and_then(|o| o.icon.as_deref())
-                            .map(|h| art::icon(e.app_id, h));
-                        let ok = url
-                            .as_deref()
-                            .is_some_and(|u| w::paint_cover(ui, icon, u, CornerRadius::same(4)));
-                        if !ok
-                            && !w::paint_cover(
-                                ui,
-                                icon,
-                                &art::header(e.app_id),
-                                CornerRadius::same(4),
-                            )
-                        {
-                            ui.painter()
-                                .rect_filled(icon, CornerRadius::same(4), t.surface_hover);
-                        }
-                        let setup = setup_state(ctx, e.app_id, e.installed.is_some());
-                        let busy = matches!(setup, Setup::Downloading(_) | Setup::Queued);
-                        let color = if busy {
-                            t.accent
-                        } else if sel {
-                            t.text
-                        } else if e.installed.is_some() {
-                            w::mix(t.text_dim, t.text, hover)
-                        } else {
-                            t.text_faint
-                        };
-                        let galley = ui.painter().layout(
-                            e.name.to_string(),
-                            w::font_medium(13.5),
-                            color,
-                            rect.width() - 50.0,
-                        );
-                        let galley = if galley.rows.len() > 1 {
-                            let mut job = egui::text::LayoutJob::simple_singleline(
-                                e.name.to_string(),
-                                w::font_medium(13.5),
-                                color,
-                            );
-                            job.wrap =
-                                egui::text::TextWrapping::truncate_at_width(rect.width() - 50.0);
-                            ui.painter().layout_job(job)
-                        } else {
-                            galley
-                        };
-                        ui.painter().galley(
-                            pos2(icon.right() + 10.0, rect.center().y - galley.size().y / 2.0),
-                            galley,
-                            color,
-                        );
-                        if ctx.state.playing == Some(e.app_id) {
-                            ui.painter().circle_filled(
-                                rect.right_center() - vec2(10.0, 0.0),
-                                4.0,
-                                t.in_game,
-                            );
-                        }
-                        // Installing: a thin bar along the bottom of the row, like Steam.
-                        if let Setup::Downloading(d) = &setup {
-                            let frac =
-                                (d.disk_done as f32 / d.disk_total.max(1) as f32).clamp(0.0, 1.0);
-                            let track = Rect::from_min_max(
-                                pos2(icon.right() + 10.0, rect.bottom() - 4.0),
-                                pos2(rect.right() - 8.0, rect.bottom() - 2.0),
-                            );
-                            ui.painter()
-                                .rect_filled(track, CornerRadius::same(1), t.raised);
-                            let fill = Rect::from_min_size(
-                                track.min,
-                                vec2(track.width() * frac, track.height()),
-                            );
-                            ui.painter().rect_filled(
-                                fill,
-                                CornerRadius::same(1),
-                                if d.paused { t.text_faint } else { t.accent },
-                            );
-                        }
-                        let id = e.app_id;
-                        self.game_menu(
-                            &resp,
-                            id,
-                            e.installed.is_some(),
-                            ctx.state.playing == Some(id),
-                        );
-                        if resp
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
-                            self.selected = Some(id);
-                            self.custom_selected = None;
-                        }
+                ui.add_space(10.0);
+            }
+            if !self.custom.is_empty() {
+                w::caption(ui, t, &t!("Non-Steam — {n}", n = self.custom.len()));
+                for (i, g) in self.custom.iter().enumerate() {
+                    let sel = self.custom_selected == Some(i);
+                    let r = ui.add(egui::Button::selectable(sel, w::text_medium(format!("{}   {}", icons::CONTROLLER, g.name), 13.5, t.text_dim)).min_size(vec2(ui.available_width() - 6.0, 32.0)));
+                    if r.clicked() {
+                        self.custom_selected = Some(i);
+                        self.selected = None;
                     }
-                    ui.add_space(10.0);
                 }
-                if !self.custom.is_empty() {
-                    w::caption(ui, t, &t!("Non-Steam — {n}", n = self.custom.len()));
-                    for (i, g) in self.custom.iter().enumerate() {
-                        let sel = self.custom_selected == Some(i);
-                        let r = ui.add(
-                            egui::Button::selectable(
-                                sel,
-                                w::text_medium(
-                                    format!("{}   {}", icons::CONTROLLER, g.name),
-                                    13.5,
-                                    t.text_dim,
-                                ),
-                            )
-                            .min_size(vec2(ui.available_width() - 6.0, 32.0)),
-                        );
-                        if r.clicked() {
-                            self.custom_selected = Some(i);
-                            self.selected = None;
-                        }
-                    }
-                    ui.add_space(10.0);
-                }
-                if !self.hidden.is_empty() {
-                    w::check(
-                        ui,
-                        t,
-                        &mut self.show_hidden,
-                        w::text(t!("Show hidden games"), 12.5, t.text_faint),
-                    );
-                }
-            });
+                ui.add_space(10.0);
+            }
+            if !self.hidden.is_empty() {
+                w::check(ui, t, &mut self.show_hidden, w::text(t!("Show hidden games"), 12.5, t.text_faint));
+            }
+        });
         drop(items);
     }
 
@@ -1581,67 +1058,26 @@ impl Library {
             ui.add_space(8.0);
             ui.label(w::text_medium(t!("Program"), 12.5, t.text_dim));
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut g.exe)
-                        .hint_text(t!("Path to the game's .exe"))
-                        .desired_width(360.0)
-                        .margin(vec2(10.0, 8.0)),
-                );
-                if w::button(
-                    ui,
-                    t,
-                    Some(icons::FOLDER),
-                    t!("Choose…"),
-                    w::Kind::Secondary,
-                    w::Size::Sm,
-                )
-                .clicked()
-                {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Programs", &["exe", "bat", "cmd", "lnk"])
-                        .pick_file()
-                    {
+                ui.add(egui::TextEdit::singleline(&mut g.exe).hint_text(t!("Path to the game's .exe")).desired_width(360.0).margin(vec2(10.0, 8.0)));
+                if w::button(ui, t, Some(icons::FOLDER), t!("Choose…"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                    if let Some(path) = rfd::FileDialog::new().add_filter("Programs", &["exe", "bat", "cmd", "lnk"]).pick_file() {
                         g.exe = path.display().to_string();
                         if g.name.is_empty() {
-                            g.name = path
-                                .file_stem()
-                                .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_default();
+                            g.name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                         }
                     }
                 }
             });
             ui.add_space(6.0);
             ui.label(w::text_medium(t!("Display name"), 12.5, t.text_dim));
-            ui.add(
-                egui::TextEdit::singleline(&mut g.name)
-                    .desired_width(f32::INFINITY)
-                    .margin(vec2(10.0, 8.0)),
-            );
+            ui.add(egui::TextEdit::singleline(&mut g.name).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0)));
             ui.add_space(6.0);
             ui.label(w::text_medium(t!("Launch options"), 12.5, t.text_dim));
-            ui.add(
-                egui::TextEdit::singleline(&mut g.args)
-                    .desired_width(f32::INFINITY)
-                    .margin(vec2(10.0, 8.0)),
-            );
+            ui.add(egui::TextEdit::singleline(&mut g.args).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0)));
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 let ok = !g.exe.trim().is_empty() && !g.name.trim().is_empty();
-                if ui
-                    .add_enabled_ui(ok, |ui| {
-                        w::button(
-                            ui,
-                            t,
-                            Some(icons::PLUS),
-                            t!("Add to library"),
-                            w::Kind::Primary,
-                            w::Size::Md,
-                        )
-                    })
-                    .inner
-                    .clicked()
-                {
+                if ui.add_enabled_ui(ok, |ui| w::button(ui, t, Some(icons::PLUS), t!("Add to library"), w::Kind::Primary, w::Size::Md)).inner.clicked() {
                     add = true;
                 }
                 if w::button(ui, t, None, t!("Cancel"), w::Kind::Secondary, w::Size::Md).clicked() {
@@ -1673,16 +1109,7 @@ impl Library {
             ui.label(w::text(&g.exe, 13.0, t.text_faint).monospace());
             ui.add_space(16.0);
             ui.horizontal(|ui| {
-                if w::button(
-                    ui,
-                    t,
-                    Some(icons::PLAY),
-                    t!("Play"),
-                    w::Kind::Play,
-                    w::Size::Lg,
-                )
-                .clicked()
-                {
+                if w::button(ui, t, Some(icons::PLAY), t!("Play"), w::Kind::Play, w::Size::Lg).clicked() {
                     let exe = std::path::PathBuf::from(&g.exe);
                     let mut cmd = std::process::Command::new(&exe);
                     cmd.args(g.args.split_whitespace());
@@ -1694,29 +1121,11 @@ impl Library {
                     }
                 }
                 if let Some(dir) = std::path::Path::new(&g.exe).parent() {
-                    if w::button(
-                        ui,
-                        t,
-                        Some(icons::FOLDER),
-                        t!("Browse local files"),
-                        w::Kind::Secondary,
-                        w::Size::Lg,
-                    )
-                    .clicked()
-                    {
+                    if w::button(ui, t, Some(icons::FOLDER), t!("Browse local files"), w::Kind::Secondary, w::Size::Lg).clicked() {
                         local::open_folder(dir);
                     }
                 }
-                if w::button(
-                    ui,
-                    t,
-                    Some(icons::TRASH),
-                    t!("Remove from library"),
-                    w::Kind::Danger,
-                    w::Size::Lg,
-                )
-                .clicked()
-                {
+                if w::button(ui, t, Some(icons::TRASH), t!("Remove from library"), w::Kind::Danger, w::Size::Lg).clicked() {
                     remove = true;
                 }
             });
@@ -1728,253 +1137,123 @@ impl Library {
     }
 
     fn home(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
-        let mut recent: Vec<_> = ctx
-            .local
-            .games
-            .iter()
-            .filter(|g| g.last_played.is_some())
-            .collect();
+        let mut recent: Vec<_> = ctx.local.games.iter().filter(|g| g.last_played.is_some()).collect();
         recent.sort_by_key(|g| std::cmp::Reverse(g.last_played));
         // Recent games across the whole account (installed or not), like Steam.
-        let mut account_recent: Vec<(AppId, String, u64)> =
-            match ctx.state.player_games.get(&ctx.state.steam_id) {
-                Some(Ok(list)) if !list.is_empty() => list
-                    .iter()
-                    .filter_map(|g| Some((g.app_id, g.name.clone(), g.last_played?)))
-                    .collect(),
-                _ => recent
-                    .iter()
-                    .filter_map(|g| Some((g.app_id, g.name.clone(), g.last_played?)))
-                    .collect(),
-            };
+        let mut account_recent: Vec<(AppId, String, u64)> = match ctx.state.player_games.get(&ctx.state.steam_id) {
+            Some(Ok(list)) if !list.is_empty() => list.iter().filter_map(|g| Some((g.app_id, g.name.clone(), g.last_played?))).collect(),
+            _ => recent.iter().filter_map(|g| Some((g.app_id, g.name.clone(), g.last_played?))).collect(),
+        };
         account_recent.sort_by_key(|g| std::cmp::Reverse(g.2));
 
-        egui::ScrollArea::vertical()
-            .id_salt("lib-home")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add_space(24.0);
-                w::centered(ui, 1400.0, 28.0, |ui| {
-                    self.whats_new(ui, t, ctx, &account_recent);
-                    // Continue playing.
-                    if let Some(g) = recent.first() {
-                        let width = ui.available_width();
-                        let (rect, resp) =
-                            ui.allocate_exact_size(vec2(width, 300.0), Sense::click());
-                        let r = t.corner();
-                        if !w::paint_cover(ui, rect, &art::hero(g.app_id), r)
-                            && !w::paint_cover(ui, rect, &art::header(g.app_id), r)
-                        {
-                            w::skeleton(ui, t, rect, r);
-                        }
-                        w::fade_right(ui, rect, Color32::from_black_alpha(200), 0.65);
-                        w::fade_down(ui, rect, Color32::from_black_alpha(160), 0.4);
-                        let inner = rect.shrink(32.0);
-                        ui.painter().text(
-                            inner.left_top(),
-                            Align2::LEFT_TOP,
-                            t!("CONTINUE PLAYING"),
-                            w::font_bold(12.0),
-                            t.accent,
-                        );
-                        let logo = Rect::from_min_max(
-                            inner.left_top() + vec2(0.0, 28.0),
-                            inner.left_bottom() + vec2(380.0, -66.0),
-                        );
-                        if !w::paint_contain(ui, logo, &art::logo(g.app_id), Align2::LEFT_BOTTOM) {
-                            ui.painter().text(
-                                logo.left_bottom(),
-                                Align2::LEFT_BOTTOM,
-                                &g.name,
-                                w::font_bold(34.0),
-                                Color32::WHITE,
-                            );
-                        }
-                        let btn = Rect::from_min_size(
-                            inner.left_bottom() - vec2(0.0, 48.0),
-                            vec2(150.0, 48.0),
-                        );
-                        let mut c = ui.new_child(
-                            egui::UiBuilder::new()
-                                .max_rect(Rect::from_min_size(btn.min, vec2(600.0, 48.0)))
-                                .layout(Layout::left_to_right(Align::Center)),
-                        );
-                        let playing = ctx.state.playing == Some(g.app_id);
-                        let play = c
-                            .add_enabled_ui(!playing, |ui| {
-                                w::button(
-                                    ui,
-                                    t,
-                                    Some(icons::PLAY),
-                                    if playing { t!("Running") } else { t!("Play") },
-                                    w::Kind::Play,
-                                    w::Size::Lg,
-                                )
-                            })
-                            .inner
-                            .clicked();
-                        c.add_space(12.0);
-                        if let Some(m) = g.playtime_minutes {
-                            c.label(w::text_medium(
-                                t!("{time} played", time = ui::playtime(m)),
-                                14.0,
-                                Color32::from_white_alpha(220),
-                            ));
-                        }
-                        self.game_menu(&resp, g.app_id, true, playing);
-                        if play {
-                            let args = self
-                                .games
-                                .get(&g.app_id)
-                                .map(|s| s.args.clone())
-                                .unwrap_or_default();
-                            ctx.send(Command::Launch {
-                                app_id: g.app_id,
-                                install_dir: g.install_dir.clone(),
-                                args,
-                            });
-                        } else if resp.clicked() {
-                            self.selected = Some(g.app_id);
-                        }
-                        ui.add_space(30.0);
+        egui::ScrollArea::vertical().id_salt("lib-home").auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(24.0);
+            w::centered(ui, 1400.0, 28.0, |ui| {
+                self.whats_new(ui, t, ctx, &account_recent);
+                // Continue playing.
+                if let Some(g) = recent.first() {
+                    let width = ui.available_width();
+                    let (rect, resp) = ui.allocate_exact_size(vec2(width, 300.0), Sense::click());
+                    let r = t.corner();
+                    if !w::paint_cover(ui, rect, &art::hero(g.app_id), r) && !w::paint_cover(ui, rect, &art::header(g.app_id), r) {
+                        w::skeleton(ui, t, rect, r);
                     }
-
-                    // Recent games shelf: everything played lately, installed or not.
-                    let first = recent.first().map(|g| g.app_id);
-                    let shelf: Vec<&(AppId, String, u64)> = account_recent
-                        .iter()
-                        .filter(|g| Some(g.0) != first)
-                        .collect();
-                    if !shelf.is_empty() {
-                        w::section(ui, t, t!("Recent games"), None);
-                        let size = vec2(170.0, 255.0);
-                        let per = (((ui.available_width() + 16.0) / (size.x + 16.0)).floor()
-                            as usize)
-                            .max(1);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 16.0;
-                            for (id, name, when) in shelf.into_iter().take(per) {
-                                let installed = ctx.local.games.iter().any(|g| g.app_id == *id);
-                                ui.vertical(|ui| {
-                                    ui.set_width(size.x);
-                                    let r = w::game_tile(
-                                        ui,
-                                        t,
-                                        &art::capsule(*id),
-                                        &art::header(*id),
-                                        name,
-                                        installed,
-                                        size,
-                                    );
-                                    self.game_menu(
-                                        &r,
-                                        *id,
-                                        installed,
-                                        ctx.state.playing == Some(*id),
-                                    );
-                                    if r.clicked() {
-                                        self.selected = Some(*id);
-                                    }
-                                    ui.label(w::text(ui::ago(*when), 12.0, t.text_faint));
-                                });
-                            }
-                        });
-                        ui.add_space(26.0);
+                    w::fade_right(ui, rect, Color32::from_black_alpha(200), 0.65);
+                    w::fade_down(ui, rect, Color32::from_black_alpha(160), 0.4);
+                    let inner = rect.shrink(32.0);
+                    ui.painter().text(inner.left_top(), Align2::LEFT_TOP, t!("CONTINUE PLAYING"), w::font_bold(12.0), t.accent);
+                    let logo = Rect::from_min_max(inner.left_top() + vec2(0.0, 28.0), inner.left_bottom() + vec2(380.0, -66.0));
+                    if !w::paint_contain(ui, logo, &art::logo(g.app_id), Align2::LEFT_BOTTOM) {
+                        ui.painter().text(logo.left_bottom(), Align2::LEFT_BOTTOM, &g.name, w::font_bold(34.0), Color32::WHITE);
                     }
-
-                    // All games grid.
-                    let items = self.filtered(ctx);
-                    ui.horizontal(|ui| {
-                        ui.label(w::text_bold(
-                            t!("All games ({n})", n = items.len()),
-                            18.0,
-                            t.text,
-                        ));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add(
-                                egui::Slider::new(&mut self.tile, 110.0..=220.0).show_value(false),
-                            )
-                            .on_hover_text(t!("Tile size"));
-                            ui.label(w::text(icons::GRID, 15.0, t.text_faint));
-                            ui.add_space(10.0);
-                            w::segmented(
-                                ui,
-                                t,
-                                &mut self.sort,
-                                &[
-                                    (Sort::Name, t!("Name")),
-                                    (Sort::Recent, t!("Recent")),
-                                    (Sort::Playtime, t!("Hours")),
-                                    (Sort::Size, t!("Size")),
-                                ],
-                            );
-                            ui.label(w::text(t!("Sort"), 13.0, t.text_faint));
-                        });
-                    });
-                    ui.add_space(12.0);
-                    if items.is_empty() {
-                        if ctx.state.apps.is_none() {
-                            w::loading(ui, t, t!("Loading your library…"));
-                        } else {
-                            w::empty(
-                                ui,
-                                t,
-                                icons::SEARCH,
-                                t!("No games match"),
-                                t!("Try a different search or filter."),
-                            );
-                        }
-                        return;
+                    let btn = Rect::from_min_size(inner.left_bottom() - vec2(0.0, 48.0), vec2(150.0, 48.0));
+                    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(btn.min, vec2(600.0, 48.0))).layout(Layout::left_to_right(Align::Center)));
+                    let playing = ctx.state.playing == Some(g.app_id);
+                    let play = c.add_enabled_ui(!playing, |ui| w::button(ui, t, Some(icons::PLAY), if playing { t!("Running") } else { t!("Play") }, w::Kind::Play, w::Size::Lg)).inner.clicked();
+                    c.add_space(12.0);
+                    if let Some(m) = g.playtime_minutes {
+                        c.label(w::text_medium(t!("{time} played", time = ui::playtime(m)), 14.0, Color32::from_white_alpha(220)));
                     }
-                    let size = vec2(self.tile, self.tile * 1.5);
-                    let gap = 16.0;
-                    let cols =
-                        (((ui.available_width() + gap) / (size.x + gap)).floor() as usize).max(1);
-                    for row in items.chunks(cols) {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = gap;
-                            for e in row {
-                                ui.vertical(|ui| {
-                                    ui.set_width(size.x);
-                                    ui.spacing_mut().item_spacing.y = 6.0;
-                                    let r = w::game_tile(
-                                        ui,
-                                        t,
-                                        &art::capsule(e.app_id),
-                                        &art::header(e.app_id),
-                                        e.name,
-                                        e.installed.is_some(),
-                                        size,
-                                    );
-                                    self.game_menu(
-                                        &r,
-                                        e.app_id,
-                                        e.installed.is_some(),
-                                        ctx.state.playing == Some(e.app_id),
-                                    );
-                                    if r.clicked() {
-                                        self.selected = Some(e.app_id);
-                                    }
-                                    ui.add(
-                                        egui::Label::new(w::text_medium(
-                                            e.name,
-                                            13.0,
-                                            if e.installed.is_some() {
-                                                t.text
-                                            } else {
-                                                t.text_dim
-                                            },
-                                        ))
-                                        .truncate(),
-                                    );
-                                });
-                            }
-                        });
-                        ui.add_space(10.0);
+                    self.game_menu(&resp, g.app_id, true, playing);
+                    if play {
+                        let args = self.games.get(&g.app_id).map(|s| s.args.clone()).unwrap_or_default();
+                        ctx.send(Command::Launch { app_id: g.app_id, install_dir: g.install_dir.clone(), args });
+                    } else if resp.clicked() {
+                        self.selected = Some(g.app_id);
                     }
                     ui.add_space(30.0);
+                }
+
+                // Recent games shelf: everything played lately, installed or not.
+                let first = recent.first().map(|g| g.app_id);
+                let shelf: Vec<&(AppId, String, u64)> = account_recent.iter().filter(|g| Some(g.0) != first).collect();
+                if !shelf.is_empty() {
+                    w::section(ui, t, t!("Recent games"), None);
+                    let size = vec2(170.0, 255.0);
+                    let per = (((ui.available_width() + 16.0) / (size.x + 16.0)).floor() as usize).max(1);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 16.0;
+                        for (id, name, when) in shelf.into_iter().take(per) {
+                            let installed = ctx.local.games.iter().any(|g| g.app_id == *id);
+                            ui.vertical(|ui| {
+                                ui.set_width(size.x);
+                                let r = w::game_tile(ui, t, &art::capsule(*id), &art::header(*id), name, installed, size);
+                                self.game_menu(&r, *id, installed, ctx.state.playing == Some(*id));
+                                if r.clicked() {
+                                    self.selected = Some(*id);
+                                }
+                                ui.label(w::text(ui::ago(*when), 12.0, t.text_faint));
+                            });
+                        }
+                    });
+                    ui.add_space(26.0);
+                }
+
+                // All games grid.
+                let items = self.filtered(ctx);
+                ui.horizontal(|ui| {
+                    ui.label(w::text_bold(t!("All games ({n})", n = items.len()), 18.0, t.text));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add(egui::Slider::new(&mut self.tile, 110.0..=220.0).show_value(false)).on_hover_text(t!("Tile size"));
+                        ui.label(w::text(icons::GRID, 15.0, t.text_faint));
+                        ui.add_space(10.0);
+                        w::segmented(ui, t, &mut self.sort, &[(Sort::Name, t!("Name")), (Sort::Recent, t!("Recent")), (Sort::Playtime, t!("Hours")), (Sort::Size, t!("Size"))]);
+                        ui.label(w::text(t!("Sort"), 13.0, t.text_faint));
+                    });
                 });
+                ui.add_space(12.0);
+                if items.is_empty() {
+                    if ctx.state.apps.is_none() {
+                        w::loading(ui, t, t!("Loading your library…"));
+                    } else {
+                        w::empty(ui, t, icons::SEARCH, t!("No games match"), t!("Try a different search or filter."));
+                    }
+                    return;
+                }
+                let size = vec2(self.tile, self.tile * 1.5);
+                let gap = 16.0;
+                let cols = (((ui.available_width() + gap) / (size.x + gap)).floor() as usize).max(1);
+                for row in items.chunks(cols) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        for e in row {
+                            ui.vertical(|ui| {
+                                ui.set_width(size.x);
+                                ui.spacing_mut().item_spacing.y = 6.0;
+                                let r = w::game_tile(ui, t, &art::capsule(e.app_id), &art::header(e.app_id), e.name, e.installed.is_some(), size);
+                                self.game_menu(&r, e.app_id, e.installed.is_some(), ctx.state.playing == Some(e.app_id));
+                                if r.clicked() {
+                                    self.selected = Some(e.app_id);
+                                }
+                                ui.add(egui::Label::new(w::text_medium(e.name, 13.0, if e.installed.is_some() { t.text } else { t.text_dim })).truncate());
+                            });
+                        }
+                    });
+                    ui.add_space(10.0);
+                }
+                ui.add_space(30.0);
             });
+        });
     }
 
     fn game_page(&mut self, id: AppId, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
@@ -1985,12 +1264,7 @@ impl Library {
         };
         let (name, installed, owned) = (e.name.to_string(), e.installed.cloned(), e.owned.cloned());
         drop(all);
-        let download = ctx.state.downloads.get(&id).cloned().filter(|d| {
-            !matches!(
-                d.phase,
-                model::DownloadPhase::Done | model::DownloadPhase::Failed
-            )
-        });
+        let download = ctx.state.downloads.get(&id).cloned().filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed));
         let queued = ctx.state.download_queue.contains(&id);
 
         egui::ScrollArea::vertical().id_salt(("game", id)).auto_shrink([false, false]).show(ui, |ui| {
@@ -2146,40 +1420,21 @@ impl Library {
         self.dialogs(ui, t, ctx, id, &name, installed.as_ref());
     }
 
-    fn download_bar(
-        &mut self,
-        ui: &mut Ui,
-        t: &Theme,
-        ctx: &mut Ctx,
-        id: AppId,
-        d: &model::DownloadStatus,
-    ) {
+    fn download_bar(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, d: &model::DownloadStatus) {
         let label = i18n::tr_dyn(d.activity());
         ui.vertical(|ui| {
             ui.set_width(380.0);
             ui.horizontal(|ui| {
                 ui.label(w::text_semibold(label, 14.0, t.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(w::text(
-                        format!("{} / {}", ui::bytes(d.disk_done), ui::bytes(d.disk_total)),
-                        12.5,
-                        t.text_dim,
-                    ));
+                    ui.label(w::text(format!("{} / {}", ui::bytes(d.disk_done), ui::bytes(d.disk_total)), 12.5, t.text_dim));
                 });
             });
             let frac = d.disk_done as f32 / d.disk_total.max(1) as f32;
             w::progress(ui, t, frac, 380.0);
             // Network and disk separately (they differ a lot: reused data
             // and buffered writes hit the disk without coming over the network).
-            ui.label(w::text(
-                t!(
-                    "Network {net}/s · Disk {disk}/s",
-                    net = ui::bytes(d.speed),
-                    disk = ui::bytes(d.disk_speed)
-                ),
-                12.0,
-                t.text_faint,
-            ));
+            ui.label(w::text(t!("Network {net}/s · Disk {disk}/s", net = ui::bytes(d.speed), disk = ui::bytes(d.disk_speed)), 12.0, t.text_faint));
         });
         if d.paused {
             if w::icon_button(ui, t, icons::PLAY, t!("Resume"), false, 0).clicked() {
@@ -2193,22 +1448,8 @@ impl Library {
         }
     }
 
-    fn manage_menu(
-        &mut self,
-        ui: &mut Ui,
-        t: &Theme,
-        ctx: &mut Ctx,
-        id: AppId,
-        installed: Option<&InstalledGame>,
-    ) {
-        let item = |ui: &mut Ui, icon: &str, label: &str, color| {
-            ui.add(
-                egui::Button::new(w::text_medium(format!("{icon}   {label}"), 13.5, color))
-                    .frame(false)
-                    .min_size(vec2(220.0, 32.0)),
-            )
-            .clicked()
-        };
+    fn manage_menu(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, installed: Option<&InstalledGame>) {
+        let item = |ui: &mut Ui, icon: &str, label: &str, color| ui.add(egui::Button::new(w::text_medium(format!("{icon}   {label}"), 13.5, color)).frame(false).min_size(vec2(220.0, 32.0))).clicked();
         if let Some(g) = installed {
             if item(ui, icons::DESKTOP, t!("Add desktop shortcut"), t.text) {
                 self.add_shortcut(ctx, id, g);
@@ -2224,11 +1465,7 @@ impl Library {
             ctx.navigate("support", Some(format!("game:{id}")));
         }
         if item(ui, icons::SLIDERS, t!("Properties…"), t.text) {
-            self.props = Some(props::Props {
-                app: id,
-                tab: props::PropTab::General,
-                ..Default::default()
-            });
+            self.props = Some(props::Props { app: id, tab: props::PropTab::General, ..Default::default() });
         }
         if installed.is_some() {
             ui.separator();
@@ -2246,175 +1483,72 @@ impl Library {
             .as_ref()
             // Like Steam: only DLC with a store page. Free "DLC" such as Dota 2's
             // Vulkan support stays in Properties, not on the game's page.
-            .map(|a| {
-                a.values()
-                    .filter(|d| d.is_dlc() && d.parent == Some(id) && d.store_assets)
-                    .map(|d| (d.app_id, d.name.clone()))
-                    .collect()
-            })
+            .map(|a| a.values().filter(|d| d.is_dlc() && d.parent == Some(id) && d.store_assets).map(|d| (d.app_id, d.name.clone())).collect())
             .unwrap_or_default();
         if dlc.is_empty() {
             return;
         }
-        egui::Frame::new()
-            .fill(t.surface)
-            .stroke(Stroke::new(1.0, t.accent_2.gamma_multiply(0.5)))
-            .corner_radius(t.corner())
-            .inner_margin(Margin::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(w::text_bold(
-                    t!("YOUR DLC ({n})", n = dlc.len()),
-                    12.0,
-                    t.text_dim,
-                ));
-                ui.add_space(6.0);
-                egui::ScrollArea::horizontal()
-                    .id_salt(("dlc", id))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            for (d, name) in &dlc {
-                                let (r, resp) =
-                                    ui.allocate_exact_size(vec2(220.0, 103.0), Sense::click());
-                                // DLC without its own art shows the game's, with a DLC badge and the name, like Steam.
-                                let url = art::header(*d);
-                                if !w::paint_cover(ui, r, &url, t.corner_small()) {
-                                    if w::image_state(ui, &url) == w::ImageState::Missing {
-                                        w::image_or_skeleton(
-                                            ui,
-                                            t,
-                                            r,
-                                            &art::header(id),
-                                            t.corner_small(),
-                                        );
-                                        let shade = egui::Rect::from_min_max(
-                                            egui::pos2(r.left(), r.bottom() - 30.0),
-                                            r.max,
-                                        );
-                                        ui.painter().rect_filled(
-                                            shade,
-                                            egui::CornerRadius {
-                                                sw: t.corner_small().sw,
-                                                se: t.corner_small().se,
-                                                nw: 0,
-                                                ne: 0,
-                                            },
-                                            Color32::from_black_alpha(190),
-                                        );
-                                        let galley = ui.painter().layout(
-                                            name.clone(),
-                                            w::font_semibold(12.5),
-                                            Color32::WHITE,
-                                            r.width() - 16.0,
-                                        );
-                                        ui.painter().galley(
-                                            egui::pos2(
-                                                r.left() + 8.0,
-                                                shade.center().y - galley.size().y / 2.0,
-                                            ),
-                                            galley,
-                                            Color32::WHITE,
-                                        );
-                                        let badge =
-                                            egui::Rect::from_min_size(r.min, vec2(34.0, 17.0));
-                                        ui.painter().rect_filled(
-                                            badge,
-                                            egui::CornerRadius {
-                                                nw: t.corner_small().nw,
-                                                se: 4,
-                                                ne: 0,
-                                                sw: 0,
-                                            },
-                                            t.accent_2,
-                                        );
-                                        ui.painter().text(
-                                            badge.center(),
-                                            egui::Align2::CENTER_CENTER,
-                                            "DLC",
-                                            w::font_bold(10.5),
-                                            Color32::WHITE,
-                                        );
-                                    } else {
-                                        w::skeleton(ui, t, r, t.corner_small());
-                                    }
-                                }
-                                let off = self
-                                    .games
-                                    .get(&id)
-                                    .is_some_and(|g| g.disabled_dlc.contains(d));
-                                if off {
-                                    ui.painter().rect_filled(
-                                        r,
-                                        t.corner_small(),
-                                        Color32::from_black_alpha(150),
-                                    );
-                                }
-                                if resp
-                                    .on_hover_text(name)
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .clicked()
-                                {
-                                    ctx.navigate("store", Some(format!("app:{d}")));
-                                }
+        egui::Frame::new().fill(t.surface).stroke(Stroke::new(1.0, t.accent_2.gamma_multiply(0.5))).corner_radius(t.corner()).inner_margin(Margin::same(12)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(w::text_bold(t!("YOUR DLC ({n})", n = dlc.len()), 12.0, t.text_dim));
+            ui.add_space(6.0);
+            egui::ScrollArea::horizontal().id_salt(("dlc", id)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (d, name) in &dlc {
+                        let (r, resp) = ui.allocate_exact_size(vec2(220.0, 103.0), Sense::click());
+                        // DLC without its own art shows the game's, with a DLC badge and the name, like Steam.
+                        let url = art::header(*d);
+                        if !w::paint_cover(ui, r, &url, t.corner_small()) {
+                            if w::image_state(ui, &url) == w::ImageState::Missing {
+                                w::image_or_skeleton(ui, t, r, &art::header(id), t.corner_small());
+                                let shade = egui::Rect::from_min_max(egui::pos2(r.left(), r.bottom() - 30.0), r.max);
+                                ui.painter().rect_filled(shade, egui::CornerRadius { sw: t.corner_small().sw, se: t.corner_small().se, nw: 0, ne: 0 }, Color32::from_black_alpha(190));
+                                let galley = ui.painter().layout(name.clone(), w::font_semibold(12.5), Color32::WHITE, r.width() - 16.0);
+                                ui.painter().galley(egui::pos2(r.left() + 8.0, shade.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
+                                let badge = egui::Rect::from_min_size(r.min, vec2(34.0, 17.0));
+                                ui.painter().rect_filled(badge, egui::CornerRadius { nw: t.corner_small().nw, se: 4, ne: 0, sw: 0 }, t.accent_2);
+                                ui.painter().text(badge.center(), egui::Align2::CENTER_CENTER, "DLC", w::font_bold(10.5), Color32::WHITE);
+                            } else {
+                                w::skeleton(ui, t, r, t.corner_small());
                             }
-                        });
-                    });
+                        }
+                        let off = self.games.get(&id).is_some_and(|g| g.disabled_dlc.contains(d));
+                        if off {
+                            ui.painter().rect_filled(r, t.corner_small(), Color32::from_black_alpha(150));
+                        }
+                        if resp.on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            ctx.navigate("store", Some(format!("app:{d}")));
+                        }
+                    }
+                });
             });
+        });
         ui.add_space(16.0);
     }
 
-    fn side_panels(
-        &mut self,
-        ui: &mut Ui,
-        t: &Theme,
-        ctx: &mut Ctx,
-        id: AppId,
-        installed: Option<&InstalledGame>,
-        owned: Option<&model::OwnedApp>,
-    ) {
+    fn side_panels(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, installed: Option<&InstalledGame>, owned: Option<&model::OwnedApp>) {
         // Notes.
         w::card(t).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(w::text_bold(t!("NOTES"), 12.0, t.text_faint));
             ui.add_space(4.0);
             let s = self.games.entry(id).or_default();
-            ui.add(
-                egui::TextEdit::multiline(&mut s.notes)
-                    .hint_text(t!("Write a note for yourself…"))
-                    .desired_rows(3)
-                    .desired_width(f32::INFINITY),
-            );
+            ui.add(egui::TextEdit::multiline(&mut s.notes).hint_text(t!("Write a note for yourself…")).desired_rows(3).desired_width(f32::INFINITY));
         });
         ui.add_space(12.0);
 
         // Friends who are playing.
-        let friends: Vec<_> = ctx
-            .state
-            .friend_list()
-            .into_iter()
-            .filter(|p| p.game_app_id == Some(id))
-            .collect();
+        let friends: Vec<_> = ctx.state.friend_list().into_iter().filter(|p| p.game_app_id == Some(id)).collect();
         w::card(t).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(w::text_bold(t!("FRIENDS PLAYING NOW"), 12.0, t.text_faint));
             ui.add_space(4.0);
             if friends.is_empty() {
-                ui.label(w::text(
-                    t!("None of your friends are playing this right now."),
-                    13.0,
-                    t.text_faint,
-                ));
+                ui.label(w::text(t!("None of your friends are playing this right now."), 13.0, t.text_faint));
             }
             ui.horizontal_wrapped(|ui| {
                 for p in friends {
-                    w::avatar(
-                        ui,
-                        t,
-                        &art::avatar(p.avatar_hash.as_deref()),
-                        36.0,
-                        Some(t.in_game),
-                    )
-                    .on_hover_text(&p.name);
+                    w::avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), 36.0, Some(t.in_game)).on_hover_text(&p.name);
                 }
             });
         });
@@ -2429,35 +1563,12 @@ impl Library {
                     ui.label(w::text_bold(t!("STEAM WORKSHOP"), 12.0, t.text_faint));
                     ui.add_space(4.0);
                     let total: u64 = items.iter().map(|i| i.size).sum();
-                    ui.label(w::text(
-                        t!(
-                            "{n} items · {size}",
-                            n = items.len(),
-                            size = ui::bytes(total)
-                        ),
-                        13.5,
-                        t.text,
-                    ));
+                    ui.label(w::text(t!("{n} items · {size}", n = items.len(), size = ui::bytes(total)), 13.5, t.text));
                     ui.horizontal(|ui| {
-                        if w::button(ui, t, None, t!("Manage"), w::Kind::Secondary, w::Size::Sm)
-                            .clicked()
-                        {
-                            self.props = Some(props::Props {
-                                app: id,
-                                tab: props::PropTab::Workshop,
-                                ..Default::default()
-                            });
+                        if w::button(ui, t, None, t!("Manage"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                            self.props = Some(props::Props { app: id, tab: props::PropTab::Workshop, ..Default::default() });
                         }
-                        if w::button(
-                            ui,
-                            t,
-                            None,
-                            t!("Browse the Workshop"),
-                            w::Kind::Ghost,
-                            w::Size::Sm,
-                        )
-                        .clicked()
-                        {
+                        if w::button(ui, t, None, t!("Browse the Workshop"), w::Kind::Ghost, w::Size::Sm).clicked() {
                             ctx.navigate("workshop", Some(id.to_string()));
                         }
                     });
@@ -2471,72 +1582,40 @@ impl Library {
             ui.set_width(ui.available_width());
             ui.label(w::text_bold(t!("DETAILS"), 12.0, t.text_faint));
             ui.add_space(4.0);
-            egui::Grid::new("game-details")
-                .num_columns(2)
-                .spacing(vec2(14.0, 6.0))
-                .show(ui, |ui| {
-                    ui.label(w::text_bold(t!("APP ID"), 10.5, t.text_faint));
-                    ui.label(w::text(id.to_string(), 13.0, t.text));
+            egui::Grid::new("game-details").num_columns(2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
+                ui.label(w::text_bold(t!("APP ID"), 10.5, t.text_faint));
+                ui.label(w::text(id.to_string(), 13.0, t.text));
+                ui.end_row();
+                if let Some(g) = installed {
+                    let (build, branch) = local::manage::installed_build(g);
+                    ui.label(w::text_bold(t!("BUILD"), 10.5, t.text_faint));
+                    ui.label(w::text(format!("{build}{}", if branch != "public" { format!(" ({branch})") } else { String::new() }), 13.0, t.text));
                     ui.end_row();
-                    if let Some(g) = installed {
-                        let (build, branch) = local::manage::installed_build(g);
-                        ui.label(w::text_bold(t!("BUILD"), 10.5, t.text_faint));
-                        ui.label(w::text(
-                            format!(
-                                "{build}{}",
-                                if branch != "public" {
-                                    format!(" ({branch})")
-                                } else {
-                                    String::new()
-                                }
-                            ),
-                            13.0,
-                            t.text,
-                        ));
-                        ui.end_row();
-                        ui.label(w::text_bold(t!("LAST UPDATED"), 10.5, t.text_faint));
-                        ui.label(w::text(
-                            g.last_updated.map(news::date).unwrap_or_else(|| "—".into()),
-                            13.0,
-                            t.text,
-                        ));
+                    ui.label(w::text_bold(t!("LAST UPDATED"), 10.5, t.text_faint));
+                    ui.label(w::text(g.last_updated.map(news::date).unwrap_or_else(|| "—".into()), 13.0, t.text));
+                    ui.end_row();
+                }
+                if let Some(o) = owned {
+                    if !o.branches.is_empty() {
+                        ui.label(w::text_bold(t!("VERSIONS"), 10.5, t.text_faint));
+                        ui.label(w::text(o.branches.len().to_string(), 13.0, t.text));
                         ui.end_row();
                     }
-                    if let Some(o) = owned {
-                        if !o.branches.is_empty() {
-                            ui.label(w::text_bold(t!("VERSIONS"), 10.5, t.text_faint));
-                            ui.label(w::text(o.branches.len().to_string(), 13.0, t.text));
-                            ui.end_row();
-                        }
-                    }
-                });
+                }
+            });
         });
     }
 
     fn queue_install(&mut self, ctx: &mut Ctx, id: AppId, library: Option<std::path::PathBuf>) {
         let s = self.games.get(&id).cloned().unwrap_or_default();
-        let library = library
-            .or_else(|| ctx.local.libraries.first().cloned())
-            .unwrap_or_else(|| ctx.local.steam_root.clone());
-        let steam_root = if ctx.local.steam_root.as_os_str().is_empty() {
-            library.clone()
-        } else {
-            ctx.local.steam_root.clone()
-        };
-        let language = if s.language.is_empty() {
-            i18n::language().steam_name().to_string()
-        } else {
-            s.language.clone()
-        };
+        let library = library.or_else(|| ctx.local.libraries.first().cloned()).unwrap_or_else(|| ctx.local.steam_root.clone());
+        let steam_root = if ctx.local.steam_root.as_os_str().is_empty() { library.clone() } else { ctx.local.steam_root.clone() };
+        let language = if s.language.is_empty() { i18n::language().steam_name().to_string() } else { s.language.clone() };
         ctx.send(Command::Install(client::download::InstallRequest {
             app_id: id,
             library,
             steam_root,
-            branch: if s.branch.is_empty() {
-                "public".into()
-            } else {
-                s.branch.clone()
-            },
+            branch: if s.branch.is_empty() { "public".into() } else { s.branch.clone() },
             language,
             skip_dlc: s.disabled_dlc.iter().copied().collect(),
         }));
@@ -2545,20 +1624,14 @@ impl Library {
 
     fn add_shortcut(&mut self, ctx: &mut Ctx, id: AppId, g: &InstalledGame) {
         let owned = ctx.state.apps.as_ref().and_then(|a| a.get(&id));
-        match crate::links::desktop_shortcut(
-            id,
-            &g.name,
-            crate::links::game_icon(owned, &g.install_dir),
-        ) {
+        match crate::links::desktop_shortcut(id, &g.name, crate::links::game_icon(owned, &g.install_dir)) {
             Ok(_) => ctx.toast(t!("Shortcut added to your desktop")),
             Err(e) => ctx.toast(e),
         }
     }
 
     fn install_window(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
-        let Some(dlg) = &mut self.install_dialog else {
-            return;
-        };
+        let Some(dlg) = &mut self.install_dialog else { return };
         let id = dlg.app;
         let name = ctx.state.app_name(id).unwrap_or_default().to_string();
         let mut go = false;
@@ -2577,32 +1650,10 @@ impl Library {
             ui.label(w::text_medium(t!("Install to"), 12.5, t.text_dim));
             for lib in &dlg.libraries {
                 let free = fs4_free(lib);
-                let label = format!(
-                    "{}   ·   {}",
-                    lib.display(),
-                    t!(
-                        "{size} free",
-                        size = free.map(ui::bytes).unwrap_or_else(|| "?".into())
-                    )
-                );
-                w::radio_value(
-                    ui,
-                    t,
-                    &mut dlg.library,
-                    lib.clone(),
-                    w::text(label, 13.5, t.text),
-                );
+                let label = format!("{}   ·   {}", lib.display(), t!("{size} free", size = free.map(ui::bytes).unwrap_or_else(|| "?".into())));
+                w::radio_value(ui, t, &mut dlg.library, lib.clone(), w::text(label, 13.5, t.text));
             }
-            if w::button(
-                ui,
-                t,
-                Some(icons::FOLDER),
-                t!("Choose another folder…"),
-                w::Kind::Ghost,
-                w::Size::Sm,
-            )
-            .clicked()
-            {
+            if w::button(ui, t, Some(icons::FOLDER), t!("Choose another folder…"), w::Kind::Ghost, w::Size::Sm).clicked() {
                 if let Some(p) = rfd::FileDialog::new().pick_folder() {
                     let _ = std::fs::create_dir_all(p.join("steamapps"));
                     dlg.libraries.push(p.clone());
@@ -2611,37 +1662,16 @@ impl Library {
             }
             ui.add_space(8.0);
             if dlg.size > 0 {
-                ui.label(w::text(
-                    t!("Space required: {size}", size = ui::bytes(dlg.size)),
-                    13.5,
-                    t.text,
-                ));
+                ui.label(w::text(t!("Space required: {size}", size = ui::bytes(dlg.size)), 13.5, t.text));
                 if fs4_free(&dlg.library).is_some_and(|f| f < dlg.size) {
-                    ui.label(w::text(
-                        format!(
-                            "{}  {}",
-                            icons::WARNING,
-                            t!("Not enough free space on this drive.")
-                        ),
-                        13.0,
-                        t.danger,
-                    ));
+                    ui.label(w::text(format!("{}  {}", icons::WARNING, t!("Not enough free space on this drive.")), 13.0, t.danger));
                 }
             }
             ui.add_space(6.0);
             w::check(ui, t, &mut dlg.desktop, t!("Create a desktop shortcut"));
             ui.add_space(14.0);
             ui.horizontal(|ui| {
-                if w::button(
-                    ui,
-                    t,
-                    Some(icons::DOWNLOAD),
-                    t!("Install"),
-                    w::Kind::Primary,
-                    w::Size::Md,
-                )
-                .clicked()
-                {
+                if w::button(ui, t, Some(icons::DOWNLOAD), t!("Install"), w::Kind::Primary, w::Size::Md).clicked() {
                     go = true;
                 }
                 if w::button(ui, t, None, t!("Cancel"), w::Kind::Secondary, w::Size::Md).clicked() {
@@ -2667,70 +1697,32 @@ impl Library {
         }
         let progress = Arc::new(Progress::default());
         let result = Arc::new(Mutex::new(None));
-        let (p, r, game, root) = (
-            progress.clone(),
-            result.clone(),
-            g.clone(),
-            ctx.local.steam_root.clone(),
-        );
+        let (p, r, game, root) = (progress.clone(), result.clone(), g.clone(), ctx.local.steam_root.clone());
         std::thread::spawn(move || {
             let report = local::manage::verify(&root, &game, &p);
             *r.lock().unwrap() = Some(report);
         });
-        self.verify = Some(Verify {
-            app_id: g.app_id,
-            progress,
-            result,
-        });
+        self.verify = Some(Verify { app_id: g.app_id, progress, result });
     }
 
     fn poll_verify(&mut self, ctx: &mut Ctx) {
         let Some(v) = &self.verify else { return };
-        let Some(report) = v.result.lock().unwrap().take() else {
-            return;
-        };
+        let Some(report) = v.result.lock().unwrap().take() else { return };
         let id = v.app_id;
-        let name = ctx
-            .state
-            .app_name(id)
-            .map(String::from)
-            .or_else(|| {
-                ctx.local
-                    .games
-                    .iter()
-                    .find(|g| g.app_id == id)
-                    .map(|g| g.name.clone())
-            })
-            .unwrap_or_default();
+        let name = ctx.state.app_name(id).map(String::from).or_else(|| ctx.local.games.iter().find(|g| g.app_id == id).map(|g| g.name.clone())).unwrap_or_default();
         let msg = if !report.unchecked_depots.is_empty() && report.files == 0 {
-            t!(
-                "{name}: Steam's file list for this game isn't on this PC, so it can't be checked yet.",
-                name = name
-            )
+            t!("{name}: Steam's file list for this game isn't on this PC, so it can't be checked yet.", name = name)
         } else if report.healthy() {
             t!("{name}: all {n} files are OK.", name = name, n = report.ok)
         } else {
-            t!(
-                "{name}: {missing} missing and {damaged} damaged files. Use Repair to download them again.",
-                name = name,
-                missing = report.missing.len(),
-                damaged = report.corrupt.len()
-            )
+            t!("{name}: {missing} missing and {damaged} damaged files. Use Repair to download them again.", name = name, missing = report.missing.len(), damaged = report.corrupt.len())
         };
         ctx.toast(msg);
         self.reports.insert(id, report);
         self.verify = None;
     }
 
-    fn dialogs(
-        &mut self,
-        ui: &mut Ui,
-        t: &Theme,
-        ctx: &mut Ctx,
-        id: AppId,
-        name: &str,
-        installed: Option<&InstalledGame>,
-    ) {
+    fn dialogs(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, name: &str, installed: Option<&InstalledGame>) {
         if !matches!(self.dialog, Some(Dialog::Uninstall)) {
             return;
         }
@@ -2807,30 +1799,11 @@ impl InstallDialog {
             .apps
             .as_ref()
             .and_then(|a| a.get(&app))
-            .map(|o| {
-                o.depots
-                    .iter()
-                    .filter(|d| {
-                        d.dlc_app.is_none()
-                            && !d.shared_install
-                            && (d.os.is_empty() || d.os.contains("windows"))
-                    })
-                    .filter_map(|d| d.manifest("public").map(|m| m.1))
-                    .sum()
-            })
+            .map(|o| o.depots.iter().filter(|d| d.dlc_app.is_none() && !d.shared_install && (d.os.is_empty() || d.os.contains("windows"))).filter_map(|d| d.manifest("public").map(|m| m.1)).sum())
             .unwrap_or(0);
         // Pick the library with the most free space.
-        let library = libraries
-            .iter()
-            .max_by_key(|l| fs4_free(l).unwrap_or(0))
-            .cloned()
-            .unwrap_or_default();
-        Self {
-            app,
-            libraries,
-            library,
-            size,
-            desktop: true,
-        }
+        let library = libraries.iter().max_by_key(|l| fs4_free(l).unwrap_or(0)).cloned().unwrap_or_default();
+        Self { app, libraries, library, size, desktop: true }
     }
 }
+

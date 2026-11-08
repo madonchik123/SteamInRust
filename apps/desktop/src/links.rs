@@ -76,9 +76,7 @@ pub fn listen(ctx: egui::Context) -> mpsc::Receiver<String> {
 }
 
 fn exe() -> String {
-    std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default()
+    std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()
 }
 
 fn config_backup() -> PathBuf {
@@ -88,14 +86,8 @@ fn config_backup() -> PathBuf {
 #[cfg(windows)]
 fn reg(args: &[&str]) -> Option<String> {
     use std::os::windows::process::CommandExt;
-    let out = std::process::Command::new("reg")
-        .args(args)
-        .creation_flags(0x0800_0000)
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    let out = std::process::Command::new("reg").args(args).creation_flags(0x0800_0000).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 const KEY: &str = r"HKCU\Software\Classes\steam\shell\open\command";
@@ -116,38 +108,15 @@ pub fn is_default_handler() -> bool {
 /// Make SteamInRust open `steam://` links (saves the old handler first).
 #[cfg(windows)]
 pub fn register() -> Result<(), String> {
-    if let Some(old) =
-        current_handler().filter(|h| !h.to_lowercase().contains(&exe().to_lowercase()))
-    {
+    if let Some(old) = current_handler().filter(|h| !h.to_lowercase().contains(&exe().to_lowercase())) {
         let _ = std::fs::create_dir_all(client::store::config_dir());
         let _ = std::fs::write(config_backup(), old);
     }
     let cmd = format!("\"{}\" \"%1\"", exe());
-    let ok = reg(&[
-        "add",
-        r"HKCU\Software\Classes\steam",
-        "/ve",
-        "/d",
-        "URL:steam protocol",
-        "/f",
-    ])
-    .is_some()
-        && reg(&[
-            "add",
-            r"HKCU\Software\Classes\steam",
-            "/v",
-            "URL Protocol",
-            "/d",
-            "",
-            "/f",
-        ])
-        .is_some()
+    let ok = reg(&["add", r"HKCU\Software\Classes\steam", "/ve", "/d", "URL:steam protocol", "/f"]).is_some()
+        && reg(&["add", r"HKCU\Software\Classes\steam", "/v", "URL Protocol", "/d", "", "/f"]).is_some()
         && reg(&["add", KEY, "/ve", "/d", &cmd, "/f"]).is_some();
-    if ok {
-        Ok(())
-    } else {
-        Err("Windows refused the change".into())
-    }
+    if ok { Ok(()) } else { Err("Windows refused the change".into()) }
 }
 
 /// Give `steam://` links back to whatever handled them before.
@@ -155,8 +124,7 @@ pub fn register() -> Result<(), String> {
 pub fn unregister() -> Result<(), String> {
     match std::fs::read_to_string(config_backup()) {
         Ok(old) if !old.trim().is_empty() => {
-            reg(&["add", KEY, "/ve", "/d", old.trim(), "/f"])
-                .ok_or("Windows refused the change")?;
+            reg(&["add", KEY, "/ve", "/d", old.trim(), "/f"]).ok_or("Windows refused the change")?;
         }
         _ => {
             // Nothing saved: point back at the official client if it's installed.
@@ -185,13 +153,8 @@ pub fn unregister() -> Result<(), String> {
 /// Put a shortcut to a game on the desktop (an internet shortcut to
 /// `steam://rungameid/<id>`, with the game's own icon).
 pub fn desktop_shortcut(app_id: u32, name: &str, icon: Option<PathBuf>) -> Result<PathBuf, String> {
-    let desktop = directories::UserDirs::new()
-        .and_then(|d| d.desktop_dir().map(|p| p.to_path_buf()))
-        .ok_or("No desktop folder found")?;
-    let safe: String = name
-        .chars()
-        .map(|c| if r#"\/:*?"<>|"#.contains(c) { ' ' } else { c })
-        .collect();
+    let desktop = directories::UserDirs::new().and_then(|d| d.desktop_dir().map(|p| p.to_path_buf())).ok_or("No desktop folder found")?;
+    let safe: String = name.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) { ' ' } else { c }).collect();
     let path = desktop.join(format!("{}.url", safe.trim()));
     let mut text = format!("[InternetShortcut]\r\nURL=steam://rungameid/{app_id}\r\n");
     if let Some(icon) = icon {
@@ -205,9 +168,7 @@ pub fn desktop_shortcut(app_id: u32, name: &str, icon: Option<PathBuf>) -> Resul
 /// `steam://rungameid/<id>`). Returns how many were removed.
 pub fn remove_desktop_shortcuts(app_id: u32) -> usize {
     let mut dirs = Vec::new();
-    if let Some(d) =
-        directories::UserDirs::new().and_then(|d| d.desktop_dir().map(|p| p.to_path_buf()))
-    {
+    if let Some(d) = directories::UserDirs::new().and_then(|d| d.desktop_dir().map(|p| p.to_path_buf())) {
         dirs.push(d);
     }
     if let Some(public) = std::env::var_os("PUBLIC") {
@@ -215,21 +176,13 @@ pub fn remove_desktop_shortcuts(app_id: u32) -> usize {
     }
     let mut removed = 0;
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for e in entries.flatten() {
             let path = e.path();
-            if path
-                .extension()
-                .and_then(|x| x.to_str())
-                .is_none_or(|x| !x.eq_ignore_ascii_case("url"))
-            {
+            if path.extension().and_then(|x| x.to_str()).is_none_or(|x| !x.eq_ignore_ascii_case("url")) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
             if shortcut_runs(&text, app_id) && std::fs::remove_file(&path).is_ok() {
                 removed += 1;
             }
@@ -251,10 +204,7 @@ fn shortcut_runs(text: &str, app_id: u32) -> bool {
 
 /// Best icon for a game: its main executable.
 pub fn game_icon(app: Option<&model::OwnedApp>, install_dir: &std::path::Path) -> Option<PathBuf> {
-    let exe = app?
-        .launch
-        .iter()
-        .find(|l| l.runs_on_this_os() && l.executable.to_lowercase().ends_with(".exe"))?;
+    let exe = app?.launch.iter().find(|l| l.runs_on_this_os() && l.executable.to_lowercase().ends_with(".exe"))?;
     let p = install_dir.join(exe.executable.replace('/', "\\"));
     p.exists().then_some(p)
 }
@@ -269,18 +219,9 @@ mod tests {
         assert_eq!(parse("\"steam://launch/730/\""), Some(Link::Run(730)));
         assert_eq!(parse("steam://install/440"), Some(Link::Install(440)));
         assert_eq!(parse("steam://store/620"), Some(Link::Store(620)));
-        assert_eq!(
-            parse("steam://open/downloads"),
-            Some(Link::Page("downloads"))
-        );
+        assert_eq!(parse("steam://open/downloads"), Some(Link::Page("downloads")));
         assert_eq!(parse("https://example.com"), None);
-        assert!(shortcut_runs(
-            "[InternetShortcut]\r\nURL=steam://rungameid/570\r\n",
-            570
-        ));
-        assert!(!shortcut_runs(
-            "[InternetShortcut]\r\nURL=steam://rungameid/5700\r\n",
-            570
-        ));
+        assert!(shortcut_runs("[InternetShortcut]\r\nURL=steam://rungameid/570\r\n", 570));
+        assert!(!shortcut_runs("[InternetShortcut]\r\nURL=steam://rungameid/5700\r\n", 570));
     }
 }

@@ -132,26 +132,12 @@ impl SteamApp {
     pub fn new(cc: &eframe::CreationContext<'_>, link: Option<String>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         ui::install_fonts(&cc.egui_ctx);
-        let prefs: Prefs = cc
-            .storage
-            .and_then(|s| eframe::get_value(s, "prefs"))
-            .unwrap_or_default();
+        let prefs: Prefs = cc.storage.and_then(|s| eframe::get_value(s, "prefs")).unwrap_or_default();
         // `--lang=en` / `--lang=ru` overrides the saved choice (screenshots, testing).
         let lang_flag = std::env::args().find_map(|a| a.strip_prefix("--lang=").map(String::from));
         // The language picked in setup counts until one is chosen in the app.
-        let from_setup = || {
-            std::fs::read_to_string(client::store::config_dir().join("language"))
-                .ok()
-                .map(|s| s.trim().to_string())
-        };
-        i18n::set_language(
-            lang_flag
-                .or_else(|| prefs.language.clone())
-                .or_else(from_setup)
-                .as_deref()
-                .and_then(i18n::Lang::from_code)
-                .unwrap_or_else(i18n::Lang::detect),
-        );
+        let from_setup = || std::fs::read_to_string(client::store::config_dir().join("language")).ok().map(|s| s.trim().to_string());
+        i18n::set_language(lang_flag.or_else(|| prefs.language.clone()).or_else(from_setup).as_deref().and_then(i18n::Lang::from_code).unwrap_or_else(i18n::Lang::detect));
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(3)
@@ -182,17 +168,15 @@ impl SteamApp {
             })
         };
 
-        let flags =
-            std::sync::Arc::new(std::sync::Mutex::new(crate::builtin::settings::AppFlags {
-                close_to_tray: prefs.close_to_tray,
-                ask_account: prefs.ask_account,
-                auto_updates: prefs.auto_updates,
-                cloud: prefs.cloud,
-                toast_messages: prefs.toast_messages,
-                toast_notifications: prefs.toast_notifications,
-            }));
-        let mut registry =
-            crate::builtin::registry(rt.handle().clone(), cc.egui_ctx.clone(), flags.clone());
+        let flags = std::sync::Arc::new(std::sync::Mutex::new(crate::builtin::settings::AppFlags {
+            close_to_tray: prefs.close_to_tray,
+            ask_account: prefs.ask_account,
+            auto_updates: prefs.auto_updates,
+            cloud: prefs.cloud,
+            toast_messages: prefs.toast_messages,
+            toast_notifications: prefs.toast_notifications,
+        }));
+        let mut registry = crate::builtin::registry(rt.handle().clone(), cc.egui_ctx.clone(), flags.clone());
         for id in &prefs.disabled {
             registry.set_enabled(id, false);
         }
@@ -207,23 +191,11 @@ impl SteamApp {
             for e in crate::demo::events(&local) {
                 let _ = demo_tx.send(e);
             }
-        } else if let Some(acc) = prefs
-            .auto_login
-            .as_ref()
-            .filter(|_| !prefs.ask_account && !std::env::args().any(|a| a == "--no-auto-login"))
-        {
+        } else if let Some(acc) = prefs.auto_login.as_ref().filter(|_| !prefs.ask_account && !std::env::args().any(|a| a == "--no-auto-login")) {
             if saved.iter().any(|s| &s.account_name == acc) {
                 auto_account = Some(acc.clone());
                 // Offline mode sticks across restarts until "Go online".
-                client.send(if prefs.wants_offline {
-                    Command::StartOffline {
-                        account: acc.clone(),
-                    }
-                } else {
-                    Command::LoginSaved {
-                        account: acc.clone(),
-                    }
-                });
+                client.send(if prefs.wants_offline { Command::StartOffline { account: acc.clone() } } else { Command::LoginSaved { account: acc.clone() } });
             }
         }
 
@@ -264,9 +236,7 @@ impl SteamApp {
             applied_zoom: 0.0,
         };
         // `--page=inventory --arg=listings`: open a page at startup (handy with --demo).
-        let flag = |name: &str| {
-            std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from))
-        };
+        let flag = |name: &str| std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from));
         if let Some(page) = flag("page") {
             app.go(page, flag("arg"));
         }
@@ -291,11 +261,7 @@ impl SteamApp {
     }
 
     pub fn toast(&mut self, now: f64, title: impl Into<String>, body: impl Into<String>) {
-        self.toasts.push(Toast {
-            title: title.into(),
-            body: body.into(),
-            until: now + 5.0,
-        });
+        self.toasts.push(Toast { title: title.into(), body: body.into(), until: now + 5.0 });
     }
 
     fn drain_events(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
@@ -303,15 +269,13 @@ impl SteamApp {
         while let Ok(e) = self.events.try_recv() {
             // Toast-worthy things are decided before state changes.
             if let Event::Message(m) = &e {
-                let open = self.prefs.page == "community"
-                    && self.current_arg.as_deref() == Some(&m.friend.to_string());
+                let open = self.prefs.page == "community" && self.current_arg.as_deref() == Some(&m.friend.to_string());
                 if m.from != self.state.steam_id && !open && self.prefs.toast_messages {
                     let name = self.state.persona(m.from).name;
                     self.toast(now, name, m.text.clone());
                 }
             }
-            if let (Event::NotificationsArrived(list), true) = (&e, self.prefs.toast_notifications)
-            {
+            if let (Event::NotificationsArrived(list), true) = (&e, self.prefs.toast_notifications) {
                 for n in list.iter().filter(|n| !n.read).take(3) {
                     let (_, text) = crate::shell::notification_text(&self.state, n);
                     self.toast(now, i18n::tr_dyn("Notification"), text);
@@ -340,15 +304,7 @@ impl SteamApp {
                     self.cart_count = Some(lines.len());
                     if before.is_some_and(|b| lines.len() > b) {
                         let gift = lines.last().is_some_and(|l| l.gift_to.is_some());
-                        self.toast(
-                            now,
-                            if gift {
-                                i18n::tr("Gift added to your cart")
-                            } else {
-                                i18n::tr("Added to your cart")
-                            },
-                            "",
-                        );
+                        self.toast(now, if gift { i18n::tr("Gift added to your cart") } else { i18n::tr("Added to your cart") }, "");
                     }
                 }
                 Event::LoginFailed(_) => {
@@ -358,8 +314,7 @@ impl SteamApp {
                 }
                 Event::AccountInfo { .. } => self.saved = client::store::load(),
                 Event::GameStarted { app_id } => {
-                    self.overlay
-                        .game_started(*app_id, self.prefs.overlay_enabled);
+                    self.overlay.game_started(*app_id, self.prefs.overlay_enabled);
                     if let Some(p) = self.launch_popup.as_mut().filter(|p| p.app_id == *app_id) {
                         p.stage = crate::launch_popup::Stage::Running(now);
                     }
@@ -371,15 +326,9 @@ impl SteamApp {
                     }
                 }
                 Event::Error(msg) => {
-                    match self
-                        .launch_popup
-                        .as_mut()
-                        .filter(|p| matches!(p.stage, crate::launch_popup::Stage::Launching))
-                    {
+                    match self.launch_popup.as_mut().filter(|p| matches!(p.stage, crate::launch_popup::Stage::Launching)) {
                         Some(p) => p.stage = crate::launch_popup::Stage::Failed(msg.clone()),
-                        None => {
-                            self.toast(now, i18n::t!("Something went wrong"), i18n::tr_dyn(msg))
-                        }
+                        None => self.toast(now, i18n::t!("Something went wrong"), i18n::tr_dyn(msg)),
                     }
                 }
                 Event::KeyActivated(r) => {
@@ -388,12 +337,7 @@ impl SteamApp {
                         a.result = Some(r.clone());
                     }
                     if r.is_ok() {
-                        self.client.send(Command::SetPersonaState(
-                            self.state
-                                .me()
-                                .map(|m| m.state)
-                                .unwrap_or(model::PersonaState::Online),
-                        ));
+                        self.client.send(Command::SetPersonaState(self.state.me().map(|m| m.state).unwrap_or(model::PersonaState::Online)));
                     }
                 }
                 _ => {}
@@ -412,8 +356,7 @@ impl SteamApp {
 
     pub fn navigate(&mut self, page: String, arg: Option<String>) {
         if page != self.prefs.page || arg != self.current_arg {
-            self.back
-                .push((self.prefs.page.clone(), self.current_arg.clone()));
+            self.back.push((self.prefs.page.clone(), self.current_arg.clone()));
             self.forward.clear();
         }
         self.go(page, arg);
@@ -427,16 +370,14 @@ impl SteamApp {
 
     pub fn go_back(&mut self) {
         if let Some((p, a)) = self.back.pop() {
-            self.forward
-                .push((self.prefs.page.clone(), self.current_arg.clone()));
+            self.forward.push((self.prefs.page.clone(), self.current_arg.clone()));
             self.go(p, a);
         }
     }
 
     pub fn go_forward(&mut self) {
         if let Some((p, a)) = self.forward.pop() {
-            self.back
-                .push((self.prefs.page.clone(), self.current_arg.clone()));
+            self.back.push((self.prefs.page.clone(), self.current_arg.clone()));
             self.go(p, a);
         }
     }
@@ -499,36 +440,19 @@ impl SteamApp {
             return;
         }
         for raw in std::mem::take(&mut self.pending_links) {
-            let nav = |page: &str, arg: Option<String>| Action::Navigate {
-                page: page.into(),
-                arg,
-            };
+            let nav = |page: &str, arg: Option<String>| Action::Navigate { page: page.into(), arg };
             match crate::links::parse(&raw) {
                 Some(Link::Run(id)) => match self.local.games.iter().find(|g| g.app_id == id) {
                     Some(g) => {
                         let now = ctx.input(|i| i.time);
-                        self.launch_popup = Some(crate::launch_popup::LaunchPopup::new(
-                            id,
-                            g.name.clone(),
-                            now,
-                        ));
-                        self.client.send(Command::Launch {
-                            app_id: id,
-                            install_dir: g.install_dir.clone(),
-                            args: String::new(),
-                        });
+                        self.launch_popup = Some(crate::launch_popup::LaunchPopup::new(id, g.name.clone(), now));
+                        self.client.send(Command::Launch { app_id: id, install_dir: g.install_dir.clone(), args: String::new() });
                     }
                     None => actions.push(nav("library", Some(format!("install:{id}")))),
                 },
-                Some(Link::Install(id)) => {
-                    actions.push(nav("library", Some(format!("install:{id}"))))
-                }
-                Some(Link::Uninstall(id)) => {
-                    actions.push(nav("library", Some(format!("uninstall:{id}"))))
-                }
-                Some(Link::Validate(id)) => {
-                    actions.push(nav("library", Some(format!("verify:{id}"))))
-                }
+                Some(Link::Install(id)) => actions.push(nav("library", Some(format!("install:{id}")))),
+                Some(Link::Uninstall(id)) => actions.push(nav("library", Some(format!("uninstall:{id}")))),
+                Some(Link::Validate(id)) => actions.push(nav("library", Some(format!("verify:{id}")))),
                 Some(Link::Store(id)) => actions.push(nav("store", Some(format!("app:{id}")))),
                 Some(Link::Page(p)) => actions.push(nav(p, None)),
                 Some(Link::Show) | None => {}
@@ -544,10 +468,7 @@ impl SteamApp {
                 TrayCmd::Menu(..) => {}
                 TrayCmd::Page(page) => {
                     self.show_window(ctx);
-                    actions.push(Action::Navigate {
-                        page: page.into(),
-                        arg: None,
-                    });
+                    actions.push(Action::Navigate { page: page.into(), arg: None });
                 }
                 TrayCmd::Friends => self.friends_window.open = true,
                 TrayCmd::Status(s) => self.client.send(Command::SetPersonaState(s)),
@@ -563,13 +484,7 @@ impl SteamApp {
 impl SteamApp {
     /// A download is running, paused or queued.
     pub fn downloading(&self) -> bool {
-        !self.state.download_queue.is_empty()
-            || self.state.downloads.values().any(|d| {
-                !matches!(
-                    d.phase,
-                    model::DownloadPhase::Done | model::DownloadPhase::Failed
-                )
-            })
+        !self.state.download_queue.is_empty() || self.state.downloads.values().any(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed))
     }
 
     /// Exit the app, asking first if a download is in progress (like Steam).
@@ -591,12 +506,7 @@ impl SteamApp {
             .state
             .downloads
             .values()
-            .find(|d| {
-                !matches!(
-                    d.phase,
-                    model::DownloadPhase::Done | model::DownloadPhase::Failed
-                )
-            })
+            .find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed))
             .map(|d| d.app_id)
             .or_else(|| self.state.download_queue.first().copied())
             .and_then(|id| self.state.app_name(id).map(String::from))
@@ -661,18 +571,7 @@ impl eframe::App for SteamApp {
             self.prefs.toast_notifications = f.toast_notifications;
             if self.prefs.cloud != f.cloud {
                 self.prefs.cloud = f.cloud;
-                self.client.send(Command::CloudSettings {
-                    steam_root: Some(self.local.steam_root.clone()),
-                    disabled: if f.cloud {
-                        vec![]
-                    } else {
-                        self.state
-                            .apps
-                            .as_ref()
-                            .map(|a| a.keys().copied().collect())
-                            .unwrap_or_default()
-                    },
-                });
+                self.client.send(Command::CloudSettings { steam_root: Some(self.local.steam_root.clone()), disabled: if f.cloud { vec![] } else { self.state.apps.as_ref().map(|a| a.keys().copied().collect()).unwrap_or_default() } });
             }
         }
         self.drain_events(&ctx, &mut actions);
@@ -681,18 +580,11 @@ impl eframe::App for SteamApp {
 
         // Closing the window hides it in the tray (like Steam) unless "Exit" was chosen.
         let signed_in_now = self.state.phase == Phase::LoggedIn;
-        if ctx.input(|i| i.viewport().close_requested())
-            && self.prefs.close_to_tray
-            && signed_in_now
-            && !self.exiting
-        {
+        if ctx.input(|i| i.viewport().close_requested()) && self.prefs.close_to_tray && signed_in_now && !self.exiting {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.hidden = true;
-        } else if ctx.input(|i| i.viewport().close_requested())
-            && !self.exiting
-            && self.downloading()
-        {
+        } else if ctx.input(|i| i.viewport().close_requested()) && !self.exiting && self.downloading() {
             // Closing for real while something downloads: ask first.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm_exit = true;
@@ -710,12 +602,7 @@ impl eframe::App for SteamApp {
         }
 
         // Mouse back/forward buttons.
-        let (b, f) = ctx.input(|i| {
-            (
-                i.pointer.button_pressed(egui::PointerButton::Extra1),
-                i.pointer.button_pressed(egui::PointerButton::Extra2),
-            )
-        });
+        let (b, f) = ctx.input(|i| (i.pointer.button_pressed(egui::PointerButton::Extra1), i.pointer.button_pressed(egui::PointerButton::Extra2)));
         if b {
             self.go_back();
         }

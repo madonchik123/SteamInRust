@@ -18,14 +18,7 @@ pub struct ConnectionError {
 }
 
 /// Pages that only work with a connection to Steam.
-const NEEDS_STEAM: &[&str] = &[
-    "store",
-    "community",
-    "profile",
-    "inventory",
-    "workshop",
-    "support",
-];
+const NEEDS_STEAM: &[&str] = &["store", "community", "profile", "inventory", "workshop", "support"];
 
 fn needs_steam(page: &str) -> bool {
     NEEDS_STEAM.contains(&page) || crate::builtin::hub::PAGES.contains(&page)
@@ -34,24 +27,14 @@ fn needs_steam(page: &str) -> bool {
 /// Called for every engine event, before the state snapshot changes.
 pub fn on_event(app: &mut SteamApp, e: &Event, now: f64) {
     match e {
-        Event::ConnectionError {
-            account,
-            message,
-            offline_ready,
-        } => {
+        Event::ConnectionError { account, message, offline_ready } => {
             app.login.signing_in = None;
             if *offline_ready && app.prefs.auto_offline {
                 tracing::info!("Steam unreachable, starting {account} offline as chosen before");
                 app.login.signing_in = Some(account.clone());
-                app.client.send(Command::StartOffline {
-                    account: account.clone(),
-                });
+                app.client.send(Command::StartOffline { account: account.clone() });
             } else {
-                app.login.connection_error = Some(ConnectionError {
-                    account: account.clone(),
-                    message: message.clone(),
-                    offline_ready: *offline_ready,
-                });
+                app.login.connection_error = Some(ConnectionError { account: account.clone(), message: message.clone(), offline_ready: *offline_ready });
             }
         }
         Event::LoggedIn { .. } => app.login.connection_error = None,
@@ -72,11 +55,7 @@ pub fn on_event(app: &mut SteamApp, e: &Event, now: f64) {
                     }
                 }
                 Link::Reconnecting { .. } if before == Link::Online => {
-                    app.toast(
-                        now,
-                        t!("Connection to Steam lost"),
-                        t!("Reconnecting… Your games keep running."),
-                    );
+                    app.toast(now, t!("Connection to Steam lost"), t!("Reconnecting… Your games keep running."));
                 }
                 Link::Reconnecting { .. } => {}
             }
@@ -91,22 +70,14 @@ pub fn on_event(app: &mut SteamApp, e: &Event, now: f64) {
 
 /// Steam's "Connection error" window, in the sign-in window.
 pub fn connection_error(app: &mut SteamApp, ui: &mut Ui, t: &Theme, err: &ConnectionError) {
-    let who = app
-        .saved
-        .iter()
-        .find(|s| s.account_name == err.account)
-        .cloned();
+    let who = app.saved.iter().find(|s| s.account_name == err.account).cloned();
     ui.vertical_centered(|ui| {
         ui.add_space(6.0);
         ui.label(w::text(icons::PLUGS, 40.0, t.away));
         ui.add_space(4.0);
         ui.label(w::text_bold(t!("Connection error"), 22.0, t.text));
         ui.add_space(2.0);
-        ui.label(w::text(
-            t!("SteamInRust can't reach the Steam servers right now."),
-            13.5,
-            t.text_dim,
-        ));
+        ui.label(w::text(t!("SteamInRust can't reach the Steam servers right now."), 13.5, t.text_dim));
         ui.add(egui::Label::new(w::text(i18n::tr_dyn(&err.message), 12.0, t.text_faint)).wrap());
         ui.add_space(14.0);
     });
@@ -158,15 +129,7 @@ pub fn connection_error(app: &mut SteamApp, ui: &mut Ui, t: &Theme, err: &Connec
     if retry || offline {
         app.login.connection_error = None;
         app.login.signing_in = Some(err.account.clone());
-        app.client.send(if offline {
-            Command::StartOffline {
-                account: err.account.clone(),
-            }
-        } else {
-            Command::LoginSaved {
-                account: err.account.clone(),
-            }
-        });
+        app.client.send(if offline { Command::StartOffline { account: err.account.clone() } } else { Command::LoginSaved { account: err.account.clone() } });
     }
     if cancel {
         app.login.connection_error = None;
@@ -179,65 +142,26 @@ pub fn connection_error(app: &mut SteamApp, ui: &mut Ui, t: &Theme, err: &Connec
 pub fn badge(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
     let (label, tip, color) = match app.state.link {
         Link::Online => return,
-        Link::Offline => (
-            format!("{}  {}", icons::PLUGS, t!("Offline")),
-            t!("Offline mode. Click to go online.").to_string(),
-            t.away,
-        ),
-        Link::Reconnecting { retry_in: 0, .. } => (
-            format!("{}  {}", icons::REFRESH, t!("Reconnecting…")),
-            t!("Connecting to Steam…").to_string(),
-            t.text_dim,
-        ),
-        Link::Reconnecting { retry_in, .. } => (
-            format!("{}  {}", icons::REFRESH, t!("Reconnecting…")),
-            t!("Next try in {n} s. Click to try now.", n = retry_in),
-            t.text_dim,
-        ),
+        Link::Offline => (format!("{}  {}", icons::PLUGS, t!("Offline")), t!("Offline mode. Click to go online.").to_string(), t.away),
+        Link::Reconnecting { retry_in: 0, .. } => (format!("{}  {}", icons::REFRESH, t!("Reconnecting…")), t!("Connecting to Steam…").to_string(), t.text_dim),
+        Link::Reconnecting { retry_in, .. } => (format!("{}  {}", icons::REFRESH, t!("Reconnecting…")), t!("Next try in {n} s. Click to try now.", n = retry_in), t.text_dim),
     };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label, w::font_semibold(12.5), color);
+    let galley = ui.painter().layout_no_wrap(label, w::font_semibold(12.5), color);
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 22.0, 28.0), Sense::click());
-    let hover = ui
-        .ctx()
-        .animate_bool_with_time(resp.id, resp.hovered(), 0.1);
-    ui.painter().rect(
-        rect,
-        CornerRadius::same(14),
-        w::mix(
-            color.gamma_multiply(0.12),
-            color.gamma_multiply(0.22),
-            hover,
-        ),
-        Stroke::new(1.0, color.gamma_multiply(0.6)),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, color);
-    if resp
-        .on_hover_text(tip)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
-    {
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    ui.painter().rect(rect, CornerRadius::same(14), w::mix(color.gamma_multiply(0.12), color.gamma_multiply(0.22), hover), Stroke::new(1.0, color.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
+    if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         app.client.send(Command::GoOnline);
     }
     if matches!(app.state.link, Link::Reconnecting { .. }) {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(500));
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
     }
 }
 
 /// "Go online" / "Go offline" at the top of the account menu.
 pub fn account_items(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
-    let item = |ui: &mut Ui, icon: &str, label: String, color: Color32| {
-        ui.add(
-            egui::Button::new(w::text_medium(format!("{icon}   {label}"), 13.5, color))
-                .frame(false)
-                .min_size(vec2(210.0, 32.0)),
-        )
-        .clicked()
-    };
+    let item = |ui: &mut Ui, icon: &str, label: String, color: Color32| ui.add(egui::Button::new(w::text_medium(format!("{icon}   {label}"), 13.5, color)).frame(false).min_size(vec2(210.0, 32.0))).clicked();
     match app.state.link {
         Link::Online => {
             if item(ui, icons::PLUGS, t!("Go offline").to_string(), t.text) {
@@ -245,21 +169,13 @@ pub fn account_items(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
             }
         }
         Link::Offline => {
-            ui.label(w::text(
-                format!("{}  {}", icons::PLUGS, t!("You're in offline mode")),
-                12.5,
-                t.away,
-            ));
+            ui.label(w::text(format!("{}  {}", icons::PLUGS, t!("You're in offline mode")), 12.5, t.away));
             if item(ui, icons::GLOBE, t!("Go online").to_string(), t.accent) {
                 app.client.send(Command::GoOnline);
             }
         }
         Link::Reconnecting { .. } => {
-            ui.label(w::text(
-                format!("{}  {}", icons::REFRESH, t!("Reconnecting…")),
-                12.5,
-                t.text_dim,
-            ));
+            ui.label(w::text(format!("{}  {}", icons::REFRESH, t!("Reconnecting…")), 12.5, t.text_dim));
             if item(ui, icons::REFRESH, t!("Try again now").to_string(), t.text) {
                 app.client.send(Command::GoOnline);
             }
@@ -283,57 +199,19 @@ pub fn page(app: &mut SteamApp, ui: &mut Ui, page: &str) -> bool {
         ui.add_space(110.0);
         ui.label(w::text(icons::PLUGS, 52.0, t.text_faint));
         ui.add_space(10.0);
-        ui.label(w::text_bold(
-            if reconnecting {
-                t!("Reconnecting to Steam…")
-            } else {
-                t!("You're offline")
-            },
-            22.0,
-            t.text,
-        ));
+        ui.label(w::text_bold(if reconnecting { t!("Reconnecting to Steam…") } else { t!("You're offline") }, 22.0, t.text));
         ui.add_space(4.0);
-        ui.label(w::text(
-            t!("This page needs a connection to Steam."),
-            14.0,
-            t.text_dim,
-        ));
-        ui.label(w::text(
-            t!("Your library and installed games still work."),
-            14.0,
-            t.text_dim,
-        ));
+        ui.label(w::text(t!("This page needs a connection to Steam."), 14.0, t.text_dim));
+        ui.label(w::text(t!("Your library and installed games still work."), 14.0, t.text_dim));
         ui.add_space(18.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             ui.add_space(((ui.available_width() - 340.0) / 2.0).max(0.0));
-            let label = if reconnecting {
-                t!("Try again now")
-            } else {
-                t!("Go online")
-            };
-            if w::button(
-                ui,
-                &t,
-                Some(icons::GLOBE),
-                label,
-                w::Kind::Primary,
-                w::Size::Md,
-            )
-            .clicked()
-            {
+            let label = if reconnecting { t!("Try again now") } else { t!("Go online") };
+            if w::button(ui, &t, Some(icons::GLOBE), label, w::Kind::Primary, w::Size::Md).clicked() {
                 app.client.send(Command::GoOnline);
             }
-            if w::button(
-                ui,
-                &t,
-                Some(icons::BOOKS),
-                t!("Library"),
-                w::Kind::Secondary,
-                w::Size::Md,
-            )
-            .clicked()
-            {
+            if w::button(ui, &t, Some(icons::BOOKS), t!("Library"), w::Kind::Secondary, w::Size::Md).clicked() {
                 app.navigate("library".into(), None);
             }
         });
@@ -343,16 +221,10 @@ pub fn page(app: &mut SteamApp, ui: &mut Ui, page: &str) -> bool {
 
 /// A thin notice strip (friends list, downloads).
 fn notice(ui: &mut Ui, t: &Theme, text: String) {
-    egui::Frame::new()
-        .fill(t.away.gamma_multiply(0.12))
-        .corner_radius(t.corner_small())
-        .inner_margin(Margin::symmetric(10, 7))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.add(
-                egui::Label::new(w::text(format!("{}  {text}", icons::PLUGS), 12.5, t.away)).wrap(),
-            );
-        });
+    egui::Frame::new().fill(t.away.gamma_multiply(0.12)).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(10, 7)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.add(egui::Label::new(w::text(format!("{}  {text}", icons::PLUGS), 12.5, t.away)).wrap());
+    });
     ui.add_space(8.0);
 }
 
@@ -360,16 +232,8 @@ fn notice(ui: &mut Ui, t: &Theme, text: String) {
 pub fn friends_notice(app: &SteamApp, ui: &mut Ui, t: &Theme) {
     match app.state.link {
         Link::Online => {}
-        Link::Offline => notice(
-            ui,
-            t,
-            t!("Offline: friends' status is unknown and chat is unavailable.").to_string(),
-        ),
-        Link::Reconnecting { .. } => notice(
-            ui,
-            t,
-            t!("Reconnecting… Friends' status may be out of date.").to_string(),
-        ),
+        Link::Offline => notice(ui, t, t!("Offline: friends' status is unknown and chat is unavailable.").to_string()),
+        Link::Reconnecting { .. } => notice(ui, t, t!("Reconnecting… Friends' status may be out of date.").to_string()),
     }
 }
 
@@ -391,37 +255,19 @@ pub fn status_note(app: &SteamApp, ui: &mut Ui, t: &Theme) {
 
 /// Play time on a game's page, with time played offline in SteamInRust
 /// that Steam doesn't have yet.
-pub fn playtime_stat(
-    ui: &mut Ui,
-    t: &Theme,
-    state: &client::State,
-    app_id: model::AppId,
-    steam_minutes: Option<u64>,
-) {
-    let (offline_total, not_sent) = state
-        .offline_playtime
-        .get(&app_id)
-        .copied()
-        .unwrap_or((0, 0));
+pub fn playtime_stat(ui: &mut Ui, t: &Theme, state: &client::State, app_id: model::AppId, steam_minutes: Option<u64>) {
+    let (offline_total, not_sent) = state.offline_playtime.get(&app_id).copied().unwrap_or((0, 0));
     let extra = not_sent / 60;
     let value = match (steam_minutes, extra) {
         (None, 0) => "—".to_string(),
         (m, extra) => ui::playtime(m.unwrap_or(0) + extra),
     };
-    let r = ui
-        .scope(|ui| w::stat(ui, t, t!("Play time"), &value))
-        .response;
+    let r = ui.scope(|ui| w::stat(ui, t, t!("Play time"), &value)).response;
     if offline_total >= 60 {
         let tip = if not_sent >= 60 {
-            t!(
-                "Includes {time} played offline that Steam doesn't have yet. It's sent to your Steam profile when you're back online.",
-                time = ui::playtime(not_sent / 60)
-            )
+            t!("Includes {time} played offline that Steam doesn't have yet. It's sent to your Steam profile when you're back online.", time = ui::playtime(not_sent / 60))
         } else {
-            t!(
-                "{time} of it was played offline and has been sent to Steam.",
-                time = ui::playtime(offline_total / 60)
-            )
+            t!("{time} of it was played offline and has been sent to Steam.", time = ui::playtime(offline_total / 60))
         };
         r.on_hover_text(tip);
     }
@@ -433,14 +279,6 @@ pub fn cloud_pending(ui: &mut Ui, t: &Theme, state: &client::State, app_id: mode
         return;
     }
     let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        icons::CLOUD_CHECK,
-        w::font(16.0),
-        t.away,
-    );
-    resp.on_hover_text(t!(
-        "Saves changed offline. They upload to Steam Cloud when you're back online."
-    ));
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, icons::CLOUD_CHECK, w::font(16.0), t.away);
+    resp.on_hover_text(t!("Saves changed offline. They upload to Steam Cloud when you're back online."));
 }

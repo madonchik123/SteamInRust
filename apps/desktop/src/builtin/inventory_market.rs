@@ -33,10 +33,7 @@ fn money(cents: u64, currency: i32) -> String {
 /// "12,50" / "12.5" / "12" -> cents.
 fn parse_amount(s: &str) -> Option<u64> {
     let s = s.trim().replace(' ', "").replace(',', ".");
-    let s: String = s
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
+    let s: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
     let v: f64 = s.parse().ok()?;
     (v > 0.0).then(|| (v * 100.0).round() as u64)
 }
@@ -44,16 +41,7 @@ fn parse_amount(s: &str) -> Option<u64> {
 impl Inventory {
     /// Right-hand panel for the selected item.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn detail(
-        &mut self,
-        ui: &mut Ui,
-        t: &Theme,
-        ctx: &mut Ctx,
-        item: &InventoryItem,
-        count: u64,
-        app: AppId,
-        mine: bool,
-    ) {
+    pub(super) fn detail(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, item: &InventoryItem, count: u64, app: AppId, mine: bool) {
         egui::Frame::new().fill(t.surface).stroke(Stroke::new(1.0, t.border)).corner_radius(t.corner()).inner_margin(Margin::same(16)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             let wdt = ui.available_width();
@@ -150,26 +138,11 @@ impl Inventory {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn market_section(
-        &mut self,
-        ui: &mut Ui,
-        t: &Theme,
-        ctx: &mut Ctx,
-        item: &InventoryItem,
-        count: u64,
-        app: AppId,
-        mine: bool,
-    ) {
+    fn market_section(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, item: &InventoryItem, count: u64, app: AppId, mine: bool) {
         let currency = wallet_currency(ctx);
         let key = (app, item.market_hash_name.clone());
         if self.full_asked.insert(key.clone()) {
-            ctx.send(Command::MarketPrice {
-                app_id: app,
-                hash_name: item.market_hash_name.clone(),
-                currency,
-                country: ctx.state.country.clone(),
-                full: true,
-            });
+            ctx.send(Command::MarketPrice { app_id: app, hash_name: item.market_hash_name.clone(), currency, country: ctx.state.country.clone(), full: true });
         }
         w::caption(ui, t, t!("Community Market"));
         let price = match ctx.state.market_prices.get(&key) {
@@ -190,17 +163,10 @@ impl Inventory {
             }
             Some(Ok(p)) => p.clone(),
         };
-        let lowest = price
-            .lowest_sell
-            .map(|c| money(c, currency))
-            .or(price.lowest.clone());
+        let lowest = price.lowest_sell.map(|c| money(c, currency)).or(price.lowest.clone());
         ui.horizontal(|ui| {
             ui.label(w::text(t!("Starting at"), 13.0, t.text_dim));
-            ui.label(w::text_bold(
-                lowest.clone().unwrap_or_else(|| "—".into()),
-                20.0,
-                t.text,
-            ));
+            ui.label(w::text_bold(lowest.clone().unwrap_or_else(|| "—".into()), 20.0, t.text));
         });
         let mut facts = Vec::new();
         if let Some(m) = &price.median {
@@ -217,15 +183,7 @@ impl Inventory {
         }
         match (price.highest_buy, price.buy_count) {
             (Some(b), n) => {
-                ui.label(w::text(
-                    t!(
-                        "Highest buy order: {price} ({n} requests)",
-                        price = money(b, currency),
-                        n = n.unwrap_or(0)
-                    ),
-                    12.5,
-                    t.text_dim,
-                ));
+                ui.label(w::text(t!("Highest buy order: {price} ({n} requests)", price = money(b, currency), n = n.unwrap_or(0)), 12.5, t.text_dim));
             }
             (None, Some(_)) => {
                 ui.label(w::text(t!("No buy orders right now"), 12.5, t.text_faint));
@@ -248,62 +206,25 @@ impl Inventory {
             let min_pay = fees::buyer_pays(1, game_fee, &rules);
             // Steam extensions' two shortcuts: undercut the cheapest listing by
             // one unit, or sell straight to the highest buy order.
-            let quick = price
-                .lowest_sell
-                .or_else(|| price.lowest.as_deref().and_then(model::parse_money))
-                .map(|l| l.saturating_sub(1).max(min_pay));
+            let quick = price.lowest_sell.or_else(|| price.lowest.as_deref().and_then(model::parse_money)).map(|l| l.saturating_sub(1).max(min_pay));
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
                 if let Some(q) = quick {
-                    let r = w::button(
-                        ui,
-                        t,
-                        Some(icons::LIGHTNING),
-                        &t!("Quick sell · {price}", price = money(q, currency)),
-                        w::Kind::Primary,
-                        w::Size::Sm,
-                    )
-                    .on_hover_text(t!(
-                        "List it just below the cheapest listing, so it sells first."
-                    ));
+                    let r = w::button(ui, t, Some(icons::LIGHTNING), &t!("Quick sell · {price}", price = money(q, currency)), w::Kind::Primary, w::Size::Sm)
+                        .on_hover_text(t!("List it just below the cheapest listing, so it sells first."));
                     if r.clicked() {
                         self.open_sell(item, count, app, game_fee, q, currency);
                     }
                 }
                 if let Some(b) = price.highest_buy.filter(|b| *b >= min_pay) {
-                    let r = w::button(
-                        ui,
-                        t,
-                        Some(icons::COINS),
-                        &t!("Sell now · {price}", price = money(b, currency)),
-                        w::Kind::Secondary,
-                        w::Size::Sm,
-                    )
-                    .on_hover_text(t!(
-                        "List it at the highest buy order, so it sells right away."
-                    ));
+                    let r = w::button(ui, t, Some(icons::COINS), &t!("Sell now · {price}", price = money(b, currency)), w::Kind::Secondary, w::Size::Sm)
+                        .on_hover_text(t!("List it at the highest buy order, so it sells right away."));
                     if r.clicked() {
                         self.open_sell(item, count, app, game_fee, b, currency);
                     }
                 }
-                if w::button(
-                    ui,
-                    t,
-                    Some(icons::TAG),
-                    t!("Sell…"),
-                    w::Kind::Secondary,
-                    w::Size::Sm,
-                )
-                .clicked()
-                {
-                    self.open_sell(
-                        item,
-                        count,
-                        app,
-                        game_fee,
-                        quick.unwrap_or(min_pay),
-                        currency,
-                    );
+                if w::button(ui, t, Some(icons::TAG), t!("Sell…"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                    self.open_sell(item, count, app, game_fee, quick.unwrap_or(min_pay), currency);
                 }
             });
         }
@@ -311,15 +232,7 @@ impl Inventory {
         market_link(ui, t, app, &item.market_hash_name);
     }
 
-    fn open_sell(
-        &mut self,
-        item: &InventoryItem,
-        count: u64,
-        app: AppId,
-        game_fee: f64,
-        pays: u64,
-        currency: i32,
-    ) {
+    fn open_sell(&mut self, item: &InventoryItem, count: u64, app: AppId, game_fee: f64, pays: u64, currency: i32) {
         let _ = currency;
         self.sell = Some(SellDialog {
             app,
@@ -458,254 +371,106 @@ impl Inventory {
         let data = match &ctx.state.my_listings {
             None => {
                 for _ in 0..5 {
-                    let (r, _) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 58.0), Sense::hover());
+                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 58.0), Sense::hover());
                     w::skeleton(ui, t, r.shrink2(vec2(0.0, 4.0)), t.corner_small());
                 }
                 return;
             }
             Some(Err(e)) => {
-                w::empty(
-                    ui,
-                    t,
-                    icons::WARNING,
-                    t!("Couldn't load your listings"),
-                    &i18n::tr_dyn(e),
-                );
+                w::empty(ui, t, icons::WARNING, t!("Couldn't load your listings"), &i18n::tr_dyn(e));
                 return;
             }
             Some(Ok(d)) => d.clone(),
         };
         ui.horizontal(|ui| {
-            let total: u64 = data
-                .listings
-                .iter()
-                .filter(|l| l.status == ListingStatus::Active)
-                .map(|l| l.you_receive * l.amount)
-                .sum();
-            let currency = data
-                .listings
-                .first()
-                .map(|l| l.currency)
-                .unwrap_or_else(|| wallet_currency(ctx));
-            ui.label(w::text(
-                t!(
-                    "You'll receive {total} if everything sells",
-                    total = money(total, currency)
-                ),
-                13.0,
-                t.text_dim,
-            ));
+            let total: u64 = data.listings.iter().filter(|l| l.status == ListingStatus::Active).map(|l| l.you_receive * l.amount).sum();
+            let currency = data.listings.first().map(|l| l.currency).unwrap_or_else(|| wallet_currency(ctx));
+            ui.label(w::text(t!("You'll receive {total} if everything sells", total = money(total, currency)), 13.0, t.text_dim));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if w::button(
-                    ui,
-                    t,
-                    Some(icons::REFRESH),
-                    t!("Refresh"),
-                    w::Kind::Ghost,
-                    w::Size::Sm,
-                )
-                .clicked()
-                {
+                if w::button(ui, t, Some(icons::REFRESH), t!("Refresh"), w::Kind::Ghost, w::Size::Sm).clicked() {
                     ctx.send(Command::LoadMyListings);
                 }
-                if w::button(
-                    ui,
-                    t,
-                    Some(icons::EXTERNAL),
-                    t!("Market history"),
-                    w::Kind::Ghost,
-                    w::Size::Sm,
-                )
-                .on_hover_text(t!("Opens in your browser"))
-                .clicked()
-                {
+                if w::button(ui, t, Some(icons::EXTERNAL), t!("Market history"), w::Kind::Ghost, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked() {
                     let _ = open::that_detached("https://steamcommunity.com/market/#myhistory");
                 }
             });
         });
         ui.add_space(8.0);
         if data.listings.is_empty() && data.buy_orders.is_empty() {
-            w::empty(
-                ui,
-                t,
-                icons::STOREFRONT,
-                t!("Nothing on the market"),
-                t!("Items you put up for sale show up here."),
-            );
+            w::empty(ui, t, icons::STOREFRONT, t!("Nothing on the market"), t!("Items you put up for sale show up here."));
             return;
         }
-        egui::ScrollArea::vertical()
-            .id_salt("my-listings")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let groups = [
-                    (
-                        ListingStatus::NeedsConfirmation,
-                        t!("Waiting for confirmation"),
-                        t!("Confirm these in the Steam Mobile app to put them on sale."),
-                    ),
-                    (ListingStatus::Active, t!("On sale"), ""),
-                    (
-                        ListingStatus::OnHold,
-                        t!("On hold"),
-                        t!("Steam is holding these for a few days before they go on sale."),
-                    ),
-                ];
-                for (status, title, hint) in groups {
-                    let rows: Vec<_> = data
-                        .listings
-                        .iter()
-                        .filter(|l| l.status == status)
-                        .collect();
-                    if rows.is_empty() {
-                        continue;
-                    }
-                    ui.label(w::text_bold(
-                        format!("{title} ({})", rows.len()),
-                        15.0,
-                        t.text,
-                    ));
-                    if !hint.is_empty() {
-                        ui.label(w::text(hint, 12.5, t.text_faint));
-                    }
-                    ui.add_space(4.0);
-                    for l in rows {
-                        let sub = if l.created > 0 {
-                            format!("{} · {}", l.game, ui::ago(l.created))
-                        } else {
-                            l.game.clone()
-                        };
-                        row(
-                            ui,
-                            t,
-                            &l.icon,
-                            &l.name,
-                            l.name_color.as_deref(),
-                            &sub,
-                            |ui| {
-                                if w::button(
-                                    ui,
-                                    t,
-                                    Some(icons::X),
-                                    t!("Remove"),
-                                    w::Kind::Ghost,
-                                    w::Size::Sm,
-                                )
-                                .clicked()
-                                {
-                                    ctx.send(Command::CancelListing {
-                                        listing_id: l.listing_id,
-                                    });
-                                }
-                                ui.vertical(|ui| {
-                                    ui.with_layout(Layout::top_down(Align::Max), |ui| {
-                                        ui.label(w::text_bold(
-                                            money(l.buyer_pays, l.currency),
-                                            14.0,
-                                            t.text,
-                                        ));
-                                        ui.label(w::text(
-                                            t!(
-                                                "you get {price}",
-                                                price = money(l.you_receive, l.currency)
-                                            ),
-                                            12.0,
-                                            t.text_dim,
-                                        ));
-                                    });
-                                });
-                            },
-                        );
-                    }
-                    ui.add_space(14.0);
+        egui::ScrollArea::vertical().id_salt("my-listings").auto_shrink([false, false]).show(ui, |ui| {
+            let groups = [
+                (ListingStatus::NeedsConfirmation, t!("Waiting for confirmation"), t!("Confirm these in the Steam Mobile app to put them on sale.")),
+                (ListingStatus::Active, t!("On sale"), ""),
+                (ListingStatus::OnHold, t!("On hold"), t!("Steam is holding these for a few days before they go on sale.")),
+            ];
+            for (status, title, hint) in groups {
+                let rows: Vec<_> = data.listings.iter().filter(|l| l.status == status).collect();
+                if rows.is_empty() {
+                    continue;
                 }
-                if !data.buy_orders.is_empty() {
-                    ui.label(w::text_bold(
-                        format!("{} ({})", t!("Buy orders"), data.buy_orders.len()),
-                        15.0,
-                        t.text,
-                    ));
-                    ui.add_space(4.0);
-                    for o in &data.buy_orders {
-                        let sub = t!("{left} of {n} left", left = o.remaining, n = o.quantity);
-                        row(ui, t, &o.icon, &o.name, None, &sub, |ui| {
-                            if w::button(
-                                ui,
-                                t,
-                                Some(icons::X),
-                                t!("Cancel"),
-                                w::Kind::Ghost,
-                                w::Size::Sm,
-                            )
-                            .clicked()
-                            {
-                                ctx.send(Command::CancelBuyOrder {
-                                    order_id: o.order_id,
-                                });
-                            }
-                            ui.label(w::text_bold(money(o.price, o.currency), 14.0, t.text));
+                ui.label(w::text_bold(format!("{title} ({})", rows.len()), 15.0, t.text));
+                if !hint.is_empty() {
+                    ui.label(w::text(hint, 12.5, t.text_faint));
+                }
+                ui.add_space(4.0);
+                for l in rows {
+                    let sub = if l.created > 0 { format!("{} · {}", l.game, ui::ago(l.created)) } else { l.game.clone() };
+                    row(ui, t, &l.icon, &l.name, l.name_color.as_deref(), &sub, |ui| {
+                        if w::button(ui, t, Some(icons::X), t!("Remove"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                            ctx.send(Command::CancelListing { listing_id: l.listing_id });
+                        }
+                        ui.vertical(|ui| {
+                            ui.with_layout(Layout::top_down(Align::Max), |ui| {
+                                ui.label(w::text_bold(money(l.buyer_pays, l.currency), 14.0, t.text));
+                                ui.label(w::text(t!("you get {price}", price = money(l.you_receive, l.currency)), 12.0, t.text_dim));
+                            });
                         });
-                    }
+                    });
                 }
-            });
+                ui.add_space(14.0);
+            }
+            if !data.buy_orders.is_empty() {
+                ui.label(w::text_bold(format!("{} ({})", t!("Buy orders"), data.buy_orders.len()), 15.0, t.text));
+                ui.add_space(4.0);
+                for o in &data.buy_orders {
+                    let sub = t!("{left} of {n} left", left = o.remaining, n = o.quantity);
+                    row(ui, t, &o.icon, &o.name, None, &sub, |ui| {
+                        if w::button(ui, t, Some(icons::X), t!("Cancel"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                            ctx.send(Command::CancelBuyOrder { order_id: o.order_id });
+                        }
+                        ui.label(w::text_bold(money(o.price, o.currency), 14.0, t.text));
+                    });
+                }
+            }
+        });
     }
 }
 
-fn row(
-    ui: &mut Ui,
-    t: &Theme,
-    icon: &str,
-    name: &str,
-    color: Option<&str>,
-    sub: &str,
-    right: impl FnOnce(&mut Ui),
-) {
-    egui::Frame::new()
-        .fill(t.surface)
-        .corner_radius(t.corner_small())
-        .inner_margin(Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
-                ui.painter().rect_filled(r, CornerRadius::same(4), t.raised);
-                if !icon.is_empty() {
-                    w::paint_contain(
-                        ui,
-                        r.shrink(3.0),
-                        &art::econ(icon, 192),
-                        Align2::CENTER_CENTER,
-                    );
-                }
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.add(
-                        egui::Label::new(w::text_semibold(
-                            name,
-                            14.0,
-                            hex(color).unwrap_or(t.text),
-                        ))
-                        .truncate(),
-                    );
-                    ui.label(w::text(sub, 12.0, t.text_dim));
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), right);
+fn row(ui: &mut Ui, t: &Theme, icon: &str, name: &str, color: Option<&str>, sub: &str, right: impl FnOnce(&mut Ui)) {
+    egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
+            ui.painter().rect_filled(r, CornerRadius::same(4), t.raised);
+            if !icon.is_empty() {
+                w::paint_contain(ui, r.shrink(3.0), &art::econ(icon, 192), Align2::CENTER_CENTER);
+            }
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.add(egui::Label::new(w::text_semibold(name, 14.0, hex(color).unwrap_or(t.text))).truncate());
+                ui.label(w::text(sub, 12.0, t.text_dim));
             });
+            ui.with_layout(Layout::right_to_left(Align::Center), right);
         });
+    });
     ui.add_space(6.0);
 }
 
 fn market_link(ui: &mut Ui, t: &Theme, app: AppId, hash: &str) {
-    if ui
-        .link(w::text(
-            format!("{}  {}", icons::EXTERNAL, t!("Open the market page")),
-            12.5,
-            t.accent,
-        ))
-        .on_hover_text(t!("Opens in your browser"))
-        .clicked()
-    {
+    if ui.link(w::text(format!("{}  {}", icons::EXTERNAL, t!("Open the market page")), 12.5, t.accent)).on_hover_text(t!("Opens in your browser")).clicked() {
         let _ = open::that_detached(client::market::listing_url(app, hash));
     }
 }
@@ -719,13 +484,7 @@ fn chart(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
     ui.label(w::text_semibold(t!("Average sale price"), 12.5, t.text_dim));
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        for (d, label) in [
-            (7u64, "1W"),
-            (30, "1M"),
-            (90, "3M"),
-            (365, "1Y"),
-            (0, t!("All")),
-        ] {
+        for (d, label) in [(7u64, "1W"), (30, "1M"), (90, "3M"), (365, "1Y"), (0, t!("All"))] {
             if w::chip(ui, t, label, days == d).clicked() {
                 days = d;
             }
@@ -734,18 +493,10 @@ fn chart(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
     ui.data_mut(|d| d.insert_temp(id, days));
 
     let last = p.history.last().map(|h| h.0).unwrap_or(0);
-    let bucket: u64 = if days > 0 && days <= 7 {
-        6 * 3600
-    } else {
-        86_400
-    };
+    let bucket: u64 = if days > 0 && days <= 7 { 6 * 3600 } else { 86_400 };
     // (bucket start, weighted average price, units sold)
     let mut points: Vec<(u64, f64, u32)> = Vec::new();
-    for h in p
-        .history
-        .iter()
-        .filter(|h| days == 0 || h.0 + days * 86_400 >= last)
-    {
+    for h in p.history.iter().filter(|h| days == 0 || h.0 + days * 86_400 >= last) {
         let key = h.0 / bucket * bucket;
         let weight = h.2.max(1) as f64;
         match points.last_mut() {
@@ -761,13 +512,7 @@ fn chart(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
     let painter = ui.painter();
     painter.rect_filled(rect, t.corner_small(), t.raised);
     if points.len() < 2 {
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            t!("Not enough sales yet"),
-            w::font(12.0),
-            t.text_faint,
-        );
+        painter.text(rect.center(), Align2::CENTER_CENTER, t!("Not enough sales yet"), w::font(12.0), t.text_faint);
         return;
     }
     // Scale with headroom; ignore the top 3% so one odd sale can't flatten it.
@@ -789,62 +534,20 @@ fn chart(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
     // Soft fill under the line.
     let mesh_color = t.accent.gamma_multiply(0.12);
     for pair in line.windows(2) {
-        let quad = vec![
-            pair[0],
-            pair[1],
-            pos2(pair[1].x, inner.bottom()),
-            pos2(pair[0].x, inner.bottom()),
-        ];
+        let quad = vec![pair[0], pair[1], pos2(pair[1].x, inner.bottom()), pos2(pair[0].x, inner.bottom())];
         painter.add(egui::Shape::convex_polygon(quad, mesh_color, Stroke::NONE));
     }
     painter.add(egui::Shape::line(line.clone(), Stroke::new(2.0, t.accent)));
     let cents = |v: f64| money((v * 100.0).round() as u64, currency);
-    painter.text(
-        rect.left_top() + vec2(8.0, 4.0),
-        Align2::LEFT_TOP,
-        cents(hi),
-        w::font(10.5),
-        t.text_faint,
-    );
-    painter.text(
-        rect.left_bottom() + vec2(8.0, -4.0),
-        Align2::LEFT_BOTTOM,
-        cents(lo),
-        w::font(10.5),
-        t.text_faint,
-    );
+    painter.text(rect.left_top() + vec2(8.0, 4.0), Align2::LEFT_TOP, cents(hi), w::font(10.5), t.text_faint);
+    painter.text(rect.left_bottom() + vec2(8.0, -4.0), Align2::LEFT_BOTTOM, cents(lo), w::font(10.5), t.text_faint);
     if let Some(pos) = resp.hover_pos() {
-        let i = line
-            .iter()
-            .enumerate()
-            .min_by(|a, b| {
-                (a.1.x - pos.x)
-                    .abs()
-                    .partial_cmp(&(b.1.x - pos.x).abs())
-                    .unwrap()
-            })
-            .map(|x| x.0)
-            .unwrap_or(0);
+        let i = line.iter().enumerate().min_by(|a, b| (a.1.x - pos.x).abs().partial_cmp(&(b.1.x - pos.x).abs()).unwrap()).map(|x| x.0).unwrap_or(0);
         let h = points[i];
-        painter.vline(
-            line[i].x,
-            inner.y_range(),
-            Stroke::new(1.0, t.text_faint.gamma_multiply(0.5)),
-        );
+        painter.vline(line[i].x, inner.y_range(), Stroke::new(1.0, t.text_faint.gamma_multiply(0.5)));
         painter.circle_filled(line[i], 4.0, t.accent);
-        let label = format!(
-            "{} · {} · {}",
-            ui::date(h.0),
-            cents(h.1),
-            t!("{n} sold", n = h.2)
-        );
-        painter.text(
-            pos2(rect.center().x, rect.top() + 4.0),
-            Align2::CENTER_TOP,
-            label,
-            w::font_semibold(11.0),
-            t.text,
-        );
+        let label = format!("{} · {} · {}", ui::date(h.0), cents(h.1), t!("{n} sold", n = h.2));
+        painter.text(pos2(rect.center().x, rect.top() + 4.0), Align2::CENTER_TOP, label, w::font_semibold(11.0), t.text);
     }
 }
 
@@ -852,51 +555,21 @@ fn chart(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
 fn ladders(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
     let rows = p.sell_ladder.len().max(p.buy_ladder.len()).min(5);
     let line = 18.0;
-    let (rect, _) = ui.allocate_exact_size(
-        vec2(ui.available_width(), line * (rows as f32 + 1.0) + 4.0),
-        Sense::hover(),
-    );
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), line * (rows as f32 + 1.0) + 4.0), Sense::hover());
     let painter = ui.painter();
     let half = rect.width() / 2.0;
-    let sides = [
-        (t!("For sale"), &p.sell_ladder, t.text),
-        (t!("Buy orders"), &p.buy_ladder, t.online),
-    ];
+    let sides = [(t!("For sale"), &p.sell_ladder, t.text), (t!("Buy orders"), &p.buy_ladder, t.online)];
     for (k, (title, list, color)) in sides.into_iter().enumerate() {
         let left = rect.left() + k as f32 * half;
         let right = left + half - 12.0;
-        painter.text(
-            pos2(left, rect.top() + line / 2.0),
-            Align2::LEFT_CENTER,
-            title,
-            w::font_semibold(11.5),
-            t.text_dim,
-        );
+        painter.text(pos2(left, rect.top() + line / 2.0), Align2::LEFT_CENTER, title, w::font_semibold(11.5), t.text_dim);
         if list.is_empty() {
-            painter.text(
-                pos2(left, rect.top() + line * 1.5),
-                Align2::LEFT_CENTER,
-                "—",
-                w::font(12.0),
-                t.text_faint,
-            );
+            painter.text(pos2(left, rect.top() + line * 1.5), Align2::LEFT_CENTER, "—", w::font(12.0), t.text_faint);
         }
         for (i, (price, n)) in list.iter().take(rows).enumerate() {
             let y = rect.top() + line * (i as f32 + 1.5);
-            painter.text(
-                pos2(left, y),
-                Align2::LEFT_CENTER,
-                money(*price, currency),
-                w::font(12.0),
-                color,
-            );
-            painter.text(
-                pos2(right, y),
-                Align2::RIGHT_CENTER,
-                n.to_string(),
-                w::font(12.0),
-                t.text_faint,
-            );
+            painter.text(pos2(left, y), Align2::LEFT_CENTER, money(*price, currency), w::font(12.0), color);
+            painter.text(pos2(right, y), Align2::RIGHT_CENTER, n.to_string(), w::font(12.0), t.text_faint);
         }
     }
 }

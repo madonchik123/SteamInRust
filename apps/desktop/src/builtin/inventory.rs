@@ -4,9 +4,7 @@
 //! `"<steamid>/<appid>"` to jump to one game.
 
 use client::{Command, Event};
-use egui::{
-    Align, Align2, Color32, CornerRadius, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2,
-};
+use egui::{Align, Align2, Color32, CornerRadius, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2};
 use extensions::{Ctx, Extension, Manifest, PageSpec};
 use i18n::t;
 use model::{AppId, InventoryItem, Relationship, SteamId, art};
@@ -79,22 +77,11 @@ pub struct Inventory {
 
 impl Extension for Inventory {
     fn manifest(&self) -> Manifest {
-        Manifest {
-            id: "inventory",
-            name: "Inventory",
-            author: "SteamInRust",
-            description: "Steam inventory",
-            core: true,
-            ..Manifest::DEFAULT
-        }
+        Manifest { id: "inventory", name: "Inventory", author: "SteamInRust", description: "Steam inventory", core: true, ..Manifest::DEFAULT }
     }
 
     fn pages(&self) -> Vec<PageSpec> {
-        vec![
-            PageSpec::new("inventory", "Inventory", icons::BACKPACK)
-                .hidden()
-                .order(960),
-        ]
+        vec![PageSpec::new("inventory", "Inventory", icons::BACKPACK).hidden().order(960)]
     }
 
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
@@ -126,21 +113,12 @@ impl Extension for Inventory {
         let owner = self.owner.filter(|o| *o != 0).unwrap_or(ctx.state.steam_id);
         let mine = owner == ctx.state.steam_id;
         if owner == 0 {
-            w::empty(
-                ui,
-                &t,
-                icons::BACKPACK,
-                t!("Sign in to see your inventory"),
-                "",
-            );
+            w::empty(ui, &t, icons::BACKPACK, t!("Sign in to see your inventory"), "");
             return;
         }
         let lang = i18n::language().steam_name().to_string();
         if !mine && self.games_requested.insert(owner) {
-            ctx.send(Command::LoadPlayerGames {
-                steam_id: owner,
-                language: lang.clone(),
-            });
+            ctx.send(Command::LoadPlayerGames { steam_id: owner, language: lang.clone() });
         }
 
         if self.apps_requested.insert(owner) {
@@ -152,30 +130,20 @@ impl Extension for Inventory {
         let fallback = matches!(listed, Some(Err(_)));
         let tabs: Vec<(AppId, u64, String, Option<u32>)> = match listed {
             None => {
-                egui::Frame::new()
-                    .inner_margin(Margin::symmetric(28, 22))
-                    .show(ui, |ui| {
-                        self.header(ui, &t, ctx, owner, mine, &[]);
-                        skeleton_grid(ui, &t);
-                    });
+                egui::Frame::new().inner_margin(Margin::symmetric(28, 22)).show(ui, |ui| {
+                    self.header(ui, &t, ctx, owner, mine, &[]);
+                    skeleton_grid(ui, &t);
+                });
                 return;
             }
             Some(Ok(apps)) => apps
                 .iter()
                 .flat_map(|a| {
                     let sections: Vec<_> = a.contexts.iter().filter(|c| c.2 > 0).collect();
-                    let sections = if sections.is_empty() {
-                        a.contexts.iter().take(1).collect()
-                    } else {
-                        sections
-                    };
+                    let sections = if sections.is_empty() { a.contexts.iter().take(1).collect() } else { sections };
                     let multi = sections.len() > 1;
                     sections.into_iter().map(move |c| {
-                        let title = if multi && !c.1.is_empty() {
-                            format!("{} · {}", a.name, c.1)
-                        } else {
-                            a.name.clone()
-                        };
+                        let title = if multi && !c.1.is_empty() { format!("{} · {}", a.name, c.1) } else { a.name.clone() };
                         (a.app_id, c.0, title, Some(c.2))
                     })
                 })
@@ -193,28 +161,13 @@ impl Extension for Inventory {
                             }
                         }
                 })
-                .map(|(app, cx, name)| {
-                    (
-                        *app,
-                        *cx,
-                        ctx.state
-                            .app_name(*app)
-                            .map(String::from)
-                            .unwrap_or_else(|| name.to_string()),
-                        None,
-                    )
-                })
+                .map(|(app, cx, name)| (*app, *cx, ctx.state.app_name(*app).map(String::from).unwrap_or_else(|| name.to_string()), None))
                 .collect(),
         };
         if fallback {
             for (app, cx, _, _) in &tabs {
                 if self.requested.insert((owner, *app, *cx)) {
-                    ctx.send(Command::LoadInventory {
-                        steam_id: owner,
-                        app_id: *app,
-                        context_id: *cx,
-                        language: lang.clone(),
-                    });
+                    ctx.send(Command::LoadInventory { steam_id: owner, app_id: *app, context_id: *cx, language: lang.clone() });
                 }
             }
         }
@@ -223,55 +176,27 @@ impl Extension for Inventory {
             if let Some(tab) = tabs.iter().find(|x| x.0 == want) {
                 self.app = Some((tab.0, tab.1));
             } else {
-                self.app = Some((
-                    want,
-                    KNOWN.iter().find(|k| k.0 == want).map(|k| k.1).unwrap_or(2),
-                ));
+                self.app = Some((want, KNOWN.iter().find(|k| k.0 == want).map(|k| k.1).unwrap_or(2)));
             }
         }
         if self.app.is_none() {
             if !fallback {
                 self.app = tabs.first().map(|x| (x.0, x.1));
-            } else if tabs
-                .iter()
-                .all(|(a, c, _, _)| ctx.state.inventories.contains_key(&(owner, *a, *c)))
-            {
-                let best = tabs
-                    .iter()
-                    .filter_map(|(a, c, _, _)| {
-                        ctx.state
-                            .inventories
-                            .get(&(owner, *a, *c))
-                            .map(|i| (*a, *c, i.items.len()))
-                    })
-                    .filter(|x| x.2 > 0)
-                    .max_by_key(|x| x.2);
+            } else if tabs.iter().all(|(a, c, _, _)| ctx.state.inventories.contains_key(&(owner, *a, *c))) {
+                let best = tabs.iter().filter_map(|(a, c, _, _)| ctx.state.inventories.get(&(owner, *a, *c)).map(|i| (*a, *c, i.items.len()))).filter(|x| x.2 > 0).max_by_key(|x| x.2);
                 self.app = Some(best.map(|b| (b.0, b.1)).unwrap_or((753, 6)));
             }
         }
         if tabs.is_empty() && !fallback {
-            egui::Frame::new()
-                .inner_margin(Margin::symmetric(28, 22))
-                .show(ui, |ui| {
-                    self.header(ui, &t, ctx, owner, mine, &tabs);
-                    w::empty(
-                        ui,
-                        &t,
-                        icons::BACKPACK,
-                        t!("No items here"),
-                        t!("This inventory is empty."),
-                    );
-                });
+            egui::Frame::new().inner_margin(Margin::symmetric(28, 22)).show(ui, |ui| {
+                self.header(ui, &t, ctx, owner, mine, &tabs);
+                w::empty(ui, &t, icons::BACKPACK, t!("No items here"), t!("This inventory is empty."));
+            });
             return;
         }
         let (app, cx) = self.app.unwrap_or((753, 6));
         if self.requested.insert((owner, app, cx)) {
-            ctx.send(Command::LoadInventory {
-                steam_id: owner,
-                app_id: app,
-                context_id: cx,
-                language: lang.clone(),
-            });
+            ctx.send(Command::LoadInventory { steam_id: owner, app_id: app, context_id: cx, language: lang.clone() });
         }
 
         egui::Frame::new().inner_margin(Margin::symmetric(28, 22)).show(ui, |ui| {
@@ -492,30 +417,19 @@ impl Extension for Inventory {
         match event {
             Event::ItemListed { result, .. } => {
                 match result {
-                    Ok(true) => ctx.toast(t!(
-                        "Listed. Confirm the sale in the Steam Mobile app to put it on the market."
-                    )),
+                    Ok(true) => ctx.toast(t!("Listed. Confirm the sale in the Steam Mobile app to put it on the market.")),
                     Ok(false) => ctx.toast(t!("Your item is on the Community Market")),
-                    Err(e) => ctx.toast(t!(
-                        "Couldn't list the item: {error}",
-                        error = i18n::tr_dyn(e)
-                    )),
+                    Err(e) => ctx.toast(t!("Couldn't list the item: {error}", error = i18n::tr_dyn(e))),
                 }
                 ctx.send(Command::LoadMyListings);
             }
             Event::ListingCancelled { result, .. } => match result {
                 Ok(()) => ctx.toast(t!("Listing removed. The item is back in your inventory.")),
-                Err(e) => ctx.toast(t!(
-                    "Couldn't remove the listing: {error}",
-                    error = i18n::tr_dyn(e)
-                )),
+                Err(e) => ctx.toast(t!("Couldn't remove the listing: {error}", error = i18n::tr_dyn(e))),
             },
             Event::BuyOrderCancelled { result, .. } => match result {
                 Ok(()) => ctx.toast(t!("Buy order cancelled")),
-                Err(e) => ctx.toast(t!(
-                    "Couldn't cancel the buy order: {error}",
-                    error = i18n::tr_dyn(e)
-                )),
+                Err(e) => ctx.toast(t!("Couldn't cancel the buy order: {error}", error = i18n::tr_dyn(e))),
             },
             _ => {}
         }
@@ -523,11 +437,7 @@ impl Extension for Inventory {
 }
 
 pub(crate) fn wallet_currency(ctx: &Ctx) -> i32 {
-    ctx.state
-        .wallet
-        .map(|w| w.1)
-        .filter(|c| *c > 0)
-        .unwrap_or(1)
+    ctx.state.wallet.map(|w| w.1).filter(|c| *c > 0).unwrap_or(1)
 }
 
 impl Inventory {
@@ -540,204 +450,89 @@ impl Inventory {
                 if c.is_empty() || v.is_empty() {
                     continue;
                 }
-                let e = cats
-                    .entry(c.as_str())
-                    .or_default()
-                    .entry(v.as_str())
-                    .or_insert((0, color.as_deref()));
+                let e = cats.entry(c.as_str()).or_default().entry(v.as_str()).or_insert((0, color.as_deref()));
                 e.0 += 1;
             }
         }
-        egui::Frame::new()
-            .inner_margin(Margin::same(6))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(w::text_bold(t!("Filters for this game"), 14.0, t.text));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if !self.tags.is_empty()
-                            && ui.link(w::text(t!("Clear all"), 12.5, t.accent)).clicked()
-                        {
-                            self.tags.clear();
+        egui::Frame::new().inner_margin(Margin::same(6)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(w::text_bold(t!("Filters for this game"), 14.0, t.text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if !self.tags.is_empty() && ui.link(w::text(t!("Clear all"), 12.5, t.accent)).clicked() {
+                        self.tags.clear();
+                    }
+                });
+            });
+            if cats.is_empty() {
+                ui.label(w::text(t!("This game doesn't tag its items."), 13.0, t.text_faint));
+                return;
+            }
+            // Categories with a single value don't filter anything.
+            for (cat, values) in cats.iter().filter(|(_, v)| v.len() > 1) {
+                let chosen = self.tags.get(*cat).map(|s| s.len()).unwrap_or(0);
+                let title = if chosen > 0 { format!("{cat} ({chosen})") } else { cat.to_string() };
+                egui::CollapsingHeader::new(w::text_semibold(title, 13.0, t.text_dim)).id_salt(("tagcat", *cat)).default_open(values.len() <= 12).show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                        let mut list: Vec<_> = values.iter().collect();
+                        list.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
+                        for (value, (n, color)) in list {
+                            let on = self.tags.get(*cat).is_some_and(|s| s.contains(*value));
+                            // Steam colors some tags (rarity, quality, card border); keep them.
+                            if w::tinted_chip(ui, t, &format!("{value}  {n}"), hex(*color), on).clicked() {
+                                let set = self.tags.entry(cat.to_string()).or_default();
+                                if on {
+                                    set.remove(*value);
+                                } else {
+                                    set.insert(value.to_string());
+                                }
+                                if set.is_empty() {
+                                    self.tags.remove(*cat);
+                                }
+                            }
                         }
                     });
                 });
-                if cats.is_empty() {
-                    ui.label(w::text(
-                        t!("This game doesn't tag its items."),
-                        13.0,
-                        t.text_faint,
-                    ));
-                    return;
-                }
-                // Categories with a single value don't filter anything.
-                for (cat, values) in cats.iter().filter(|(_, v)| v.len() > 1) {
-                    let chosen = self.tags.get(*cat).map(|s| s.len()).unwrap_or(0);
-                    let title = if chosen > 0 {
-                        format!("{cat} ({chosen})")
-                    } else {
-                        cat.to_string()
-                    };
-                    egui::CollapsingHeader::new(w::text_semibold(title, 13.0, t.text_dim))
-                        .id_salt(("tagcat", *cat))
-                        .default_open(values.len() <= 12)
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                                let mut list: Vec<_> = values.iter().collect();
-                                list.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
-                                for (value, (n, color)) in list {
-                                    let on =
-                                        self.tags.get(*cat).is_some_and(|s| s.contains(*value));
-                                    // Steam colors some tags (rarity, quality, card border); keep them.
-                                    if w::tinted_chip(
-                                        ui,
-                                        t,
-                                        &format!("{value}  {n}"),
-                                        hex(*color),
-                                        on,
-                                    )
-                                    .clicked()
-                                    {
-                                        let set = self.tags.entry(cat.to_string()).or_default();
-                                        if on {
-                                            set.remove(*value);
-                                        } else {
-                                            set.insert(value.to_string());
-                                        }
-                                        if set.is_empty() {
-                                            self.tags.remove(*cat);
-                                        }
-                                    }
-                                }
-                            });
-                        });
-                }
-            });
+            }
+        });
     }
 
-    fn header(
-        &mut self,
-        ui: &mut Ui,
-        t: &Theme,
-        ctx: &mut Ctx,
-        owner: SteamId,
-        mine: bool,
-        tabs: &[(AppId, u64, String, Option<u32>)],
-    ) {
+    fn header(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, owner: SteamId, mine: bool, tabs: &[(AppId, u64, String, Option<u32>)]) {
         let t = t.clone();
         let persona = ctx.state.persona(owner);
-        let name = if mine && !ctx.state.persona_name.is_empty() {
-            ctx.state.persona_name.clone()
-        } else {
-            persona.name.clone()
-        };
+        let name = if mine && !ctx.state.persona_name.is_empty() { ctx.state.persona_name.clone() } else { persona.name.clone() };
         ui.horizontal(|ui| {
             let (r, resp) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::click());
-            if !w::paint_cover(
-                ui,
-                r,
-                &art::avatar_full(persona.avatar_hash.as_deref()),
-                CornerRadius::same(6),
-            ) {
+            if !w::paint_cover(ui, r, &art::avatar_full(persona.avatar_hash.as_deref()), CornerRadius::same(6)) {
                 w::skeleton(ui, &t, r, CornerRadius::same(6));
             }
-            if resp
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 ctx.navigate("profile", Some(owner.to_string()));
             }
             ui.add_space(6.0);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                ui.label(w::text_bold(
-                    if mine {
-                        t!("Your inventory").to_string()
-                    } else {
-                        t!("{name}'s inventory", name = name)
-                    },
-                    22.0,
-                    t.text,
-                ));
-                let total: u64 = tabs
-                    .iter()
-                    .map(|(a, c, _, n)| {
-                        n.map(u64::from)
-                            .or_else(|| {
-                                ctx.state
-                                    .inventories
-                                    .get(&(owner, *a, *c))
-                                    .map(|i| i.total as u64)
-                            })
-                            .unwrap_or(0)
-                    })
-                    .sum();
+                ui.label(w::text_bold(if mine { t!("Your inventory").to_string() } else { t!("{name}'s inventory", name = name) }, 22.0, t.text));
+                let total: u64 = tabs.iter().map(|(a, c, _, n)| n.map(u64::from).or_else(|| ctx.state.inventories.get(&(owner, *a, *c)).map(|i| i.total as u64)).unwrap_or(0)).sum();
                 let games = tabs.iter().map(|x| x.0).collect::<HashSet<_>>().len();
-                ui.label(w::text(
-                    t!("{n} items in {games} games", n = total, games = games),
-                    13.0,
-                    t.text_dim,
-                ));
+                ui.label(w::text(t!("{n} items in {games} games", n = total, games = games), 13.0, t.text_dim));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if w::button(
-                    ui,
-                    &t,
-                    Some(icons::STOREFRONT),
-                    t!("Community Market"),
-                    w::Kind::Secondary,
-                    w::Size::Sm,
-                )
-                .on_hover_text(t!("Opens in your browser"))
-                .clicked()
-                {
+                if w::button(ui, &t, Some(icons::STOREFRONT), t!("Community Market"), w::Kind::Secondary, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked() {
                     let _ = open::that_detached("https://steamcommunity.com/market/");
                 }
                 if mine {
-                    if w::button(
-                        ui,
-                        &t,
-                        Some(icons::SWAP),
-                        t!("Trade offers"),
-                        w::Kind::Secondary,
-                        w::Size::Sm,
-                    )
-                    .on_hover_text(t!("Opens in your browser"))
-                    .clicked()
-                    {
-                        let _ = open::that_detached(format!(
-                            "https://steamcommunity.com/profiles/{owner}/tradeoffers/"
-                        ));
+                    if w::button(ui, &t, Some(icons::SWAP), t!("Trade offers"), w::Kind::Secondary, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked() {
+                        let _ = open::that_detached(format!("https://steamcommunity.com/profiles/{owner}/tradeoffers/"));
                     }
                 } else if ctx.state.friends.get(&owner) == Some(&Relationship::Friend)
-                    && w::button(
-                        ui,
-                        &t,
-                        Some(icons::SWAP),
-                        t!("Offer a trade"),
-                        w::Kind::Secondary,
-                        w::Size::Sm,
-                    )
-                    .on_hover_text(t!("Opens in your browser"))
-                    .clicked()
+                    && w::button(ui, &t, Some(icons::SWAP), t!("Offer a trade"), w::Kind::Secondary, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked()
                 {
                     let account = owner & 0xFFFF_FFFF;
-                    let _ = open::that_detached(format!(
-                        "https://steamcommunity.com/tradeoffer/new/?partner={account}"
-                    ));
+                    let _ = open::that_detached(format!("https://steamcommunity.com/tradeoffer/new/?partner={account}"));
                 }
-                if !mine
-                    && w::button(
-                        ui,
-                        &t,
-                        Some(icons::USER_CIRCLE),
-                        t!("Profile"),
-                        w::Kind::Ghost,
-                        w::Size::Sm,
-                    )
-                    .clicked()
-                {
+                if !mine && w::button(ui, &t, Some(icons::USER_CIRCLE), t!("Profile"), w::Kind::Ghost, w::Size::Sm).clicked() {
                     ctx.navigate("profile", Some(owner.to_string()));
                 }
             });
@@ -767,33 +562,13 @@ pub(crate) fn hex(c: Option<&str>) -> Option<Color32> {
     Some(Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
 }
 
-fn item_tile(
-    ui: &mut Ui,
-    t: &Theme,
-    item: &InventoryItem,
-    count: u64,
-    price: Option<String>,
-    size: f32,
-    selected: bool,
-) -> egui::Response {
+fn item_tile(ui: &mut Ui, t: &Theme, item: &InventoryItem, count: u64, price: Option<String>, size: f32, selected: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
-    let hover = ui
-        .ctx()
-        .animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
     let p = ui.painter();
-    let base = hex(item.background.as_deref())
-        .map(|c| w::mix(t.surface, c, 0.35))
-        .unwrap_or(t.surface);
-    let base = if selected {
-        w::mix(base, t.accent, 0.12)
-    } else {
-        base
-    };
-    p.rect_filled(
-        rect,
-        t.corner_small(),
-        w::mix(base, t.surface_hover, hover * 0.6),
-    );
+    let base = hex(item.background.as_deref()).map(|c| w::mix(t.surface, c, 0.35)).unwrap_or(t.surface);
+    let base = if selected { w::mix(base, t.accent, 0.12) } else { base };
+    p.rect_filled(rect, t.corner_small(), w::mix(base, t.surface_hover, hover * 0.6));
     // The picture fills the tile (above the rarity bar), sharp on high-DPI screens.
     let img = Rect::from_min_max(rect.min + vec2(5.0, 5.0), rect.max - vec2(5.0, 10.0));
     if !w::paint_contain(ui, img, &art::econ(&item.icon, 192), Align2::CENTER_CENTER) {
@@ -802,19 +577,12 @@ fn item_tile(
     let p = ui.painter();
     if let Some(c) = rarity_color(item) {
         // Inside the border, so the selection outline stays unbroken.
-        let bar = Rect::from_min_max(
-            pos2(rect.left() + 8.0, rect.bottom() - 6.0),
-            pos2(rect.right() - 8.0, rect.bottom() - 3.5),
-        );
+        let bar = Rect::from_min_max(pos2(rect.left() + 8.0, rect.bottom() - 6.0), pos2(rect.right() - 8.0, rect.bottom() - 3.5));
         p.rect_filled(bar, CornerRadius::same(2), c);
     }
     let badge = |text: String, top: bool| {
         let g = p.layout_no_wrap(text, w::font_bold(10.5), t.text);
-        let pos = if top {
-            pos2(rect.right() - g.size().x - 10.0, rect.top() + 4.0)
-        } else {
-            pos2(rect.left() + 4.0, rect.bottom() - g.size().y - 8.0)
-        };
+        let pos = if top { pos2(rect.right() - g.size().x - 10.0, rect.top() + 4.0) } else { pos2(rect.left() + 4.0, rect.bottom() - g.size().y - 8.0) };
         let r = Rect::from_min_size(pos, g.size() + vec2(6.0, 2.0));
         p.rect_filled(r, CornerRadius::same(3), Color32::from_black_alpha(170));
         p.galley(r.min + vec2(3.0, 1.0), g, t.text);
@@ -826,29 +594,16 @@ fn item_tile(
         badge(price, false);
     }
     if !item.tradable {
-        p.text(
-            pos2(rect.left() + 8.0, rect.top() + 10.0),
-            Align2::LEFT_CENTER,
-            icons::LOCK_SIMPLE,
-            w::font(11.0),
-            t.text_faint,
-        );
+        p.text(pos2(rect.left() + 8.0, rect.top() + 10.0), Align2::LEFT_CENTER, icons::LOCK_SIMPLE, w::font(11.0), t.text_faint);
     }
-    let stroke = if selected {
-        Stroke::new(2.0, t.accent)
-    } else {
-        Stroke::new(1.0, w::mix(t.border, t.text_faint, hover))
-    };
+    let stroke = if selected { Stroke::new(2.0, t.accent) } else { Stroke::new(1.0, w::mix(t.border, t.text_faint, hover)) };
     p.rect_stroke(rect, t.corner_small(), stroke, egui::StrokeKind::Inside);
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(&item.name)
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&item.name)
 }
 
 fn skeleton_grid(ui: &mut Ui, t: &Theme) {
     let tile = 96.0;
-    let cols = ((ui.available_width() + 8.0) / (tile + 8.0))
-        .floor()
-        .max(1.0) as usize;
+    let cols = ((ui.available_width() + 8.0) / (tile + 8.0)).floor().max(1.0) as usize;
     for _ in 0..3 {
         ui.horizontal(|ui| {
             for _ in 0..cols.min(10) {

@@ -7,27 +7,9 @@ use model::{ChatMessage, OwnedApp, Persona, PersonaState, Relationship};
 pub fn events(local: &local::LocalState) -> Vec<Event> {
     const BASE: u64 = 76561197960265728;
     let me = BASE + 1;
-    let app = |id, name: &str| OwnedApp {
-        app_id: id,
-        name: name.into(),
-        kind: "game".into(),
-        launch: vec![],
-        icon: None,
-        parent: None,
-        ..Default::default()
-    };
+    let app = |id, name: &str| OwnedApp { app_id: id, name: name.into(), kind: "game".into(), launch: vec![], icon: None, parent: None, ..Default::default() };
     let mut apps: Vec<OwnedApp> = local.games.iter().map(|g| app(g.app_id, &g.name)).collect();
-    for (id, name) in [
-        (440, "Team Fortress 2"),
-        (570, "Dota 2"),
-        (620, "Portal 2"),
-        (730, "Counter-Strike 2"),
-        (1145360, "Hades"),
-        (413150, "Stardew Valley"),
-        (292030, "The Witcher 3: Wild Hunt"),
-        (1203220, "永劫无间 NARAKA"),
-        (1938090, "コール オブ デューティ"),
-    ] {
+    for (id, name) in [(440, "Team Fortress 2"), (570, "Dota 2"), (620, "Portal 2"), (730, "Counter-Strike 2"), (1145360, "Hades"), (413150, "Stardew Valley"), (292030, "The Witcher 3: Wild Hunt"), (1203220, "永劫无间 NARAKA"), (1938090, "コール オブ デューティ")] {
         if !apps.iter().any(|a| a.app_id == id) {
             apps.push(app(id, name));
         }
@@ -41,35 +23,22 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
         ("Juniper", PersonaState::Offline, None),
         ("Marlow", PersonaState::Offline, None),
     ];
-    let personas: Vec<Persona> = std::iter::once(Persona {
-        steam_id: me,
-        name: "You".into(),
-        state: PersonaState::Online,
-        ..Default::default()
-    })
-    .chain(
-        friends
-            .iter()
-            .enumerate()
-            .map(|(i, (name, state, game))| Persona {
-                steam_id: BASE + 100 + i as u64,
-                name: (*name).into(),
-                state: *state,
-                game_app_id: *game,
-                last_logoff: Some(1_700_000_000),
-                // Nova is on a game server: shows "Join game" and "View server info".
-                server: (i == 1).then(|| "127.0.0.1:27015".to_string()),
-                rich_status: (i == 1).then(|| "Ranked · Dire 21 – 17 Radiant".to_string()),
-                nickname: (i == 2).then(|| "Pix".to_string()),
-                ..Default::default()
-            }),
-    )
-    .collect();
+    let personas: Vec<Persona> = std::iter::once(Persona { steam_id: me, name: "You".into(), state: PersonaState::Online, ..Default::default() })
+        .chain(friends.iter().enumerate().map(|(i, (name, state, game))| Persona {
+            steam_id: BASE + 100 + i as u64,
+            name: (*name).into(),
+            state: *state,
+            game_app_id: *game,
+            last_logoff: Some(1_700_000_000),
+            // Nova is on a game server: shows "Join game" and "View server info".
+            server: (i == 1).then(|| "127.0.0.1:27015".to_string()),
+            rich_status: (i == 1).then(|| "Ranked · Dire 21 – 17 Radiant".to_string()),
+            nickname: (i == 2).then(|| "Pix".to_string()),
+            ..Default::default()
+        }))
+        .collect();
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let ferris = BASE + 100;
     let chat = [
         (ferris, "hey, portal 2 co-op tonight?", 600),
@@ -77,35 +46,17 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
         (ferris, "nice. I'll send an invite around 8", 500),
     ];
     let mut events = vec![
-        Event::LoggedIn {
-            steam_id: me,
-            account: "demo".into(),
-        },
-        Event::AccountInfo {
-            persona_name: "You".into(),
-            country: "US".into(),
-        },
+        Event::LoggedIn { steam_id: me, account: "demo".into() },
+        Event::AccountInfo { persona_name: "You".into(), country: "US".into() },
         Event::Level(27),
         Event::Licenses { count: apps.len() },
         Event::Apps(apps),
-        Event::Friends(
-            (0..friends.len())
-                .map(|i| (BASE + 100 + i as u64, Relationship::Friend))
-                .collect(),
-        ),
+        Event::Friends((0..friends.len()).map(|i| (BASE + 100 + i as u64, Relationship::Friend)).collect()),
         Event::Personas(personas),
     ];
     events.push(Event::History {
         friend: ferris,
-        messages: chat
-            .iter()
-            .map(|(from, text, ago)| ChatMessage {
-                friend: ferris,
-                from: *from,
-                text: (*text).into(),
-                time: now - ago,
-            })
-            .collect(),
+        messages: chat.iter().map(|(from, text, ago)| ChatMessage { friend: ferris, from: *from, text: (*text).into(), time: now - ago }).collect(),
     });
     events.push(Event::Profile(model::ProfileInfo {
         steam_id: me,
@@ -116,17 +67,8 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
         member_since: Some(now - 9 * 31_536_000),
         ..Default::default()
     }));
-    events.push(Event::Wallet {
-        balance: 1234,
-        currency: 1,
-        pending: 250,
-    });
-    events.push(Event::Message(ChatMessage {
-        friend: BASE + 101,
-        from: BASE + 101,
-        text: "gg! one more?".into(),
-        time: now - 30,
-    }));
+    events.push(Event::Wallet { balance: 1234, currency: 1, pending: 250 });
+    events.push(Event::Message(ChatMessage { friend: BASE + 101, from: BASE + 101, text: "gg! one more?".into(), time: now - 30 }));
     events.extend(inventory(me, now));
     events.extend(crate::builtin::hub::demo::events());
     events
@@ -134,101 +76,18 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
 
 /// Sample inventory, market and support data (public Dota 2 items).
 fn inventory(me: u64, now: u64) -> Vec<Event> {
-    use model::{
-        InventoryApp, InventoryItem, MarketPrice, MyListing, MyListings, SupportMessage,
-        SupportTicket,
-    };
+    use model::{InventoryApp, InventoryItem, MarketPrice, MyListing, MyListings, SupportMessage, SupportTicket};
     const ITEMS: &[(&str, &str, &str, &str, u64, &str, &str)] = &[
-        (
-            "Arms of Desolation",
-            "Immortal arms",
-            "Immortal",
-            "Arms",
-            1138,
-            "Shadow Fiend",
-            "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGIyi3kajH-Xcws6uIkSR7FN78Mj1-FT0fhn0jZmv_DBW_M2qbbdibvHHDTLJlLZ3s7NvFyjqzE1z5znVm9uucHiWO1coCMF1RbRZsRW6l9H5d7S1tUgGsHE",
-        ),
-        (
-            "Hydrakan Latch",
-            "Immortal Latch",
-            "Immortal",
-            "Weapon",
-            289,
-            "Dragon Knight",
-            "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGIyi3kajH-XYwtiqenOO4UR0_4b61VXmVR750Zvl7ioU5-uqeq9sLs-fD3OTydF7v-VsQ2fll0wi6mrdnNipJC6ebg4nDZYkEeQKtBPsl9W1YuK2sQLc2NhAmCX2kGoXufdXeDr7",
-        ),
-        (
-            "The Strings of Suradan",
-            "Immortal Wearable",
-            "Immortal",
-            "Weapon",
-            563,
-            "Dark Willow",
-            "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGIyi3kajH_7bzM62PHWcql56-4PLuAm1EyL4k5vv7zZa4825baV9L_7cBmifxdEk4LM7cCC-mBI1pzyJpZj8IDvIMBhzDsciFuZY5ES-xoXhMenqtVTfiItEyy6viS4b6Cpv4roEBaF086GBkUifZmzryOWo",
-        ),
-        (
-            "Frosty the Sew-Man",
-            "Immortal Bundle",
-            "Immortal",
-            "Bundle",
-            2627,
-            "Pudge",
-            "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGIm52k-5XvHr0MmzMH6Z9hlz5ojn_lDxVA6jzsSzwjZU9uK7bKNobvPGCmSWxe0h5bI_Fny1lkUm42XVnIqgdX3CaAEnXpV4F7UOuhS7k9z5d7S1xv_hlhM",
-        ),
-        (
-            "Lumpo and Rupertus",
-            "Legendary Bundle",
-            "Legendary",
-            "Bundle",
-            2729,
-            "Ogre Magi",
-            "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGJGzyF-5RPPZ_NmtOm-o4Ftl4J66s1jiF0iizMLi_nsPt_esafA4c_PLCDbHw-sutbY9TH7gw08k622GysHpLyzhnw2XIg",
-        ),
-        (
-            "Jingle Fist Bundle",
-            "Immortal Bundle",
-            "Immortal",
-            "Bundle",
-            2664,
-            "Monkey King",
-            "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGIm52k-5XvHr0MmzMH6Z9hlz5ojn_lDxVA6jzsSzwjZO_PngP_w9dPWSDT7HxO8itrg-GS_lkUR_6jmDmdn7I3-UPQR1XJJzQu9YsQ74zIMcHg3psw",
-        ),
-        (
-            "Crownfall Treasure I",
-            "Mythical Treasure chest",
-            "Mythical",
-            "Treasure Chest",
-            175,
-            "",
-            "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGJG51EejH_XGzN2vM3qb6Wlm95Xx71jySiLljJPh7jdJ6rz7O6FsePbCCzKRwrpz6edvFi23wk0i6zvTzd76dXrEZgUpCZR0QOILrFDmxRCfiKj7",
-        ),
-        (
-            "Dead Reckoning Chest",
-            "Rare Treasure chest",
-            "Rare",
-            "Treasure Chest",
-            30,
-            "",
-            "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGJG51EejH-LGxsuyIGmS2llzy4Px613YUxjylZnu9CxcoaX8PadodKSQXT6UmLsi4uM5TXjlkR9ytm3Xmdz6di_CPAIjW5t5TO4U8k7vczduM-k",
-        ),
-        (
-            "Frostivus 2023 Treasure Chest",
-            "Rare Treasure chest",
-            "Rare",
-            "Treasure Chest",
-            19,
-            "",
-            "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGJG51EejH_DGzNm1PG2C9ml2_ILn_hfjEU2oncXjq3JZv6P4afZudKXAVjDIl-gm5uJrSnDhzU5z4mmBztmsbzvJOaPTTigK",
-        ),
-        (
-            "Hallowed Chest of the Diretide",
-            "Rare Treasure chest",
-            "Rare",
-            "Treasure Chest",
-            9,
-            "",
-            "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGJG51EejH-LGxsuyIGmS2lV98ZTg1V3uUxjll5Llr3Jk7OCvfKEjJvTDXzKSkL915bA8HC2ylk535WTcn9irJ3qWP1B0CZR5FuII50W7ksqnab2Wq9Ge1A",
-        ),
+        ("Arms of Desolation", "Immortal arms", "Immortal", "Arms", 1138, "Shadow Fiend", "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGIyi3kajH-Xcws6uIkSR7FN78Mj1-FT0fhn0jZmv_DBW_M2qbbdibvHHDTLJlLZ3s7NvFyjqzE1z5znVm9uucHiWO1coCMF1RbRZsRW6l9H5d7S1tUgGsHE"),
+        ("Hydrakan Latch", "Immortal Latch", "Immortal", "Weapon", 289, "Dragon Knight", "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGIyi3kajH-XYwtiqenOO4UR0_4b61VXmVR750Zvl7ioU5-uqeq9sLs-fD3OTydF7v-VsQ2fll0wi6mrdnNipJC6ebg4nDZYkEeQKtBPsl9W1YuK2sQLc2NhAmCX2kGoXufdXeDr7"),
+        ("The Strings of Suradan", "Immortal Wearable", "Immortal", "Weapon", 563, "Dark Willow", "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGIyi3kajH_7bzM62PHWcql56-4PLuAm1EyL4k5vv7zZa4825baV9L_7cBmifxdEk4LM7cCC-mBI1pzyJpZj8IDvIMBhzDsciFuZY5ES-xoXhMenqtVTfiItEyy6viS4b6Cpv4roEBaF086GBkUifZmzryOWo"),
+        ("Frosty the Sew-Man", "Immortal Bundle", "Immortal", "Bundle", 2627, "Pudge", "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGIm52k-5XvHr0MmzMH6Z9hlz5ojn_lDxVA6jzsSzwjZU9uK7bKNobvPGCmSWxe0h5bI_Fny1lkUm42XVnIqgdX3CaAEnXpV4F7UOuhS7k9z5d7S1xv_hlhM"),
+        ("Lumpo and Rupertus", "Legendary Bundle", "Legendary", "Bundle", 2729, "Ogre Magi", "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGJGzyF-5RPPZ_NmtOm-o4Ftl4J66s1jiF0iizMLi_nsPt_esafA4c_PLCDbHw-sutbY9TH7gw08k622GysHpLyzhnw2XIg"),
+        ("Jingle Fist Bundle", "Immortal Bundle", "Immortal", "Bundle", 2664, "Monkey King", "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGIm52k-5XvHr0MmzMH6Z9hlz5ojn_lDxVA6jzsSzwjZO_PngP_w9dPWSDT7HxO8itrg-GS_lkUR_6jmDmdn7I3-UPQR1XJJzQu9YsQ74zIMcHg3psw"),
+        ("Crownfall Treasure I", "Mythical Treasure chest", "Mythical", "Treasure Chest", 175, "", "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGJG51EejH_XGzN2vM3qb6Wlm95Xx71jySiLljJPh7jdJ6rz7O6FsePbCCzKRwrpz6edvFi23wk0i6zvTzd76dXrEZgUpCZR0QOILrFDmxRCfiKj7"),
+        ("Dead Reckoning Chest", "Rare Treasure chest", "Rare", "Treasure Chest", 30, "", "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGJG51EejH-LGxsuyIGmS2llzy4Px613YUxjylZnu9CxcoaX8PadodKSQXT6UmLsi4uM5TXjlkR9ytm3Xmdz6di_CPAIjW5t5TO4U8k7vczduM-k"),
+        ("Frostivus 2023 Treasure Chest", "Rare Treasure chest", "Rare", "Treasure Chest", 19, "", "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGJG51EejH_DGzNm1PG2C9ml2_ILn_hfjEU2oncXjq3JZv6P4afZudKXAVjDIl-gm5uJrSnDhzU5z4mmBztmsbzvJOaPTTigK"),
+        ("Hallowed Chest of the Diretide", "Rare Treasure chest", "Rare", "Treasure Chest", 9, "", "i0CoZ81Ui0m-9KwlBY1L_18myuGuq1wfhWSaZgMttydbPaERSR0Wqmu7LAocGJG51EejH-LGxsuyIGmS2lV98ZTg1V3uUxjll5Llr3Jk7OCvfKEjJvTDXzKSkL915bA8HC2ylk535WTcn9irJ3qWP1B0CZR5FuII50W7ksqnab2Wq9Ge1A"),
     ];
     let rarity_color = |r: &str| match r {
         "Immortal" => "E4AE39",
@@ -239,14 +98,7 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
     let mut items = Vec::new();
     let mut prices = Vec::new();
     for (i, (name, kind, rarity, slot, cents, hero, icon)) in ITEMS.iter().enumerate() {
-        let mut tags = vec![
-            (
-                "Rarity".to_string(),
-                rarity.to_string(),
-                Some(rarity_color(rarity).to_string()),
-            ),
-            ("Type".to_string(), slot.to_string(), None),
-        ];
+        let mut tags = vec![("Rarity".to_string(), rarity.to_string(), Some(rarity_color(rarity).to_string())), ("Type".to_string(), slot.to_string(), None)];
         if !hero.is_empty() {
             tags.push(("Hero".to_string(), hero.to_string(), None));
         }
@@ -263,17 +115,10 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
                 tradable: i != 2,
                 marketable: i != 2,
                 market_hash_name: name.to_string(),
-                description: vec![(
-                    "Used By: ".to_string() + if hero.is_empty() { "All heroes" } else { hero },
-                    None,
-                )],
+                description: vec![("Used By: ".to_string() + if hero.is_empty() { "All heroes" } else { hero }, None)],
                 tags: tags.clone(),
                 context_id: 2,
-                owner_notes: if i == 2 {
-                    vec!["Tradable/Marketable After Nov 14, 2026 (8:00:00) GMT".into()]
-                } else {
-                    vec![]
-                },
+                owner_notes: if i == 2 { vec!["Tradable/Marketable After Nov 14, 2026 (8:00:00) GMT".into()] } else { vec![] },
                 trade_hold_days: 7,
                 market_hold_days: 7,
                 market_fee: Some(0.1),
@@ -284,11 +129,7 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
         let history = (0..60u64)
             .map(|d| {
                 let f = 1.0 + 0.18 * ((d as f64) / 6.0).sin() + 0.002 * d as f64;
-                (
-                    now - (60 - d) * 86_400,
-                    *cents as f64 / 100.0 * f,
-                    5 + (d % 9) as u32,
-                )
+                (now - (60 - d) * 86_400, *cents as f64 / 100.0 * f, 5 + (d % 9) as u32)
             })
             .collect();
         prices.push(Event::MarketPrice {
@@ -305,14 +146,7 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
                 fee_rules: None,
                 currency: 1,
                 sell_ladder: (0..5).map(|k| (cents + k * 2, 3 + k * 4)).collect(),
-                buy_ladder: (0..5)
-                    .map(|k| {
-                        (
-                            ((*cents as f64 * 0.86) as u64).saturating_sub(k * 2).max(1),
-                            10 + k * 7,
-                        )
-                    })
-                    .collect(),
+                buy_ladder: (0..5).map(|k| (((*cents as f64 * 0.86) as u64).saturating_sub(k * 2).max(1), 10 + k * 7)).collect(),
                 history,
             }),
         });

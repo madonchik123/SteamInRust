@@ -43,16 +43,8 @@ fn main() -> eframe::Result {
             .with_inner_size([720.0, 470.0])
             // Our own title bar (see chrome.rs) instead of the Windows one.
             .with_decorations(false)
-            .with_icon(std::sync::Arc::new(egui::IconData {
-                rgba: ui::brand::icon_rgba(256),
-                width: 256,
-                height: 256,
-            })),
+            .with_icon(std::sync::Arc::new(egui::IconData { rgba: ui::brand::icon_rgba(256), width: 256, height: 256 })),
         ..Default::default()
     };
-    eframe::run_native(
-        "SteamInRust",
-        options,
-        Box::new(move |cc| Ok(Box::new(app::SteamApp::new(cc, link)))),
-    )
+    eframe::run_native("SteamInRust", options, Box::new(move |cc| Ok(Box::new(app::SteamApp::new(cc, link)))))
 }
