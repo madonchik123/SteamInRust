@@ -19,6 +19,7 @@ pub mod cloud;
 pub mod regions;
 pub mod a2s;
 pub mod game_ugc;
+pub mod game_inventory;
 mod notify;
 pub mod offline;
 pub mod support;

@@ -93,6 +93,52 @@ pub enum Request {
     UgcGetVote { id: u64 },
     /// Download (or update) an item into the game's Workshop folder.
     UgcDownload { id: u64 },
+    /// Read or change the player's items for this game (ISteamInventory):
+    /// answered with [`Reply::Inventory`].
+    Inventory(InventoryOp),
+    /// The game's item definitions: answered with [`Reply::ItemDefs`].
+    ItemDefs,
+    /// Promo items this player can still get.
+    PromoItems,
+}
+
+/// What ISteamInventory asked for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum InventoryOp {
+    All,
+    ByIds(Vec<u64>),
+    Consume { item: u64, quantity: u32 },
+    /// Destroy (item, quantity) to make one of `generate`.
+    Exchange { generate: i32, destroy: Vec<(u64, u32)> },
+    /// Move `quantity` to `dest` (another stack), or split into a new stack (dest 0).
+    Transfer { source: u64, quantity: u32, dest: u64 },
+    /// A playtime drop from this drop list.
+    Drop { def: i32 },
+    /// Grant these promo items (empty: every eligible one).
+    Promo(Vec<i32>),
+    /// Developers only: make items.
+    Generate(Vec<(i32, u32)>),
+    /// Dynamic property changes: (item, name, value; None removes it).
+    Modify(Vec<(u64, String, Option<PropValue>)>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PropValue {
+    Str(String),
+    Bool(bool),
+    Int(i64),
+    Float(f32),
+}
+
+/// One item as SteamItemDetails_t plus its JSON properties.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InvItem {
+    pub id: u64,
+    pub def: i32,
+    pub quantity: u16,
+    /// ESteamItemFlags: 1 no trade, 0x100 removed, 0x200 consumed.
+    pub flags: u16,
+    pub props: Vec<(String, String)>,
 }
 
 /// What ISteamUGC's query builder collected.
@@ -247,6 +293,10 @@ pub enum Reply {
     UgcResults { eresult: i32, total: u32, items: Vec<UgcItem>, cursor: String },
     UgcIds { ids: Vec<u64> },
     UgcVote { eresult: i32, up: bool, down: bool, skipped: bool },
+    Inventory { eresult: i32, items: Vec<InvItem>, ticket: Vec<u8> },
+    /// Item definitions: (id, properties).
+    ItemDefs { defs: Vec<(i32, Vec<(String, String)>)> },
+    PromoItems { eresult: i32, defs: Vec<i32> },
     /// EResult, the item's folder, size on disk and last update time.
     UgcDownloaded { eresult: i32, folder: String, size: u64, updated: u32 },
     LbFound { found: bool, id: i32, count: i32, sort: i32, display: i32, name: String },

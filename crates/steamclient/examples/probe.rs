@@ -398,11 +398,86 @@ fn ugc_test(dll: &str) -> ! {
     std::process::exit(if result == 1 && r == Some(1) && ok { 0 } else { 1 });
 }
 
+/// `--direct <steamclient.dll> --test inventory`: the player's items and the
+/// game's item definitions through our DLL (read-only).
+fn inventory_test(dll: &str) -> ! {
+    let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {dll}");
+    let api = Api(module);
+    let create: extern "C" fn(*const c_char, *mut i32) -> usize = unsafe { std::mem::transmute(api.f("CreateInterface").unwrap()) };
+    let client = create(c"SteamClient021".as_ptr(), std::ptr::null_mut());
+    let pipe: extern "C" fn(usize) -> i32 = unsafe { std::mem::transmute(slot(client, 0)) };
+    let pipe = pipe(client);
+    let connect: extern "C" fn(usize, i32) -> i32 = unsafe { std::mem::transmute(slot(client, 2)) };
+    let user = connect(client, pipe);
+    let generic: extern "C" fn(usize, i32, i32, *const c_char) -> usize = unsafe { std::mem::transmute(slot(client, 12)) };
+    const V: &str = "STEAMINVENTORY_INTERFACE_V003";
+    let inv = generic(client, user, pipe, c"STEAMINVENTORY_INTERFACE_V003".as_ptr());
+    assert!(inv != 0);
+    let m = |name: &str| slot(inv, steamclient::slot_of(V, name).unwrap_or_else(|| panic!("{name}")));
+    let get_callback: extern "C" fn(i32, *mut CallbackMsg) -> bool = unsafe { std::mem::transmute(api.f("Steam_BGetCallback").unwrap()) };
+    let free_callback: extern "C" fn(i32) -> bool = unsafe { std::mem::transmute(api.f("Steam_FreeLastCallback").unwrap()) };
+    let wait = |want: i32| -> Option<Vec<u8>> {
+        let until = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < until {
+            let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
+            while get_callback(pipe, &mut msg) {
+                let b = unsafe { std::slice::from_raw_parts(msg.param, msg.size as usize) }.to_vec();
+                free_callback(pipe);
+                println!("  callback {}", msg.callback);
+                if msg.callback == want {
+                    return Some(b);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    };
+    let all: extern "C" fn(usize, *mut i32) -> bool = unsafe { std::mem::transmute(m("GetAllItems")) };
+    let status: extern "C" fn(usize, i32) -> i32 = unsafe { std::mem::transmute(m("GetResultStatus")) };
+    let items: extern "C" fn(usize, i32, *mut u8, *mut u32) -> bool = unsafe { std::mem::transmute(m("GetResultItems")) };
+    let mut h = 0i32;
+    println!("GetAllItems = {} (handle {h})", all(inv, &mut h));
+    wait(4700);
+    let mut n = 0u32;
+    items(inv, h, std::ptr::null_mut(), &mut n);
+    let mut buf = vec![0u8; n as usize * 16];
+    items(inv, h, buf.as_mut_ptr(), &mut n);
+    println!("result {h}: status {}, {n} item(s)", status(inv, h));
+    for c in buf.chunks(16).take(10) {
+        println!("  item {} def {} x{}", u64::from_le_bytes(c[0..8].try_into().unwrap()), i32::from_le_bytes(c[8..12].try_into().unwrap()), u16::from_le_bytes(c[12..14].try_into().unwrap()));
+    }
+    let ids: extern "C" fn(usize, *mut i32, *mut u32) -> bool = unsafe { std::mem::transmute(m("GetItemDefinitionIDs")) };
+    let prop: extern "C" fn(usize, i32, *const c_char, *mut c_char, *mut u32) -> bool = unsafe { std::mem::transmute(m("GetItemDefinitionProperty")) };
+    let mut count = 0u32;
+    if !ids(inv, std::ptr::null_mut(), &mut count) {
+        wait(4702);
+        ids(inv, std::ptr::null_mut(), &mut count);
+    }
+    let mut defs = vec![0i32; count as usize];
+    ids(inv, defs.as_mut_ptr(), &mut count);
+    println!("{count} item definition(s)");
+    for d in defs.iter().take(5) {
+        let mut name = [0 as c_char; 256];
+        let mut size = 256u32;
+        prop(inv, *d, c"name".as_ptr(), name.as_mut_ptr(), &mut size);
+        let mut keys = [0 as c_char; 1024];
+        let mut ksize = 1024u32;
+        prop(inv, *d, std::ptr::null(), keys.as_mut_ptr(), &mut ksize);
+        println!("  def {d}: {:?} [{}]", s(name.as_ptr()), s(keys.as_ptr()));
+    }
+    std::process::exit(if status(inv, h) == 1 && count > 0 { 0 } else { 1 });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
     if let (Some(dll), Some("ugc")) = (arg("--direct"), arg("--test").as_deref()) {
         ugc_test(&dll);
+    }
+    if let (Some(dll), Some("inventory")) = (arg("--direct"), arg("--test").as_deref()) {
+        inventory_test(&dll);
     }
     if let Some(dll) = arg("--direct") {
         direct(&dll, arg("--role").as_deref() == Some("host"), arg("--peer").and_then(|p| p.parse().ok()).unwrap_or(0));

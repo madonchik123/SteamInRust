@@ -2281,6 +2281,21 @@ impl Online {
                     let _ = reply.send(crate::game_ugc::get_vote(&conn, id).await);
                 });
             }
+            Request::Inventory(op) => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_inventory::run(&conn, app_id, me, op).await);
+                });
+            }
+            Request::ItemDefs => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_inventory::item_defs(&conn, app_id).await);
+                });
+            }
+            Request::PromoItems => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::game_inventory::promo_items(&conn, app_id, me).await);
+                });
+            }
             Request::UgcDownload { id } => {
                 let dir = self.launched_dirs.get(&app_id).cloned().unwrap_or_default();
                 let cell = self.download_cell.unwrap_or(self.cell_id);

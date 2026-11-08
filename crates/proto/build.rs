@@ -21,6 +21,7 @@ const FILES: &[&str] = &[
     "steammessages_contentsystem.steamclient.proto",
     "steammessages_econ.steamclient.proto",
     "steammessages_cloud.steamclient.proto",
+    "steammessages_inventory.steamclient.proto",
 ];
 
 /// Web UI services (cart, wishlist, store query). Separate module because

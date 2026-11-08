@@ -38,6 +38,7 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
         ("ISteamUtils", "GetImageRGBA") => f!(image_rgba),
         ("ISteamHTTP", m) => http_imp(m),
         ("ISteamUGC", m) => crate::ugc::imp(m),
+        ("ISteamInventory", m) => crate::inventory::imp(m),
         _ => None,
     }
 }
