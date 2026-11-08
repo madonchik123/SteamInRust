@@ -128,6 +128,27 @@ async fn app_info(
     Ok(out)
 }
 
+/// One app's whole PICS app info (the `appinfo` object), with its access token.
+pub async fn raw_app_info(conn: &Connection, id: AppId) -> Option<vdf::Obj> {
+    let tokens = app_tokens(conn, &[id]).await.unwrap_or_default();
+    let req = CMsgClientPicsProductInfoRequest {
+        apps: vec![c_msg_client_pics_product_info_request::AppInfo { appid: Some(id), access_token: tokens.get(&id).copied(), only_public_obsolete: None }],
+        ..Default::default()
+    };
+    let http = reqwest::Client::new();
+    for resp in product_info(conn, &req).await.ok()? {
+        let host = resp.http_host.clone().filter(|h| !h.is_empty());
+        for app in resp.apps.into_iter().filter(|a| a.appid() == id) {
+            let text = match app.buffer.as_deref().filter(|b| !b.is_empty()) {
+                Some(buf) => String::from_utf8_lossy(buf).into_owned(),
+                None => fetch_http(&http, host.as_deref()?, id, app.sha.as_deref()?).await?,
+            };
+            return vdf::parse(text.trim_end_matches('\0')).ok()?.obj("appinfo").cloned();
+        }
+    }
+    None
+}
+
 /// Names of any apps, from their public info (no ownership needed).
 pub async fn names(conn: &Connection, ids: &[AppId]) -> Result<Vec<(AppId, String)>> {
     let apps = app_info(conn, ids, &HashMap::new()).await?;

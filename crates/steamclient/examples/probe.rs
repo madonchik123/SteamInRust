@@ -591,9 +591,37 @@ fn servers_test(dll: &str, app: u32) -> ! {
     std::process::exit(if ok { 0 } else { 1 });
 }
 
+/// `--direct <steamclient.dll> --test input`: Steam Input bindings and pads.
+fn input_test(dll: &str) -> ! {
+    let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {dll}");
+    let api = Api(module);
+    let create: extern "C" fn(*const c_char, *mut i32) -> usize = unsafe { std::mem::transmute(api.f("CreateInterface").unwrap()) };
+    let client = create(c"SteamClient021".as_ptr(), std::ptr::null_mut());
+    let pipe: extern "C" fn(usize) -> i32 = unsafe { std::mem::transmute(slot(client, 0)) };
+    let pipe = pipe(client);
+    let connect: extern "C" fn(usize, i32) -> i32 = unsafe { std::mem::transmute(slot(client, 2)) };
+    let user = connect(client, pipe);
+    let generic: extern "C" fn(usize, i32, i32, *const c_char) -> usize = unsafe { std::mem::transmute(slot(client, 12)) };
+    const V: &str = "SteamInput006";
+    let input = generic(client, user, pipe, c"SteamInput006".as_ptr());
+    let m = |name: &str| slot(input, steamclient::slot_of(V, name).unwrap_or_else(|| panic!("{name}")));
+    let init: extern "C" fn(usize, bool) -> bool = unsafe { std::mem::transmute(m("Init")) };
+    let connected: extern "C" fn(usize, *mut u64) -> i32 = unsafe { std::mem::transmute(m("GetConnectedControllers")) };
+    println!("Init = {}", init(input, false));
+    std::thread::sleep(Duration::from_secs(8));
+    let mut handles = [0u64; 16];
+    println!("controllers: {}", connected(input, handles.as_mut_ptr()));
+    std::process::exit(0);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+    if let (Some(dll), Some("input")) = (arg("--direct"), arg("--test").as_deref()) {
+        input_test(&dll);
+    }
     if let (Some(dll), Some("servers")) = (arg("--direct"), arg("--test").as_deref()) {
         servers_test(&dll, arg("--app").and_then(|a| a.parse().ok()).unwrap_or(440));
     }

@@ -103,6 +103,8 @@ pub enum Request {
     /// Game servers from Steam's master server: `filter` in Steam's
     /// "\key\value" form. Answered with [`Reply::Servers`].
     ServerList { filter: String, max: u32 },
+    /// Steam Input bindings for an Xbox-style pad: answered with [`Reply::InputConfig`].
+    InputConfig,
 }
 
 /// A game server as Steam's server browser lists it.
@@ -323,6 +325,8 @@ pub enum Reply {
     ItemDefs { defs: Vec<(i32, Vec<(String, String)>)> },
     PromoItems { eresult: i32, defs: Vec<i32> },
     Servers { servers: Vec<GameServer> },
+    /// A controller_mappings VDF (empty: none found) and where it came from.
+    InputConfig { bindings: String, source: String },
     /// EResult, the item's folder, size on disk and last update time.
     UgcDownloaded { eresult: i32, folder: String, size: u64, updated: u32 },
     LbFound { found: bool, id: i32, count: i32, sort: i32, display: i32, name: String },

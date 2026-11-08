@@ -2291,6 +2291,18 @@ impl Online {
                     let _ = reply.send(crate::game_inventory::item_defs(&conn, app_id).await);
                 });
             }
+            Request::InputConfig => {
+                // Steam's own folder holds the player's Steam Input choices.
+                let root = self
+                    .steam_root
+                    .clone()
+                    .or_else(|| launch::reg_string("Software\\Valve\\Steam", "SteamPath").map(|p| std::path::PathBuf::from(p.replace('/', "\\"))))
+                    .unwrap_or_default();
+                let dir = self.launched_dirs.get(&app_id).cloned().unwrap_or_default();
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::input_config::config(&conn, app_id, me, &root, &dir).await);
+                });
+            }
             Request::ServerList { filter, max } => {
                 tokio::spawn(async move {
                     let _ = reply.send(crate::game_servers::list(&conn, app_id, &filter, max).await);

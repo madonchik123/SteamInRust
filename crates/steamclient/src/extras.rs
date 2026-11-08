@@ -41,6 +41,7 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
         ("ISteamInventory", m) => crate::inventory::imp(m),
         ("ISteamMatchmakingServers", m) => crate::servers::imp(m),
         ("ISteamScreenshots", m) => crate::screenshots::imp(m),
+        ("ISteamInput" | "ISteamController", m) => crate::input::imp(m),
         _ => None,
     }
 }

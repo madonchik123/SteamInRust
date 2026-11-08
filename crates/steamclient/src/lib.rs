@@ -29,6 +29,7 @@ pub fn slot_of(version: &str, method: &str) -> Option<usize> {
 
 mod extras;
 mod ifaces;
+mod input;
 mod inventory;
 mod ipc;
 mod lobby;

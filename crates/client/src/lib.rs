@@ -21,6 +21,7 @@ pub mod a2s;
 pub mod game_ugc;
 pub mod game_inventory;
 pub mod game_servers;
+mod input_config;
 mod notify;
 pub mod offline;
 pub mod support;
