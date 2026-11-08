@@ -326,6 +326,10 @@ struct Online {
     active_req: Option<crate::download::InstallRequest>,
     /// Unfinished downloads from the last run were put back in the queue.
     downloads_restored: bool,
+    /// The library came from Steam this session (not just the saved copy
+    /// shown at start-up). Installs wait for it: the saved depot info may be
+    /// out of date.
+    apps_fresh: bool,
     limit_kbps: u64,
     concurrency: u32,
     refresh_token: String,
@@ -445,6 +449,7 @@ async fn online(
         queue: Default::default(),
         active_req: None,
         downloads_restored: false,
+        apps_fresh: false,
         active: None,
         limit_kbps: 0,
         concurrency: 16,
@@ -493,6 +498,13 @@ async fn online(
     } else {
         sink(Event::Link(Link::Online));
         st.connected(sink);
+        // Show the library saved at the last sign-in right away, like Steam;
+        // the fresh one from Steam replaces it in a few seconds.
+        if let Some(cache) = offline::load_account(me).filter(|c| !c.apps.is_empty()) {
+            tracing::info!("showing the saved library ({} apps) while Steam sends the current one", cache.apps.len());
+            st.apps = cache.apps.iter().map(|a| (a.app_id, a.clone())).collect();
+            sink(Event::Apps(cache.apps));
+        }
         // Play time and stats from an earlier offline run go to Steam now.
         st.flush_offline(sink);
     }
@@ -858,6 +870,11 @@ async fn online(
             Some(apps) = apps_rx.recv() => {
                 st.apps = apps.iter().map(|a| (a.app_id, a.clone())).collect();
                 sink(Event::Apps(apps));
+                // Installs queued while the saved library was showing go now.
+                if !st.apps_fresh {
+                    st.apps_fresh = true;
+                    st.pump(sink, &dl_tx);
+                }
                 // Downloads that were running or queued when the app closed
                 // carry on (files already on disk are checked and kept).
                 if !st.downloads_restored {
@@ -1347,7 +1364,7 @@ impl Online {
     fn pump(&mut self, sink: &Sink, done: &mpsc::UnboundedSender<(AppId, Result<String, String>)>) {
         // The queue is reported after the next game leaves it, so the one
         // that's downloading isn't also listed as "queued".
-        if self.active.is_some() || self.link != Link::Online {
+        if self.active.is_some() || self.link != Link::Online || !self.apps_fresh {
             sink(Event::DownloadQueue(self.queue.iter().map(|q| q.app_id).collect()));
             return;
         }
