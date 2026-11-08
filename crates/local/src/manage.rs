@@ -192,6 +192,12 @@ pub fn verify(steam_root: &Path, game: &InstalledGame, progress: &Progress) -> V
 /// Delete a game's files and its app manifest. Refuses anything that isn't
 /// a folder inside `<library>/steamapps/common`.
 pub fn uninstall(game: &InstalledGame) -> Result<(), String> {
+    uninstall_with(game, &Progress::default())
+}
+
+/// Uninstall file by file, counting deleted bytes in `progress` (run it
+/// off the UI thread: a big game takes a while).
+pub fn uninstall_with(game: &InstalledGame, progress: &Progress) -> Result<(), String> {
     let common = game.library.join("steamapps").join("common");
     let dir = &game.install_dir;
     let inside = dir.starts_with(&common) && dir != &common && dir.parent() == Some(common.as_path());
@@ -199,6 +205,33 @@ pub fn uninstall(game: &InstalledGame) -> Result<(), String> {
         return Err(format!("refusing to delete {}: not a game folder in {}", dir.display(), common.display()));
     }
     if dir.exists() {
+        // List the files first, so the total is known before deleting.
+        let mut files = Vec::new();
+        let mut stack = vec![dir.clone()];
+        while let Some(d) = stack.pop() {
+            let Ok(entries) = fs::read_dir(&d) else { continue };
+            for e in entries.flatten() {
+                match e.file_type() {
+                    Ok(ft) if ft.is_dir() => stack.push(e.path()),
+                    Ok(_) => files.push((e.path(), e.metadata().map(|m| m.len()).unwrap_or(0))),
+                    Err(_) => {}
+                }
+            }
+        }
+        progress.total_bytes.store(files.iter().map(|f| f.1).sum::<u64>().max(1), Ordering::Relaxed);
+        for (path, size) in files {
+            if fs::remove_file(&path).is_err() {
+                // Read-only files: clear the flag and try again.
+                if let Ok(m) = fs::metadata(&path) {
+                    let mut perms = m.permissions();
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    perms.set_readonly(false);
+                    let _ = fs::set_permissions(&path, perms);
+                }
+                let _ = fs::remove_file(&path);
+            }
+            progress.done_bytes.fetch_add(size, Ordering::Relaxed);
+        }
         fs::remove_dir_all(dir).map_err(|e| format!("could not delete {}: {e}", dir.display()))?;
     }
     let manifest = manifest_file(game);
