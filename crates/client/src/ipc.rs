@@ -937,6 +937,253 @@ pub fn game_event(p: &net::Packet) -> Option<(AppId, GameEvent)> {
     })
 }
 
+// ------------------------------------------------------- leaderboards
+
+/// Steam's leaderboard messages (steammessages_clientserver_lbs.proto),
+/// written out here because that .proto isn't vendored.
+mod lbs {
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct FindOrCreate {
+        #[prost(uint32, optional, tag = "1")]
+        pub app_id: Option<u32>,
+        #[prost(int32, optional, tag = "2")]
+        pub leaderboard_sort_method: Option<i32>,
+        #[prost(int32, optional, tag = "3")]
+        pub leaderboard_display_type: Option<i32>,
+        #[prost(bool, optional, tag = "4")]
+        pub create_if_not_found: Option<bool>,
+        #[prost(string, optional, tag = "5")]
+        pub leaderboard_name: Option<String>,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct FindOrCreateResponse {
+        #[prost(int32, optional, tag = "1")]
+        pub eresult: Option<i32>,
+        #[prost(int32, optional, tag = "2")]
+        pub leaderboard_id: Option<i32>,
+        #[prost(int32, optional, tag = "3")]
+        pub leaderboard_entry_count: Option<i32>,
+        #[prost(int32, optional, tag = "4")]
+        pub leaderboard_sort_method: Option<i32>,
+        #[prost(int32, optional, tag = "5")]
+        pub leaderboard_display_type: Option<i32>,
+        #[prost(string, optional, tag = "6")]
+        pub leaderboard_name: Option<String>,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct GetEntries {
+        #[prost(int32, optional, tag = "1")]
+        pub app_id: Option<i32>,
+        #[prost(int32, optional, tag = "2")]
+        pub leaderboard_id: Option<i32>,
+        #[prost(int32, optional, tag = "3")]
+        pub range_start: Option<i32>,
+        #[prost(int32, optional, tag = "4")]
+        pub range_end: Option<i32>,
+        #[prost(int32, optional, tag = "5")]
+        pub leaderboard_data_request: Option<i32>,
+        #[prost(fixed64, repeated, packed = "false", tag = "6")]
+        pub steamids: Vec<u64>,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct Entry {
+        #[prost(fixed64, optional, tag = "1")]
+        pub steam_id_user: Option<u64>,
+        #[prost(int32, optional, tag = "2")]
+        pub global_rank: Option<i32>,
+        #[prost(int32, optional, tag = "3")]
+        pub score: Option<i32>,
+        #[prost(bytes = "vec", optional, tag = "4")]
+        pub details: Option<Vec<u8>>,
+        #[prost(fixed64, optional, tag = "5")]
+        pub ugc_id: Option<u64>,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct GetEntriesResponse {
+        #[prost(int32, optional, tag = "1")]
+        pub eresult: Option<i32>,
+        #[prost(int32, optional, tag = "2")]
+        pub leaderboard_entry_count: Option<i32>,
+        #[prost(message, repeated, tag = "3")]
+        pub entries: Vec<Entry>,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct SetScore {
+        #[prost(uint32, optional, tag = "1")]
+        pub app_id: Option<u32>,
+        #[prost(int32, optional, tag = "2")]
+        pub leaderboard_id: Option<i32>,
+        #[prost(int32, optional, tag = "3")]
+        pub score: Option<i32>,
+        #[prost(bytes = "vec", optional, tag = "4")]
+        pub details: Option<Vec<u8>>,
+        #[prost(int32, optional, tag = "5")]
+        pub upload_score_method: Option<i32>,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct SetScoreResponse {
+        #[prost(int32, optional, tag = "1")]
+        pub eresult: Option<i32>,
+        #[prost(int32, optional, tag = "2")]
+        pub leaderboard_entry_count: Option<i32>,
+        #[prost(bool, optional, tag = "3")]
+        pub score_changed: Option<bool>,
+        #[prost(int32, optional, tag = "4")]
+        pub global_rank_previous: Option<i32>,
+        #[prost(int32, optional, tag = "5")]
+        pub global_rank_new: Option<i32>,
+    }
+}
+
+const EMSG_LBS_SET_SCORE: u32 = 5414;
+const EMSG_LBS_FIND_OR_CREATE: u32 = 5416;
+const EMSG_LBS_GET_ENTRIES: u32 = 5418;
+
+pub async fn lb_find(conn: &Connection, app_id: AppId, name: &str, create: bool, sort: i32, display: i32) -> Reply {
+    let req = lbs::FindOrCreate {
+        app_id: Some(app_id),
+        leaderboard_sort_method: Some(sort),
+        leaderboard_display_type: Some(display),
+        create_if_not_found: Some(create),
+        leaderboard_name: Some(name.to_string()),
+    };
+    match mms_request(conn, app_id, EMSG_LBS_FIND_OR_CREATE, &req).await.and_then(|p| p.body::<lbs::FindOrCreateResponse>()) {
+        Ok(r) if r.eresult.unwrap_or(2) == 1 && r.leaderboard_id.unwrap_or(0) != 0 => Reply::LbFound {
+            found: true,
+            id: r.leaderboard_id(),
+            count: r.leaderboard_entry_count(),
+            sort: r.leaderboard_sort_method(),
+            display: r.leaderboard_display_type(),
+            name: r.leaderboard_name.unwrap_or_else(|| name.to_string()),
+        },
+        other => {
+            tracing::info!("leaderboard {name}: {other:?}");
+            Reply::LbFound { found: false, id: 0, count: 0, sort: 0, display: 0, name: name.to_string() }
+        }
+    }
+}
+
+/// Leaderboard details travel as little-endian int32s.
+fn details_bytes(d: &[i32]) -> Vec<u8> {
+    d.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+fn details_ints(b: &[u8]) -> Vec<i32> {
+    b.chunks_exact(4).map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+}
+
+pub async fn lb_entries(conn: &Connection, app_id: AppId, lb: i32, request: i32, start: i32, end: i32, users: &[u64]) -> Reply {
+    let req = lbs::GetEntries {
+        app_id: Some(app_id as i32),
+        leaderboard_id: Some(lb),
+        range_start: Some(start),
+        range_end: Some(end),
+        leaderboard_data_request: Some(request),
+        steamids: users.to_vec(),
+    };
+    match mms_request(conn, app_id, EMSG_LBS_GET_ENTRIES, &req).await.and_then(|p| p.body::<lbs::GetEntriesResponse>()) {
+        Ok(r) if r.eresult.unwrap_or(2) == 1 => Reply::LbEntries {
+            total: r.leaderboard_entry_count(),
+            entries: r
+                .entries
+                .iter()
+                .map(|e| protocol::LbEntry {
+                    steam_id: e.steam_id_user(),
+                    rank: e.global_rank(),
+                    score: e.score(),
+                    details: details_ints(e.details()),
+                    ugc: e.ugc_id.unwrap_or(u64::MAX),
+                })
+                .collect(),
+        },
+        other => {
+            tracing::info!("leaderboard {lb} entries: {other:?}");
+            Reply::LbEntries { total: 0, entries: Vec::new() }
+        }
+    }
+}
+
+pub async fn lb_upload(conn: &Connection, app_id: AppId, lb: i32, method: i32, score: i32, details: &[i32]) -> Reply {
+    let req = lbs::SetScore { app_id: Some(app_id), leaderboard_id: Some(lb), score: Some(score), details: Some(details_bytes(details)), upload_score_method: Some(method) };
+    match mms_request(conn, app_id, EMSG_LBS_SET_SCORE, &req).await.and_then(|p| p.body::<lbs::SetScoreResponse>()) {
+        Ok(r) => Reply::LbUploaded { ok: r.eresult.unwrap_or(2) == 1, changed: r.score_changed(), rank_new: r.global_rank_new(), rank_prev: r.global_rank_previous() },
+        Err(e) => {
+            tracing::info!("leaderboard {lb} upload: {e}");
+            Reply::LbUploaded { ok: false, changed: false, rank_new: 0, rank_prev: 0 }
+        }
+    }
+}
+
+/// Percent of players with each achievement (API name).
+pub async fn global_percentages(conn: &Connection, app_id: AppId) -> Vec<(String, f32)> {
+    let req = proto::CPlayerGetGameAchievementsRequest { appid: Some(app_id), language: Some("english".into()), hash_only: Some(false) };
+    match conn.call::<_, proto::CPlayerGetGameAchievementsResponse>("Player.GetGameAchievements#1", &req).await {
+        Ok(r) => r.achievements.iter().map(|a| (a.internal_name().to_string(), a.player_percent_unlocked().parse().unwrap_or(0.0))).collect(),
+        Err(e) => {
+            tracing::info!("achievement percentages for {app_id}: {e}");
+            Vec::new()
+        }
+    }
+}
+
+fn http() -> &'static reqwest::Client {
+    static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    HTTP.get_or_init(|| reqwest::Client::builder().user_agent("Valve/Steam HTTP Client 1.0").build().unwrap_or_default())
+}
+
+/// A player's avatar, decoded to RGBA. `hash`: the avatar hash Steam sends
+/// with persona data. `size` 0/1/2 = 32/64/184 pixels.
+pub async fn avatar(hash: &str, size: u8) -> Option<(u32, u32, Vec<u8>)> {
+    let suffix = match size {
+        0 => "",
+        1 => "_medium",
+        _ => "_full",
+    };
+    let url = format!("https://avatars.steamstatic.com/{hash}{suffix}.jpg");
+    let bytes = http().get(url).send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?;
+    let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    Some((img.width(), img.height(), img.into_raw()))
+}
+
+/// ISteamHTTP, done by the app.
+pub async fn http_request(method: i32, url: &str, headers: &[(String, String)], params: &[(String, String)], body: Option<(String, Vec<u8>)>, timeout_ms: u32) -> Reply {
+    let m = match method {
+        2 => reqwest::Method::HEAD,
+        3 => reqwest::Method::POST,
+        4 => reqwest::Method::PUT,
+        5 => reqwest::Method::DELETE,
+        6 => reqwest::Method::OPTIONS,
+        7 => reqwest::Method::PATCH,
+        _ => reqwest::Method::GET,
+    };
+    let get_like = matches!(m, reqwest::Method::GET | reqwest::Method::HEAD | reqwest::Method::DELETE);
+    let mut req = http().request(m, url).timeout(std::time::Duration::from_millis(if timeout_ms == 0 { 60_000 } else { timeout_ms as u64 }));
+    for (k, v) in headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    if !params.is_empty() {
+        req = if get_like || body.is_some() { req.query(params) } else { req.form(params) };
+    }
+    if let Some((content_type, data)) = body {
+        req = req.header("Content-Type", content_type).body(data);
+    }
+    match req.send().await {
+        Ok(r) => {
+            let status = r.status().as_u16() as i32;
+            let headers = r.headers().iter().map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string())).collect();
+            let body = r.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
+            Reply::HttpDone { status, headers, body, timed_out: false }
+        }
+        Err(e) => Reply::HttpDone { status: 0, headers: Vec::new(), body: Vec::new(), timed_out: e.is_timeout() },
+    }
+}
+
 /// Game language and branch from Steam's `appmanifest_<id>.acf` next to
 /// the install (`<library>/steamapps/common/<dir>`): (language, beta, build id).
 pub fn manifest_info(app_id: AppId, install_dir: &std::path::Path) -> (Option<String>, String, u32) {

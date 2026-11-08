@@ -2179,6 +2179,43 @@ impl Online {
                 crate::ipc::signal(&conn, app_id, me, to, &data, lobby);
                 let _ = reply.send(Reply::Ok);
             }
+            Request::LbFind { name, create, sort, display } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::ipc::lb_find(&conn, app_id, &name, create, sort, display).await);
+                });
+            }
+            Request::LbEntries { lb, request, start, end, users } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::ipc::lb_entries(&conn, app_id, lb, request, start, end, &users).await);
+                });
+            }
+            Request::LbUpload { lb, method, score, details } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::ipc::lb_upload(&conn, app_id, lb, method, score, &details).await);
+                });
+            }
+            Request::GlobalPercentages => {
+                tokio::spawn(async move {
+                    let list = crate::ipc::global_percentages(&conn, app_id).await;
+                    let _ = reply.send(Reply::Percentages { list });
+                });
+            }
+            Request::Avatar { steam_id, size } => {
+                // Default avatar for players we have no persona data for.
+                let hash = self.personas.get(&steam_id).and_then(|p| p.avatar_hash.clone()).unwrap_or_else(|| "fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb".into());
+                tokio::spawn(async move {
+                    let r = match crate::ipc::avatar(&hash, size).await {
+                        Some((width, height, rgba)) => Reply::Image { width, height, rgba },
+                        None => Reply::Err { message: "avatar unavailable".into() },
+                    };
+                    let _ = reply.send(r);
+                });
+            }
+            Request::Http { method, url, headers, params, body, timeout_ms } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::ipc::http_request(method, &url, &headers, &params, body, timeout_ms).await);
+                });
+            }
             Request::EncryptedTicket { data } => {
                 tokio::spawn(async move {
                     let r = match crate::ipc::encrypted_ticket(&conn, app_id, &data).await {

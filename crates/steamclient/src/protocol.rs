@@ -70,6 +70,27 @@ pub enum Request {
     /// (P2P connection setup). With `lobby`, also as a lobby message
     /// addressed to that player.
     Signal { to: u64, data: Vec<u8>, lobby: u64 },
+    /// Find (or create) a leaderboard by name.
+    LbFind { name: String, create: bool, sort: i32, display: i32 },
+    /// ELeaderboardDataRequest 0 global, 1 around me, 2 friends, 3 users.
+    LbEntries { lb: i32, request: i32, start: i32, end: i32, users: Vec<u64> },
+    /// ELeaderboardUploadScoreMethod 1 keep best, 2 force update.
+    LbUpload { lb: i32, method: i32, score: i32, details: Vec<i32> },
+    /// How many players have each achievement (API name, percent).
+    GlobalPercentages,
+    /// A player's avatar as RGBA. `size`: 0 small (32), 1 medium (64), 2 large (184).
+    Avatar { steam_id: u64, size: u8 },
+    /// An HTTP request for ISteamHTTP. `method`: EHTTPMethod (1 GET, 2 HEAD, 3 POST, 4 PUT, 5 DELETE…).
+    Http { method: i32, url: String, headers: Vec<(String, String)>, params: Vec<(String, String)>, body: Option<(String, Vec<u8>)>, timeout_ms: u32 },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LbEntry {
+    pub steam_id: u64,
+    pub rank: i32,
+    pub score: i32,
+    pub details: Vec<i32>,
+    pub ugc: u64,
 }
 
 /// One RequestLobbyList filter, as Steam's matchmaking server takes it.
@@ -133,6 +154,12 @@ pub enum Reply {
     LobbyJoined { response: i32, lobby: Option<Lobby> },
     LobbyList { lobbies: Vec<Lobby> },
     Result { eresult: i32 },
+    LbFound { found: bool, id: i32, count: i32, sort: i32, display: i32, name: String },
+    LbEntries { total: i32, entries: Vec<LbEntry> },
+    LbUploaded { ok: bool, changed: bool, rank_new: i32, rank_prev: i32 },
+    Percentages { list: Vec<(String, f32)> },
+    Image { width: u32, height: u32, rgba: Vec<u8> },
+    HttpDone { status: i32, headers: Vec<(String, String)>, body: Vec<u8>, timed_out: bool },
     Ok,
     Err { message: String },
 }

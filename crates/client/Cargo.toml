@@ -13,6 +13,7 @@ vdf.workspace = true
 model.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }
 prost.workspace = true
+image.workspace = true
 reqwest.workspace = true
 flate2.workspace = true
 serde.workspace = true

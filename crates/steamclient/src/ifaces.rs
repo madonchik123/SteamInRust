@@ -23,6 +23,9 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
             Some($f as Fp)
         };
     }
+    if let Some(f) = crate::extras::imp(kind, name) {
+        return Some(f);
+    }
     match (kind, name) {
         // ISteamClient
         ("ISteamClient", "CreateSteamPipe") => f!(c_create_pipe),
@@ -121,16 +124,8 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
         ("ISteamUserStats", "GetUserAchievement") => f!(st_user_ach),
         ("ISteamUserStats", "GetUserAchievementAndUnlockTime") => f!(st_user_ach_time),
         ("ISteamUserStats", "ResetAllStats") => f!(st_reset),
-        ("ISteamUserStats", "FindOrCreateLeaderboard") => f!(st_find_or_create_lb),
-        ("ISteamUserStats", "FindLeaderboard") => f!(st_find_lb),
-        ("ISteamUserStats", "GetLeaderboardName") => f!(empty_str),
-        ("ISteamUserStats", "DownloadLeaderboardEntries") => f!(st_download_lb),
-        ("ISteamUserStats", "DownloadLeaderboardEntriesForUsers") => f!(st_download_lb_users),
-        ("ISteamUserStats", "UploadLeaderboardScore") => f!(st_upload_lb),
         ("ISteamUserStats", "AttachLeaderboardUGC") => f!(st_attach_ugc),
         ("ISteamUserStats", "GetNumberOfCurrentPlayers") => f!(st_current_players),
-        ("ISteamUserStats", "RequestGlobalAchievementPercentages") => f!(st_global_percentages),
-        ("ISteamUserStats", "GetMostAchievedAchievementInfo" | "GetNextMostAchievedAchievementInfo") => f!(minus_one),
         ("ISteamUserStats", "RequestGlobalStats") => f!(st_global_stats),
 
         // ISteamRemoteStorage (the Steam Cloud file API)
@@ -974,29 +969,6 @@ extern "C" fn st_reset(_t: This, achievements_too: bool) -> bool {
     true
 }
 
-// Leaderboards aren't supported yet; every request answers "not found".
-fn lb_not_found() -> u64 {
-    lock().call_now(cb::LEADERBOARD_FIND_RESULT, Bytes::new(16).0)
-}
-extern "C" fn st_find_or_create_lb(_t: This, _name: *const c_char, _sort: i32, _display: i32) -> u64 {
-    lb_not_found()
-}
-extern "C" fn st_find_lb(_t: This, _name: *const c_char) -> u64 {
-    lb_not_found()
-}
-extern "C" fn st_download_lb(_t: This, lb: u64, _req: i32, _start: i32, _end: i32) -> u64 {
-    let mut b = Bytes::new(24);
-    b.u64(0, lb);
-    lock().call_now(cb::LEADERBOARD_SCORES_DOWNLOADED, b.0)
-}
-extern "C" fn st_download_lb_users(_t: This, lb: u64, _users: *const u64, _n: i32) -> u64 {
-    st_download_lb(_t, lb, 0, 0, 0)
-}
-extern "C" fn st_upload_lb(_t: This, lb: u64, _method: i32, score: i32, _details: *const i32, _n: i32) -> u64 {
-    let mut b = Bytes::new(32);
-    b.u8(0, 0).u64(8, lb).i32(16, score);
-    lock().call_now(cb::LEADERBOARD_SCORE_UPLOADED, b.0)
-}
 extern "C" fn st_attach_ugc(_t: This, lb: u64, _ugc: u64) -> u64 {
     let mut b = Bytes::new(16);
     b.u64(0, lb).i32(8, state::RESULT_FAIL);
@@ -1014,12 +986,6 @@ extern "C" fn st_current_players(_t: This) -> u64 {
         lock().complete(call, cb::NUMBER_OF_CURRENT_PLAYERS, b.0, false);
     });
     call
-}
-extern "C" fn st_global_percentages(_t: This) -> u64 {
-    let mut g = lock();
-    let mut b = Bytes::new(16);
-    b.u64(0, g.app_id() as u64).i32(8, state::RESULT_FAIL);
-    g.call_now(cb::GLOBAL_ACHIEVEMENT_PERCENTAGES_READY, b.0)
 }
 extern "C" fn st_global_stats(_t: This, _days: i32) -> u64 {
     let mut g = lock();

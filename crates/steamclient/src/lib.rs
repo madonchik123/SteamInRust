@@ -20,6 +20,7 @@
 
 pub mod protocol;
 
+mod extras;
 mod ifaces;
 mod ipc;
 mod lobby;
