@@ -2348,6 +2348,15 @@ impl Online {
                     let _ = reply.send(r);
                 });
             }
+            Request::NetworkingCert { public_key } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::ipc::networking_cert(&conn, app_id, &public_key).await);
+                });
+            }
+            Request::Rendezvous { to, data } => {
+                crate::ipc::rendezvous(&conn, app_id, me, to, &data);
+                let _ = reply.send(Reply::Ok);
+            }
         }
     }
 

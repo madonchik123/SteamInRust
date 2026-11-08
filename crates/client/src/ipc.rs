@@ -718,6 +718,7 @@ pub const EMSG_MMS_USER_JOINED_LOBBY: u32 = 6619;
 pub const EMSG_MMS_USER_LEFT_LOBBY: u32 = 6620;
 pub const EMSG_MMS_INVITE_TO_LOBBY: u32 = 6621;
 pub const EMSG_P2P_CONNECTION_INFO: u32 = 5434;
+const EMSG_NETWORKING_CERT_REQUEST: u32 = 5621;
 
 use proto::webui::{
     CMsgClientMmsCreateLobby, CMsgClientMmsCreateLobbyResponse, CMsgClientMmsGetLobbyData, CMsgClientMmsGetLobbyList, CMsgClientMmsGetLobbyListFilter,
@@ -916,6 +917,27 @@ pub fn signal(conn: &Connection, app_id: AppId, me: u64, to: u64, data: &[u8], l
     }
 }
 
+/// A SteamNetworkingSockets signal (`CMsgSteamNetworkingP2PRendezvous`)
+/// for another player, the way Valve's client sends it.
+pub fn rendezvous(conn: &Connection, app_id: AppId, me: u64, to: u64, data: &[u8]) {
+    let msg = proto::CMsgClientP2pConnectionInfo { steam_id_dest: Some(to), steam_id_src: Some(me), app_id: Some(app_id), rendezvous: Some(data.to_vec()), ..Default::default() };
+    let _ = conn.send_with(EMSG_P2P_CONNECTION_INFO, proto::CMsgProtoBufHeader { routing_appid: Some(app_id), ..Default::default() }, &msg);
+}
+
+/// A Valve-signed certificate for our Ed25519 public key (raw 32 bytes),
+/// scoped to the game: what SteamNetworkingSockets presents to peers and
+/// relays. Steam fills in our identity and the expiry.
+pub async fn networking_cert(conn: &Connection, app_id: AppId, public_key: &[u8]) -> Reply {
+    let req = proto::CMsgClientNetworkingCertRequest { key_data: Some(public_key.to_vec()), app_id: Some(app_id) };
+    match conn.request(EMSG_NETWORKING_CERT_REQUEST, &req).await.and_then(|p| p.body::<proto::CMsgClientNetworkingCertReply>()) {
+        Ok(r) if r.cert.as_ref().is_some_and(|c| !c.is_empty()) => {
+            Reply::NetworkingCert { cert: r.cert().to_vec(), ca_key_id: r.ca_key_id(), ca_signature: r.ca_signature().to_vec() }
+        }
+        Ok(_) => Reply::Err { message: "Steam returned no networking certificate".into() },
+        Err(e) => Reply::Err { message: format!("networking certificate: {e}") },
+    }
+}
+
 /// A matchmaking / signalling push from Steam, as (game, event).
 pub fn game_event(p: &net::Packet) -> Option<(AppId, GameEvent)> {
     Some(match p.emsg {
@@ -942,7 +964,12 @@ pub fn game_event(p: &net::Packet) -> Option<(AppId, GameEvent)> {
         }
         EMSG_P2P_CONNECTION_INFO => {
             let m: proto::CMsgClientP2pConnectionInfo = p.body().ok()?;
-            (m.app_id(), GameEvent::Signal { from: m.steam_id_src(), data: m.candidate().to_vec() })
+            // Valve's client puts one or the other in: a SteamNetworkingSockets
+            // rendezvous, or a libjingle candidate (and our own signals).
+            match &m.rendezvous {
+                Some(r) if !r.is_empty() => (m.app_id(), GameEvent::Rendezvous { from: m.steam_id_src(), data: r.clone() }),
+                _ => (m.app_id(), GameEvent::Signal { from: m.steam_id_src(), data: m.candidate().to_vec() }),
+            }
         }
         _ => return None,
     })
