@@ -63,7 +63,7 @@ jobs:
 
       - name: Package
         shell: pwsh
-        run: ./tools/package.ps1
+        run: cargo xtask package
 
       - name: Attach the files to the release
         shell: pwsh

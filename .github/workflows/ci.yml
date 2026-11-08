@@ -91,7 +91,7 @@ jobs:
 
       - name: Package
         shell: pwsh
-        run: ./tools/package.ps1
+        run: cargo xtask package
 
       - uses: actions/upload-artifact@v4
         with:
