@@ -16,6 +16,7 @@ type Result<T> = std::result::Result<T, Error>;
 const LIBRARY_TYPES: &[&str] = &["game", "demo", "application", "tool", "music", "video", "dlc"];
 
 pub async fn resolve(conn: &Connection, licenses: &[(u32, u64)]) -> Result<Vec<OwnedApp>> {
+    let started = std::time::Instant::now();
     let app_ids = package_apps(conn, licenses).await?;
     tracing::info!("{} licenses -> {} app ids", licenses.len(), app_ids.len());
     let ids: Vec<AppId> = app_ids.into_iter().collect();
@@ -23,6 +24,7 @@ pub async fn resolve(conn: &Connection, licenses: &[(u32, u64)]) -> Result<Vec<O
     let mut apps = app_info(conn, &ids, &tokens).await?;
     apps.retain(|a| LIBRARY_TYPES.contains(&a.kind.as_str()));
     apps.sort_by_key(|a| a.name.to_lowercase());
+    tracing::info!("library: {} apps in {:.1} s", apps.len(), started.elapsed().as_secs_f32());
     Ok(apps)
 }
 
@@ -90,10 +92,12 @@ async fn app_info(
     ids: &[AppId],
     tokens: &HashMap<AppId, u64>,
 ) -> Result<Vec<OwnedApp>> {
+    use futures_util::stream::{self, StreamExt, TryStreamExt};
     let http = reqwest::Client::new();
-    let mut out = Vec::new();
-    for chunk in ids.chunks(200) {
-        let req = CMsgClientPicsProductInfoRequest {
+    // A few batches at once instead of one after another.
+    let requests: Vec<CMsgClientPicsProductInfoRequest> = ids
+        .chunks(200)
+        .map(|chunk| CMsgClientPicsProductInfoRequest {
             apps: chunk
                 .iter()
                 .map(|&id| c_msg_client_pics_product_info_request::AppInfo {
@@ -103,28 +107,46 @@ async fn app_info(
                 })
                 .collect(),
             ..Default::default()
-        };
-        for resp in product_info(conn, &req).await? {
-            let host = resp.http_host.clone().filter(|h| !h.is_empty());
-            for app in resp.apps {
-                let id = app.appid();
-                let text = match app.buffer.as_deref().filter(|b| !b.is_empty()) {
-                    Some(buf) => String::from_utf8_lossy(buf).into_owned(),
-                    // Large entries are served over HTTP instead of inline.
-                    None => match (&host, app.sha.as_deref()) {
-                        (Some(h), Some(sha)) => match fetch_http(&http, h, id, sha).await {
-                            Some(t) => t,
-                            None => continue,
-                        },
-                        _ => continue,
-                    },
-                };
-                if let Some(a) = parse_app(id, text.trim_end_matches('\0')) {
-                    out.push(a);
+        })
+        .collect();
+    let replies: Vec<Vec<CMsgClientPicsProductInfoResponse>> =
+        stream::iter(requests.into_iter().map(|req| {
+            let conn = conn.clone();
+            async move { product_info(&conn, &req).await }
+        }))
+        .buffer_unordered(4)
+        .try_collect()
+        .await?;
+    let mut out = Vec::new();
+    let mut remote = Vec::new();
+    for resp in replies.into_iter().flatten() {
+        let host = resp.http_host.clone().filter(|h| !h.is_empty());
+        for app in resp.apps {
+            let id = app.appid();
+            match app.buffer.as_deref().filter(|b| !b.is_empty()) {
+                Some(buf) => {
+                    if let Some(a) = parse_app(id, String::from_utf8_lossy(buf).trim_end_matches('\0')) {
+                        out.push(a);
+                    }
+                }
+                // Large entries are served over HTTP instead of inline.
+                None => {
+                    if let (Some(h), Some(sha)) = (host.clone(), app.sha.clone()) {
+                        remote.push((id, h, sha));
+                    }
                 }
             }
         }
     }
+    // Those downloads run 16 at a time instead of one by one.
+    let fetched: Vec<Option<OwnedApp>> = stream::iter(remote.into_iter().map(|(id, h, sha)| {
+        let http = http.clone();
+        async move { fetch_http(&http, &h, id, &sha).await.and_then(|t| parse_app(id, t.trim_end_matches('\0'))) }
+    }))
+    .buffer_unordered(16)
+    .collect()
+    .await;
+    out.extend(fetched.into_iter().flatten());
     Ok(out)
 }
 
