@@ -592,6 +592,7 @@ fn apply(e: GameEvent) {
             post(LOBBY_GAME_CREATED, b.0);
         }
         GameEvent::Signal { from, data } => crate::p2p::signal(from, &data),
+        GameEvent::Rendezvous { from, data } => crate::sns::rendezvous(from, &data),
         GameEvent::JoinRequested { lobby, friend, connect } => {
             crate::log!("join requested: lobby {lobby}, connect {connect:?}");
             if lobby != 0 {

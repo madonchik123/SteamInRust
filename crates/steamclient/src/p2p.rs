@@ -815,15 +815,7 @@ impl Outside for Steam {
         b.u64(0, from);
         lock().post(P2P_SESSION_REQUEST, b.0);
     }
-    fn route(&self, from: u64, channel: i32, data: &[u8]) -> bool {
-        if channel == crate::sns::CH_SOCKETS || channel == crate::sns::CH_MESSAGES {
-            crate::sns::on_wire(from, channel, data);
-            return true;
-        }
-        false
-    }
     fn connect_failed(&self, to: u64) {
-        crate::sns::peer_failed(to);
         // P2PSessionConnectFail_t: remote, EP2PSessionError (4 = timeout).
         let mut b = Bytes::new(16);
         b.u64(0, to).u8(8, 4);
@@ -857,23 +849,6 @@ pub fn signal(from: u64, payload: &[u8]) {
     if let Some(e) = ep() {
         e.on_signal(from, payload);
     }
-}
-
-/// Send on a channel for another module (networking sockets / messages).
-pub fn send_raw(to: u64, data: &[u8], reliable: bool, channel: i32) -> bool {
-    ep().is_some_and(|e| e.send(to, data, if reliable { 2 } else { 0 }, channel))
-}
-
-/// Round trip to a player in ms, once measured.
-pub fn rtt_ms(peer: u64) -> Option<i32> {
-    let e = ep()?;
-    let peers = e.peers.lock().unwrap();
-    peers.get(&peer)?.rtt.map(|d| d.as_millis().min(i32::MAX as u128) as i32)
-}
-
-/// (connected, still connecting) for a player we've talked to.
-pub fn link(peer: u64) -> Option<(bool, bool)> {
-    ep()?.state(peer).map(|(connected, connecting, ..)| (connected, connecting))
 }
 
 pub fn lobby_changed(_lobby: u64) {}

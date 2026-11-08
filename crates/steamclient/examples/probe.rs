@@ -668,8 +668,34 @@ fn input_test(dll: &str) -> ! {
     std::process::exit(0);
 }
 
+/// `--direct <steamclient.dll> --test cert`: our DLL asks Steam (through a
+/// signed-in SteamInRust) for a networking certificate; see the DLL log.
+fn cert_test(dll: &str) -> ! {
+    let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {dll}");
+    let api = Api(module);
+    let create: extern "C" fn(*const c_char, *mut i32) -> usize = unsafe { std::mem::transmute(api.f("CreateInterface").unwrap()) };
+    let client = create(c"SteamClient021".as_ptr(), std::ptr::null_mut());
+    let pipe: extern "C" fn(usize) -> i32 = unsafe { std::mem::transmute(slot(client, 0)) };
+    let pipe = pipe(client);
+    let connect: extern "C" fn(usize, i32) -> i32 = unsafe { std::mem::transmute(slot(client, 2)) };
+    let user = connect(client, pipe);
+    let generic: extern "C" fn(usize, i32, i32, *const c_char) -> usize = unsafe { std::mem::transmute(slot(client, 12)) };
+    const V: &str = "SteamNetworkingSockets012";
+    let sockets = generic(client, user, pipe, c"SteamNetworkingSockets012".as_ptr());
+    assert!(sockets != 0);
+    let init: extern "C" fn(usize) -> i32 = unsafe { std::mem::transmute(slot(sockets, steamclient::slot_of(V, "InitAuthentication").unwrap())) };
+    println!("InitAuthentication = {}", init(sockets));
+    std::thread::sleep(Duration::from_secs(10));
+    std::process::exit(0);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let (Some(dll), Some("cert")) = (args.iter().position(|a| a == "--direct").and_then(|i| args.get(i + 1)), args.iter().position(|a| a == "--test").and_then(|i| args.get(i + 1)).map(|s| s.as_str())) {
+        cert_test(dll);
+    }
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
     if let (Some(dll), Some("input")) = (arg("--direct"), arg("--test").as_deref()) {
         input_test(&dll);

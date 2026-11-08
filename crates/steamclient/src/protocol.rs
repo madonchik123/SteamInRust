@@ -112,6 +112,13 @@ pub enum Request {
     Overlay { dialog: String, target: String },
     /// Invite a friend to play with this connect string (ISteamFriends::InviteUserToGame).
     GameInvite { friend: u64, connect: String },
+    /// A Valve-signed networking certificate for this Ed25519 public key
+    /// (raw 32 bytes), for SteamNetworkingSockets: answered with
+    /// [`Reply::NetworkingCert`].
+    NetworkingCert { public_key: Vec<u8> },
+    /// A SteamNetworkingSockets signal (serialized
+    /// `CMsgSteamNetworkingP2PRendezvous`) for another player, through Steam.
+    Rendezvous { to: u64, data: Vec<u8> },
 }
 
 /// A game server as Steam's server browser lists it.
@@ -304,6 +311,9 @@ pub enum GameEvent {
     LobbyGameServer { lobby: u64, ip: u32, port: u16, server: u64 },
     /// A P2P signalling message from another player.
     Signal { from: u64, data: Vec<u8> },
+    /// A SteamNetworkingSockets signal (serialized
+    /// `CMsgSteamNetworkingP2PRendezvous`) from another player.
+    Rendezvous { from: u64, data: Vec<u8> },
     /// The player accepted an invite (or picked "Join game") while the game
     /// runs: GameLobbyJoinRequested_t for a lobby, else
     /// GameRichPresenceJoinRequested_t with the connect string.
@@ -346,6 +356,8 @@ pub enum Reply {
     Percentages { list: Vec<(String, f32)> },
     Image { width: u32, height: u32, rgba: Vec<u8> },
     HttpDone { status: i32, headers: Vec<(String, String)>, body: Vec<u8>, timed_out: bool },
+    /// A signed `CMsgSteamDatagramCertificate` (serialized) for our key.
+    NetworkingCert { cert: Vec<u8>, ca_key_id: u64, ca_signature: Vec<u8> },
     Ok,
     Err { message: String },
 }

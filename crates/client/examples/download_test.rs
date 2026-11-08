@@ -1,7 +1,8 @@
 //! End-to-end downloader check:
-//! `cargo run -p client --example download_test -- <empty folder>`
-//! Signs in with the saved account, installs the smallest owned Windows game
-//! into `<folder>/steamapps/common/...`, then verifies every file.
+//! `cargo run -p client --example download_test -- <empty folder> [app id]`
+//! Signs in with the saved account, installs the given game (or the smallest
+//! owned Windows game) into `<folder>/steamapps/common/...`, then verifies
+//! every file.
 
 use client::{Client, Command, Event, download::InstallRequest};
 use std::sync::{Arc, Mutex, mpsc};
@@ -9,6 +10,7 @@ use std::sync::{Arc, Mutex, mpsc};
 fn main() {
     tracing_subscriber::fmt().with_env_filter("info,depot=info").init();
     let dir = std::path::PathBuf::from(std::env::args().nth(1).expect("folder"));
+    let wanted: Option<u32> = std::env::args().nth(2).map(|a| a.parse().expect("app id"));
     std::fs::create_dir_all(dir.join("steamapps")).unwrap();
     let account = client::store::load().into_iter().next().expect("a saved account").account_name;
 
@@ -29,7 +31,7 @@ fn main() {
                 // Smallest game with Windows content.
                 let best = apps
                     .iter()
-                    .filter(|a| a.kind == "game")
+                    .filter(|a| a.kind == "game" && wanted.is_none_or(|w| a.app_id == w))
                     .filter_map(|a| {
                         let size: u64 = a
                             .depots

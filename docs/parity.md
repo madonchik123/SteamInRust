@@ -18,7 +18,7 @@ Steam's website" still works; it just isn't native yet.
 | Community | 0.5 | Reading only for discussions; badge pages, groups and someone's reviews open Steam's website |
 | Inventory and Market | 0.75 | Trade offers open Steam's website; no Market search page |
 | Steam Cloud | 1 | Can't delete files from the cloud |
-| Steam features inside games | 0.75 | Networking sockets / messages with players on the official client; hosting game servers; inventory item definitions |
+| Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers; inventory item definitions |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games only (others get a window overlay); no in-game web browser or screenshots |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | English and Russian only; Windows only |
@@ -153,8 +153,8 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | P2P (`ISteamNetworking`) with players on the official client | Done: Valve's libjingle protocol, direct or through Valve's relays. Tested joining an official player's Human Fall Flat lobby |
 | Leaderboards, global achievement percentages, avatars, `ISteamHTTP` | Done |
 | Exact interface layouts for SDK 1.3x–1.6x (91 versions, both bitnesses) | Done |
-| `ISteamNetworkingSockets` / `ISteamNetworkingMessages` with players on the official client | Not yet: needs Valve's certificates, the SteamNetworkingSockets handshake and the Steam Datagram Relay |
-| `ISteamNetworkingSockets`, `ISteamNetworkingMessages` between SteamInRust players | Done (P2P; connecting by IP to dedicated servers isn't possible) |
+| `ISteamNetworkingSockets` / `ISteamNetworkingMessages` with players on the official client | Partly: Valve's protocol (Steam-signed certificates, rendezvous, encrypted SNP) over direct ICE connections, which official players allow for friends. No Steam Datagram Relay, which the official client uses for strangers. Not yet tested against an official player |
+| `ISteamNetworkingSockets`, `ISteamNetworkingMessages` between SteamInRust players | Done, on Valve's protocol over ICE (P2P; connecting by IP to dedicated servers isn't possible) |
 | Workshop (`ISteamUGC`): queries, subscriptions, votes, favorites, downloads | Done. Publishing items isn't supported |
 | Inventory (`ISteamInventory`): items, drops, promos, crafting, properties | Done. Item definitions don't load yet; no purchases |
 | Server browser (`ISteamMatchmakingServers`): internet and LAN lists, ping, players, rules | Done |
