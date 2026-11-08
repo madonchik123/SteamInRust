@@ -767,13 +767,25 @@ pub fn invite_options(state: &client::State) -> Vec<(Invite, String)> {
     out
 }
 
-/// Send an invite as Steam's own chat invite, so any Steam client shows it.
+/// Send an invite. Lobby invites are Steam's own (every client shows them).
+/// The others are a `steam://run` link with the join arguments: Steam
+/// strips invite markup that doesn't come from its own client, and any Steam
+/// client opens the link. Ours shows it as an invite card.
 pub fn send_invite(app: &mut SteamApp, to: &Persona, invite: Invite, actions: &mut Vec<Action>) {
     let friend = to.steam_id;
+    let game = |id| app.state.app_name(id).unwrap_or_default().to_string();
     match invite {
         Invite::Lobby(app_id, lobby) => app.client.send(Command::InviteToLobby { app_id, lobby, friend }),
-        Invite::Game(app_id, connect) => app.client.send(Command::SendMessage { to: friend, text: model::GameInvite { app_id, connect }.bbcode() }),
-        Invite::Play(app_id) => app.client.send(Command::SendMessage { to: friend, text: model::GameInvite { app_id, connect: String::new() }.bbcode() }),
+        Invite::Game(app_id, connect) => {
+            let link = model::GameInvite { app_id, connect }.link();
+            let text = t!("Join me in {game}! {link}", game = game(app_id), link = link).to_string();
+            app.client.send(Command::SendMessage { to: friend, text });
+        }
+        Invite::Play(app_id) => {
+            let link = model::GameInvite { app_id, connect: String::new() }.link();
+            let text = t!("Play {game} with me! {link}", game = game(app_id), link = link).to_string();
+            app.client.send(Command::SendMessage { to: friend, text });
+        }
     }
     let offline = to.state == PersonaState::Offline;
     actions.push(Action::Toast(if offline { t!("Invite sent. {name} will see it when they come online.", name = to.name) } else { t!("Invite sent to {name}", name = to.name) }));

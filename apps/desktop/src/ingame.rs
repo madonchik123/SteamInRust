@@ -37,6 +37,7 @@ impl Session {
         ui::install_fonts(&ctx);
         crate::image_cache::ImageCache::install(&ctx, rt.handle().clone());
         theme.apply(&ctx);
+        no_animations(&ctx);
         let wake_at: Arc<Mutex<Option<Instant>>> = Arc::default();
         let (w, main) = (wake_at.clone(), main.clone());
         // Images loading, animations, the clock: run again when it asks.
@@ -46,7 +47,7 @@ impl Session {
             if slot.is_none_or(|s| at < s) {
                 *slot = Some(at);
             }
-            main.request_repaint_after(info.delay);
+            wake(&main, info.delay);
         });
         let size = conn.size;
         Self {
@@ -101,6 +102,7 @@ impl Session {
     pub fn theme(&mut self, theme: &ui::Theme) {
         if self.theme.as_ref() != Some(theme) {
             theme.apply(&self.ctx);
+            no_animations(&self.ctx);
             self.theme = Some(theme.clone());
             self.wake_now();
         }
@@ -187,7 +189,7 @@ impl Session {
         if at <= now {
             return true;
         }
-        main.request_repaint_after(at - now);
+        wake(main, at - now);
         false
     }
 
@@ -243,7 +245,7 @@ impl Session {
                 if slot.is_none_or(|s| at < s) {
                     *slot = Some(at);
                 }
-                main.request_repaint_after(info.repaint_delay.max(Duration::from_millis(15)));
+                wake(main, info.repaint_delay.max(Duration::from_millis(15)));
             }
         }
         let cursor = cursor(out.platform_output.cursor_icon);
@@ -360,4 +362,26 @@ mod tests {
         assert_eq!(key_from_vk(0x1B), Some(Key::Escape));
         assert_eq!(key_from_vk(0xFF), None);
     }
+}
+
+/// The in-game UI only gets frames when the app's main window repaints, so
+/// fades and smooth scrolling stutter there. Hover and scroll change at once.
+fn no_animations(ctx: &egui::Context) {
+    ctx.all_styles_mut(|s| {
+        s.animation_time = 0.0;
+        s.scroll_animation = egui::style::ScrollAnimation::none();
+    });
+}
+
+/// The helper window whose frames run the in-game overlay (see
+/// `overlay::keep_ticking`).
+pub fn tick() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("steaminrust-ingame-tick")
+}
+
+/// Ask for an in-game overlay frame after `delay`: on the helper window, and
+/// on the main window (which runs it when the helper can't).
+pub fn wake(main: &egui::Context, delay: Duration) {
+    main.request_repaint_after_for(delay, tick());
+    main.request_repaint_after_for(delay, egui::ViewportId::ROOT);
 }

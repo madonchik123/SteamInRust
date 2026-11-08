@@ -1098,9 +1098,23 @@ pub struct GameInvite {
 }
 
 impl GameInvite {
-    /// The chat markup Steam's own client sends for an invite.
-    pub fn bbcode(&self) -> String {
-        format!("[gameinvite appid=\"{}\" connect=\"{}\"][/gameinvite]", self.app_id, self.connect.replace('"', "'"))
+    /// A link that starts the game with the join arguments, for invites in
+    /// chat. (Steam strips `[gameinvite]` markup that doesn't come from its
+    /// own client, so we can't send that; lobby invites go through the
+    /// lobby itself and Steam writes their chat message.) Any Steam client
+    /// opens it; ours shows it as an invite card.
+    pub fn link(&self) -> String {
+        if self.connect.is_empty() {
+            return format!("steam://run/{}", self.app_id);
+        }
+        let mut args = String::new();
+        for b in self.connect.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'+' | b':' => args.push(b as char),
+                _ => args.push_str(&format!("%{b:02X}")),
+            }
+        }
+        format!("steam://run/{}//{args}", self.app_id)
     }
 }
 
@@ -1171,16 +1185,38 @@ pub mod chat {
             rest = &rest[c.len_utf8()..];
         }
         let text = out.trim().to_string();
-        // Invites SteamInRust used to send as text: "Play X with me! steam://run/123".
+        // SteamInRust's invites: "Play X with me! steam://run/123//+args".
         if invite.is_none() {
-            if let Some(at) = text.find("steam://run/") {
-                let digits: String = text[at + 12..].chars().take_while(|c| c.is_ascii_digit()).collect();
-                if let Ok(app_id) = digits.parse() {
-                    return (text, Some(GameInvite { app_id, connect: String::new() }));
+            invite = link_invite(&text);
+        }
+        (text, invite)
+    }
+
+    /// The invite in a `steam://run/<app>[//<args>]` link, if any.
+    fn link_invite(text: &str) -> Option<GameInvite> {
+        let at = text.find("steam://run/")?;
+        let rest = &text[at + 12..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let app_id = digits.parse().ok()?;
+        let args = rest[digits.len()..].strip_prefix("//").unwrap_or("");
+        let args = args.split(char::is_whitespace).next().unwrap_or("");
+        // Percent-decoded launch arguments.
+        let mut bytes = Vec::new();
+        let raw = args.as_bytes();
+        let mut i = 0;
+        while i < raw.len() {
+            match (raw[i], raw.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok())) {
+                (b'%', Some(b)) => {
+                    bytes.push(b);
+                    i += 3;
+                }
+                (b, _) => {
+                    bytes.push(b);
+                    i += 1;
                 }
             }
         }
-        (text, invite)
+        Some(GameInvite { app_id, connect: String::from_utf8_lossy(&bytes).into_owned() })
     }
 
     #[cfg(test)]
@@ -1194,8 +1230,16 @@ pub mod chat {
             assert_eq!(inv, Some(GameInvite { app_id: 570, connect: "+invite 30095787509687845 -launchsource2".into() }));
             let (_, inv) = parse(r#"[lobbyinvite appid="477160" lobbyid="109775241000000001"][/lobbyinvite]"#);
             assert_eq!(inv.unwrap().connect, "+connect_lobby 109775241000000001");
-            let me = GameInvite { app_id: 10, connect: "+connect 1.2.3.4".into() };
-            assert_eq!(parse(&me.bbcode()).1, Some(me));
+        }
+
+        #[test]
+        fn links() {
+            let me = GameInvite { app_id: 10, connect: "+connect_lobby 1234 -x \"a b\"".into() };
+            assert_eq!(me.link(), "steam://run/10//+connect_lobby%201234%20-x%20%22a%20b%22");
+            assert_eq!(parse(&format!("Join me! {}", me.link())).1, Some(me));
+            let plain = GameInvite { app_id: 477160, connect: String::new() };
+            assert_eq!(plain.link(), "steam://run/477160");
+            assert_eq!(parse("Play it with me! steam://run/477160 now").1, Some(plain));
         }
 
         #[test]

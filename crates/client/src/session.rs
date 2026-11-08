@@ -624,10 +624,10 @@ async fn online(
                 Some(Command::ForgetAccount { account }) => store::remove(&account),
                 Some(Command::SendMessage { to, text }) => st.send_message(to, text, sink),
                 Some(Command::InviteToLobby { app_id, lobby, friend }) => {
-                    // Lets them into a private or friends-only lobby...
+                    // Steam's own lobby invite: it lets them in (private and
+                    // friends-only lobbies) and Steam writes the [lobbyinvite]
+                    // chat message every client shows.
                     crate::ipc::lobby_invite(&st.conn, app_id, lobby, friend);
-                    // ...and the invite they see, which joins it.
-                    st.send_message(friend, model::GameInvite { app_id, connect: format!("+connect_lobby {lobby}") }.bbcode(), sink);
                 }
                 Some(Command::LoadHistory { friend }) => st.load_history(friend, sink),
                 Some(Command::LoadProfile { steam_id }) => st.load_profile(steam_id, sink),
@@ -1245,19 +1245,14 @@ impl Online {
                         steamid: Some(to),
                         chat_entry_type: Some(1),
                         message: Some(text.clone()),
-                        // Invites go as Steam's own markup so every client shows them.
-                        contains_bbcode: Some(text.starts_with("[gameinvite")),
+                        contains_bbcode: Some(false),
                         ..Default::default()
                     },
                 )
                 .await;
             match r {
                 Ok(r) => {
-                    // Steam's echo may drop the markup; our own text still has it.
-                    let (text, invite) = match model::chat::parse(r.modified_message()) {
-                        (t, None) if t.is_empty() || text.starts_with("[gameinvite") => model::chat::parse(&text),
-                        parsed => parsed,
-                    };
+                    let (text, invite) = model::chat::parse(if r.modified_message().is_empty() { &text } else { r.modified_message() });
                     sink(Event::Message(model::ChatMessage { friend: to, from: me, text, time: r.server_timestamp() as u64, invite }))
                 }
                 Err(e) => sink(Event::Error(format!("Message not sent: {e}"))),
