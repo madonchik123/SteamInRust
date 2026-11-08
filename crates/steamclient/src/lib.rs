@@ -24,6 +24,7 @@ mod extras;
 mod ifaces;
 mod ipc;
 mod lobby;
+pub mod overlay;
 mod p2p;
 mod state;
 mod tables;
@@ -126,7 +127,10 @@ fn create_interface(version: usize, err: usize) -> usize {
     }
     if !p.is_null() {
         // Load the session now so GetAppID and friends are right from the start.
-        state::ensure_session();
+        if state::ensure_session() {
+            // Draw the Shift+Tab overlay inside the game (see overlay/).
+            overlay::start();
+        }
     }
     p as usize
 }
