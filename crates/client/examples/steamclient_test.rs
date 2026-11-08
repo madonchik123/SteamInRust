@@ -5,6 +5,8 @@
 //! prints the launch mode, starts the game exactly like the Play button and
 //! waits until it closes. Set `STEAMINRUST_STEAMCLIENT64` to the built DLL
 //! and `STEAMINRUST_STEAMCLIENT_LOG` to a file to see what the game asked.
+//! A Steam Cloud conflict holds the launch, like in the app; set
+//! `STEAMINRUST_TEST_CLOUD=local` (or `cloud`) to settle it that way.
 
 use client::{Client, Command, Event};
 use std::sync::{Arc, Mutex, mpsc};
@@ -48,7 +50,19 @@ fn main() {
                 }
             }
             Event::GameStarted { app_id } => println!("game {app_id} running"),
-            Event::CloudReport { report, .. } => println!("cloud: {report:?}"),
+            Event::CloudReport { report, held_launch } => {
+                println!("cloud: {report:?}");
+                let names: Vec<String> = report.conflicts.iter().map(|c| c.name.clone()).collect();
+                match (held_launch, std::env::var("STEAMINRUST_TEST_CLOUD").as_deref()) {
+                    (Some(args), Ok(side @ ("local" | "cloud"))) => {
+                        println!("settling {} conflict(s): keeping the {side} copy", names.len());
+                        let (keep_local, keep_cloud) = if side == "local" { (names, vec![]) } else { (vec![], names) };
+                        c.send(Command::CloudSync { app_id, install_dir: dir.clone(), mode: client::cloud::Mode::Sync, keep_local, keep_cloud, then_launch: Some(args) });
+                    }
+                    (Some(_), _) => println!("launch held by a cloud conflict (set STEAMINRUST_TEST_CLOUD=local or cloud)"),
+                    _ => {}
+                }
+            }
             Event::Error(e) => println!("error: {e}"),
             Event::GameStopped { app_id } => {
                 println!("game {app_id} closed");

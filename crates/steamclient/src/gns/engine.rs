@@ -17,8 +17,12 @@ pub struct Engine {
     pub sock: Option<Arc<UdpSocket>>,
     host: Vec<SocketAddr>,
     srflx: Option<SocketAddr>,
-    stun_server: Option<SocketAddr>,
+    /// STUN server addresses, looked up on a thread of their own (DNS can
+    /// be slow, and the network state is locked while we poll).
+    stun_servers: Arc<Mutex<Vec<SocketAddr>>>,
     stun_txid: Option<[u8; 12]>,
+    /// Where the last request went (and, once one answers, where they keep going).
+    stun_to: Option<SocketAddr>,
     stun_sent: Option<Instant>,
     stun_tries: u32,
 }
@@ -29,7 +33,16 @@ impl Engine {
         let port = sock.as_ref().and_then(|s| s.local_addr().ok()).map(|a| a.port()).unwrap_or(0);
         let host = local_ips().into_iter().map(|ip| SocketAddr::new(ip.into(), port)).collect::<Vec<_>>();
         crate::log!("gns: UDP port {port}, host addresses {host:?}");
-        Engine { sock, host, srflx: None, stun_server: None, stun_txid: None, stun_sent: None, stun_tries: 0 }
+        let stun_servers = Arc::new(Mutex::new(Vec::new()));
+        let found = stun_servers.clone();
+        std::thread::spawn(move || {
+            for name in STUN_SERVERS {
+                if let Some(a) = name.to_socket_addrs().ok().and_then(|mut a| a.find(|a| a.is_ipv4())) {
+                    found.lock().unwrap_or_else(|e| e.into_inner()).push(a);
+                }
+            }
+        });
+        Engine { sock, host, srflx: None, stun_servers, stun_txid: None, stun_to: None, stun_sent: None, stun_tries: 0 }
     }
 
     pub fn port(&self) -> u16 {
@@ -51,15 +64,19 @@ impl Engine {
         if self.stun_sent.is_some_and(|t| now.duration_since(t) < gap) {
             return;
         }
-        if self.stun_server.is_none() || (self.srflx.is_none() && self.stun_tries % 3 == 2) {
-            let pick = STUN_SERVERS[(self.stun_tries as usize / 3) % STUN_SERVERS.len()];
-            self.stun_server = pick.to_socket_addrs().ok().and_then(|mut a| a.find(|a| a.is_ipv4()));
-        }
-        let Some(server) = self.stun_server else {
-            self.stun_tries += 1;
-            self.stun_sent = Some(now);
-            return;
+        // The first server that answers keeps being used; while none has,
+        // move to the next one every three tries.
+        let server = match (self.srflx, self.stun_to) {
+            (Some(_), Some(to)) => to,
+            _ => {
+                let list = self.stun_servers.lock().unwrap_or_else(|e| e.into_inner());
+                if list.is_empty() {
+                    return;
+                }
+                list[(self.stun_tries as usize / 3) % list.len()]
+            }
         };
+        self.stun_to = Some(server);
         let m = ice::server_request();
         self.stun_txid = Some(m.txid);
         let _ = sock.send_to(&m.encode(None), server);
