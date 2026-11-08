@@ -52,6 +52,8 @@ pub struct Workshop {
     tags_requested: Option<AppId>,
     tags: std::collections::BTreeSet<String>,
     hide_subscribed: bool,
+    /// Search text inside the open tag dropdown (dropdown index, text).
+    tag_search: (usize, String),
 }
 
 impl Workshop {
@@ -98,13 +100,27 @@ impl Extension for Workshop {
 
                 self.loading = false;
             }
+            // Downloads of subscribed items (after subscribing, or before a launch).
+            Event::WorkshopSync { result, .. } => match result {
+                Ok(r) => {
+                    match r.downloaded.as_slice() {
+                        [] => {}
+                        [(_, title)] => ctx.toast(t!("Workshop item downloaded: {title}", title = title)),
+                        many => ctx.toast(t!("{n} Workshop items downloaded", n = many.len())),
+                    }
+                    for (_, title, why) in &r.failed {
+                        ctx.toast(t!("Couldn't download {title}: {why}", title = title, why = why));
+                    }
+                }
+                Err(e) => ctx.toast(t!("Couldn't check Workshop items: {e}", e = e)),
+            },
             Event::WorkshopTags { app_id, result } if Some(*app_id) == self.app => {
                 self.categories = Some(result.clone());
             }
             Event::WorkshopSubscribed { file_id, result } => match result {
                 Ok(()) => {
                     self.subscribed.insert(*file_id);
-                    ctx.toast(t!("Subscribed. Steam will download it with the game."));
+                    ctx.toast(t!("Subscribed. Downloading it if the game is installed…"));
                 }
                 Err(e) => ctx.toast(e.clone()),
             },
@@ -144,94 +160,61 @@ impl Extension for Workshop {
 
             ui.add_space(12.0);
             w::centered(ui, 1300.0, 28.0, |ui| {
-                ui.horizontal(|ui| {
-                    let sorts = [
-                        (Tab::Trending, t!("Most popular")),
-                        (Tab::TopRated, t!("Most liked")),
-                        (Tab::MostSubscribed, t!("Most downloaded")),
-                        (Tab::MostPlayed, t!("Most played")),
-                        (Tab::Newest, t!("Newest")),
-                        (Tab::Updated, t!("Recently updated")),
-                    ];
-                    for (tab, label) in sorts {
-                        if w::chip(ui, &t, label, self.tab == tab && self.submitted.is_empty()).clicked() {
-                            self.tab = tab;
-                            self.page = 1;
-                            self.submitted.clear();
-                            self.search.clear();
-                            self.query(ctx);
+                // One compact toolbar: sort, the game's own tag groups as
+                // dropdowns, "hide what I have", search. Picked tags show
+                // underneath as removable chips.
+                let mut changed = false;
+                ui.horizontal_top(|ui| {
+                    let search_w = 280.0;
+                    let left_w = (ui.available_width() - search_w - 16.0).max(240.0);
+                    ui.allocate_ui_with_layout(vec2(left_w, 30.0), Layout::left_to_right(Align::Center).with_main_wrap(true), |ui| {
+                        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+                        changed |= self.sort_menu(ui, &t);
+                        if let Some(Ok(cats)) = &self.categories {
+                            for (i, cat) in cats.clone().iter().enumerate() {
+                                changed |= self.tag_menu(ui, &t, i, cat);
+                            }
                         }
-                    }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let r = w::search(ui, &t, &mut self.search, t!("Search the Workshop"), 300.0);
+                        w::toggle_chip(ui, &t, t!("Hide items I have"), &mut self.hide_subscribed);
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        let r = w::search(ui, &t, &mut self.search, t!("Search the Workshop"), search_w);
                         if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             self.submitted = self.search.trim().to_string();
                             self.page = 1;
-                            self.query(ctx);
+                            changed = true;
                         }
                     });
                 });
-                // Filters: trending period, tags, hide what you have.
-                ui.add_space(10.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-                    if self.tab == Tab::Trending && self.submitted.is_empty() {
-                        let mut period = if self.period == 0 { 7 } else { self.period };
-                        let before = period;
-                        w::segmented(ui, &t, &mut period, &[(1, &t!("Today")), (7, &t!("Week")), (30, &t!("Month")), (90, &t!("3 months")), (365, &t!("Year"))]);
-                        if period != before {
-                            self.period = period;
-                            self.page = 1;
-                            self.query(ctx);
-                        }
-                    }
-                    w::toggle_chip(ui, &t, t!("Hide items I have"), &mut self.hide_subscribed);
-                });
-                // The game's own filter groups, like the sidebar on Steam's Workshop.
-                let mut changed = false;
-                if let Some(Ok(cats)) = &self.categories {
-                    let cats = cats.clone();
+                if !self.tags.is_empty() || !self.submitted.is_empty() {
                     ui.add_space(8.0);
-                    egui::Frame::new().fill(t.surface).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(t.corner()).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        for cat in &cats {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                                let title = if cat.name.is_empty() { t!("Tags").to_string() } else { cat.name.clone() };
-                                ui.add_sized(vec2(130.0, 28.0), egui::Label::new(w::text_bold(title.to_uppercase(), 11.0, t.text_faint)).truncate());
-                                if cat.single {
-                                    let any = !cat.tags.iter().any(|(tag, _)| self.tags.contains(tag));
-                                    if w::chip(ui, &t, t!("Any"), any).clicked() && !any {
-                                        for (tag, _) in &cat.tags {
-                                            self.tags.remove(tag);
-                                        }
-                                        changed = true;
-                                    }
-                                }
-                                for (tag, shown) in cat.tags.iter().take(40) {
-                                    let on = self.tags.contains(tag);
-                                    if w::chip(ui, &t, shown, on).clicked() {
-                                        if cat.single {
-                                            for (other, _) in &cat.tags {
-                                                self.tags.remove(other);
-                                            }
-                                        }
-                                        if on {
-                                            self.tags.remove(tag);
-                                        } else {
-                                            self.tags.insert(tag.clone());
-                                        }
-                                        changed = true;
-                                    }
-                                }
-                                if cat.tags.len() > 40 {
-                                    ui.label(w::text(t!("+{n} more", n = cat.tags.len() - 40), 12.0, t.text_faint));
-                                }
-                            });
-                            ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                        if !self.submitted.is_empty() && small_chip(ui, &t, &format!("{}  \u{201C}{}\u{201D}", icons::SEARCH, self.submitted)).clicked() {
+                            self.submitted.clear();
+                            self.search.clear();
+                            changed = true;
                         }
-                        if !self.tags.is_empty() && ui.link(w::text(t!("Clear filters"), 12.5, t.accent)).clicked() {
+                        let shown = |tag: &str| -> String {
+                            match &self.categories {
+                                Some(Ok(cats)) => cats.iter().flat_map(|c| c.tags.iter()).find(|(t, _)| t == tag).map(|(_, s)| s.clone()).unwrap_or_else(|| tag.to_string()),
+                                _ => tag.to_string(),
+                            }
+                        };
+                        let mut remove = None;
+                        for tag in &self.tags {
+                            if small_chip(ui, &t, &shown(tag)).clicked() {
+                                remove = Some(tag.clone());
+                            }
+                        }
+                        if let Some(tag) = remove {
+                            self.tags.remove(&tag);
+                            changed = true;
+                        }
+                        if self.tags.len() + usize::from(!self.submitted.is_empty()) > 1 && ui.link(w::text(t!("Clear all"), 12.5, t.accent)).clicked() {
                             self.tags.clear();
+                            self.submitted.clear();
+                            self.search.clear();
                             changed = true;
                         }
                     });
@@ -328,4 +311,130 @@ impl Workshop {
             let _ = Rect::NOTHING;
         });
     }
+}
+
+impl Workshop {
+    fn sort_label(&self) -> String {
+        let name = match self.tab {
+            Tab::Trending => t!("Most popular"),
+            Tab::TopRated => t!("Most liked"),
+            Tab::MostSubscribed => t!("Most downloaded"),
+            Tab::MostPlayed => t!("Most played"),
+            Tab::Newest => t!("Newest"),
+            Tab::Updated => t!("Recently updated"),
+        };
+        if self.tab != Tab::Trending {
+            return name.to_string();
+        }
+        let period = match self.period {
+            1 => t!("today"),
+            30 => t!("this month"),
+            90 => t!("last 3 months"),
+            365 => t!("this year"),
+            _ => t!("this week"),
+        };
+        format!("{name} · {period}")
+    }
+
+    /// Sort order (and, for "Most popular", the period) in one dropdown.
+    fn sort_menu(&mut self, ui: &mut Ui, t: &Theme) -> bool {
+        let r = w::chip(ui, t, &format!("{}  {}  {}", icons::SORT, self.sort_label(), icons::CARET_DOWN), false);
+        let mut changed = false;
+        egui::Popup::from_toggle_button_response(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(230.0).show(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            let sorts = [
+                (Tab::Trending, t!("Most popular")),
+                (Tab::TopRated, t!("Most liked")),
+                (Tab::MostSubscribed, t!("Most downloaded")),
+                (Tab::MostPlayed, t!("Most played")),
+                (Tab::Newest, t!("Newest")),
+                (Tab::Updated, t!("Recently updated")),
+            ];
+            for (tab, label) in sorts {
+                if w::radio(ui, t, self.tab == tab, label).clicked() && self.tab != tab {
+                    self.tab = tab;
+                    changed = true;
+                }
+            }
+            if self.tab == Tab::Trending {
+                ui.add_space(6.0);
+                ui.label(w::text_bold(t!("PERIOD"), 10.5, t.text_faint));
+                let current = if self.period == 0 { 7 } else { self.period };
+                for (days, label) in [(1, t!("Today")), (7, t!("Week")), (30, t!("Month")), (90, t!("3 months")), (365, t!("Year"))] {
+                    if w::radio(ui, t, current == days, label).clicked() && current != days {
+                        self.period = days;
+                        changed = true;
+                    }
+                }
+            }
+        });
+        if changed {
+            self.page = 1;
+        }
+        changed
+    }
+
+    /// One of the game's own tag groups as a dropdown: checkboxes (or a
+    /// single choice), with a search box for long lists.
+    fn tag_menu(&mut self, ui: &mut Ui, t: &Theme, index: usize, cat: &model::WorkshopTagCategory) -> bool {
+        let title = if cat.name.is_empty() { t!("Tags").to_string() } else { cat.name.clone() };
+        let picked: Vec<(String, String)> = cat.tags.iter().filter(|(tag, _)| self.tags.contains(tag)).cloned().collect();
+        let label = match picked.as_slice() {
+            [] => format!("{title}  {}", icons::CARET_DOWN),
+            [one] if cat.single => format!("{title}: {}  {}", one.1, icons::CARET_DOWN),
+            many => format!("{title} · {}  {}", many.len(), icons::CARET_DOWN),
+        };
+        let r = w::chip(ui, t, &label, !picked.is_empty());
+        let mut changed = false;
+        let popup = egui::Popup::from_toggle_button_response(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(260.0);
+        if popup.is_open() && self.tag_search.0 != index {
+            self.tag_search = (index, String::new());
+        }
+        popup.show(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if cat.tags.len() > 10 {
+                let width = ui.available_width();
+                w::search(ui, t, &mut self.tag_search.1, t!("Find"), width);
+                ui.add_space(4.0);
+            }
+            let q = self.tag_search.1.trim().to_lowercase();
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                if cat.single && q.is_empty() && w::radio(ui, t, picked.is_empty(), t!("Any")).clicked() && !picked.is_empty() {
+                    for (tag, _) in &cat.tags {
+                        self.tags.remove(tag);
+                    }
+                    changed = true;
+                }
+                for (tag, shown) in cat.tags.iter().filter(|(_, s)| q.is_empty() || s.to_lowercase().contains(&q)) {
+                    let mut on = self.tags.contains(tag);
+                    let clicked = if cat.single { w::radio(ui, t, on, shown.as_str()).clicked() } else { w::check(ui, t, &mut on, shown.as_str()).changed() };
+                    if clicked {
+                        if cat.single {
+                            for (other, _) in &cat.tags {
+                                self.tags.remove(other);
+                            }
+                            self.tags.insert(tag.clone());
+                        } else if on {
+                            self.tags.insert(tag.clone());
+                        } else {
+                            self.tags.remove(tag);
+                        }
+                        changed = true;
+                    }
+                }
+            });
+        });
+        changed
+    }
+}
+
+/// A small picked-filter chip with an x; clicking removes it.
+fn small_chip(ui: &mut Ui, t: &Theme, label: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(format!("{label}   {}", icons::X), w::font_medium(12.0), Color32::PLACEHOLDER);
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 20.0, 24.0), Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::same(12), t.accent.gamma_multiply(0.14 + 0.08 * hover));
+    p.galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, w::mix(t.accent, t.text, 0.3 * hover));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Remove"))
 }
