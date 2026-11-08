@@ -211,7 +211,8 @@ impl Downloads {
                                 ui::bytes(d.disk_done),
                                 ui::bytes(d.disk_total),
                                 t!("network {rate}", rate = self.rate(d.speed)),
-                                t!("disk {rate}", rate = self.rate(d.disk_speed)),
+                                // Disk in MB/s like Steam; network in the unit picked in settings.
+                                t!("disk {rate}", rate = format!("{}/s", ui::bytes(d.disk_speed))),
                                 t!("{time} left", time = eta)
                             ),
                             12.5,

@@ -1286,7 +1286,8 @@ impl Online {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 let now = std::time::Instant::now();
                 let net = p2.downloaded.load(std::sync::atomic::Ordering::Relaxed);
-                let disk = p2.disk_done.load(std::sync::atomic::Ordering::Relaxed);
+                // Real writes only: files found complete aren't disk activity.
+                let disk = p2.written.load(std::sync::atomic::Ordering::Relaxed);
                 samples.push_back((now, net, disk));
                 while samples.len() > 10 {
                     samples.pop_front();
