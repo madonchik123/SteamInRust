@@ -26,6 +26,8 @@ mod lobby;
 mod p2p;
 mod state;
 mod tables;
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+mod tables32;
 mod vt;
 mod win;
 
@@ -59,7 +61,7 @@ enum Mode {
 fn mode() -> &'static Mode {
     static MODE: OnceLock<Mode> = OnceLock::new();
     MODE.get_or_init(|| {
-        if cfg!(target_arch = "x86_64") && ipc::target().is_some() {
+        if ipc::target().is_some() {
             log!("steamclient: answering for SteamInRust (app {})", state::env_app_id());
             Mode::Ours
         } else {
@@ -68,27 +70,43 @@ fn mode() -> &'static Mode {
     })
 }
 
-type Raw6 = unsafe extern "C" fn(usize, usize, usize, usize, usize, usize) -> usize;
+type Raw8 = unsafe extern "C" fn(usize, usize, usize, usize, usize, usize, usize, usize) -> usize;
 
 /// Each export: forward to Valve's DLL in forward mode, else run ours.
-/// Every export takes at most six integer/pointer arguments, so passing six
-/// through is safe on x64 (extra ones are just ignored by the callee).
+/// Exports take at most eight pointer-sized slots; extra ones are just
+/// ignored by the callee (the caller cleans up, x64 and 32-bit cdecl alike).
 macro_rules! exports {
     ($($name:ident => $ours:expr;)*) => {$(
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> usize {
+        pub unsafe extern "C" fn $name(a: usize, b: usize, c: usize, d: usize, e: usize, f: usize, g: usize, h: usize) -> usize {
             match mode() {
                 Mode::Forward(module) => match win::proc_address(*module, stringify!($name)) {
                     0 => 0,
-                    p => unsafe { std::mem::transmute::<usize, Raw6>(p)(a, b, c, d, e, f) },
+                    p => unsafe { std::mem::transmute::<usize, Raw8>(p)(a, b, c, d, e, f, g, h) },
                 },
                 Mode::Ours => {
+                    let _ = (g, h);
                     let ours: fn(usize, usize, usize, usize, usize, usize) -> usize = $ours;
                     ours(a, b, c, d, e, f)
                 }
             }
         }
     )*};
+}
+
+/// Steam_GetAPICallResult(pipe, call, buffer, size, expected callback,
+/// *failed). Typed, because the 64-bit call handle takes two stack slots
+/// on 32-bit and would shift the generic six-argument form.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Steam_GetAPICallResult(pipe: i32, call: u64, buf: *mut u8, size: i32, expected: i32, failed: *mut bool) -> bool {
+    type Real = unsafe extern "C" fn(i32, u64, *mut u8, i32, i32, *mut bool) -> bool;
+    match mode() {
+        Mode::Forward(module) => match win::proc_address(*module, "Steam_GetAPICallResult") {
+            0 => false,
+            p => unsafe { std::mem::transmute::<usize, Real>(p)(pipe, call, buf, size, expected, failed) },
+        },
+        Mode::Ours => ifaces::call_result(call, buf, size, expected, failed),
+    }
 }
 
 /// CallbackMsg_t
@@ -151,9 +169,6 @@ exports! {
     CreateInterface => |a, b, _, _, _, _| create_interface(a, b);
     Steam_BGetCallback => |a, b, _, _, _, _| get_callback(a, b);
     Steam_FreeLastCallback => |a, _, _, _, _, _| free_last_callback(a);
-    Steam_GetAPICallResult => |_, call, buf, size, expected, failed| {
-        ifaces::call_result(call as u64, buf as *mut u8, size as i32, expected as i32, failed as *mut bool) as usize
-    };
     Steam_IsKnownInterface => |a, _, _, _, _, _| known_interface(a);
     Steam_NotifyMissingInterface => |_, b, _, _, _, _| { known_interface(b); 0 };
     Steam_CreateSteamPipe => |_, _, _, _, _, _| 1;

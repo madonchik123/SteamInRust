@@ -58,7 +58,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
     let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
-    let dll: Vec<u16> = dir.join("steam_api64.dll").to_string_lossy().encode_utf16().chain([0]).collect();
+    let dll: Vec<u16> = dir.join(if cfg!(target_pointer_width = "64") { "steam_api64.dll" } else { "steam_api.dll" }).to_string_lossy().encode_utf16().chain([0]).collect();
     let module = unsafe { LoadLibraryW(dll.as_ptr()) };
     assert!(!module.is_null(), "steam_api64.dll not next to the probe");
     let api = Api(module);
@@ -85,7 +85,7 @@ fn main() {
     let utils = api.iface("SteamUtils", &["v010", "v009"]);
     let apps = api.iface("SteamApps", &["v008"]);
     let stats = api.iface("SteamUserStats", &["v013", "v012"]);
-    let rs = api.iface("SteamRemoteStorage", &["v016"]);
+    let rs = api.iface("SteamRemoteStorage", &["v016", "v014"]);
 
     println!("steam id      {}", call!(api, "SteamAPI_ISteamUser_GetSteamID", fn(usize) -> u64, user));
     println!("logged on     {}", call!(api, "SteamAPI_ISteamUser_BLoggedOn", fn(usize) -> bool, user));

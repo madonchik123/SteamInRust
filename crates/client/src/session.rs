@@ -1952,9 +1952,10 @@ impl Online {
             }
             crate::LaunchMode::SteamInRust => {
                 let token = self.ipc.register(app_id);
-                let dll = launch::steamclient_dll();
+                let is64 = launch::exe_is_64bit(app, dir).unwrap_or(true);
+                let dll = launch::steamclient_dll(is64);
                 let account_id = model::account_id(self.me);
-                let swapped = dll.as_deref().ok_or_else(|| "steamclient DLL missing".to_string()).and_then(|d| launch::swap_begin(&token, d, account_id));
+                let swapped = dll.as_deref().ok_or_else(|| "steamclient DLL missing".to_string()).and_then(|d| launch::swap_begin(&token, d, is64, account_id));
                 let started = swapped.and_then(|_| launch::spawn_with_steamclient(app, dir, args, &self.ipc.env_value(&token), &self.account));
                 match started {
                     Ok(child) => {
