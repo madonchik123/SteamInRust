@@ -184,6 +184,7 @@ cd SteamInRust
 cargo run                  # вход в ваш аккаунт
 cargo run -- --demo        # тестовые данные, без входа
 cargo test --workspace
+cargo xtask steamclient32   # DLL для 32-битных игр (нужен 32-битный MinGW)
 cargo xtask package        # установщик и portable-архив в target/package/dist
 ```
 
