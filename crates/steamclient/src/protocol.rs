@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 /// Environment variable with `<pipe name>|<token>`, set only for games
 /// SteamInRust starts with its own steamclient.
 pub const ENV_IPC: &str = "STEAMINRUST_IPC";
+/// Lobby chat messages starting with this are SteamInRust's own (P2P
+/// set-up between players), never shown to the game.
+pub const SIGNAL_PREFIX: &[u8] = b"\0SIR-P2P\0";
 /// Optional log file for the DLL.
 pub const ENV_LOG: &str = "STEAMINRUST_STEAMCLIENT_LOG";
 
@@ -49,6 +52,88 @@ pub enum Request {
     EndAuth { steam_id: u64 },
     /// An encrypted app ticket with the game's own data inside.
     EncryptedTicket { data: Vec<u8> },
+    /// Wait (up to ~20 s) for things Steam pushed: lobby changes, chat,
+    /// P2P signals. Answered with [`Reply::Events`].
+    Poll,
+    /// ELobbyType (0 private, 1 friends, 2 public, 3 invisible).
+    LobbyCreate { kind: i32, max_members: i32 },
+    LobbyJoin { lobby: u64 },
+    LobbyLeave { lobby: u64 },
+    LobbyList { filters: Vec<LobbyFilter>, count: i32 },
+    /// Replace the lobby's data (owner), or with `member`, our own member data.
+    LobbySetData { lobby: u64, member: bool, data: Vec<(String, String)>, max_members: i32, kind: i32, flags: i32 },
+    LobbyRefresh { lobby: u64 },
+    LobbyChat { lobby: u64, data: Vec<u8> },
+    LobbySetOwner { lobby: u64, owner: u64 },
+    LobbyInvite { lobby: u64, user: u64 },
+    /// Send a small signalling message to another player's SteamInRust
+    /// (P2P connection setup). With `lobby`, also as a lobby message
+    /// addressed to that player.
+    Signal { to: u64, data: Vec<u8>, lobby: u64 },
+    /// Find (or create) a leaderboard by name.
+    LbFind { name: String, create: bool, sort: i32, display: i32 },
+    /// ELeaderboardDataRequest 0 global, 1 around me, 2 friends, 3 users.
+    LbEntries { lb: i32, request: i32, start: i32, end: i32, users: Vec<u64> },
+    /// ELeaderboardUploadScoreMethod 1 keep best, 2 force update.
+    LbUpload { lb: i32, method: i32, score: i32, details: Vec<i32> },
+    /// How many players have each achievement (API name, percent).
+    GlobalPercentages,
+    /// A player's avatar as RGBA. `size`: 0 small (32), 1 medium (64), 2 large (184).
+    Avatar { steam_id: u64, size: u8 },
+    /// An HTTP request for ISteamHTTP. `method`: EHTTPMethod (1 GET, 2 HEAD, 3 POST, 4 PUT, 5 DELETE…).
+    Http { method: i32, url: String, headers: Vec<(String, String)>, params: Vec<(String, String)>, body: Option<(String, Vec<u8>)>, timeout_ms: u32 },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LbEntry {
+    pub steam_id: u64,
+    pub rank: i32,
+    pub score: i32,
+    pub details: Vec<i32>,
+    pub ugc: u64,
+}
+
+/// One RequestLobbyList filter, as Steam's matchmaking server takes it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LobbyFilter {
+    pub key: String,
+    pub value: String,
+    /// ELobbyComparison (-2 ..= 3).
+    pub cmp: i32,
+    /// 0 string, 1 number, 2 open slots, 3 near value, 4 distance.
+    pub kind: i32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LobbyMember {
+    pub steam_id: u64,
+    pub name: String,
+    pub data: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Lobby {
+    pub id: u64,
+    pub owner: u64,
+    pub kind: i32,
+    pub flags: i32,
+    pub max_members: i32,
+    pub num_members: i32,
+    pub data: Vec<(String, String)>,
+    /// Empty in lobby lists (only members see members).
+    pub members: Vec<LobbyMember>,
+}
+
+/// Something Steam told SteamInRust that the game needs to hear.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "e")]
+pub enum GameEvent {
+    LobbyData(Lobby),
+    LobbyMember { lobby: u64, user: u64, name: String, joined: bool },
+    LobbyChat { lobby: u64, sender: u64, data: Vec<u8> },
+    LobbyGameServer { lobby: u64, ip: u32, port: u16, server: u64 },
+    /// A P2P signalling message from another player.
+    Signal { from: u64, data: Vec<u8> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +148,18 @@ pub enum Reply {
     /// EAuthSessionResponse (0 = OK) and the game's owner.
     AuthResult { response: u32, owner: u64 },
     Bytes { data: Vec<u8> },
+    Events { events: Vec<GameEvent> },
+    LobbyCreated { eresult: i32, lobby: u64 },
+    /// EChatRoomEnterResponse (1 = success) and the lobby when joined.
+    LobbyJoined { response: i32, lobby: Option<Lobby> },
+    LobbyList { lobbies: Vec<Lobby> },
+    Result { eresult: i32 },
+    LbFound { found: bool, id: i32, count: i32, sort: i32, display: i32, name: String },
+    LbEntries { total: i32, entries: Vec<LbEntry> },
+    LbUploaded { ok: bool, changed: bool, rank_new: i32, rank_prev: i32 },
+    Percentages { list: Vec<(String, f32)> },
+    Image { width: u32, height: u32, rgba: Vec<u8> },
+    HttpDone { status: i32, headers: Vec<(String, String)>, body: Vec<u8>, timed_out: bool },
     Ok,
     Err { message: String },
 }

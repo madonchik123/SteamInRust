@@ -409,6 +409,7 @@ dependencies = [
  "flate2",
  "fs4",
  "futures-util",
+ "image",
  "local",
  "model",
  "net",
