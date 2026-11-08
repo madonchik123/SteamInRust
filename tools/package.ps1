@@ -23,6 +23,20 @@ if ($LASTEXITCODE -ne 0) { throw 'app build failed' }
 
 Copy-Item target\release\steam-rs.exe $stage
 Copy-Item target\release\steamclient.dll $stage
+
+# The same DLL for 32-bit games, when a 32-bit MinGW is around
+# (i686-w64-mingw32-gcc on PATH, or SIR_MINGW32 = its bin folder).
+$gcc32 = if ($env:SIR_MINGW32) { Join-Path $env:SIR_MINGW32 'i686-w64-mingw32-gcc.exe' } else { (Get-Command i686-w64-mingw32-gcc -ErrorAction SilentlyContinue).Source }
+if ($gcc32 -and (Test-Path $gcc32)) {
+    $env:PATH = (Split-Path $gcc32) + ';' + $env:PATH
+    $env:CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER = $gcc32
+    rustup target add i686-pc-windows-gnu
+    cargo build --release -p steamclient --target i686-pc-windows-gnu
+    if ($LASTEXITCODE -ne 0) { throw '32-bit steamclient build failed' }
+    Copy-Item target\i686-pc-windows-gnu\release\steamclient.dll (Join-Path $stage 'steamclient32.dll')
+} else {
+    Write-Warning 'No 32-bit MinGW found: 32-bit games will start without Steam features (no steamclient32.dll).'
+}
 Copy-Item LICENSE $stage
 Copy-Item README.md $stage
 

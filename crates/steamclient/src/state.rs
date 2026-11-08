@@ -13,20 +13,13 @@ pub mod cb {
     pub const USER_STATS_RECEIVED: i32 = 1101;
     pub const USER_STATS_STORED: i32 = 1102;
     pub const USER_ACHIEVEMENT_STORED: i32 = 1103;
-    pub const LEADERBOARD_FIND_RESULT: i32 = 1104;
-    pub const LEADERBOARD_SCORES_DOWNLOADED: i32 = 1105;
-    pub const LEADERBOARD_SCORE_UPLOADED: i32 = 1106;
     pub const NUMBER_OF_CURRENT_PLAYERS: i32 = 1107;
-    pub const GLOBAL_ACHIEVEMENT_PERCENTAGES_READY: i32 = 1110;
     pub const LEADERBOARD_UGC_SET: i32 = 1111;
     pub const GLOBAL_STATS_RECEIVED: i32 = 1112;
     pub const ENCRYPTED_APP_TICKET_RESPONSE: i32 = 154;
     pub const VALIDATE_AUTH_TICKET_RESPONSE: i32 = 143;
     pub const GET_AUTH_SESSION_TICKET_RESPONSE: i32 = 163;
     pub const GET_TICKET_FOR_WEB_API_RESPONSE: i32 = 168;
-    pub const LOBBY_ENTER: i32 = 504;
-    pub const LOBBY_MATCH_LIST: i32 = 510;
-    pub const LOBBY_CREATED: i32 = 513;
     pub const REMOTE_STORAGE_FILE_SHARE_RESULT: i32 = 1307;
     pub const REMOTE_STORAGE_FILE_WRITE_ASYNC_COMPLETE: i32 = 1331;
     pub const REMOTE_STORAGE_FILE_READ_ASYNC_COMPLETE: i32 = 1332;
@@ -249,6 +242,7 @@ pub fn ensure_session() -> bool {
             }
             let (app, me, ok) = (s.app_id, s.steam_id, s.stats.is_some());
             g.session = Some(*s);
+            crate::lobby::start_events();
             g.post(cb::USER_STATS_RECEIVED, user_stats_received(app, if ok { RESULT_OK } else { RESULT_FAIL }, me));
             true
         }

@@ -1133,6 +1133,17 @@ impl Online {
                     });
                 }
             }
+            crate::ipc::EMSG_MMS_LOBBY_DATA
+            | crate::ipc::EMSG_MMS_LOBBY_CHAT
+            | crate::ipc::EMSG_MMS_USER_JOINED_LOBBY
+            | crate::ipc::EMSG_MMS_USER_LEFT_LOBBY
+            | crate::ipc::EMSG_MMS_LOBBY_GAME_SERVER_SET
+            | crate::ipc::EMSG_P2P_CONNECTION_INFO => {
+                // Lobby changes, lobby chat and P2P signals for running games.
+                if let Some((app_id, event)) = crate::ipc::game_event(&p) {
+                    self.ipc.push(app_id, event);
+                }
+            }
             crate::ipc::EMSG_GAME_CONNECT_TOKENS => {
                 let m: CMsgClientGameConnectTokens = p.body()?;
                 self.auth.lock().unwrap().add_tokens(&m);
@@ -1941,9 +1952,10 @@ impl Online {
             }
             crate::LaunchMode::SteamInRust => {
                 let token = self.ipc.register(app_id);
-                let dll = launch::steamclient_dll();
+                let is64 = launch::exe_is_64bit(app, dir).unwrap_or(true);
+                let dll = launch::steamclient_dll(is64);
                 let account_id = model::account_id(self.me);
-                let swapped = dll.as_deref().ok_or_else(|| "steamclient DLL missing".to_string()).and_then(|d| launch::swap_begin(&token, d, account_id));
+                let swapped = dll.as_deref().ok_or_else(|| "steamclient DLL missing".to_string()).and_then(|d| launch::swap_begin(&token, d, is64, account_id));
                 let started = swapped.and_then(|_| launch::spawn_with_steamclient(app, dir, args, &self.ipc.env_value(&token), &self.account));
                 match started {
                     Ok(child) => {
@@ -2110,6 +2122,100 @@ impl Online {
                 crate::ipc::end_auth(&conn, &self.auth, app_id, steam_id);
                 let _ = reply.send(Reply::Ok);
             }
+            Request::Poll => {
+                let _ = reply.send(Reply::Events { events: Vec::new() });
+            }
+            Request::LobbyCreate { kind, max_members } => {
+                let name = self.my_name();
+                tokio::spawn(async move {
+                    let (eresult, lobby) = crate::ipc::lobby_create(&conn, app_id, kind, max_members, &name).await;
+                    tracing::info!("game {app_id} created lobby {lobby}: result {eresult}");
+                    if eresult == eresult::OK {
+                        crate::ipc::lobby_refresh(&conn, app_id, lobby);
+                    }
+                    let _ = reply.send(Reply::LobbyCreated { eresult, lobby });
+                });
+            }
+            Request::LobbyJoin { lobby } => {
+                let name = self.my_name();
+                tokio::spawn(async move {
+                    let (response, lobby) = crate::ipc::lobby_join(&conn, app_id, lobby, &name).await;
+                    let _ = reply.send(Reply::LobbyJoined { response, lobby });
+                });
+            }
+            Request::LobbyLeave { lobby } => {
+                crate::ipc::lobby_leave(&conn, app_id, lobby);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::LobbyList { filters, count } => {
+                tokio::spawn(async move {
+                    let lobbies = crate::ipc::lobby_list(&conn, app_id, &filters, count).await;
+                    let _ = reply.send(Reply::LobbyList { lobbies });
+                });
+            }
+            Request::LobbySetData { lobby, member, data, max_members, kind, flags } => {
+                tokio::spawn(async move {
+                    let eresult = crate::ipc::lobby_set_data(&conn, app_id, me, lobby, member, &data, max_members, kind, flags).await;
+                    let _ = reply.send(Reply::Result { eresult });
+                });
+            }
+            Request::LobbyRefresh { lobby } => {
+                crate::ipc::lobby_refresh(&conn, app_id, lobby);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::LobbyChat { lobby, data } => {
+                crate::ipc::lobby_chat(&conn, app_id, lobby, 0, &data);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::LobbySetOwner { lobby, owner } => {
+                crate::ipc::lobby_set_owner(&conn, app_id, lobby, owner);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::LobbyInvite { lobby, user } => {
+                crate::ipc::lobby_invite(&conn, app_id, lobby, user);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::Signal { to, data, lobby } => {
+                crate::ipc::signal(&conn, app_id, me, to, &data, lobby);
+                let _ = reply.send(Reply::Ok);
+            }
+            Request::LbFind { name, create, sort, display } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::ipc::lb_find(&conn, app_id, &name, create, sort, display).await);
+                });
+            }
+            Request::LbEntries { lb, request, start, end, users } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::ipc::lb_entries(&conn, app_id, lb, request, start, end, &users).await);
+                });
+            }
+            Request::LbUpload { lb, method, score, details } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::ipc::lb_upload(&conn, app_id, lb, method, score, &details).await);
+                });
+            }
+            Request::GlobalPercentages => {
+                tokio::spawn(async move {
+                    let list = crate::ipc::global_percentages(&conn, app_id).await;
+                    let _ = reply.send(Reply::Percentages { list });
+                });
+            }
+            Request::Avatar { steam_id, size } => {
+                // Default avatar for players we have no persona data for.
+                let hash = self.personas.get(&steam_id).and_then(|p| p.avatar_hash.clone()).unwrap_or_else(|| "fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb".into());
+                tokio::spawn(async move {
+                    let r = match crate::ipc::avatar(&hash, size).await {
+                        Some((width, height, rgba)) => Reply::Image { width, height, rgba },
+                        None => Reply::Err { message: "avatar unavailable".into() },
+                    };
+                    let _ = reply.send(r);
+                });
+            }
+            Request::Http { method, url, headers, params, body, timeout_ms } => {
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::ipc::http_request(method, &url, &headers, &params, body, timeout_ms).await);
+                });
+            }
             Request::EncryptedTicket { data } => {
                 tokio::spawn(async move {
                     let r = match crate::ipc::encrypted_ticket(&conn, app_id, &data).await {
@@ -2120,6 +2226,10 @@ impl Online {
                 });
             }
         }
+    }
+
+    fn my_name(&self) -> String {
+        self.personas.get(&self.me).map(|p| p.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| self.account.clone())
     }
 
     /// What a game learns about the player at start-up.

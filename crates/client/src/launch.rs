@@ -37,13 +37,13 @@ pub fn mode(app: &OwnedApp, install_dir: &Path) -> LaunchMode {
     let Some(exe) = executable(app, install_dir) else {
         return LaunchMode::NoSteam { reason: "no launch option for this system".into() };
     };
-    match pe_is_64bit(&exe) {
-        Some(true) => {}
-        Some(false) => return LaunchMode::NoSteam { reason: "32-bit game".into() },
-        None => return LaunchMode::NoSteam { reason: "game file not found".into() },
-    }
-    if steamclient_dll().is_none() {
-        return LaunchMode::NoSteam { reason: "steamclient.dll not found next to SteamInRust".into() };
+    let Some(is64) = pe_is_64bit(&exe) else {
+        return LaunchMode::NoSteam { reason: "game file not found".into() };
+    };
+    if steamclient_dll(is64).is_none() {
+        return LaunchMode::NoSteam {
+            reason: if is64 { "steamclient.dll not found next to SteamInRust" } else { "steamclient32.dll (for 32-bit games) not found next to SteamInRust" }.into(),
+        };
     }
     LaunchMode::SteamInRust
 }
@@ -158,14 +158,27 @@ fn pe_is_64bit(path: &Path) -> Option<bool> {
     Some(u16::from_le_bytes([hdr[4], hdr[5]]) == 0x8664)
 }
 
-/// Our steamclient DLL: `steamclient64.dll` or `steamclient.dll` (the
-/// cargo build name) next to the app, 64-bit only.
-pub fn steamclient_dll() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("STEAMINRUST_STEAMCLIENT64").map(PathBuf::from) {
-        return pe_is_64bit(&p).filter(|b| *b).map(|_| p);
+/// Our steamclient DLL for 64-bit or 32-bit games, next to the app:
+/// `steamclient64.dll` / `steamclient.dll` (the cargo build name) and
+/// `steamclient32.dll`; while developing, also the cargo i686 build output
+/// (`target/i686-pc-windows-gnu/<profile>/steamclient.dll`).
+pub fn steamclient_dll(is64: bool) -> Option<PathBuf> {
+    let var = if is64 { "STEAMINRUST_STEAMCLIENT64" } else { "STEAMINRUST_STEAMCLIENT32" };
+    if let Some(p) = std::env::var_os(var).map(PathBuf::from) {
+        return (pe_is_64bit(&p) == Some(is64)).then_some(p);
     }
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    ["steamclient64.dll", "steamclient.dll"].iter().map(|n| dir.join(n)).find(|p| pe_is_64bit(p) == Some(true))
+    let mut candidates: Vec<PathBuf> = if is64 {
+        vec![dir.join("steamclient64.dll"), dir.join("steamclient.dll")]
+    } else {
+        vec![dir.join("steamclient32.dll"), dir.join("steamclient.dll")]
+    };
+    if !is64 {
+        if let (Some(profile), Some(target)) = (dir.file_name(), dir.parent()) {
+            candidates.push(target.join("i686-pc-windows-gnu").join(profile).join("steamclient.dll"));
+        }
+    }
+    candidates.into_iter().find(|p| pe_is_64bit(p) == Some(is64))
 }
 
 pub fn spawn(app: &OwnedApp, install_dir: &Path, extra_args: &str) -> Result<Child, String> {
@@ -284,6 +297,8 @@ struct Saved {
     pid: Option<u32>,
     user: Option<u32>,
     dll64: Option<String>,
+    /// `SteamClientDll`, the one 32-bit games load.
+    dll32: Option<String>,
 }
 
 struct Swap {
@@ -299,21 +314,32 @@ struct Swap {
 
 static SWAP: Mutex<Option<Swap>> = Mutex::new(None);
 
-/// Point steam_api at our DLL for one launch.
-pub fn swap_begin(token: &str, dll64: &Path, account_id: u32) -> Result<(), String> {
+/// Point steam_api at our DLL (64-bit or 32-bit) for one launch.
+pub fn swap_begin(token: &str, dll: &Path, is64: bool, account_id: u32) -> Result<(), String> {
     let mut swap = SWAP.lock().unwrap();
     let state = swap.get_or_insert_with(|| Swap {
-        saved: Saved { pid: win::reg_dword(ACTIVE, "pid"), user: win::reg_dword(ACTIVE, "ActiveUser"), dll64: win::reg_string(ACTIVE, "SteamClientDll64") },
+        saved: Saved {
+            pid: win::reg_dword(ACTIVE, "pid"),
+            user: win::reg_dword(ACTIVE, "ActiveUser"),
+            dll64: win::reg_string(ACTIVE, "SteamClientDll64"),
+            dll32: win::reg_string(ACTIVE, "SteamClientDll"),
+        },
         ours: Saved::default(),
         pending: Default::default(),
         running: Default::default(),
     });
-    let dll = dll64.to_string_lossy().into_owned();
+    let dll = dll.to_string_lossy().into_owned();
     let pid = std::process::id();
-    win::set_string(ACTIVE, "SteamClientDll64", &dll)?;
+    win::set_string(ACTIVE, if is64 { "SteamClientDll64" } else { "SteamClientDll" }, &dll)?;
     win::set_dword(ACTIVE, "pid", pid)?;
     win::set_dword(ACTIVE, "ActiveUser", account_id)?;
-    state.ours = Saved { pid: Some(pid), user: Some(account_id), dll64: Some(dll) };
+    state.ours.pid = Some(pid);
+    state.ours.user = Some(account_id);
+    if is64 {
+        state.ours.dll64 = Some(dll);
+    } else {
+        state.ours.dll32 = Some(dll);
+    }
     state.pending.insert(token.to_string());
     state.running.insert(token.to_string());
     Ok(())
@@ -356,8 +382,11 @@ pub fn swap_restore_now() {
 }
 
 fn restore_dll(s: &Swap) {
-    if win::reg_string(ACTIVE, "SteamClientDll64") == s.ours.dll64 {
+    if s.ours.dll64.is_some() && win::reg_string(ACTIVE, "SteamClientDll64") == s.ours.dll64 {
         put_back_string("SteamClientDll64", &s.saved.dll64);
+    }
+    if s.ours.dll32.is_some() && win::reg_string(ACTIVE, "SteamClientDll") == s.ours.dll32 {
+        put_back_string("SteamClientDll", &s.saved.dll32);
     }
     if win::reg_dword(ACTIVE, "ActiveUser") == s.ours.user {
         put_back_dword("ActiveUser", s.saved.user);
@@ -397,17 +426,31 @@ pub fn repair_registry() {
     if SWAP.lock().unwrap().is_some() {
         return;
     }
-    let Some(dll) = win::reg_string(ACTIVE, "SteamClientDll64") else { return };
     let Some(root) = win::reg_string("Software\\Valve\\Steam", "SteamPath") else { return };
-    let valve = PathBuf::from(root.replace('/', "\\")).join("steamclient64.dll");
+    let root = PathBuf::from(root.replace('/', "\\"));
     let pid = win::reg_dword(ACTIVE, "pid").unwrap_or(0);
-    let ours = Path::new(&dll) != valve && !dll.to_lowercase().starts_with(&valve.parent().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default());
-    if ours && !win::is_alive(pid) {
+    if win::is_alive(pid) {
+        return;
+    }
+    let mut fixed = false;
+    for (value, file) in [("SteamClientDll64", "steamclient64.dll"), ("SteamClientDll", "steamclient.dll")] {
+        let Some(dll) = win::reg_string(ACTIVE, value) else { continue };
+        let in_steam = dll.to_lowercase().starts_with(&root.to_string_lossy().to_lowercase());
+        if !in_steam {
+            let _ = win::set_string(ACTIVE, value, &root.join(file).to_string_lossy());
+            fixed = true;
+        }
+    }
+    if fixed {
         tracing::info!("putting Valve's steamclient back in the registry");
-        let _ = win::set_string(ACTIVE, "SteamClientDll64", &valve.to_string_lossy());
         let _ = win::set_dword(ACTIVE, "pid", 0);
         let _ = win::set_dword(ACTIVE, "ActiveUser", 0);
     }
+}
+
+/// Is the game's executable 64-bit? (`None`: no executable / not a program.)
+pub fn exe_is_64bit(app: &OwnedApp, install_dir: &Path) -> Option<bool> {
+    pe_is_64bit(&executable(app, install_dir)?)
 }
 
 pub fn reg_string(sub: &str, value: &str) -> Option<String> {
