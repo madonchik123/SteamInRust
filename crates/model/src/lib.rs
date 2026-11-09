@@ -239,6 +239,9 @@ pub struct CartLine {
     pub price: String,
     /// Friend's account id when bought as a gift.
     pub gift_to: Option<u32>,
+    /// A gift (Steam's "This is a gift"), with or without a recipient yet.
+    #[serde(default)]
+    pub is_gift: bool,
 }
 
 /// Live state of one download, as shown on the Downloads page.

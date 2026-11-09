@@ -181,7 +181,12 @@ pub enum Command {
     WishlistRemove { app_id: AppId },
     LoadCart,
     /// Add a package to the cart, optionally as a gift for a friend.
-    CartAdd { package_id: u32, gift_to: Option<SteamId> },
+    /// Add a copy to the cart: for this account, or as a gift (optionally
+    /// already for a friend).
+    CartAdd { package_id: u32, gift: bool, gift_to: Option<SteamId> },
+    /// Switch a cart line between "For my account" and "This is a gift"
+    /// (optionally for a friend), like the dropdown in Steam's cart.
+    CartModify { line_item_id: u64, gift: bool, gift_to: Option<SteamId> },
     CartRemove { line_item_id: u64 },
     /// Community pages: Workshop items, guides, discussions, hub, achievements.
     Hub(hub::Request),
