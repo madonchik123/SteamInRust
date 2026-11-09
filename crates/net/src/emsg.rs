@@ -18,6 +18,8 @@ pub const CLIENT_REQUEST_FRIEND_DATA: u32 = 815;
 pub const CLIENT_LOGON: u32 = 5514;
 pub const CLIENT_WALLET_INFO_UPDATE: u32 = 5528;
 pub const CLIENT_GET_DEPOT_DECRYPTION_KEY: u32 = 5438;
+/// Add a free game to the account (answered with 5573).
+pub const CLIENT_REQUEST_FREE_LICENSE: u32 = 5572;
 pub const CLIENT_EMAIL_ADDR_INFO: u32 = 5456;
 pub const CLIENT_ADD_FRIEND: u32 = 791;
 pub const CLIENT_REMOVE_FRIEND: u32 = 714;

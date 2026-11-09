@@ -844,55 +844,56 @@ impl Library {
                 }
             });
         });
-        let toggle = |ui: &mut Ui, set_has: bool, label: &str| -> bool { w::chip(ui, t, label, set_has).clicked() };
-        group(ui, t!("Play state"));
-        ui.horizontal_wrapped(|ui| {
-            for (v, label) in [(0u8, t!("Ready to play")), (1, t!("Not installed")), (2, t!("Played")), (3, t!("Never played"))] {
-                if toggle(ui, f.play.contains(&v), label) && !f.play.remove(&v) {
+        // Checkboxes in columns, compact enough to fit the window.
+        {
+            group(ui, t!("Play state"));
+            let play = [(0u8, t!("Ready to play")), (1, t!("Not installed")), (2, t!("Played")), (3, t!("Never played"))];
+            if let Some(i) = check_grid(ui, t, "f-play", 4, play.iter().map(|(v, l)| (f.play.contains(v), l.to_string()))) {
+                let v = play[i].0;
+                if !f.play.remove(&v) {
                     f.play.insert(v);
                 }
             }
-        });
-        group(ui, t!("Type"));
-        ui.horizontal_wrapped(|ui| {
-            for k in &kinds {
-                let label = match k.as_str() {
-                    "game" => t!("Games").to_string(),
-                    "application" => t!("Software").to_string(),
-                    "tool" => t!("Tools").to_string(),
-                    "demo" => t!("Demos").to_string(),
-                    "music" => t!("Soundtracks").to_string(),
-                    other => other.to_string(),
-                };
-                if toggle(ui, f.kinds.contains(k), &label) && !f.kinds.remove(k) {
+            group(ui, t!("Type"));
+            let kind_label = |k: &str| match k {
+                "game" => t!("Games").to_string(),
+                "application" => t!("Software").to_string(),
+                "tool" => t!("Tools").to_string(),
+                "demo" => t!("Demos").to_string(),
+                "music" => t!("Soundtracks").to_string(),
+                other => other.to_string(),
+            };
+            if let Some(i) = check_grid(ui, t, "f-kind", 5, kinds.iter().map(|k| (f.kinds.contains(k), kind_label(k)))) {
+                let k = &kinds[i];
+                if !f.kinds.remove(k) {
                     f.kinds.insert(k.clone());
                 }
             }
-        });
-        group(ui, t!("Genre"));
-        ui.horizontal_wrapped(|ui| {
-            for (g, label) in GENRES.iter().filter(|(g, _)| has_genre(*g)) {
-                if toggle(ui, f.genres.contains(g), &i18n::tr_dyn(label)) && !f.genres.remove(g) {
-                    f.genres.insert(*g);
+            group(ui, t!("Genre"));
+            let genres: Vec<&(u32, &str)> = GENRES.iter().filter(|(g, _)| has_genre(*g)).collect();
+            if let Some(i) = check_grid(ui, t, "f-genre", 3, genres.iter().map(|(g, l)| (f.genres.contains(g), i18n::tr_dyn(l).to_string()))) {
+                let g = genres[i].0;
+                if !f.genres.remove(&g) {
+                    f.genres.insert(g);
                 }
             }
-        });
-        group(ui, t!("Features"));
-        ui.horizontal_wrapped(|ui| {
-            for (c, label) in FEATURES.iter().filter(|(c, _)| has_feature(*c)) {
-                if toggle(ui, f.features.contains(c), &i18n::tr_dyn(label)) && !f.features.remove(c) {
-                    f.features.insert(*c);
+            group(ui, t!("Features"));
+            let features: Vec<&(u32, &str)> = FEATURES.iter().filter(|(c, _)| has_feature(*c)).collect();
+            if let Some(i) = check_grid(ui, t, "f-feature", 3, features.iter().map(|(c, l)| (f.features.contains(c), i18n::tr_dyn(l).to_string()))) {
+                let c = features[i].0;
+                if !f.features.remove(&c) {
+                    f.features.insert(c);
                 }
             }
-        });
-        group(ui, t!("Steam Deck"));
-        ui.horizontal_wrapped(|ui| {
-            for (v, label) in [(3u8, t!("Verified")), (2, t!("Playable")), (1, t!("Unsupported")), (0, t!("Unknown"))] {
-                if toggle(ui, f.deck.contains(&v), label) && !f.deck.remove(&v) {
+            group(ui, t!("Steam Deck"));
+            let deck = [(3u8, t!("Verified")), (2, t!("Playable")), (1, t!("Unsupported")), (0, t!("Unknown"))];
+            if let Some(i) = check_grid(ui, t, "f-deck", 4, deck.iter().map(|(v, l)| (f.deck.contains(v), l.to_string()))) {
+                let v = deck[i].0;
+                if !f.deck.remove(&v) {
                     f.deck.insert(v);
                 }
             }
-        });
+        }
     }
 
     fn sidebar(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
@@ -923,7 +924,7 @@ impl Library {
             let r = w::chip(ui, t, &label, n > 0);
             egui::Popup::from_toggle_button_response(&r)
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .width(360.0)
+                .width(720.0)
                 .show(|ui| self.adv_panel(ui, t, ctx));
         });
         // Collections.
@@ -1855,6 +1856,24 @@ fn uninstall_bar(ui: &mut Ui, t: &Theme, fraction: f32) {
     p.rect_filled(fill, r, t.danger.gamma_multiply(0.35));
     p.rect_stroke(rect, r, Stroke::new(1.0, t.danger.gamma_multiply(0.5)), egui::StrokeKind::Inside);
     p.galley(pos2(rect.center().x - galley.size().x / 2.0, rect.center().y - galley.size().y / 2.0), galley, t.danger);
+}
+
+/// Checkboxes in `cols` columns; returns the index of the one clicked.
+fn check_grid(ui: &mut Ui, t: &Theme, id: &str, cols: usize, items: impl Iterator<Item = (bool, String)>) -> Option<usize> {
+    let mut hit = None;
+    let col_w = (ui.available_width() - 16.0 * (cols as f32 - 1.0)) / cols as f32;
+    egui::Grid::new(id).num_columns(cols).spacing(vec2(16.0, 2.0)).min_col_width(col_w).max_col_width(col_w).show(ui, |ui| {
+        for (i, (on, label)) in items.enumerate() {
+            let mut v = on;
+            if w::check(ui, t, &mut v, w::text(label, 13.0, t.text)).changed() {
+                hit = Some(i);
+            }
+            if i % cols == cols - 1 {
+                ui.end_row();
+            }
+        }
+    });
+    hit
 }
 
 fn fs4_free(path: &std::path::Path) -> Option<u64> {

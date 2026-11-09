@@ -295,7 +295,7 @@ impl State {
             }
             Event::Error(msg) => self.last_error = Some(msg.clone()),
             Event::KeyActivated(_) | Event::WorkshopUnsubscribed { .. } | Event::StoreError(_) => {}
-            Event::WorkshopResults { .. } | Event::WorkshopSubscribed { .. } | Event::WorkshopSync { .. } => {}
+            Event::WorkshopResults { .. } | Event::WorkshopSubscribed { .. } | Event::WorkshopSync { .. } | Event::FreeLicense { .. } => {}
             Event::Download(d) => {
                 self.downloads.insert(d.app_id, d.clone());
             }

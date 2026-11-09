@@ -140,9 +140,12 @@ impl Store {
         w::card(t).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(w::text_bold(t!("TAGS"), 11.0, t.text_faint));
+            // Tags picked elsewhere (a game page, the search below) first,
+            // so every active tag is visible and can be turned off.
+            let extra: Vec<u32> = self.filters.tags.iter().copied().filter(|t| !TAGS.contains(t)).collect();
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                for tag in TAGS {
+                for tag in extra.iter().chain(TAGS.iter()) {
                     let name = self.tag_name(*tag).unwrap_or_else(|| format!("#{tag}"));
                     let on = self.filters.tags.contains(tag);
                     if w::chip(ui, t, &name, on).clicked() {
@@ -154,6 +157,27 @@ impl Store {
                     }
                 }
             });
+            // Any of Steam's tags, by name.
+            ui.add_space(8.0);
+            let width = ui.available_width();
+            w::search(ui, t, &mut self.tag_query, t!("Find a tag…"), width);
+            let query = self.tag_query.trim().to_string();
+            if query.chars().count() >= 2 {
+                let found: Vec<(u32, String)> = self.find_tags(&query).into_iter().filter(|(id, _)| !TAGS.contains(id) && !self.filters.tags.contains(id)).take(12).collect();
+                ui.add_space(6.0);
+                if found.is_empty() {
+                    ui.label(w::text(t!("No tags match."), 12.5, t.text_faint));
+                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    for (id, name) in found {
+                        if w::chip(ui, t, &format!("{}  {name}", icons::PLUS), false).clicked() {
+                            self.filters.tags.push(id);
+                            self.tag_query.clear();
+                        }
+                    }
+                });
+            }
             if !self.filters.tags.is_empty() && ui.link(w::text(t!("Clear tags"), 12.5, t.text_dim)).clicked() {
                 self.filters.tags.clear();
             }

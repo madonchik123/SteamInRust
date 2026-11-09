@@ -850,6 +850,22 @@ async fn online(
                 Some(Command::WishlistRemove { app_id }) => st.wishlist_change(app_id, false, sink),
                 Some(Command::LoadCart) => st.load_cart(sink),
                 Some(Command::CartAdd { package_id, gift_to }) => st.cart_add(package_id, gift_to, sink),
+                Some(Command::RequestFreeLicense { app_id }) => {
+                    let (conn, sink) = (conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        let result = match conn.request(emsg::CLIENT_REQUEST_FREE_LICENSE, &CMsgClientRequestFreeLicense { appids: vec![app_id] }).await {
+                            Ok(p) => match p.body::<CMsgClientRequestFreeLicenseResponse>() {
+                                // Steam answers OK even when it grants nothing (not free here).
+                                Ok(r) if r.eresult() == 1 && (r.granted_appids.contains(&app_id) || !r.granted_packageids.is_empty()) => Ok(()),
+                                Ok(r) if r.eresult() == 1 => Err("Steam didn't add it: this game isn't free in your region, or you already have it.".to_string()),
+                                Ok(r) => Err(format!("Steam refused (error {})", r.eresult())),
+                                Err(e) => Err(e.to_string()),
+                            },
+                            Err(e) => Err(e.to_string()),
+                        };
+                        sink(Event::FreeLicense { app_id, result });
+                    });
+                }
                 Some(Command::CartRemove { line_item_id }) => st.cart_remove(line_item_id, sink),
                 Some(Command::Hub(req)) => {
                     let (conn, me) = (conn.clone(), st.me);
