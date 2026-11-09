@@ -210,7 +210,17 @@ pub async fn run(
     }
 
     let manifests: Vec<depot::Manifest> = jobs.iter().map(|j| j.manifest.clone()).collect();
-    let report = depot::install(cdn, &dir, jobs, progress).await.map_err(|e| e.to_string())?;
+    // A new install creates its folder; an update writes into the game's.
+    let fresh = !dir.exists();
+    let report = match depot::install(cdn, &dir, jobs, progress).await {
+        Ok(r) => r,
+        Err(depot::Error::Cancelled) => {
+            // Unfinished files are reserved at full size: give the space back.
+            remove_unfinished(&req, &dir, fresh);
+            return Err(depot::Error::Cancelled.to_string());
+        }
+        Err(e) => return Err(e.to_string()),
+    };
 
     // Leave the same records Steam does, so both clients agree.
     let cache = req.steam_root.join("depotcache");
@@ -220,6 +230,40 @@ pub async fn run(
     }
     write_app_manifest(&req, &app, &installed, need, owner).map_err(|e| e.to_string())?;
     Ok(report)
+}
+
+/// After a cancelled download: delete the folder of a new install, or just
+/// the unfinished `*.sirpart` files of an update (the game stays playable).
+fn remove_unfinished(req: &InstallRequest, dir: &Path, fresh: bool) {
+    // Only ever inside <library>/steamapps/common/<game>.
+    let common = req.library.join("steamapps").join("common");
+    if dir.parent() != Some(common.as_path()) {
+        return;
+    }
+    if fresh {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => tracing::info!("cancelled: removed {}", dir.display()),
+            Err(e) => tracing::warn!("cancelled: couldn't remove {}: {e}", dir.display()),
+        }
+        return;
+    }
+    let mut stack = vec![dir.to_path_buf()];
+    let mut freed = 0u64;
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for e in entries.flatten() {
+            let path = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(_) if path.extension().is_some_and(|x| x == "sirpart") => {
+                    freed += e.metadata().map(|m| m.len()).unwrap_or(0);
+                    let _ = std::fs::remove_file(&path);
+                }
+                _ => {}
+            }
+        }
+    }
+    tracing::info!("cancelled: removed {} MB of unfinished files in {}", freed / 1_048_576, dir.display());
 }
 
 fn dir_size(dir: &Path) -> u64 {
@@ -297,5 +341,33 @@ mod tests {
         let owned: HashSet<u32> = [99].into_iter().collect();
         let ids: Vec<u32> = pick_depots(&app, &owned, &req).iter().map(|d| d.id).collect();
         assert_eq!(ids, vec![11, 15]);
+    }
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+
+    #[test]
+    fn cancel_removes_only_unfinished_files() {
+        let lib = std::env::temp_dir().join(format!("sir-cancel-{}", std::process::id()));
+        let game = lib.join("steamapps").join("common").join("Game");
+        std::fs::create_dir_all(game.join("data")).unwrap();
+        std::fs::write(game.join("game.exe"), b"done").unwrap();
+        std::fs::write(game.join("data").join("big.pak.sirpart"), b"half").unwrap();
+        let req = InstallRequest { app_id: 1, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![] };
+        // An update: the finished file stays, the unfinished one goes.
+        remove_unfinished(&req, &game, false);
+        assert!(game.join("game.exe").exists());
+        assert!(!game.join("data").join("big.pak.sirpart").exists());
+        // A new install: the whole folder goes.
+        remove_unfinished(&req, &game, true);
+        assert!(!game.exists());
+        // Never outside steamapps/common.
+        let other = lib.join("elsewhere");
+        std::fs::create_dir_all(&other).unwrap();
+        remove_unfinished(&req, &other, true);
+        assert!(other.exists());
+        let _ = std::fs::remove_dir_all(lib);
     }
 }
