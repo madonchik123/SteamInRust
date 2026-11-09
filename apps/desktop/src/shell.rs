@@ -449,7 +449,7 @@ fn wallet_button(ui: &mut Ui, t: &Theme, balance: i64, currency: i32, pending: i
         ui.add(egui::Label::new(w::text(t!("Wallet funds can be spent in the Store and on the Community Market. They can't be withdrawn."), 12.0, t.text_faint)).wrap());
         });
         ui.separator();
-        let item = |ui: &mut Ui, icon: &str, label: &str| ui.add(egui::Button::new(w::text_medium(format!("{icon}   {label}"), 13.5, t.text)).frame(false).min_size(vec2(280.0, 30.0))).clicked();
+        let item = |ui: &mut Ui, icon: &str, label: &str| w::menu_item(ui, t, icon, label).clicked();
         if item(ui, icons::PLUS, t!("Add funds…")) {
             let _ = open::that_detached("https://store.steampowered.com/steamaccount/addfunds");
         }
@@ -476,8 +476,8 @@ fn app_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action
     ui.painter().galley(egui::pos2(rect.left() + 34.0, rect.center().y - galley.size().y / 2.0), galley, t.text);
     ui.painter().text(rect.right_center() - vec2(10.0, 0.0), Align2::CENTER_CENTER, icons::CARET_DOWN, w::font(12.0), t.text_faint);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-    egui::Popup::menu(&resp).width(300.0).show(|ui| {
-        let item = |ui: &mut Ui, icon: &str, label: &str| ui.add(egui::Button::new(w::text_medium(format!("{icon}   {label}"), 13.5, t.text)).frame(false).min_size(vec2(230.0, 32.0))).clicked();
+    egui::Popup::menu(&resp).width(320.0).show(|ui| {
+        let item = |ui: &mut Ui, icon: &str, label: &str| w::menu_item(ui, t, icon, label).clicked();
         if item(ui, icons::GEAR, t!("Settings")) {
             actions.push(Action::Navigate { page: "settings".into(), arg: None });
         }
