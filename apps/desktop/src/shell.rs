@@ -476,7 +476,7 @@ fn app_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action
     ui.painter().galley(egui::pos2(rect.left() + 34.0, rect.center().y - galley.size().y / 2.0), galley, t.text);
     ui.painter().text(rect.right_center() - vec2(10.0, 0.0), Align2::CENTER_CENTER, icons::CARET_DOWN, w::font(12.0), t.text_faint);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-    egui::Popup::menu(&resp).width(250.0).show(|ui| {
+    egui::Popup::menu(&resp).width(300.0).show(|ui| {
         let item = |ui: &mut Ui, icon: &str, label: &str| ui.add(egui::Button::new(w::text_medium(format!("{icon}   {label}"), 13.5, t.text)).frame(false).min_size(vec2(230.0, 32.0))).clicked();
         if item(ui, icons::GEAR, t!("Settings")) {
             actions.push(Action::Navigate { page: "settings".into(), arg: None });

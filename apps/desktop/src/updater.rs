@@ -121,10 +121,18 @@ fn run_setup(setup: &std::path::Path) -> bool {
 }
 
 /// Called every frame: schedules checks and shows the update window.
+/// Built from source (`cargo run`, or anything in a cargo `target` folder):
+/// updates come through git, so don't offer installers on our own.
+fn is_dev_build() -> bool {
+    cfg!(debug_assertions)
+        || std::env::current_exe().is_ok_and(|p| p.components().any(|c| c.as_os_str().eq_ignore_ascii_case("target")))
+}
+
 pub fn tick(app: &mut SteamApp, ctx: &egui::Context) {
     let state = STATE.clone();
     let mut g = state.lock().unwrap();
-    let due = g.last_check.is_none_or(|t| t.elapsed() > EVERY);
+    // Dev builds only check when asked (Settings > Check for updates).
+    let due = !is_dev_build() && g.last_check.is_none_or(|t| t.elapsed() > EVERY);
     if due && !matches!(g.status, Status::Checking | Status::Downloading(..)) {
         g.last_check = Some(Instant::now());
         g.status = Status::Checking;
@@ -367,10 +375,24 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
             w::progress(ui, &t, *f, ui.available_width());
             ui.add_space(8.0);
         }
-        ui.horizontal(|ui| {
+        // Small links on their own row, so long labels (Russian) never overlap.
+        ui.horizontal_wrapped(|ui| {
             if ui.link(w::text(t!("Release page"), 12.5, t.accent)).clicked() {
                 let _ = open::that_detached(&release.page);
             }
+            if let (None, Status::Available(r)) = (&ready, &status) {
+                ui.label(w::text("·", 12.5, t.text_faint));
+                if ui.link(w::text(t!("Skip this version"), 12.5, t.text_dim)).clicked() {
+                    if let Ok(mut g) = STATE.lock() {
+                        g.settings.skipped = Some(r.version.clone());
+                        save(&g.settings);
+                    }
+                    close = true;
+                }
+            }
+        });
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 match (&ready, &status) {
                     (Some(setup), _) => {
@@ -389,13 +411,6 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
                             }
                         } else if w::button(ui, &t, Some(icons::DOWNLOAD), t!("Get the installer"), w::Kind::Primary, w::Size::Md).on_hover_text(t!("This copy wasn't installed with the setup, so it can't replace itself")).clicked() {
                             let _ = open::that_detached(&r.page);
-                        }
-                        if w::button(ui, &t, None, t!("Skip this version"), w::Kind::Ghost, w::Size::Md).clicked() {
-                            if let Ok(mut g) = STATE.lock() {
-                                g.settings.skipped = Some(r.version.clone());
-                                save(&g.settings);
-                            }
-                            close = true;
                         }
                         if w::button(ui, &t, None, t!("Later"), w::Kind::Ghost, w::Size::Md).clicked() {
                             close = true;
@@ -423,19 +438,53 @@ fn notes(ui: &mut Ui, t: &Theme, text: &str) {
     }
     for line in text.lines() {
         let l = line.trim();
-        let clean = |s: &str| s.replace("**", "").replace('`', "");
         if let Some(h) = l.strip_prefix('#') {
-            ui.add_space(4.0);
-            ui.label(w::text_semibold(clean(h.trim_start_matches('#').trim()), 14.0, t.text));
+            let h = h.trim_start_matches('#').trim();
+            // The version heading ("[0.4.0](compare link) (date)"): the title already says it.
+            if h.starts_with('[') {
+                continue;
+            }
+            let h = plain(h);
+            let h = match h.as_str() {
+                "New" | "Features" => t!("New").to_string(),
+                "Fixes" | "Bug Fixes" => t!("Fixes").to_string(),
+                "Faster" | "Performance Improvements" => t!("Faster").to_string(),
+                _ => h,
+            };
+            ui.add_space(6.0);
+            ui.label(w::text_semibold(h, 14.0, t.text));
         } else if let Some(b) = l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")) {
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
                 ui.label(w::text("•", 13.0, t.accent));
-                ui.add(egui::Label::new(w::text(clean(b), 13.0, t.text_dim)).wrap());
+                ui.add(egui::Label::new(w::text(plain(b), 13.0, t.text_dim)).wrap());
             });
         } else if !l.is_empty() {
-            ui.add(egui::Label::new(w::text(clean(l), 13.0, t.text_dim)).wrap());
+            ui.add(egui::Label::new(w::text(plain(l), 13.0, t.text_dim)).wrap());
         }
     }
+}
+
+/// Release-note Markdown as plain text: "[#17](url)" -> "#17", commit links
+/// ("([7562a6d](url))") dropped, bold and code marks removed.
+fn plain(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(open) = rest.find('[') {
+        let Some(close) = rest[open..].find("](").map(|i| open + i) else { break };
+        let Some(end) = rest[close..].find(')').map(|i| close + i) else { break };
+        out.push_str(&rest[..open]);
+        let text = &rest[open + 1..close];
+        // A bare commit hash: leave it out.
+        let commit = text.len() >= 7 && text.chars().all(|c| c.is_ascii_hexdigit());
+        if !commit {
+            out.push_str(text);
+        }
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    let out = out.replace("**", "").replace('`', "").replace(" ()", "").replace("()", "");
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The Updates card in Settings > About.
@@ -483,6 +532,16 @@ pub fn settings_ui(ui: &mut Ui, t: &Theme) {
 
 #[cfg(test)]
 mod tests {
+    use super::plain;
+
+    #[test]
+    fn release_notes_become_plain_text() {
+        let line = "compact Workshop filters ([#17](https://github.com/x/y/issues/17)) ([7562a6d](https://github.com/x/y/commit/7562a6d30e))";
+        assert_eq!(plain(line), "compact Workshop filters (#17)");
+        assert_eq!(plain("**bold** and `code`"), "bold and code");
+        assert_eq!(plain("no links here"), "no links here");
+    }
+
     #[test]
     fn compares_versions() {
         assert!(super::is_newer("v0.2.0", "0.1.9"));
