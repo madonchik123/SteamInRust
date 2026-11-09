@@ -503,11 +503,19 @@ impl Library {
         section(ui, t, t!("Private beta code"), t!("Some betas need a code from the developer."), |ui| {
             ui.add(egui::TextEdit::singleline(&mut s.beta_code).desired_width(260.0).margin(vec2(10.0, 8.0)));
         });
-        if chosen != installed_branch {
-            ui.label(w::text(t!("Switching versions downloads the files for that version."), 13.0, t.away));
-            if w::button(ui, t, Some(icons::DOWNLOAD), t!("Switch now"), w::Kind::Primary, w::Size::Sm).clicked() {
-                self.queue_install(ctx, app, installed.map(|g| g.library.clone()));
+        // Like Steam: an installed game downloads the other version on
+        // request; one that isn't installed just remembers the choice.
+        match installed {
+            Some(g) if chosen != installed_branch => {
+                ui.label(w::text(t!("Switching versions downloads the files for that version."), 13.0, t.away));
+                if w::button(ui, t, Some(icons::DOWNLOAD), t!("Switch now"), w::Kind::Primary, w::Size::Sm).clicked() {
+                    self.queue_install(ctx, app, Some(g.library.clone()));
+                }
             }
+            None if chosen != "public" => {
+                ui.label(w::text(t!("This version installs when you install the game."), 13.0, t.text_dim));
+            }
+            _ => {}
         }
     }
 
