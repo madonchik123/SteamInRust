@@ -211,7 +211,7 @@ impl StoreClient {
                     .as_ref()
                     .and_then(|a| Some(format!("{ASSETS}{}", a.asset_url_format.as_deref()?.replace("${FILENAME}", a.header.as_deref()?))))
                     .unwrap_or_else(|| model::art::header(p.included_appids.first().copied().unwrap_or(0)));
-                (p.packageid, p.name, art)
+                (if p.id != 0 { p.id } else { p.packageid }, p.name, art)
             })
             .collect())
     }
@@ -235,6 +235,9 @@ struct RawPackages {
 
 #[derive(Deserialize)]
 struct RawPackage {
+    /// Steam answers with the package id in `id` (older answers: `packageid`).
+    #[serde(default)]
+    id: u32,
     #[serde(default)]
     packageid: u32,
     #[serde(default)]
@@ -347,4 +350,18 @@ struct RawPlatforms {
     mac: bool,
     #[serde(default)]
     steamos_linux: bool,
+}
+
+#[cfg(test)]
+mod package_tests {
+    use super::*;
+
+    #[test]
+    fn reads_package_ids_from_id() {
+        // Trimmed from a real IStoreBrowseService/GetItems answer.
+        let json = r#"{"response":{"store_items":[{"item_type":1,"id":244390,"success":1,"name":"Rust","appid":252490,"included_appids":[252490],"best_purchase_option":{"packageid":244390}}]}}"#;
+        let r: GetPackages = serde_json::from_str(json).unwrap();
+        let p = &r.response.store_items[0];
+        assert_eq!((p.id, p.name.as_str(), p.included_appids.clone()), (244390, "Rust", vec![252490]));
+    }
 }

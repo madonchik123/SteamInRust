@@ -43,6 +43,14 @@ enum View {
 }
 
 pub struct Store {
+    /// A view opened inside the store, to record in Back/Forward history.
+    nav_out: Option<Option<String>>,
+    /// Set while the app navigates us (Back, Forward, links): don't record again.
+    in_nav: bool,
+    /// A free game being added to the account.
+    free_pending: Option<AppId>,
+    /// Text in the Browse page's tag search box.
+    tag_query: String,
     rt: tokio::runtime::Handle,
     egui: egui::Context,
     api: StoreClient,
@@ -121,6 +129,10 @@ impl Store {
             cart_names: None,
             gift: None,
             history: HashMap::new(),
+            nav_out: None,
+            in_nav: false,
+            free_pending: None,
+            tag_query: String::new(),
             itad_key: String::new(),
             price_log: Default::default(),
             price_log_dirty: false,
@@ -197,6 +209,18 @@ impl Store {
         p.last
     }
 
+    /// Every Steam tag whose name contains `query` (case-insensitive), by name.
+    fn find_tags(&mut self, query: &str) -> Vec<(u32, String)> {
+        self.tag_name(0);
+        let q = query.trim().to_lowercase();
+        let Some(slot) = &self.tags else { return Vec::new() };
+        let Load::Ready(all) = &*slot.lock().unwrap() else { return Vec::new() };
+        let mut found: Vec<(u32, String)> = all.iter().filter(|(_, n)| n.to_lowercase().contains(&q)).map(|(id, n)| (*id, n.clone())).collect();
+        // Names that start with the query first, then alphabetical.
+        found.sort_by_key(|(_, n)| (!n.to_lowercase().starts_with(&q), n.to_lowercase()));
+        found
+    }
+
     fn tag_name(&mut self, id: u32) -> Option<String> {
         if self.tags.is_none() {
             let api = self.api.clone();
@@ -229,6 +253,8 @@ impl Store {
             self.front = None;
             self.details.clear();
             self.browse.clear();
+            // Browse results carry prices too: load them again in the new currency.
+            self.query = None;
             self.tags = None;
             self.ratings.lock().unwrap().clear();
         }
@@ -279,6 +305,11 @@ impl Store {
             self.shot = 0;
             self.shot_centered = None;
         }
+        // Opened from inside the store: put it in the app's Back history,
+        // so Back returns to the previous store page.
+        if !self.in_nav && view != self.view {
+            self.nav_out = Some(view_arg(&view));
+        }
         self.view = view;
     }
 
@@ -316,8 +347,23 @@ impl Extension for Store {
         vec![PageSpec::new("store", "Store", icons::STORE).main().order(10)]
     }
 
+    fn on_event(&mut self, event: &client::Event, ctx: &mut Ctx) {
+        if let client::Event::FreeLicense { app_id, result } = event {
+            if self.free_pending == Some(*app_id) {
+                self.free_pending = None;
+            }
+            match result {
+                Ok(()) => ctx.toast(t!("Added to your library. You can install it from there.")),
+                Err(e) => ctx.toast(i18n::tr_dyn(e).to_string()),
+            }
+        }
+    }
+
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
+        self.in_nav = true;
+        self.nav_out = None;
         match arg {
+            Some(a) if a.starts_with("section:") => self.open(View::Section(a.trim_start_matches("section:").to_string())),
             Some(a) if a.starts_with("search:") => {
                 let q = a.trim_start_matches("search:").to_string();
                 let api = self.api.clone();
@@ -345,9 +391,13 @@ impl Extension for Store {
             }
             None => self.open(View::Home),
         }
+        self.in_nav = false;
     }
 
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {
+        if let Some(arg) = self.nav_out.take() {
+            ctx.navigate("store", arg);
+        }
         let t = ctx.theme.clone();
         // Refresh the owned set only when the library changes size.
         let count = ctx.state.apps.as_ref().map(|a| a.len()).unwrap_or(0) + ctx.local.games.len();
@@ -591,7 +641,7 @@ impl Store {
         let bottom = Rect::from_min_max(pos2(side.left(), side.bottom() - 30.0), side.max);
         let upper = Rect::from_min_max(side.min, pos2(side.right(), bottom.top() - 12.0));
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(upper).layout(Layout::top_down(Align::Min)));
-        c.set_clip_rect(upper.expand(1.0));
+        c.set_clip_rect(upper.expand(1.0).intersect(ui.clip_rect()));
         c.add(egui::Label::new(w::text_bold(&item.name, 22.0, t.text)).truncate());
         c.add_space(8.0);
         if let Some(d) = self.details(item.app_id) {
@@ -963,11 +1013,13 @@ impl Store {
                                 }
                             }
                         } else if d.is_free {
-                            if let Some(pkg) = d.package_id {
-                                if w::button(ui, t, Some(icons::PLUS), t!("Add to library"), w::Kind::Play, w::Size::Lg).on_hover_text(t!("Free to play: adds it to your account through the cart")).clicked() {
-                                    ctx.send(client::Command::CartAdd { package_id: pkg, gift_to: None });
-                                    let _ = open::that_detached("https://store.steampowered.com/cart");
-                                }
+                            // Like Steam's "Play Game": the free license goes on the account.
+                            let pending = self.free_pending == Some(id);
+                            let label = if pending { t!("Adding…") } else { t!("Add to library") };
+                            let r = ui.add_enabled_ui(!pending, |ui| w::button(ui, t, Some(icons::PLUS), label, w::Kind::Play, w::Size::Lg)).inner;
+                            if r.on_hover_text(t!("Free to play: adds it to your account, then you can install it")).clicked() {
+                                self.free_pending = Some(id);
+                                ctx.send(client::Command::RequestFreeLicense { app_id: id });
                             }
                         } else if d.coming_soon {
                             w::pill(ui, t!("Coming soon"), t.text, t.raised);
@@ -1441,5 +1493,19 @@ impl Store {
                 });
             });
         });
+    }
+}
+
+/// The store link for a view, as `on_navigate` reads it.
+fn view_arg(view: &View) -> Option<String> {
+    match view {
+        View::Home => None,
+        View::Section(id) => Some(format!("section:{id}")),
+        View::Search(q) => Some(format!("search:{q}")),
+        View::Creator(kind, name) => Some(format!("{kind}:{name}")),
+        View::App(id) => Some(format!("app:{id}")),
+        View::Browse => Some("browse".into()),
+        View::Wishlist => Some("wishlist".into()),
+        View::Cart => Some("cart".into()),
     }
 }

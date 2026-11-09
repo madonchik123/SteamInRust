@@ -168,6 +168,9 @@ pub enum Command {
     /// EPublishedFileQueryType (0 top rated, 1 newest, 3 trending, 9 most subscribed, 12 text search).
     WorkshopQuery { request_id: u64, app_id: AppId, query_type: u32, page: u32, search: String, days: u32, tags: Vec<String> },
     WorkshopSubscribe { app_id: AppId, file_id: u64 },
+    /// Add a free-to-play game to the account, like Steam's "Play Game" /
+    /// "Add to Library" on a free game's store page.
+    RequestFreeLicense { app_id: AppId },
     /// Download every subscribed Workshop item of an installed game that
     /// is missing or outdated (also done before each launch, like Steam).
     SyncWorkshop { app_id: AppId },
@@ -294,6 +297,8 @@ pub enum Event {
     WorkshopUnsubscribed { file_id: u64, result: Result<(), String> },
     WorkshopResults { request_id: u64, total: u64, items: Vec<model::WorkshopEntry> },
     WorkshopSubscribed { file_id: u64, result: Result<(), String> },
+    /// Answer to [`Command::RequestFreeLicense`].
+    FreeLicense { app_id: AppId, result: Result<(), String> },
     /// Workshop items were downloaded (or failed) for a game.
     WorkshopSync { app_id: AppId, result: Result<crate::workshop::Report, String> },
     WorkshopTags { app_id: AppId, result: Result<Vec<model::WorkshopTagCategory>, String> },
