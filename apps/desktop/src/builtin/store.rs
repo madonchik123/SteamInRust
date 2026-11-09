@@ -87,7 +87,9 @@ pub struct Store {
     query: Option<(store::query::Filters, u32, Shared<(Vec<store::query::QueryItem>, u64)>)>,
     hide_owned: bool,
     wish_items: Option<(Vec<AppId>, Shared<Vec<store::query::QueryItem>>)>,
-    cart_names: Option<(Vec<u32>, Shared<Vec<(u32, String, String)>>)>,
+    cart_names: Option<(Vec<u32>, Shared<Vec<(u32, String, String, AppId)>>)>,
+    /// Steam's "Added to your cart!" popup, for one game.
+    cart_popup: Option<more::CartPopup>,
     gift: Option<more::Gift>,
     history: HashMap<AppId, Shared<store::itad::PriceHistory>>,
     itad_key: String,
@@ -127,6 +129,7 @@ impl Store {
             hide_owned: false,
             wish_items: None,
             cart_names: None,
+            cart_popup: None,
             gift: None,
             history: HashMap::new(),
             nav_out: None,
@@ -449,6 +452,7 @@ impl Extension for Store {
         });
         self.flush_ratings();
         self.gift_dialog(ui, &t, ctx);
+        self.cart_popup_ui(ui, &t, ctx);
     }
 
     fn settings(&mut self, ui: &mut Ui, ctx: &mut Ctx) -> bool {
@@ -1002,14 +1006,14 @@ impl Store {
                             if w::button(ui, t, Some(icons::BOOKS), t!("In your library"), w::Kind::Play, w::Size::Lg).clicked() {
                                 ctx.navigate("library", Some(id.to_string()));
                             }
-                            // Like Steam: you can still buy it, as a gift for a friend.
+                            // Like Steam: you can still buy copies, as gifts.
                             if let Some(pkg) = d.package_id.filter(|_| !d.is_free) {
                                 ui.add_space(8.0);
-                                if w::button(ui, t, Some(icons::USER), t!("Buy as a gift…"), w::Kind::Secondary, w::Size::Lg)
-                                    .on_hover_text(t!("You already own this; buying it again makes a gift for a friend."))
-                                    .clicked()
-                                {
-                                    self.gift = Some(more::Gift { app: id, package: pkg, name: d.name.clone(), to: None, search: String::new(), checks: Default::default() });
+                                let price = d.price.as_ref().map(|p| (p.label(), p.original_label(), p.discount));
+                                self.purchase_actions(ui, t, ctx, id, Some(pkg), &d.name, price.clone(), true);
+                                ui.add_space(8.0);
+                                if let Some((label, original, discount)) = &price {
+                                    w::price_tag(ui, t, label, original.as_deref(), *discount);
                                 }
                             }
                         } else if d.is_free {
@@ -1024,9 +1028,10 @@ impl Store {
                         } else if d.coming_soon {
                             w::pill(ui, t!("Coming soon"), t.text, t.raised);
                             ui.add_space(8.0);
-                            self.purchase_actions(ui, t, ctx, id, None, &d.name);
+                            self.purchase_actions(ui, t, ctx, id, None, &d.name, None, false);
                         } else {
-                            self.purchase_actions(ui, t, ctx, id, d.package_id, &d.name);
+                            let price = d.price.as_ref().map(|p| (p.label(), p.original_label(), p.discount));
+                            self.purchase_actions(ui, t, ctx, id, d.package_id, &d.name, price, false);
                             ui.add_space(8.0);
                             if let Some(p) = &d.price {
                                 if let Some(c) = p.final_ {

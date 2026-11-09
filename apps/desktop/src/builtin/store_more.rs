@@ -17,6 +17,8 @@ pub struct Gift {
     pub package: u32,
     pub name: String,
     pub to: Option<SteamId>,
+    /// The cart line this picks a friend for (None: add a new gift copy).
+    pub line: Option<u64>,
     /// Filter for the friend list.
     pub search: String,
     /// Region checks per friend ("can Steam deliver this gift to them?").
@@ -264,7 +266,8 @@ impl Store {
                     ui.horizontal(|ui| {
                         if let Some(pkg) = it.package_id {
                             if w::icon_button(ui, t, icons::CART, t!("Add to cart"), false, 0).clicked() {
-                                ctx.send(Command::CartAdd { package_id: pkg, gift_to: None });
+                                let owned = self.owned.contains(&it.app_id);
+                                self.add_to_cart(ctx, it.app_id, pkg, &it.name, None, owned);
                             }
                         }
                         if w::icon_button(ui, t, icons::TRASH, t!("Remove from wishlist"), false, 0).clicked() {
@@ -296,35 +299,18 @@ impl Store {
             self.cart_names = Some((pkgs.clone(), slot));
         }
         let names = self.cart_names.as_ref().and_then(|(_, s)| snapshot(s)).and_then(|r| r.ok()).unwrap_or_default();
-        let base = ctx.state.steam_id & 0xFFFF_FFFF_0000_0000;
+        let mut acts = Vec::new();
         for l in &lines {
-            let (name, art) = names.iter().find(|n| n.0 == l.package_id).map(|n| (n.1.clone(), n.2.clone())).unwrap_or_else(|| (format!("#{}", l.package_id), String::new()));
-            w::card(t).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let (r, _) = ui.allocate_exact_size(vec2(150.0, 70.0), Sense::hover());
-                    w::image_or_skeleton(ui, t, r, &art, t.corner_small());
-                    ui.vertical(|ui| {
-                        ui.label(w::text_semibold(&name, 15.0, t.text));
-                        match l.gift_to {
-                            Some(acc) => {
-                                let friend = ctx.state.persona(base | acc as u64);
-                                ui.label(w::text(format!("{}  {}", icons::USER, t!("Gift for {name}", name = friend.name)), 13.0, t.accent));
-                            }
-                            None => {
-                                ui.label(w::text(t!("For your account"), 13.0, t.text_dim));
-                            }
-                        }
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if w::icon_button(ui, t, icons::TRASH, t!("Remove"), false, 0).clicked() {
-                            ctx.send(Command::CartRemove { line_item_id: l.line_item_id });
-                        }
-                        ui.label(w::text_semibold(&l.price, 15.0, t.text));
-                    });
-                });
-            });
+            let (name, art, app) = names.iter().find(|n| n.0 == l.package_id).map(|n| (n.1.clone(), n.2.clone(), n.3)).unwrap_or_else(|| (format!("#{}", l.package_id), String::new(), 0));
+            let owned = app != 0 && self.owned.contains(&app);
+            let same: Vec<model::CartLine> = lines.iter().filter(|x| x.package_id == l.package_id).cloned().collect();
+            if let Some(a) = cart_row(ui, t, ctx, l, &same, &name, &art, None, owned) {
+                acts.push((a, app, l.package_id, name.clone()));
+            }
             ui.add_space(6.0);
+        }
+        for (a, app, pkg, name) in acts {
+            self.cart_act(ctx, a, app, pkg, &name);
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -339,23 +325,96 @@ impl Store {
 
     // ---------- purchase box helpers ----------
 
-    pub(super) fn purchase_actions(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, package: Option<u32>, name: &str) {
+    /// The buy box's buttons, like Steam's: a wishlist heart and one
+    /// "Add to Cart" (or "In Cart") button. Gifts are chosen in the cart.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn purchase_actions(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, package: Option<u32>, name: &str, price: Option<(String, Option<String>, u8)>, owned: bool) {
         let wished = ctx.state.wishlist.as_ref().is_some_and(|w| w.iter().any(|x| x.0 == id));
-        let heart = w::button(ui, t, Some(icons::HEART), if wished { t!("On wishlist") } else { t!("Add to wishlist") }, w::Kind::Secondary, w::Size::Lg);
-        if heart.clicked() {
+        if !owned && w::icon_button(ui, t, icons::HEART, if wished { t!("On wishlist") } else { t!("Add to wishlist") }, wished, 0).clicked() {
             ctx.send(if wished { Command::WishlistRemove { app_id: id } } else { Command::WishlistAdd { app_id: id } });
         }
-        if let Some(pkg) = package {
-            let in_cart = ctx.state.cart.as_ref().is_some_and(|c| c.iter().any(|l| l.package_id == pkg && l.gift_to.is_none()));
-            if in_cart {
-                if w::button(ui, t, Some(icons::CART), t!("In cart"), w::Kind::Play, w::Size::Lg).clicked() {
-                    self.open(View::Cart);
-                }
-            } else if w::button(ui, t, Some(icons::CART), t!("Add to cart"), w::Kind::Primary, w::Size::Lg).clicked() {
-                ctx.send(Command::CartAdd { package_id: pkg, gift_to: None });
+        let Some(pkg) = package else { return };
+        let copies = ctx.state.cart.as_ref().map(|c| c.iter().filter(|l| l.package_id == pkg).count()).unwrap_or(0);
+        ui.add_space(6.0);
+        if copies > 0 && !owned {
+            let label = if copies > 1 { t!("In cart ({n})", n = copies).to_string() } else { t!("In cart").to_string() };
+            if w::button(ui, t, Some(icons::CART), &label, w::Kind::Play, w::Size::Lg).on_hover_text(t!("Add another copy, or make one a gift")).clicked() {
+                self.cart_popup = Some(CartPopup { app: id, package: pkg, name: name.to_string(), price, owned });
             }
-            if w::button(ui, t, Some(icons::USER), t!("Buy as a gift…"), w::Kind::Secondary, w::Size::Lg).clicked() {
-                self.gift = Some(Gift { app: id, package: pkg, name: name.to_string(), to: None, search: String::new(), checks: Default::default() });
+        } else if w::button(ui, t, Some(icons::CART), t!("Add to cart"), w::Kind::Primary, w::Size::Lg).clicked() {
+            self.add_to_cart(ctx, id, pkg, name, price, owned);
+        }
+    }
+
+    /// Add a copy like Steam does: for this account when it can be, else as
+    /// a gift (already owned, or a copy for the account is in the cart).
+    pub(super) fn add_to_cart(&mut self, ctx: &mut Ctx, app: AppId, package: u32, name: &str, price: Option<(String, Option<String>, u8)>, owned: bool) {
+        let mine_in_cart = ctx.state.cart.as_ref().is_some_and(|c| c.iter().any(|l| l.package_id == package && !l.is_gift));
+        ctx.send(Command::CartAdd { package_id: package, gift: owned || mine_in_cart, gift_to: None });
+        self.cart_popup = Some(CartPopup { app, package, name: name.to_string(), price, owned });
+    }
+
+    /// Steam's "Added to your cart!" window: every copy of this game in the
+    /// cart, each for the account or a gift, with Add and Remove.
+    pub(super) fn cart_popup_ui(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        let Some(pop) = self.cart_popup.clone() else { return };
+        let all = ctx.state.cart.clone().unwrap_or_default();
+        let lines: Vec<model::CartLine> = all.iter().filter(|l| l.package_id == pop.package).cloned().collect();
+        let mut close = false;
+        let mut acts = Vec::new();
+        egui::Modal::new(egui::Id::unique("cart-popup")).show(ui.ctx(), |ui| {
+            ui.set_width(620.0);
+            ui.horizontal(|ui| {
+                ui.label(w::text_bold(t!("Added to your cart!"), 20.0, t.text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if w::icon_button(ui, t, icons::X, t!("Close"), false, 0).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            if lines.is_empty() {
+                w::loading(ui, t, t!("Adding…"));
+            }
+            egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+                for l in &lines {
+                    let art = model::art::header(pop.app);
+                    if let Some(a) = cart_row(ui, t, ctx, l, &lines, &pop.name, &art, pop.price.as_ref(), pop.owned) {
+                        acts.push(a);
+                    }
+                    ui.add_space(6.0);
+                }
+            });
+            ui.add_space(10.0);
+            ui.columns(2, |c| {
+                if w::button(&mut c[0], t, None, t!("Continue shopping"), w::Kind::Secondary, w::Size::Md).clicked() {
+                    close = true;
+                }
+                c[1].with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if w::button(ui, t, Some(icons::CART), &t!("View my cart ({n})", n = all.len()), w::Kind::Primary, w::Size::Md).clicked() {
+                        close = true;
+                        self.open(View::Cart);
+                    }
+                });
+            });
+        });
+        for a in acts {
+            self.cart_act(ctx, a, pop.app, pop.package, &pop.name);
+        }
+        if close {
+            self.cart_popup = None;
+        }
+    }
+
+    /// Carry out what a cart row asked for.
+    pub(super) fn cart_act(&mut self, ctx: &mut Ctx, act: CartAct, app: AppId, package: u32, name: &str) {
+        match act {
+            CartAct::SetGift(line, gift) => ctx.send(Command::CartModify { line_item_id: line, gift, gift_to: None }),
+            // Another copy: always a gift (one copy per account).
+            CartAct::AddCopy => ctx.send(Command::CartAdd { package_id: package, gift: true, gift_to: None }),
+            CartAct::Remove(line) => ctx.send(Command::CartRemove { line_item_id: line }),
+            CartAct::ChooseFriend(line, to) => {
+                self.gift = Some(Gift { app, package, name: name.to_string(), to, line: Some(line), search: String::new(), checks: Default::default() });
             }
         }
     }
@@ -430,7 +489,8 @@ impl Store {
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled_ui(g.to.is_some(), |ui| w::button(ui, t, Some(icons::CART), t!("Add gift to cart"), w::Kind::Primary, w::Size::Md)).inner.clicked() {
+                let ok = if g.line.is_some() { t!("Give it to them") } else { t!("Add gift to cart") };
+                if ui.add_enabled_ui(g.to.is_some(), |ui| w::button(ui, t, Some(icons::CART), ok, w::Kind::Primary, w::Size::Md)).inner.clicked() {
                     send = g.to.map(|to| (g.package, to));
                 }
                 if w::button(ui, t, None, t!("Cancel"), w::Kind::Secondary, w::Size::Md).clicked() {
@@ -439,7 +499,10 @@ impl Store {
             });
         });
         if let Some((package, to)) = send {
-            ctx.send(Command::CartAdd { package_id: package, gift_to: Some(to) });
+            match self.gift.as_ref().and_then(|g| g.line) {
+                Some(line) => ctx.send(Command::CartModify { line_item_id: line, gift: true, gift_to: Some(to) }),
+                None => ctx.send(Command::CartAdd { package_id: package, gift: true, gift_to: Some(to) }),
+            }
             close = true;
         }
         if close {
@@ -556,4 +619,100 @@ fn gift_line(t: &Theme, c: &store::gift::GiftCheck, name: &str) -> (&'static str
         Verdict::Unknown(why) if why == "no country" => (icons::INFO, t!("{name} hasn't set a country on their profile, so the region can't be checked.", name = name), t.text_dim),
         Verdict::Unknown(_) => (icons::INFO, t!("Can't compare prices for {name}'s region. Steam decides at checkout.", name = name), t.text_dim),
     }
+}
+
+/// The "Added to your cart!" popup for one game.
+#[derive(Clone)]
+pub struct CartPopup {
+    pub app: AppId,
+    pub package: u32,
+    pub name: String,
+    /// (price, original price, discount %) as shown on the game page.
+    pub price: Option<(String, Option<String>, u8)>,
+    pub owned: bool,
+}
+
+/// What a cart row's controls asked for.
+pub enum CartAct {
+    /// "For my account" (false) or "This is a gift" (true).
+    SetGift(u64, bool),
+    /// Another copy of the same game.
+    AddCopy,
+    Remove(u64),
+    /// Pick (or change) the friend a gift line is for.
+    ChooseFriend(u64, Option<SteamId>),
+}
+
+/// One cart line like Steam's: art, name, "For my account" / "This is a
+/// gift", price, and Add | Remove. `same` = every line of this package.
+#[allow(clippy::too_many_arguments)]
+fn cart_row(ui: &mut Ui, t: &Theme, ctx: &Ctx, l: &model::CartLine, same: &[model::CartLine], name: &str, art: &str, price: Option<&(String, Option<String>, u8)>, owned: bool) -> Option<CartAct> {
+    let mut act = None;
+    // One copy per account: "For my account" only while no other copy is
+    // for the account, and not for a game already owned.
+    let mine_elsewhere = same.iter().any(|x| x.line_item_id != l.line_item_id && !x.is_gift);
+    let can_be_mine = !owned && !mine_elsewhere;
+    w::card(t).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(170.0, 80.0), Sense::hover());
+            w::image_or_skeleton(ui, t, r, art, t.corner_small());
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                ui.add(egui::Label::new(w::text_semibold(name, 15.0, t.text)).truncate());
+                ui.add_space(4.0);
+                let current = if l.is_gift { t!("This is a gift") } else { t!("For my account") };
+                egui::ComboBox::from_id_salt(("cart-line", l.line_item_id)).selected_text(current).width(170.0).show_ui(ui, |ui| {
+                    let mine = ui.add_enabled(can_be_mine || !l.is_gift, egui::Button::selectable(!l.is_gift, t!("For my account")));
+                    let mine = if owned { mine.on_disabled_hover_text(t!("You already own this game")) } else { mine.on_disabled_hover_text(t!("Another copy is already for your account")) };
+                    if mine.clicked() && l.is_gift {
+                        act = Some(CartAct::SetGift(l.line_item_id, false));
+                    }
+                    if ui.add(egui::Button::selectable(l.is_gift, t!("This is a gift"))).clicked() && !l.is_gift {
+                        act = Some(CartAct::SetGift(l.line_item_id, true));
+                    }
+                });
+                if l.is_gift {
+                    let base = ctx.state.steam_id & 0xFFFF_FFFF_0000_0000;
+                    let to = l.gift_to.map(|acc| base | acc as u64);
+                    ui.horizontal(|ui| {
+                        match to {
+                            Some(id) => {
+                                ui.label(w::text(format!("{}  {}", icons::USER, t!("For {name}", name = ctx.state.persona(id).name)), 12.5, t.accent));
+                                if ui.link(w::text(t!("Change"), 12.5, t.text_dim)).clicked() {
+                                    act = Some(CartAct::ChooseFriend(l.line_item_id, to));
+                                }
+                            }
+                            None => {
+                                if ui.link(w::text(format!("{}  {}", icons::USER, t!("Choose a friend…")), 12.5, t.accent)).on_hover_text(t!("Or pick who gets it on Steam's checkout page")).clicked() {
+                                    act = Some(CartAct::ChooseFriend(l.line_item_id, None));
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                ui.vertical(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| match price {
+                        Some((label, original, discount)) => w::price_tag(ui, t, label, original.as_deref(), *discount),
+                        None => {
+                            ui.label(w::text_semibold(&l.price, 15.0, t.text));
+                        }
+                    });
+                    ui.add_space(10.0);
+                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        if ui.link(w::text(t!("Remove"), 12.5, t.text_dim)).clicked() {
+                            act = Some(CartAct::Remove(l.line_item_id));
+                        }
+                        ui.label(w::text("|", 12.5, t.text_faint));
+                        if ui.link(w::text(t!("Add"), 12.5, t.text_dim)).on_hover_text(t!("Another copy, as a gift")).clicked() {
+                            act = Some(CartAct::AddCopy);
+                        }
+                    });
+                });
+            });
+        });
+    });
+    act
 }

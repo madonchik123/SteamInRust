@@ -186,7 +186,8 @@ impl StoreClient {
     }
 
     /// Names and art for packages (cart lines are packages, not apps).
-    pub async fn packages(&self, ids: &[u32]) -> Result<Vec<(u32, String, String)>> {
+    /// (package id, name, header art, first app in it) for each package.
+    pub async fn packages(&self, ids: &[u32]) -> Result<Vec<(u32, String, String, AppId)>> {
         let input = serde_json::json!({
             "ids": ids.iter().map(|id| serde_json::json!({ "packageid": id })).collect::<Vec<_>>(),
             "context": { "language": self.language, "country_code": self.country.to_uppercase() },
@@ -211,7 +212,7 @@ impl StoreClient {
                     .as_ref()
                     .and_then(|a| Some(format!("{ASSETS}{}", a.asset_url_format.as_deref()?.replace("${FILENAME}", a.header.as_deref()?))))
                     .unwrap_or_else(|| model::art::header(p.included_appids.first().copied().unwrap_or(0)));
-                (if p.id != 0 { p.id } else { p.packageid }, p.name, art)
+                (if p.id != 0 { p.id } else { p.packageid }, p.name, art, p.included_appids.first().copied().unwrap_or(0))
             })
             .collect())
     }
