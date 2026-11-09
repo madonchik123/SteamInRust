@@ -308,6 +308,24 @@ pub fn icon_button(ui: &mut Ui, t: &Theme, icon: &str, tooltip: &str, active: bo
 }
 
 /// Top navigation tab with an animated underline.
+/// A row in a dropdown menu: icon and label, the full menu width, with a
+/// highlight while hovered so it's clear which item a click will hit.
+pub fn menu_item(ui: &mut Ui, t: &Theme, icon: &str, label: &str) -> Response {
+    let width = ui.available_width().max(160.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.08);
+        let p = ui.painter();
+        if hover > 0.0 {
+            p.rect_filled(rect, t.corner_small(), t.accent.gamma_multiply(0.16 * hover));
+        }
+        let y = rect.center().y;
+        p.text(pos2(rect.left() + 18.0, y), egui::Align2::CENTER_CENTER, icon, font(14.0), mix(t.text_dim, t.accent, hover));
+        p.text(pos2(rect.left() + 36.0, y), egui::Align2::LEFT_CENTER, label, font_medium(13.5), mix(t.text_dim, t.text, 0.6 + 0.4 * hover));
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 pub fn nav_tab(ui: &mut Ui, t: &Theme, label: &str, selected: bool, height: f32) -> Response {
     // Laid out without a color, so the state color below applies (a fixed
     // color made every tab look the same, hovered or not).
