@@ -535,16 +535,43 @@ pub fn game_tile(ui: &mut Ui, t: &Theme, url: &str, fallback_url: &str, title: &
 
 /// Price with an optional discount badge and struck-through original.
 pub fn price_tag(ui: &mut Ui, t: &Theme, label: &str, original: Option<&str>, discount: u8) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        if discount > 0 {
-            pill(ui, &format!("-{discount}%"), Color32::from_rgb(0xBE, 0xEE, 0x11), t.discount);
-            if let Some(o) = original {
-                ui.label(text(o, 12.0, t.text_faint).strikethrough());
-            }
-        }
+    if discount == 0 {
         ui.label(text_semibold(label, 14.0, t.text));
-    });
+        return;
+    }
+    // Like Steam: a green "-10%" block joined to a dark block with the old
+    // price struck through above the new one.
+    let pct = ui.painter().layout_no_wrap(format!("-{discount}%"), font_bold(17.0), Color32::from_rgb(0xBE, 0xEE, 0x11));
+    let new = ui.painter().layout_no_wrap(label.to_string(), font_semibold(14.0), t.text);
+    let old = original.map(|o| ui.painter().layout_no_wrap(o.to_string(), font(11.0), t.text_faint));
+    let h = 36.0;
+    let pct_w = pct.size().x + 16.0;
+    let price_w = new.size().x.max(old.as_ref().map(|g| g.size().x).unwrap_or(0.0)) + 16.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(pct_w + price_w, h), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let p = ui.painter();
+    let left = Rect::from_min_size(rect.min, vec2(pct_w, h));
+    let right = Rect::from_min_max(egui::pos2(left.right(), rect.top()), rect.max);
+    let r = CornerRadius::same(3);
+    p.rect_filled(left, CornerRadius { nw: r.nw, sw: r.sw, ne: 0, se: 0 }, t.discount);
+    p.rect_filled(right, CornerRadius { nw: 0, sw: 0, ne: r.ne, se: r.se }, Color32::from_black_alpha(140));
+    p.galley(left.center() - pct.size() / 2.0, pct, Color32::from_rgb(0xBE, 0xEE, 0x11));
+    match old {
+        Some(old) => {
+            let x = right.right() - 8.0;
+            let top = egui::pos2(x - old.size().x, right.top() + 3.0);
+            let strike_y = top.y + old.size().y / 2.0;
+            let old_w = old.size().x;
+            p.galley(top, old, t.text_faint);
+            p.line_segment([egui::pos2(top.x - 1.0, strike_y), egui::pos2(top.x + old_w + 1.0, strike_y)], Stroke::new(1.0, t.text_faint));
+            p.galley(egui::pos2(x - new.size().x, right.bottom() - 3.0 - new.size().y), new, t.text);
+        }
+        None => {
+            p.galley(right.center() - new.size() / 2.0, new, t.text);
+        }
+    }
 }
 
 // ---------- layout helpers ----------
