@@ -217,7 +217,7 @@ impl Store {
         });
         c.with_layout(Layout::right_to_left(Align::Center), |ui| {
             match &it.formatted_price {
-                Some(p) => w::price_tag(ui, t, p, None, it.price.discount),
+                Some(p) => w::price_tag(ui, t, p, it.formatted_original.as_deref(), it.price.discount),
                 None => {
                     ui.label(w::text_semibold(t!("Free"), 14.0, t.text));
                 }
@@ -336,10 +336,10 @@ impl Store {
         let Some(pkg) = package else { return };
         let copies = ctx.state.cart.as_ref().map(|c| c.iter().filter(|l| l.package_id == pkg).count()).unwrap_or(0);
         ui.add_space(6.0);
-        if copies > 0 && !owned {
+        if copies > 0 {
             let label = if copies > 1 { t!("In cart ({n})", n = copies).to_string() } else { t!("In cart").to_string() };
             if w::button(ui, t, Some(icons::CART), &label, w::Kind::Play, w::Size::Lg).on_hover_text(t!("Add another copy, or make one a gift")).clicked() {
-                self.cart_popup = Some(CartPopup { app: id, package: pkg, name: name.to_string(), price, owned });
+                self.cart_popup = Some(CartPopup { app: id, package: pkg, name: name.to_string(), price, owned, waiting: false });
             }
         } else if w::button(ui, t, Some(icons::CART), t!("Add to cart"), w::Kind::Primary, w::Size::Lg).clicked() {
             self.add_to_cart(ctx, id, pkg, name, price, owned);
@@ -351,7 +351,7 @@ impl Store {
     pub(super) fn add_to_cart(&mut self, ctx: &mut Ctx, app: AppId, package: u32, name: &str, price: Option<(String, Option<String>, u8)>, owned: bool) {
         let mine_in_cart = ctx.state.cart.as_ref().is_some_and(|c| c.iter().any(|l| l.package_id == package && !l.is_gift));
         ctx.send(Command::CartAdd { package_id: package, gift: owned || mine_in_cart, gift_to: None });
-        self.cart_popup = Some(CartPopup { app, package, name: name.to_string(), price, owned });
+        self.cart_popup = Some(CartPopup { app, package, name: name.to_string(), price, owned, waiting: true });
     }
 
     /// Steam's "Added to your cart!" window: every copy of this game in the
@@ -360,6 +360,16 @@ impl Store {
         let Some(pop) = self.cart_popup.clone() else { return };
         let all = ctx.state.cart.clone().unwrap_or_default();
         let lines: Vec<model::CartLine> = all.iter().filter(|l| l.package_id == pop.package).cloned().collect();
+        // Every copy removed: nothing left to show.
+        if lines.is_empty() && !pop.waiting {
+            self.cart_popup = None;
+            return;
+        }
+        if !lines.is_empty() && pop.waiting {
+            if let Some(p) = &mut self.cart_popup {
+                p.waiting = false;
+            }
+        }
         let mut close = false;
         let mut acts = Vec::new();
         egui::Modal::new(egui::Id::unique("cart-popup")).show(ui.ctx(), |ui| {
@@ -386,11 +396,11 @@ impl Store {
                 }
             });
             ui.add_space(10.0);
-            ui.columns(2, |c| {
-                if w::button(&mut c[0], t, None, t!("Continue shopping"), w::Kind::Secondary, w::Size::Md).clicked() {
+            ui.horizontal(|ui| {
+                if w::button(ui, t, None, t!("Continue shopping"), w::Kind::Secondary, w::Size::Md).clicked() {
                     close = true;
                 }
-                c[1].with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if w::button(ui, t, Some(icons::CART), &t!("View my cart ({n})", n = all.len()), w::Kind::Primary, w::Size::Md).clicked() {
                         close = true;
                         self.open(View::Cart);
@@ -630,6 +640,8 @@ pub struct CartPopup {
     /// (price, original price, discount %) as shown on the game page.
     pub price: Option<(String, Option<String>, u8)>,
     pub owned: bool,
+    /// Just added: Steam hasn't sent the cart back yet.
+    pub waiting: bool,
 }
 
 /// What a cart row's controls asked for.

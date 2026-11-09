@@ -96,6 +96,8 @@ pub struct QueryItem {
     pub capsule: Option<String>,
     pub price: Price,
     pub formatted_price: Option<String>,
+    /// The price before the discount, as Steam formats it (sales only).
+    pub formatted_original: Option<String>,
     pub package_id: Option<u32>,
     pub giftable: bool,
     pub review_label: Option<String>,
@@ -271,6 +273,7 @@ impl From<RawItem> for QueryItem {
             capsule,
             price: Price { initial: initial.or(final_), final_, discount, currency: String::new() },
             formatted_price: bpo.as_ref().and_then(|b| b.formatted_final_price.clone()),
+            formatted_original: bpo.as_ref().filter(|b| b.discount_pct.unwrap_or(0) > 0).and_then(|b| b.formatted_original_price.clone()),
             package_id: bpo.as_ref().and_then(|b| b.packageid),
             giftable: bpo.as_ref().and_then(|b| b.user_can_purchase_as_gift).unwrap_or(false),
             review_label: reviews.as_ref().map(|r| r.review_score_label.clone()).filter(|l| !l.is_empty()),
@@ -325,6 +328,7 @@ struct RawPurchase {
     original_price_in_cents: Option<String>,
     discount_pct: Option<u8>,
     formatted_final_price: Option<String>,
+    formatted_original_price: Option<String>,
     user_can_purchase_as_gift: Option<bool>,
 }
 

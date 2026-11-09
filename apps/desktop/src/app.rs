@@ -298,14 +298,9 @@ impl SteamApp {
                 }
                 // Store actions that failed (they used to be silent).
                 Event::StoreError(e) => self.toast(now, i18n::tr_dyn(e), ""),
-                // Confirm cart additions only when the cart really grew.
+                // Additions show in the store's "Added to your cart!" popup.
                 Event::Cart(lines) => {
-                    let before = self.cart_count;
                     self.cart_count = Some(lines.len());
-                    if before.is_some_and(|b| lines.len() > b) {
-                        let gift = lines.last().is_some_and(|l| l.gift_to.is_some());
-                        self.toast(now, if gift { i18n::tr("Gift added to your cart") } else { i18n::tr("Added to your cart") }, "");
-                    }
                 }
                 Event::LoginFailed(_) => {
                     self.prefs.auto_login = None;
