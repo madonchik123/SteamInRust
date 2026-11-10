@@ -202,29 +202,34 @@ impl Downloads {
                         // Downloading / Writing to disk / Checking existing files…
                         ui.label(w::text_semibold(i18n::tr_dyn(d.activity()), 13.5, t.accent));
                         let width = (ui.available_width() - 120.0).max(80.0);
-                        w::progress(ui, t, d.disk_done as f32 / d.disk_total.max(1) as f32, width);
-                        let left = d.download_total.saturating_sub(d.downloaded);
-                        let eta = if d.speed > 0 && !d.paused { ui::playtime(left / d.speed / 60 + 1) } else { "—".into() };
-                        ui.label(w::text(
+                        // Like Steam: an update shows only its own size (0 / 6 GB),
+                        // a verification how much of the game it has checked.
+                        let (done, total) = d.shown();
+                        w::progress(ui, t, d.fraction(), width);
+                        let line = if d.verifying() {
+                            format!("{} / {}   ·   {}%", ui::bytes(done), ui::bytes(total), (d.fraction() * 100.0) as u32)
+                        } else {
+                            let left = d.download_total.saturating_sub(d.downloaded);
+                            let eta = if d.speed > 0 && !d.paused { ui::playtime(left / d.speed / 60 + 1) } else { "—".into() };
                             format!(
                                 "{} / {}   ·   {}   ·   {}   ·   {}",
-                                ui::bytes(d.disk_done),
-                                ui::bytes(d.disk_total),
+                                ui::bytes(done),
+                                ui::bytes(total),
                                 t!("network {rate}", rate = self.rate(d.speed)),
                                 // Disk in MB/s like Steam; network in the unit picked in settings.
                                 t!("disk {rate}", rate = format!("{}/s", ui::bytes(d.disk_speed))),
                                 t!("{time} left", time = eta)
-                            ),
-                            12.5,
-                            t.text_dim,
-                        ));
+                            )
+                        };
+                        ui.label(w::text(line, 12.5, t.text_dim));
                         notes(ui, t, d);
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if w::icon_button(ui, t, ui::icons::X, t!("Cancel"), false, 0).clicked() {
-                            ctx.send(client::Command::CancelDownload { app_id: d.app_id });
+                            ctx.send(if d.verifying() { client::Command::CancelVerify { app_id: d.app_id } } else { client::Command::CancelDownload { app_id: d.app_id } });
                         }
-                        if d.paused {
+                        if d.verifying() {
+                        } else if d.paused {
                             if w::icon_button(ui, t, ui::icons::PLAY, t!("Resume"), false, 0).clicked() {
                                 ctx.send(client::Command::ResumeDownload { app_id: d.app_id });
                             }
@@ -265,7 +270,9 @@ impl Downloads {
                     if let Some(e) = &d.error {
                         ui.label(w::text(i18n::tr_dyn(e), 12.5, t.danger));
                     } else {
-                        ui.label(w::text(ui::bytes(d.disk_total), 12.5, t.text_faint));
+                        // What came over the network (an update's own size).
+                        let size = if d.download_total > 0 { d.download_total } else { d.disk_total };
+                        ui.label(w::text(ui::bytes(size), 12.5, t.text_faint));
                     }
                 });
                 notes(ui, t, &d);

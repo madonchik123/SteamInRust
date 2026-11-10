@@ -51,7 +51,7 @@ fn main() {
                     steam_root: dir.clone(),
                     branch: "public".into(),
                     language: "english".into(),
-                    skip_dlc: vec![],
+                    skip_dlc: vec![], add_dlc: vec![],
                 }));
             }
             Event::Download(d) => println!(

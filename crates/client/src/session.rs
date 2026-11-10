@@ -330,6 +330,8 @@ struct Online {
     /// shown at start-up). Installs wait for it: the saved depot info may be
     /// out of date.
     apps_fresh: bool,
+    /// Games whose files are being verified, with the check's progress.
+    verifying: HashMap<AppId, std::sync::Arc<local::manage::Progress>>,
     limit_kbps: u64,
     concurrency: u32,
     refresh_token: String,
@@ -450,6 +452,7 @@ async fn online(
         active_req: None,
         downloads_restored: false,
         apps_fresh: false,
+        verifying: HashMap::new(),
         active: None,
         limit_kbps: 0,
         concurrency: 16,
@@ -481,6 +484,8 @@ async fn online(
     let (launch_tx, mut launch_rx) = mpsc::unbounded_channel::<(AppId, std::path::PathBuf, String)>();
     // Launches that waited for Workshop downloads (Steam Cloud comes next).
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<(AppId, std::path::PathBuf, String)>();
+    // Verifications that ended.
+    let (vf_tx, mut vf_rx) = mpsc::unbounded_channel::<(AppId, local::manage::VerifyReport)>();
     // Reconnect attempts, and checks of a connection that went quiet.
     let (rc_tx, mut rc_rx) = mpsc::unbounded_channel::<Result<(Connection, net::connection::Events, Logon), Error>>();
     let (probe_tx, mut probe_rx) = mpsc::unbounded_channel::<(u64, bool)>();
@@ -606,6 +611,52 @@ async fn online(
                     st.launched_dirs.insert(app_id, install_dir);
                     let token = st.ipc.register(app_id);
                     sink(Event::GameAttached { app_id, env: st.ipc.env_value(&token) });
+                }
+                // Like Steam: no playing while the game's files are changing.
+                Some(Command::Launch { app_id, .. }) if st.verifying.contains_key(&app_id) || st.active.as_ref().is_some_and(|(a, _)| *a == app_id) => {
+                    sink(Event::StoreError("This game is being updated or verified. You can play when that finishes.".into()));
+                }
+                Some(Command::VerifyGame { game, steam_root }) => {
+                    let app_id = game.app_id;
+                    if st.running.contains_key(&app_id) {
+                        sink(Event::VerifyFinished { app_id, result: Err("Close the game before verifying its files.".into()) });
+                    } else if st.verifying.contains_key(&app_id) || st.active.as_ref().is_some_and(|(a, _)| *a == app_id) {
+                        sink(Event::VerifyFinished { app_id, result: Err("This game is already being updated or verified.".into()) });
+                    } else {
+                        let progress = std::sync::Arc::new(local::manage::Progress::default());
+                        st.verifying.insert(app_id, progress.clone());
+                        // The check runs on a blocking thread; this task shows its
+                        // progress on the Downloads page twice a second and then
+                        // reports the result, so no progress arrives after it.
+                        let (p2, sink2, tx) = (progress.clone(), sink.clone(), vf_tx.clone());
+                        let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+                        let result2 = result.clone();
+                        tokio::spawn(async move {
+                            loop {
+                                if let Some(report) = result2.lock().unwrap().take() {
+                                    let _ = tx.send((app_id, report));
+                                    break;
+                                }
+                                sink2(Event::Download(model::DownloadStatus {
+                                    app_id,
+                                    phase: model::DownloadPhase::Verifying,
+                                    disk_done: p2.done_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                                    disk_total: p2.total_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                                    ..Default::default()
+                                }));
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                            }
+                        });
+                        tokio::task::spawn_blocking(move || {
+                            let report = local::manage::verify(&steam_root, &game, &progress);
+                            *result.lock().unwrap() = Some(report);
+                        });
+                    }
+                }
+                Some(Command::CancelVerify { app_id }) => {
+                    if let Some(p) = st.verifying.get(&app_id) {
+                        p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
                 Some(Command::Launch { app_id, install_dir, args }) => {
                     // Like Steam: subscribed Workshop items are downloaded
@@ -806,7 +857,9 @@ async fn online(
                 Some(Command::LoadAchievements { app_id, language }) => st.load_achievements(app_id, language, sink),
                 Some(Command::ActivateKey { key }) => st.activate_key(key, sink),
                 Some(Command::Install(req)) => {
-                    if st.active.as_ref().map(|a| a.0) != Some(req.app_id) && !st.queue.iter().any(|q| q.app_id == req.app_id) {
+                    // A download being cancelled doesn't count: "Apply now" restarts it.
+                    let running = st.active.as_ref().is_some_and(|(a, p)| *a == req.app_id && !p.cancel.load(std::sync::atomic::Ordering::Relaxed));
+                    if !running && !st.queue.iter().any(|q| q.app_id == req.app_id) {
                         st.queue.push_back(req);
                     }
                     st.pump(sink, &dl_tx);
@@ -921,6 +974,10 @@ async fn online(
                 let _ = st.launch(app_id, &dir, &args, sink, &exit_tx);
             }
             Some((app_id, dir, args)) = ws_rx.recv() => launch_cloud!(app_id, dir, args),
+            Some((app_id, report)) = vf_rx.recv() => {
+                st.verifying.remove(&app_id);
+                sink(Event::VerifyFinished { app_id, result: Ok(report) });
+            }
             Some(call) = ipc_rx.recv() => st.ipc_call(call, sink),
             Some(app_id) = exit_rx.recv() => {
                 st.running.remove(&app_id);

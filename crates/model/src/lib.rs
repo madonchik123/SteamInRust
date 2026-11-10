@@ -271,12 +271,33 @@ pub struct DownloadStatus {
 }
 
 impl DownloadStatus {
+    /// (done, total) for the progress bar, like Steam: the bytes this
+    /// download fetches (an update shows only the update, e.g. 0 / 6 GB).
+    /// While existing files are checked or verified, the check's progress.
+    pub fn shown(&self) -> (u64, u64) {
+        if self.phase == DownloadPhase::Verifying || self.download_total == 0 {
+            (self.disk_done.min(self.disk_total), self.disk_total)
+        } else {
+            (self.downloaded.min(self.download_total), self.download_total)
+        }
+    }
+
+    pub fn fraction(&self) -> f32 {
+        let (done, total) = self.shown();
+        (done as f32 / total.max(1) as f32).clamp(0.0, 1.0)
+    }
+
+    pub fn verifying(&self) -> bool {
+        self.phase == DownloadPhase::Verifying
+    }
+
     /// What it's doing right now, in words (an English key for translation):
     /// downloading, writing to disk, checking files…, like Steam's status.
     pub fn activity(&self) -> &'static str {
         match self.phase {
             DownloadPhase::Queued | DownloadPhase::Preparing => "Preparing…",
             DownloadPhase::Checking => "Checking existing files…",
+            DownloadPhase::Verifying => "Verifying files…",
             DownloadPhase::Finishing => "Finishing…",
             DownloadPhase::Done => "Done",
             DownloadPhase::Failed => "Failed",
@@ -298,6 +319,8 @@ pub enum DownloadPhase {
     Checking,
     Downloading,
     Finishing,
+    /// Checking an installed game's files (Verify integrity).
+    Verifying,
     Done,
     Failed,
 }

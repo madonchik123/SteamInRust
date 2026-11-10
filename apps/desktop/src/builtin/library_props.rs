@@ -241,6 +241,11 @@ impl Library {
         // Size of each DLC's own content, from the game's depots.
         let size_of = |d: AppId| -> u64 { owned.map(|o| o.depots.iter().filter(|x| x.dlc_app == Some(d)).filter_map(|x| x.manifest("public").map(|m| m.1)).sum()).unwrap_or(0) };
         let mut changed = false;
+        // What's on disk now: a DLC with content counts as installed when its
+        // depots are (an update keeps those; ticking adds, unticking removes).
+        let on_disk: Vec<local::manage::InstalledDepot> = installed.map(local::manage::installed_depots).unwrap_or_default();
+        let has_content = |d: AppId| owned.is_some_and(|o| o.depots.iter().any(|x| x.dlc_app == Some(d)));
+        let is_installed = |d: AppId| on_disk.iter().any(|x| x.dlc_app == Some(d));
         egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -254,12 +259,19 @@ impl Library {
                 ui.horizontal(|ui| {
                     ui.add_space(30.0);
                     let s = self.games.entry(app).or_default();
-                    let mut on = !s.disabled_dlc.contains(&d.app_id);
+                    let mut on = if installed.is_some() && has_content(d.app_id) {
+                        (is_installed(d.app_id) && !s.disabled_dlc.contains(&d.app_id)) || s.enabled_dlc.contains(&d.app_id)
+                    } else {
+                        // Not installed yet: a new install gets owned DLC unless unticked.
+                        !s.disabled_dlc.contains(&d.app_id)
+                    };
                     if w::check(ui, t, &mut on, "").changed() {
                         if on {
                             s.disabled_dlc.remove(&d.app_id);
+                            s.enabled_dlc.insert(d.app_id);
                         } else {
                             s.disabled_dlc.insert(d.app_id);
+                            s.enabled_dlc.remove(&d.app_id);
                         }
                         changed = true;
                     }
@@ -282,11 +294,17 @@ impl Library {
             ui.add_space(6.0);
         });
         if changed {
-            ctx.toast(t!("DLC choice saved. It applies on the next update."));
+            ctx.toast(t!("DLC choice saved. Apply now to download or remove it, or it applies on the next update."));
         }
         if let Some(g) = installed {
             ui.add_space(10.0);
-            if w::button(ui, t, Some(icons::DOWNLOAD), t!("Apply now"), w::Kind::Primary, w::Size::Sm).on_hover_text(t!("Downloads the game's files again with your DLC choice")).clicked() {
+            let running = ctx.state.downloads.get(&app).is_some_and(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed) && !d.verifying());
+            let hint = if running { t!("Restarts the running download with your DLC choice") } else { t!("Downloads ticked DLC and removes unticked DLC") };
+            if w::button(ui, t, Some(icons::DOWNLOAD), t!("Apply now"), w::Kind::Primary, w::Size::Sm).on_hover_text(hint).clicked() {
+                // A running download has its file list fixed: start it again.
+                if running {
+                    ctx.send(Command::CancelDownload { app_id: app });
+                }
                 self.queue_install(ctx, app, Some(g.library.clone()));
             }
         }
@@ -444,10 +462,10 @@ impl Library {
                 }
             });
         });
-        if let Some(v) = self.verify.as_ref().filter(|v| v.app_id == app) {
+        if let Some(d) = ctx.state.downloads.get(&app).filter(|d| d.verifying()) {
             ui.add_space(8.0);
             ui.label(w::text(t!("Verifying files…"), 13.5, t.text_dim));
-            w::progress(ui, t, v.progress.fraction(), ui.available_width());
+            w::progress(ui, t, d.fraction(), ui.available_width());
         }
         if let Some(r) = self.reports.get(&app) {
             ui.add_space(10.0);
