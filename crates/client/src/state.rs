@@ -300,6 +300,11 @@ impl State {
                 self.downloads.insert(d.app_id, d.clone());
             }
             Event::DownloadQueue(q) => self.download_queue = q.clone(),
+            Event::VerifyFinished { app_id, .. } => {
+                if self.downloads.get(app_id).is_some_and(|d| d.verifying()) {
+                    self.downloads.remove(app_id);
+                }
+            }
             Event::DownloadFinished { app_id, result } => {
                 if let Some(d) = self.downloads.get_mut(app_id) {
                     match result {

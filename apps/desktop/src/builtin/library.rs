@@ -25,6 +25,8 @@ struct GameSettings {
     args: String,
     /// DLC the user turned off.
     disabled_dlc: BTreeSet<AppId>,
+    /// DLC the user turned on after installing (added on the next update).
+    enabled_dlc: BTreeSet<AppId>,
     /// Version branch ("" = installed/public).
     branch: String,
     beta_code: String,
@@ -96,12 +98,6 @@ struct CloudHold {
     app: AppId,
     args: String,
     report: model::CloudReport,
-}
-
-struct Verify {
-    app_id: AppId,
-    progress: Arc<Progress>,
-    result: Arc<Mutex<Option<VerifyReport>>>,
 }
 
 /// A game added by hand (not from Steam).
@@ -212,7 +208,8 @@ pub struct Library {
     dialog: Option<Dialog>,
     /// Games being uninstalled in the background: (name, progress, result).
     uninstalling: HashMap<AppId, Uninstalling>,
-    verify: Option<Verify>,
+    /// Installed build and branch per game, read from disk now and then.
+    builds: HashMap<AppId, (std::time::Instant, u64, String)>,
     reports: HashMap<AppId, VerifyReport>,
     pending: Option<String>,
     events: HashMap<AppId, news::EventsSlot>,
@@ -267,6 +264,7 @@ impl Extension for Library {
         // An uninstall can end while another page is open.
         self.finish_uninstalls(ctx);
         match event {
+            client::Event::VerifyFinished { app_id, result } => self.verify_finished(ctx, *app_id, result),
             client::Event::LoggedIn { steam_id, .. } => {
                 self.send_cloud_settings(ctx);
                 ctx.send(Command::LoadSteamCollections);
@@ -605,14 +603,14 @@ impl Library {
     }
 
     /// Right-click menu for a game anywhere in the library, like Steam's.
-    fn game_menu(&mut self, resp: &egui::Response, id: AppId, installed: bool, running: bool) {
+    fn game_menu(&mut self, t: &Theme, resp: &egui::Response, id: AppId, installed: bool, running: bool) {
         let fav = self.favorites.contains(&id);
         let hid = self.hidden.contains(&id);
         let pick = std::cell::Cell::new(None);
         resp.context_menu(|ui| {
             ui.set_min_width(220.0);
             let item = |ui: &mut Ui, icon: &str, label: &str, act: MenuAct| {
-                if ui.button(format!("{icon}   {label}")).clicked() {
+                if w::menu_item(ui, t, icon, label).clicked() {
                     pick.set(Some(act));
                     ui.close();
                 }
@@ -1027,14 +1025,14 @@ impl Library {
                     }
                     // Installing: a thin bar along the bottom of the row, like Steam.
                     if let Setup::Downloading(d) = &setup {
-                        let frac = (d.disk_done as f32 / d.disk_total.max(1) as f32).clamp(0.0, 1.0);
+                        let frac = d.fraction();
                         let track = Rect::from_min_max(pos2(icon.right() + 10.0, rect.bottom() - 4.0), pos2(rect.right() - 8.0, rect.bottom() - 2.0));
                         ui.painter().rect_filled(track, CornerRadius::same(1), t.raised);
                         let fill = Rect::from_min_size(track.min, vec2(track.width() * frac, track.height()));
                         ui.painter().rect_filled(fill, CornerRadius::same(1), if d.paused { t.text_faint } else { t.accent });
                     }
                     let id = e.app_id;
-                    self.game_menu(&resp, id, e.installed.is_some(), ctx.state.playing == Some(id));
+                    self.game_menu(t, &resp, id, e.installed.is_some(), ctx.state.playing == Some(id));
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         self.selected = Some(id);
                         self.custom_selected = None;
@@ -1182,16 +1180,14 @@ impl Library {
                     let btn = Rect::from_min_size(inner.left_bottom() - vec2(0.0, 48.0), vec2(150.0, 48.0));
                     let mut c = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(btn.min, vec2(600.0, 48.0))).layout(Layout::left_to_right(Align::Center)));
                     let playing = ctx.state.playing == Some(g.app_id);
-                    let play = c.add_enabled_ui(!playing, |ui| w::button(ui, t, Some(icons::PLAY), if playing { t!("Running") } else { t!("Play") }, w::Kind::Play, w::Size::Lg)).inner.clicked();
+                    let g: InstalledGame = (*g).clone();
+                    self.play_button(&mut c, t, ctx, &g);
                     c.add_space(12.0);
                     if let Some(m) = g.playtime_minutes {
                         c.label(w::text_medium(t!("{time} played", time = ui::playtime(m)), 14.0, Color32::from_white_alpha(220)));
                     }
-                    self.game_menu(&resp, g.app_id, true, playing);
-                    if play {
-                        let args = self.games.get(&g.app_id).map(|s| s.args.clone()).unwrap_or_default();
-                        ctx.send(Command::Launch { app_id: g.app_id, install_dir: g.install_dir.clone(), args });
-                    } else if resp.clicked() {
+                    self.game_menu(t, &resp, g.app_id, true, playing);
+                    if resp.clicked() {
                         self.selected = Some(g.app_id);
                     }
                     ui.add_space(30.0);
@@ -1211,7 +1207,7 @@ impl Library {
                             ui.vertical(|ui| {
                                 ui.set_width(size.x);
                                 let r = w::game_tile(ui, t, &art::capsule(*id), &art::header(*id), name, installed, size);
-                                self.game_menu(&r, *id, installed, ctx.state.playing == Some(*id));
+                                self.game_menu(t, &r, *id, installed, ctx.state.playing == Some(*id));
                                 if r.clicked() {
                                     self.selected = Some(*id);
                                 }
@@ -1254,7 +1250,7 @@ impl Library {
                                 ui.set_width(size.x);
                                 ui.spacing_mut().item_spacing.y = 6.0;
                                 let r = w::game_tile(ui, t, &art::capsule(e.app_id), &art::header(e.app_id), e.name, e.installed.is_some(), size);
-                                self.game_menu(&r, e.app_id, e.installed.is_some(), ctx.state.playing == Some(e.app_id));
+                                self.game_menu(t, &r, e.app_id, e.installed.is_some(), ctx.state.playing == Some(e.app_id));
                                 if r.clicked() {
                                     self.selected = Some(e.app_id);
                                 }
@@ -1313,7 +1309,7 @@ impl Library {
                                     ctx.send(Command::StopGame { app_id: id });
                                 }
                             }
-                            Some(g) if g.state == model::InstallState::UpdateRequired => {
+                            Some(g) if self.needs_update(ctx, g) => {
                                 if w::button(ui, t, Some(icons::DOWNLOAD), t!("Update"), w::Kind::Primary, w::Size::Lg).clicked() {
                                     self.queue_install(ctx, id, Some(g.library.clone()));
                                 }
@@ -1442,7 +1438,6 @@ impl Library {
                 ui.add_space(40.0);
             });
         });
-        self.poll_verify(ctx);
         self.dialogs(ui, t, ctx, id, &name, installed.as_ref());
     }
 
@@ -1453,15 +1448,24 @@ impl Library {
             ui.horizontal(|ui| {
                 ui.label(w::text_semibold(label, 14.0, t.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(w::text(format!("{} / {}", ui::bytes(d.disk_done), ui::bytes(d.disk_total)), 12.5, t.text_dim));
+                    // Like Steam: an update shows only its own size.
+                    let (done, total) = d.shown();
+                    ui.label(w::text(format!("{} / {}", ui::bytes(done), ui::bytes(total)), 12.5, t.text_dim));
                 });
             });
-            let frac = d.disk_done as f32 / d.disk_total.max(1) as f32;
-            w::progress(ui, t, frac, 380.0);
+            w::progress(ui, t, d.fraction(), 380.0);
             // Network and disk separately (they differ a lot: reused data
             // and buffered writes hit the disk without coming over the network).
-            ui.label(w::text(t!("Network {net}/s · Disk {disk}/s", net = ui::bytes(d.speed), disk = ui::bytes(d.disk_speed)), 12.0, t.text_faint));
+            if !d.verifying() {
+                ui.label(w::text(t!("Network {net}/s · Disk {disk}/s", net = ui::bytes(d.speed), disk = ui::bytes(d.disk_speed)), 12.0, t.text_faint));
+            }
         });
+        if d.verifying() {
+            if w::icon_button(ui, t, icons::X, t!("Cancel"), false, 0).clicked() {
+                ctx.send(Command::CancelVerify { app_id: id });
+            }
+            return;
+        }
         if d.paused {
             if w::icon_button(ui, t, icons::PLAY, t!("Resume"), false, 0).clicked() {
                 ctx.send(Command::ResumeDownload { app_id: id });
@@ -1475,7 +1479,8 @@ impl Library {
     }
 
     fn manage_menu(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, installed: Option<&InstalledGame>) {
-        let item = |ui: &mut Ui, icon: &str, label: &str, color| ui.add(egui::Button::new(w::text_medium(format!("{icon}   {label}"), 13.5, color)).frame(false).min_size(vec2(220.0, 32.0))).clicked();
+        ui.set_min_width(240.0);
+        let item = |ui: &mut Ui, icon: &str, label: &str, color: Color32| w::menu_item_tinted(ui, t, icon, label, (color != t.text).then_some(color)).clicked();
         if let Some(g) = installed {
             if item(ui, icons::DESKTOP, t!("Add desktop shortcut"), t.text) {
                 self.add_shortcut(ctx, id, g);
@@ -1656,6 +1661,7 @@ impl Library {
             branch: if s.branch.is_empty() { "public".into() } else { s.branch.clone() },
             language,
             skip_dlc: s.disabled_dlc.iter().copied().collect(),
+            add_dlc: s.enabled_dlc.iter().copied().collect(),
         }));
         ctx.toast(t!("Added to downloads"));
     }
@@ -1729,35 +1735,75 @@ impl Library {
     }
 
     fn start_verify(&mut self, ctx: &mut Ctx, g: &InstalledGame) {
-        if self.verify.is_some() {
-            ctx.toast(t!("A verification is already running"));
-            return;
-        }
-        let progress = Arc::new(Progress::default());
-        let result = Arc::new(Mutex::new(None));
-        let (p, r, game, root) = (progress.clone(), result.clone(), g.clone(), ctx.local.steam_root.clone());
-        std::thread::spawn(move || {
-            let report = local::manage::verify(&root, &game, &p);
-            *r.lock().unwrap() = Some(report);
-        });
-        self.verify = Some(Verify { app_id: g.app_id, progress, result });
+        ctx.send(Command::VerifyGame { game: g.clone(), steam_root: ctx.local.steam_root.clone() });
+        ctx.navigate("downloads", None);
     }
 
-    fn poll_verify(&mut self, ctx: &mut Ctx) {
-        let Some(v) = &self.verify else { return };
-        let Some(report) = v.result.lock().unwrap().take() else { return };
-        let id = v.app_id;
+    /// Like Steam: report the check, and download damaged or missing files again.
+    fn verify_finished(&mut self, ctx: &mut Ctx, id: AppId, result: &Result<local::manage::VerifyReport, String>) {
         let name = ctx.state.app_name(id).map(String::from).or_else(|| ctx.local.games.iter().find(|g| g.app_id == id).map(|g| g.name.clone())).unwrap_or_default();
-        let msg = if !report.unchecked_depots.is_empty() && report.files == 0 {
-            t!("{name}: Steam's file list for this game isn't on this PC, so it can't be checked yet.", name = name)
-        } else if report.healthy() {
-            t!("{name}: all {n} files are OK.", name = name, n = report.ok)
-        } else {
-            t!("{name}: {missing} missing and {damaged} damaged files. Use Repair to download them again.", name = name, missing = report.missing.len(), damaged = report.corrupt.len())
+        let report = match result {
+            Ok(r) => r.clone(),
+            Err(e) => {
+                ctx.toast(i18n::tr_dyn(e).to_string());
+                return;
+            }
         };
-        ctx.toast(msg);
+        if report.cancelled {
+            ctx.toast(t!("{name}: verification cancelled.", name = name));
+        } else if !report.unchecked_depots.is_empty() && report.files == 0 {
+            ctx.toast(t!("{name}: Steam's file list for this game isn't on this PC, so it can't be checked yet.", name = name));
+        } else if report.healthy() {
+            ctx.toast(t!("{name}: all {n} files are OK.", name = name, n = report.ok));
+        } else {
+            let bad = report.missing.len() + report.corrupt.len();
+            ctx.toast(t!("{name}: {n} files failed to validate and will be downloaded again.", name = name, n = bad));
+            if let Some(g) = ctx.local.games.iter().find(|g| g.app_id == id).cloned() {
+                self.queue_install(ctx, id, Some(g.library.clone()));
+            }
+        }
         self.reports.insert(id, report);
-        self.verify = None;
+    }
+
+    /// Is a newer build of the installed version out? (Cached: it reads the
+    /// game's manifest from disk.)
+    fn needs_update(&mut self, ctx: &Ctx, g: &InstalledGame) -> bool {
+        if g.state == model::InstallState::UpdateRequired {
+            return true;
+        }
+        let now = std::time::Instant::now();
+        let stale = self.builds.get(&g.app_id).is_none_or(|(t, _, _)| now.duration_since(*t).as_secs() > 10);
+        if stale {
+            let (build, branch) = local::manage::installed_build(g);
+            self.builds.insert(g.app_id, (now, build, branch));
+        }
+        let (_, build, branch) = &self.builds[&g.app_id];
+        let latest = ctx.state.apps.as_ref().and_then(|a| a.get(&g.app_id)).and_then(|o| o.branches.iter().find(|b| &b.name == branch)).map(|b| b.build_id).unwrap_or(0);
+        *build != 0 && latest != 0 && latest != *build
+    }
+
+    /// The game's main button, like Steam's: Play, Update, or what's running.
+    fn play_button(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, g: &InstalledGame) {
+        let id = g.app_id;
+        let busy = ctx.state.downloads.get(&id).filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).cloned();
+        if let Some(d) = busy {
+            let what = if d.verifying() { t!("Verifying…") } else { t!("Updating…") };
+            let label = format!("{what} {}%", (d.fraction() * 100.0) as u32);
+            if ui.add_enabled_ui(true, |ui| w::button(ui, t, Some(icons::DOWNLOAD), &label, w::Kind::Secondary, w::Size::Lg)).inner.on_hover_text(t!("Open Downloads")).clicked() {
+                ctx.navigate("downloads", None);
+            }
+        } else if ctx.state.download_queue.contains(&id) {
+            ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::CLOCK), t!("Queued"), w::Kind::Secondary, w::Size::Lg));
+        } else if ctx.state.playing == Some(id) {
+            ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::PLAY), t!("Running"), w::Kind::Play, w::Size::Lg));
+        } else if self.needs_update(ctx, g) {
+            if w::button(ui, t, Some(icons::DOWNLOAD), t!("Update"), w::Kind::Primary, w::Size::Lg).clicked() {
+                self.queue_install(ctx, id, Some(g.library.clone()));
+            }
+        } else if w::button(ui, t, Some(icons::PLAY), t!("Play"), w::Kind::Play, w::Size::Lg).clicked() {
+            let args = self.games.get(&id).map(|s| s.args.clone()).unwrap_or_default();
+            ctx.send(Command::Launch { app_id: id, install_dir: g.install_dir.clone(), args });
+        }
     }
 
     fn dialogs(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, name: &str, installed: Option<&InstalledGame>) {

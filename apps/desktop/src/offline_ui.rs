@@ -161,7 +161,7 @@ pub fn badge(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
 
 /// "Go online" / "Go offline" at the top of the account menu.
 pub fn account_items(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
-    let item = |ui: &mut Ui, icon: &str, label: String, color: Color32| ui.add(egui::Button::new(w::text_medium(format!("{icon}   {label}"), 13.5, color)).frame(false).min_size(vec2(210.0, 32.0))).clicked();
+    let item = |ui: &mut Ui, icon: &str, label: String, color: Color32| w::menu_item_tinted(ui, t, icon, &label, (color != t.text).then_some(color)).clicked();
     match app.state.link {
         Link::Online => {
             if item(ui, icons::PLUGS, t!("Go offline").to_string(), t.text) {

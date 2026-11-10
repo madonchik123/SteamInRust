@@ -20,27 +20,36 @@ pub struct InstallRequest {
     /// Steam language name, e.g. "english", "russian".
     pub language: String,
     pub skip_dlc: Vec<AppId>,
+    /// DLC the user turned on after installing: added on this update.
+    #[serde(default)]
+    pub add_dlc: Vec<AppId>,
 }
 
-/// Choose the depots a Windows 64-bit install needs.
-pub fn pick_depots<'a>(app: &'a OwnedApp, owned: &HashSet<AppId>, req: &InstallRequest) -> Vec<&'a model::DepotInfo> {
+/// Choose the depots a Windows 64-bit install needs. `installed` = the
+/// depots on disk now (empty for a new install). Like Steam, a new install
+/// gets the owned DLC, and an update only keeps the DLC already installed
+/// (plus any the user turned on), so owned-but-uninstalled DLC never turns
+/// an update into a multi-gigabyte download.
+pub fn pick_depots<'a>(app: &'a OwnedApp, owned: &HashSet<AppId>, req: &InstallRequest, installed: &HashSet<u32>) -> Vec<&'a model::DepotInfo> {
     let os_ok = |d: &&model::DepotInfo| d.os.is_empty() || d.os.split(',').any(|o| o.trim() == "windows");
     let lang_ok = |d: &&model::DepotInfo| d.language.is_empty() || d.language == req.language;
+    // An update keeps every depot already installed (its language, 32 or
+    // 64-bit), like Steam; the OS/language/arch choice is for new content.
+    let was = |d: &&model::DepotInfo| installed.contains(&d.id);
     let mut out: Vec<&model::DepotInfo> = app
         .depots
         .iter()
-        .filter(os_ok)
-        .filter(lang_ok)
+        .filter(|d| was(d) || (os_ok(d) && lang_ok(d)))
         .filter(|d| !d.low_violence && !d.shared_install && !d.manifests.is_empty())
         .filter(|d| match d.dlc_app {
-            Some(dlc) => owned.contains(&dlc) && !req.skip_dlc.contains(&dlc),
+            Some(dlc) => owned.contains(&dlc) && !req.skip_dlc.contains(&dlc) && (installed.is_empty() || was(d) || req.add_dlc.contains(&dlc)),
             None => true,
         })
         .collect();
-    // Prefer 64-bit depots when both exist.
+    // Prefer 64-bit depots when both exist (but never drop an installed one).
     let has64 = out.iter().any(|d| d.arch == "64");
     if has64 {
-        out.retain(|d| d.arch != "32");
+        out.retain(|d| d.arch != "32" || was(d));
     }
     // Fall back to English content if the chosen language has none.
     if out.iter().all(|d| d.language.is_empty()) && req.language != "english" {
@@ -150,7 +159,9 @@ pub async fn run(
     progress: Arc<depot::Progress>,
 ) -> Result<depot::Report, String> {
     progress.set_phase(depot::Phase::Preparing);
-    let depots = pick_depots(&app, &owned, &req);
+    let old = installed_manifests(&req);
+    let on_disk: HashSet<u32> = old.iter().map(|(d, _)| *d).collect();
+    let depots = pick_depots(&app, &owned, &req, &on_disk);
     if depots.is_empty() {
         return Err(format!("{} has no downloadable content for Windows", app.name));
     }
@@ -166,9 +177,11 @@ pub async fn run(
     let cdn = Arc::new(depot::Cdn::new(servers));
     cdn.rank().await;
 
-    let old = installed_manifests(&req);
     let mut jobs = Vec::new();
     let mut installed = Vec::new();
+    // Installed depots left untouched this time (couldn't get their key).
+    let mut kept: Vec<(u32, u64, u64, Option<AppId>)> = Vec::new();
+    let picked: HashSet<u32> = depots.iter().map(|d| d.id).collect();
     for d in depots {
         let Some((gid, size)) = d.manifest(&req.branch) else { continue };
         let key = match depot_key(&conn, app.app_id, d.id).await {
@@ -179,6 +192,10 @@ pub async fn run(
                 tracing::info!("skipping depot {}: {e}", d.id);
                 if let Ok(mut n) = progress.notes.lock() {
                     n.push(e);
+                }
+                // Already installed: keep it (and its record) as it is.
+                if let Some((_, m)) = old.iter().find(|(dep, _)| *dep == d.id) {
+                    kept.push((d.id, *m, 0, d.dlc_app));
                 }
                 continue;
             }
@@ -210,6 +227,22 @@ pub async fn run(
     }
 
     let manifests: Vec<depot::Manifest> = jobs.iter().map(|j| j.manifest.clone()).collect();
+    // Depots installed before but not wanted now: only DLC the user turned
+    // off. Anything else not picked (unknown to Steam's app info now, say)
+    // is left alone rather than deleted.
+    let dropped: Vec<(u32, u64)> = old
+        .iter()
+        .filter(|(d, _)| !picked.contains(d))
+        .filter(|(d, _)| app.depots.iter().find(|x| x.id == *d).and_then(|x| x.dlc_app).is_some_and(|dlc| req.skip_dlc.contains(&dlc) || !owned.contains(&dlc)))
+        .copied()
+        .collect();
+    // Installed depots neither updated nor removed keep their record.
+    for (d, m) in &old {
+        if !picked.contains(d) && !dropped.iter().any(|(x, _)| x == d) {
+            kept.push((*d, *m, 0, app.depots.iter().find(|x| x.id == *d).and_then(|x| x.dlc_app)));
+        }
+    }
+    installed.extend(kept.iter().copied());
     // A new install creates its folder; an update writes into the game's.
     let fresh = !dir.exists();
     let report = match depot::install(cdn, &dir, jobs, progress).await {
@@ -217,11 +250,22 @@ pub async fn run(
         Err(depot::Error::Cancelled) => {
             // Unfinished files are reserved at full size: give the space back.
             remove_unfinished(&req, &dir, fresh);
+            // An update that was adding depots (e.g. DLC): undo those too,
+            // finished files included, so the game is as it was.
+            let added: Vec<&depot::Manifest> = manifests.iter().filter(|m| !on_disk.contains(&m.depot)).collect();
+            if !fresh && !added.is_empty() {
+                remove_added(&req, &dir, &added, &old);
+            }
             return Err(depot::Error::Cancelled.to_string());
         }
         Err(e) => return Err(e.to_string()),
     };
 
+    // Leftovers of earlier interrupted attempts are junk once it's complete.
+    remove_unfinished(&req, &dir, false);
+    if !dropped.is_empty() {
+        remove_dropped(&req, &dir, &dropped, &manifests);
+    }
     // Leave the same records Steam does, so both clients agree.
     let cache = req.steam_root.join("depotcache");
     let _ = std::fs::create_dir_all(&cache);
@@ -230,6 +274,50 @@ pub async fn run(
     }
     write_app_manifest(&req, &app, &installed, need, owner).map_err(|e| e.to_string())?;
     Ok(report)
+}
+
+/// Delete the files of depots that are no longer installed (a DLC turned
+/// off), except files another installed depot still has.
+fn remove_dropped(req: &InstallRequest, dir: &Path, dropped: &[(u32, u64)], kept: &[depot::Manifest]) {
+    let keep: HashSet<String> = kept.iter().flat_map(|m| m.files.iter().map(|f| f.name.to_lowercase())).collect();
+    let cache = req.steam_root.join("depotcache");
+    for (depot, gid) in dropped {
+        let Some(m) = std::fs::read(cache.join(format!("{depot}_{gid}.manifest"))).ok().and_then(|b| depot::Manifest::parse(&b).ok()) else {
+            tracing::warn!("depot {depot} dropped but its manifest isn't cached; its files stay");
+            continue;
+        };
+        let mut removed = 0;
+        for f in m.files.iter().filter(|f| !f.directory) {
+            if keep.contains(&f.name.to_lowercase()) {
+                continue;
+            }
+            let path = dir.join(&f.name);
+            if path.starts_with(dir) && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        tracing::info!("depot {depot} no longer installed: removed {removed} files");
+    }
+}
+
+/// After a cancelled update: delete the files of depots it was adding,
+/// except files the depots installed before also have.
+fn remove_added(req: &InstallRequest, dir: &Path, added: &[&depot::Manifest], before: &[(u32, u64)]) {
+    let cache = req.steam_root.join("depotcache");
+    let keep: HashSet<String> = before
+        .iter()
+        .filter_map(|(d, g)| std::fs::read(cache.join(format!("{d}_{g}.manifest"))).ok().and_then(|b| depot::Manifest::parse(&b).ok()))
+        .flat_map(|m| m.files.into_iter().map(|f| f.name.to_lowercase()))
+        .collect();
+    let mut removed = 0;
+    for m in added {
+        for f in m.files.iter().filter(|f| !f.directory && !keep.contains(&f.name.to_lowercase())) {
+            if std::fs::remove_file(dir.join(&f.name)).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    tracing::info!("cancelled: removed {removed} files of depots this update was adding");
 }
 
 /// After a cancelled download: delete the folder of a new install, or just
@@ -335,12 +423,35 @@ mod tests {
             depots: vec![d(11, "windows", "64", "", None), d(12, "windows", "32", "", None), d(13, "linux", "", "", None), d(14, "", "", "german", None), d(15, "windows", "", "", Some(99))],
             ..Default::default()
         };
-        let req = InstallRequest { app_id: 10, library: ".".into(), steam_root: ".".into(), branch: "public".into(), language: "english".into(), skip_dlc: vec![] };
-        let ids: Vec<u32> = pick_depots(&app, &HashSet::new(), &req).iter().map(|d| d.id).collect();
+        let req = InstallRequest { app_id: 10, library: ".".into(), steam_root: ".".into(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![] };
+        let fresh = HashSet::new();
+        let ids: Vec<u32> = pick_depots(&app, &HashSet::new(), &req, &fresh).iter().map(|d| d.id).collect();
         assert_eq!(ids, vec![11]);
         let owned: HashSet<u32> = [99].into_iter().collect();
-        let ids: Vec<u32> = pick_depots(&app, &owned, &req).iter().map(|d| d.id).collect();
+        // A new install gets the owned DLC.
+        let ids: Vec<u32> = pick_depots(&app, &owned, &req, &fresh).iter().map(|d| d.id).collect();
         assert_eq!(ids, vec![11, 15]);
+        // An update of an install without it doesn't add it...
+        let installed: HashSet<u32> = [11].into_iter().collect();
+        let ids: Vec<u32> = pick_depots(&app, &owned, &req, &installed).iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec![11]);
+        // ...unless the user turned it on.
+        let on = InstallRequest { add_dlc: vec![99], ..req.clone() };
+        let ids: Vec<u32> = pick_depots(&app, &owned, &on, &installed).iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec![11, 15]);
+        // Installed DLC stays, and goes when turned off.
+        let both: HashSet<u32> = [11, 15].into_iter().collect();
+        assert_eq!(pick_depots(&app, &owned, &req, &both).len(), 2);
+        let off = InstallRequest { skip_dlc: vec![99], ..req.clone() };
+        assert_eq!(pick_depots(&app, &owned, &off, &both).iter().map(|d| d.id).collect::<Vec<_>>(), vec![11]);
+        // An update keeps an installed depot in another language, or 32-bit.
+        let ru = InstallRequest { language: "russian".into(), ..req.clone() };
+        let with_lang: HashSet<u32> = [11, 14].into_iter().collect();
+        let ids: Vec<u32> = pick_depots(&app, &HashSet::new(), &ru, &with_lang).iter().map(|d| d.id).collect();
+        assert!(ids.contains(&14), "kept the installed german depot: {ids:?}");
+        let with32: HashSet<u32> = [11, 12].into_iter().collect();
+        let ids: Vec<u32> = pick_depots(&app, &HashSet::new(), &req, &with32).iter().map(|d| d.id).collect();
+        assert!(ids.contains(&12), "kept the installed 32-bit depot: {ids:?}");
     }
 }
 
@@ -355,7 +466,7 @@ mod cancel_tests {
         std::fs::create_dir_all(game.join("data")).unwrap();
         std::fs::write(game.join("game.exe"), b"done").unwrap();
         std::fs::write(game.join("data").join("big.pak.sirpart"), b"half").unwrap();
-        let req = InstallRequest { app_id: 1, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![] };
+        let req = InstallRequest { app_id: 1, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![] };
         // An update: the finished file stays, the unfinished one goes.
         remove_unfinished(&req, &game, false);
         assert!(game.join("game.exe").exists());
