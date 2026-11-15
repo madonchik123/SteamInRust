@@ -127,6 +127,9 @@ pub fn find(account: &str) -> Option<SavedAccount> {
 /// empty. Its credentials go to the credential store (if there's none, the
 /// sign-in just isn't remembered).
 pub fn upsert(mut acc: SavedAccount) {
+    // Load (and so migrate) first: migrating an old plaintext file after
+    // saving would overwrite this fresh token with the stale one on disk.
+    let mut list = load();
     if !acc.refresh_token.is_empty() {
         if acc.guard_data.is_none() {
             acc.guard_data = secrets::load(&acc.account_name).ok().and_then(|(_, g)| g);
@@ -137,7 +140,6 @@ pub fn upsert(mut acc: SavedAccount) {
         acc.refresh_token.clear();
         acc.guard_data = None;
     }
-    let mut list = load();
     if let Some(old) = list.iter().find(|a| a.account_name.eq_ignore_ascii_case(&acc.account_name)) {
         if acc.persona_name.is_empty() {
             acc.persona_name = old.persona_name.clone();
@@ -161,10 +163,12 @@ pub fn update(account: &str, f: impl FnOnce(&mut SavedAccount)) {
 
 /// Forget an account and its credentials.
 pub fn remove(account: &str) {
+    // Load (and so migrate) first, so an old plaintext token can't be moved
+    // into the store after its entries were deleted.
+    let mut list = load();
     if let Err(e) = secrets::delete(account) {
         tracing::warn!("couldn't delete the saved sign-in of {account}: {e}");
     }
-    let mut list = load();
     list.retain(|a| !a.account_name.eq_ignore_ascii_case(account));
     write(&list);
 }
