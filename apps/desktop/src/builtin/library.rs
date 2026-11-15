@@ -636,7 +636,8 @@ impl Library {
             item(ui, icons::STAR, if fav { t!("Remove from favorites") } else { t!("Add to favorites") }, MenuAct::Favorite);
             item(ui, icons::EYE, if hid { t!("Unhide") } else { t!("Hide this game") }, MenuAct::Hide);
             if installed {
-                ui.menu_button(format!("{}   {}", icons::GEAR, t!("Manage")), |ui| {
+                let r = w::submenu_item(ui, t, icons::GEAR, t!("Manage"));
+                egui::containers::menu::SubMenu::new().show(ui, &r, |ui| {
                     ui.set_min_width(220.0);
                     let sub = item;
                     sub(ui, icons::DESKTOP, t!("Add desktop shortcut"), MenuAct::Shortcut);
@@ -645,11 +646,13 @@ impl Library {
                     sub(ui, icons::TRASH, t!("Uninstall…"), MenuAct::Uninstall);
                 });
             }
-            ui.menu_button(format!("{}   {}", icons::STACK, t!("Add to collection")), |ui| {
-                ui.set_min_width(200.0);
+            let r = w::submenu_item(ui, t, icons::STACK, t!("Add to collection"));
+            egui::containers::menu::SubMenu::new().show(ui, &r, |ui| {
+                ui.set_min_width(220.0);
                 for (i, c) in self.collections.iter().enumerate() {
-                    let mut on = c.games.contains(&id);
-                    if ui.checkbox(&mut on, &c.name).clicked() {
+                    // A check for collections the game is already in.
+                    let on = c.games.contains(&id);
+                    if w::menu_item(ui, t, if on { icons::CHECK } else { "" }, &c.name).clicked() {
                         pick.set(Some(MenuAct::ToggleCollection(i)));
                         ui.close();
                     }

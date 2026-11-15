@@ -316,7 +316,11 @@ pub fn menu_item(ui: &mut Ui, t: &Theme, icon: &str, label: &str) -> Response {
 
 /// [`menu_item`] in its own color, e.g. red for "Uninstall…".
 pub fn menu_item_tinted(ui: &mut Ui, t: &Theme, icon: &str, label: &str, tint: Option<Color32>) -> Response {
-    let width = ui.available_width().max(160.0);
+    // As wide as the text needs, and the menu's set width; a right-click
+    // menu with no width set offers ~400 px, which made every row that wide.
+    let text_w = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.5), Color32::PLACEHOLDER).size().x;
+    let avail = ui.available_width();
+    let width = (36.0 + text_w + 28.0).max(if avail > 360.0 { 220.0 } else { avail });
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
     if ui.is_rect_visible(rect) {
         let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.08);
@@ -333,6 +337,14 @@ pub fn menu_item_tinted(ui: &mut Ui, t: &Theme, icon: &str, label: &str, tint: O
         p.text(pos2(rect.left() + 36.0, y), egui::Align2::LEFT_CENTER, label, font_medium(13.5), text_c);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A menu row that opens a submenu (open it with egui's `SubMenu`): the
+/// same look as [`menu_item`], with an arrow on the right.
+pub fn submenu_item(ui: &mut Ui, t: &Theme, icon: &str, label: &str) -> Response {
+    let r = menu_item(ui, t, icon, label);
+    ui.painter().text(pos2(r.rect.right() - 12.0, r.rect.center().y), egui::Align2::CENTER_CENTER, crate::icons::CARET_RIGHT, font(12.0), t.text_faint);
+    r
 }
 
 pub fn nav_tab(ui: &mut Ui, t: &Theme, label: &str, selected: bool, height: f32) -> Response {

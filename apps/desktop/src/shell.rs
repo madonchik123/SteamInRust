@@ -645,20 +645,20 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
     p.galley(egui::pos2(x, rect.center().y + 1.0), status_g, color);
     p.text(rect.right_center() - vec2(10.0, 0.0), Align2::CENTER_CENTER, icons::CARET_DOWN, w::font(12.0), t.text_faint);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-    egui::Popup::menu(&resp).width(230.0).show(|ui| {
+    egui::Popup::menu(&resp).width(270.0).show(|ui| {
         crate::offline_ui::account_items(app, ui, t);
         ui.label(w::caption_text(t, t!("Status")));
         for s in PersonaState::SELECTABLE {
             // A colored dot per status, like Steam's.
             let on = me.state == s;
-            let (r, resp) = ui.allocate_exact_size(vec2(210.0, 32.0), Sense::click());
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
             if on || resp.hovered() {
                 ui.painter().rect_filled(r, t.corner_small(), if on { t.accent.gamma_multiply(0.18) } else { t.surface_hover });
             }
             let probe = model::Persona { state: s, ..Default::default() };
-            let dot = egui::pos2(r.left() + 16.0, r.center().y);
+            let dot = egui::pos2(r.left() + 18.0, r.center().y);
             ui.painter().circle_filled(dot, 5.0, status_color(t, &probe));
-            ui.painter().text(egui::pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, i18n::tr_dyn(s.label()), w::font_medium(13.5), t.text);
+            ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, i18n::tr_dyn(s.label()), w::font_medium(13.5), t.text);
             if on {
                 ui.painter().text(egui::pos2(r.right() - 12.0, r.center().y), Align2::RIGHT_CENTER, icons::CHECK, w::font(13.0), t.accent);
             }
@@ -668,15 +668,15 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
         }
         ui.separator();
         for (icon, label, page) in [(icons::USER_CIRCLE, t!("View profile"), "profile"), (icons::GEAR, t!("Settings"), "settings")] {
-            if ui.add(egui::Button::new(w::text_medium(format!("{icon}   {label}"), 13.5, t.text)).frame(false).min_size(vec2(210.0, 32.0))).clicked() {
+            if w::menu_item(ui, t, icon, &label).clicked() {
                 actions.push(Action::Navigate { page: page.into(), arg: None });
             }
         }
         ui.separator();
-        if ui.add(egui::Button::new(w::text_medium(format!("{}   {}", icons::SIGN_OUT, t!("Sign out of account")), 13.5, t.text)).frame(false).min_size(vec2(210.0, 32.0))).clicked() {
+        if w::menu_item(ui, t, icons::SIGN_OUT, t!("Sign out of account")).clicked() {
             app.client.send(Command::LogOut);
         }
-        if ui.add(egui::Button::new(w::text_medium(format!("{}   {}", icons::POWER, t!("Exit SteamInRust")), 13.5, t.danger)).frame(false).min_size(vec2(210.0, 32.0))).clicked() {
+        if w::menu_item_tinted(ui, t, icons::POWER, t!("Exit SteamInRust"), Some(t.danger)).clicked() {
             app.request_exit(ui.ctx());
         }
     });
