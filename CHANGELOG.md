@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/madonchik123/SteamInRust/compare/v0.5.0...v0.5.1) (2026-11-15)
+
+
+### Fixes
+
+* keep saved sign-ins in the OS credential store, not in plain text ([#42](https://github.com/madonchik123/SteamInRust/issues/42)) ([79c9ce2](https://github.com/madonchik123/SteamInRust/commit/79c9ce2ffd567aeb5b45876fbbb21c1f343db8dc))
+* paste, copy and cut work in every text field ([#40](https://github.com/madonchik123/SteamInRust/issues/40)) ([8964382](https://github.com/madonchik123/SteamInRust/commit/8964382349aba5be1ef4367db5f8298bc217db62))
+
 ## [0.5.0](https://github.com/madonchik123/SteamInRust/compare/v0.4.1...v0.5.0) (2026-11-10)
 
 
