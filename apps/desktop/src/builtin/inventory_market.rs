@@ -3,6 +3,7 @@
 //! market with your signed-in session; Steam then asks you to confirm each
 //! listing in the Steam Mobile app, the same as on its website.
 
+use ui::widgets::EditMenu;
 use super::{Inventory, hex, wallet_currency};
 use client::Command;
 use egui::{Align, Align2, CornerRadius, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2};
@@ -269,7 +270,7 @@ impl Inventory {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.label(w::text(t!("Buyer pays"), 13.5, t.text_dim));
-                ui.add(egui::TextEdit::singleline(&mut d.pays).desired_width(120.0).margin(vec2(10.0, 6.0)));
+                ui.add(egui::TextEdit::singleline(&mut d.pays).desired_width(120.0).margin(vec2(10.0, 6.0))).with_edit_menu();
                 ui.label(w::text(model::currency(currency).0, 12.5, t.text_faint));
             });
             if d.max_amount > 1 {

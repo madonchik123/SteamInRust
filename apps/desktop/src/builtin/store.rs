@@ -1,6 +1,7 @@
 //! Store: rendered natively from Steam's store JSON (no web view).
 //! Payment is the only step that leaves the app: Steam only accepts it on its website.
 
+use ui::widgets::EditMenu;
 use i18n::t;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, Align2, Color32, CornerRadius, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2};
@@ -474,7 +475,7 @@ impl Extension for Store {
         ui.label(w::text_semibold(t!("Price history"), 15.0, t.text));
         ui.add(egui::Label::new(w::text(t!("Paste a free IsThereAnyDeal API key to see each game's price history and all-time low on its store page. Get one at isthereanydeal.com/apps/my."), 12.5, t.text_dim)).wrap());
         ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut self.itad_key).password(true).hint_text(t!("API key")).desired_width(320.0).margin(vec2(10.0, 8.0)));
+            let r = ui.add(egui::TextEdit::singleline(&mut self.itad_key).password(true).hint_text(t!("API key")).desired_width(320.0).margin(vec2(10.0, 8.0))).with_edit_menu();
             if r.changed() {
                 self.history.clear();
             }

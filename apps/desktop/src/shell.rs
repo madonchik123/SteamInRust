@@ -1,5 +1,6 @@
 //! Main window chrome: top navigation, friends drawer, status bar, toasts.
 
+use ui::widgets::EditMenu;
 use i18n::t;
 use crate::app::SteamApp;
 use client::Command;
@@ -590,7 +591,7 @@ pub fn activate_dialog(app: &mut SteamApp, ctx: &egui::Context) {
         ui.add_enabled(
             !dlg.busy,
             egui::TextEdit::singleline(&mut dlg.key).hint_text("XXXXX-XXXXX-XXXXX").font(w::font_semibold(18.0)).desired_width(f32::INFINITY).margin(vec2(12.0, 10.0)),
-        );
+        ).with_edit_menu();
         match &dlg.result {
             Some(Ok(items)) => {
                 ui.label(w::text(format!("{}  {}", icons::CHECK, t!("Activated!")), 14.0, t.play));
@@ -1091,7 +1092,7 @@ pub fn friend_dialogs(app: &mut SteamApp, ctx: &egui::Context) {
                 ui.label(w::text_bold(t!("Add a nickname"), 17.0, t.text));
                 ui.label(w::text(t!("Only you see it. Steam keeps it on all your devices."), 12.5, t.text_dim));
                 ui.add_space(8.0);
-                let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).hint_text(t!("Nickname")));
+                let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).hint_text(t!("Nickname"))).with_edit_menu();
                 r.request_focus();
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {

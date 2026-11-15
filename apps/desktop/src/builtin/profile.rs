@@ -1,6 +1,7 @@
 //! Profiles: yours and your friends'. Shows the equipped profile background,
 //! avatar frame, level, bio, and (for you) stats and game history.
 
+use ui::widgets::EditMenu;
 use client::Command;
 use egui::{Align, Align2, Color32, CornerRadius, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2};
 use extensions::{Action, Ctx, Extension, Manifest, PageSpec};
@@ -496,7 +497,7 @@ impl Profile {
             };
             // Composer.
             let hint = if mine { t!("Write a comment on your profile…") } else { t!("Add a comment…") };
-            ui.add(egui::TextEdit::multiline(&mut self.comment_draft).hint_text(hint).desired_rows(2).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0)));
+            ui.add(egui::TextEdit::multiline(&mut self.comment_draft).hint_text(hint).desired_rows(2).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0))).with_edit_menu();
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let text = self.comment_draft.trim().to_string();

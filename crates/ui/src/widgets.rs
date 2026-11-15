@@ -462,7 +462,7 @@ pub fn search(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width: f32
             .margin(vec2(0.0, 0.0))
             .align(Align2::LEFT_CENTER)
             .desired_width(field.width()),
-    );
+    ).with_edit_menu();
     let border = if resp.has_focus() { t.accent.gamma_multiply(0.8) } else { t.border };
     ui.painter().rect_stroke(rect, r, Stroke::new(1.0, border), StrokeKind::Inside);
     if !value.is_empty() {
@@ -486,7 +486,7 @@ pub fn field(ui: &mut Ui, t: &Theme, label: &str, value: &mut String, password: 
             .font(font(15.0))
             .desired_width(f32::INFINITY)
             .margin(vec2(12.0, 10.0)),
-    )
+    ).with_edit_menu()
 }
 
 // ---------- people ----------
@@ -875,5 +875,40 @@ mod markup_tests {
         assert!(job.sections.iter().any(|s| s.format.color == egui::Color32::from_rgb(0xff, 0xdb, 0xa5)));
         // Brackets that aren't tags stay.
         assert_eq!(super::markup("[x] and [y]", 12.0, egui::Color32::WHITE, 100.0).text, "[x] and [y]");
+    }
+}
+
+/// Right-click menu for text fields, like Steam's: Cut, Copy, Paste.
+/// They act on the field through egui's own clipboard commands, so
+/// selections and the cursor behave exactly as with Ctrl+X/C/V.
+pub trait EditMenu {
+    fn with_edit_menu(self) -> Self;
+}
+
+impl EditMenu for Response {
+    fn with_edit_menu(self) -> Self {
+        if self.secondary_clicked() {
+            // The commands go to the focused field: this one.
+            self.request_focus();
+        }
+        self.context_menu(|ui| {
+            ui.set_min_width(160.0);
+            let mut cmd = None;
+            if ui.button(i18n::tr("Cut")).clicked() {
+                cmd = Some(egui::ViewportCommand::RequestCut);
+            }
+            if ui.button(i18n::tr("Copy")).clicked() {
+                cmd = Some(egui::ViewportCommand::RequestCopy);
+            }
+            if ui.button(i18n::tr("Paste")).clicked() {
+                cmd = Some(egui::ViewportCommand::RequestPaste);
+            }
+            if let Some(c) = cmd {
+                self.request_focus();
+                ui.ctx().send_viewport_cmd(c);
+                ui.close();
+            }
+        });
+        self
     }
 }

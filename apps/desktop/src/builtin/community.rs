@@ -1,5 +1,6 @@
 //! Community: friends and 1:1 chat.
 
+use ui::widgets::EditMenu;
 use i18n::t;
 use client::{Client, Command, State};
 use egui::{Align, Align2, CornerRadius, Key, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2};
@@ -220,7 +221,7 @@ pub fn chat_body(ui: &mut Ui, t: &Theme, state: &State, client: &impl Sender, fr
                         .font(w::font(14.5))
                         .frame(egui::Frame::NONE)
                         .desired_width(ui.available_width() - 48.0),
-                );
+                ).with_edit_menu();
                 if input.len() > before && before == 0 {
                     client.send(Command::Typing { to: friend });
                 }
@@ -541,7 +542,7 @@ impl Community {
             ui.add_space(4.0);
             let target = parse_friend(&self.add);
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.add).hint_text(t!("e.g. 836957442 or steamcommunity.com/profiles/…")).desired_width(380.0).margin(vec2(10.0, 8.0)));
+                ui.add(egui::TextEdit::singleline(&mut self.add).hint_text(t!("e.g. 836957442 or steamcommunity.com/profiles/…")).desired_width(380.0).margin(vec2(10.0, 8.0))).with_edit_menu();
                 ui.add_enabled_ui(target.is_some(), |ui| {
                     if w::button(ui, t, Some(icons::USER_PLUS), t!("Send invite"), w::Kind::Primary, w::Size::Md).clicked() {
                         if let Some(id) = target {

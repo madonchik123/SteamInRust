@@ -1,5 +1,6 @@
 //! The game Properties window (a separate OS window, like Steam's).
 
+use ui::widgets::EditMenu;
 use super::{GameSettings, Library};
 use client::Command;
 use egui::{Align, Layout, Margin, Sense, Ui, vec2};
@@ -313,7 +314,7 @@ impl Library {
     fn tab_general(&mut self, ui: &mut Ui, t: &Theme, app: AppId, owned: Option<&OwnedApp>) {
         let s = self.settings_mut(app);
         section(ui, t, t!("Launch options"), t!("Extra arguments added when the game starts."), |ui| {
-            ui.add(egui::TextEdit::singleline(&mut s.args).hint_text("-novid -fullscreen").desired_width(f32::INFINITY).margin(vec2(10.0, 8.0)));
+            ui.add(egui::TextEdit::singleline(&mut s.args).hint_text("-novid -fullscreen").desired_width(f32::INFINITY).margin(vec2(10.0, 8.0))).with_edit_menu();
         });
         section(ui, t, t!("In-game overlay"), t!("Open friends and chat with Shift+Tab while playing."), |ui| {
             ui.add(crate::builtin::settings::toggle(&mut s.overlay_on));
@@ -519,7 +520,7 @@ impl Library {
         s.branch = chosen.clone();
         ui.add_space(8.0);
         section(ui, t, t!("Private beta code"), t!("Some betas need a code from the developer."), |ui| {
-            ui.add(egui::TextEdit::singleline(&mut s.beta_code).desired_width(260.0).margin(vec2(10.0, 8.0)));
+            ui.add(egui::TextEdit::singleline(&mut s.beta_code).desired_width(260.0).margin(vec2(10.0, 8.0))).with_edit_menu();
         });
         // Like Steam: an installed game downloads the other version on
         // request; one that isn't installed just remembers the choice.

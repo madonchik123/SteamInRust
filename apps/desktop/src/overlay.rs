@@ -11,6 +11,7 @@
 //! separate always-on-top window, which shows over windowed and
 //! borderless-fullscreen games only.
 
+use ui::widgets::EditMenu;
 use i18n::t;
 use crate::app::SteamApp;
 use client::Command;
@@ -1007,6 +1008,6 @@ fn notes_window(app: &mut SteamApp, ctx: &egui::Context, t: &Theme) {
         ui.label(w::text(t!("Jot things down while you play. Kept until you close the app."), 12.0, t.text_dim));
         ui.add_space(6.0);
         let size = ui.available_size();
-        ui.add_sized(size, egui::TextEdit::multiline(&mut app.overlay.notes).font(w::font(14.0)));
+        ui.add_sized(size, egui::TextEdit::multiline(&mut app.overlay.notes).font(w::font(14.0))).with_edit_menu();
     });
 }
