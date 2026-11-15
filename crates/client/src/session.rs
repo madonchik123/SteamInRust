@@ -38,14 +38,20 @@ pub async fn run(mut cmds: Cmds, sink: Sink) {
         let login = match cmd {
             Command::LoginPassword { account, password } => Login::Password { account, password },
             Command::LoginQr => Login::Qr,
-            Command::LoginSaved { account } => match store::find(&account) {
+            Command::LoginSaved { account } => match store::credentials(&account) {
+                // No token in the credential store (none on this system, or
+                // it was cleared): the password is needed again.
+                Some(saved) if saved.refresh_token.is_empty() => {
+                    sink(Event::LoginFailed(format!("The saved sign-in for {account} isn't available. Sign in with your password.")));
+                    continue;
+                }
                 Some(saved) => Login::Saved(saved),
                 None => {
                     sink(Event::LoginFailed(format!("No saved login for {account}")));
                     continue;
                 }
             },
-            Command::StartOffline { account } => match store::find(&account) {
+            Command::StartOffline { account } => match store::credentials(&account) {
                 Some(saved) => Login::Offline(saved),
                 None => {
                     sink(Event::LoginFailed(format!("No saved login for {account}")));
@@ -206,7 +212,7 @@ async fn session(login: Login, cmds: &mut Cmds, sink: &Sink, next: &mut Option<C
             }
         }
         Login::Password { account, password } => {
-            let guard_data = store::find(&account).and_then(|a| a.guard_data);
+            let guard_data = store::credentials(&account).and_then(|a| a.guard_data);
             let mut pending = auth::begin(&conn, &account, &password, guard_data, &device).await?;
             drop(password);
             let Some(tokens) = guard_flow(&conn, &mut pending, cmds, sink, next).await? else {

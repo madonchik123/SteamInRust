@@ -26,6 +26,10 @@ futures-util.workspace = true
 sha1 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 fs4 = "1"
+# Saved sign-ins: the refresh token and Steam Guard data live in the OS
+# credential store (Secret Service on Linux, Credential Manager on Windows,
+# Keychain on macOS), never in a file.
+keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust", "windows-native", "apple-native"] }
 # Finding where a game is installed (Workshop downloads).
 local.workspace = true
 
