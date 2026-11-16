@@ -176,6 +176,10 @@ impl Overlay {
     pub fn game_stopped(&mut self) {
         self.game = None;
         self.ingame = None;
+        if self.open {
+            #[cfg(target_os = "macos")]
+            mac::set_accessory(false);
+        }
         self.open = false;
         for w in &mut self.wins {
             w.pinned = false;
@@ -192,6 +196,10 @@ impl Overlay {
         if self.open {
             self.close();
         } else {
+            // macOS only lets an accessory app (no Dock icon) put windows on
+            // another app's full-screen space, where games run.
+            #[cfg(target_os = "macos")]
+            mac::set_accessory(true);
             self.open = true;
             self.focused = false;
             self.game_window = foreground_window();
@@ -200,6 +208,8 @@ impl Overlay {
 
     fn close(&mut self) {
         self.open = false;
+        #[cfg(target_os = "macos")]
+        mac::set_accessory(false);
         // Give the keyboard back to the game.
         give_focus(self.game_window);
     }
@@ -288,6 +298,16 @@ mod mac {
                     let _: () = msg_send![w, orderFrontRegardless];
                 }
             }
+        }
+    }
+
+    /// Accessory (no Dock icon, may join full-screen spaces) or a normal app.
+    pub fn set_accessory(on: bool) {
+        unsafe {
+            let Some(cls) = AnyClass::get(c"NSApplication") else { return };
+            let app: *mut AnyObject = msg_send![cls, sharedApplication];
+            // NSApplicationActivationPolicyRegular = 0, Accessory = 1
+            let _: bool = msg_send![app, setActivationPolicy: if on { 1isize } else { 0isize }];
         }
     }
 
