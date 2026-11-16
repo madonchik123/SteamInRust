@@ -224,9 +224,50 @@ impl Overlay {
 fn foreground_window() -> isize {
     unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() as isize }
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn foreground_window() -> isize {
     0
+}
+
+/// macOS: the app in front, as its process id.
+#[cfg(target_os = "macos")]
+fn foreground_window() -> isize {
+    mac::frontmost().map_or(0, |(pid, _)| pid as isize)
+}
+
+/// macOS: which app is in front, and bringing one back (NSWorkspace).
+#[cfg(target_os = "macos")]
+mod mac {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use std::ffi::{CStr, c_char};
+
+    /// The frontmost app: (process id, its program's path).
+    pub fn frontmost() -> Option<(i32, String)> {
+        unsafe {
+            let ws: *mut AnyObject = msg_send![AnyClass::get(c"NSWorkspace")?, sharedWorkspace];
+            let app: *mut AnyObject = msg_send![ws, frontmostApplication];
+            if app.is_null() {
+                return None;
+            }
+            let pid: i32 = msg_send![app, processIdentifier];
+            let url: *mut AnyObject = msg_send![app, executableURL];
+            let path: *mut AnyObject = if url.is_null() { std::ptr::null_mut() } else { msg_send![url, path] };
+            let s: *const c_char = if path.is_null() { std::ptr::null() } else { msg_send![path, UTF8String] };
+            Some((pid, if s.is_null() { String::new() } else { CStr::from_ptr(s).to_string_lossy().into_owned() }))
+        }
+    }
+
+    pub fn activate(pid: i32) {
+        unsafe {
+            let Some(cls) = AnyClass::get(c"NSRunningApplication") else { return };
+            let app: *mut AnyObject = msg_send![cls, runningApplicationWithProcessIdentifier: pid];
+            if !app.is_null() {
+                // NSApplicationActivateIgnoringOtherApps
+                let _: bool = msg_send![app, activateWithOptions: 2usize];
+            }
+        }
+    }
 }
 
 /// The focused window belongs to a program inside `dir` (the game's folder).
@@ -261,9 +302,15 @@ fn foreground_is_in(dir: &std::path::Path) -> bool {
         exe.starts_with(dir.trim_end_matches('\\'))
     }
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn foreground_is_in(_: &std::path::Path) -> bool {
     false
+}
+
+/// macOS: the app in front runs from inside `dir` (the game's folder).
+#[cfg(target_os = "macos")]
+fn foreground_is_in(dir: &std::path::Path) -> bool {
+    mac::frontmost().is_some_and(|(pid, exe)| pid as u32 != std::process::id() && !exe.is_empty() && std::path::Path::new(&exe).starts_with(dir))
 }
 
 #[cfg(windows)]
@@ -272,7 +319,13 @@ fn give_focus(window: isize) {
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(window as _) };
     }
 }
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn give_focus(window: isize) {
+    if window > 0 {
+        mac::activate(window as i32);
+    }
+}
+#[cfg(not(any(windows, target_os = "macos")))]
 fn give_focus(_: isize) {}
 
 /// Pick up games that draw the overlay themselves and read what they sent.
