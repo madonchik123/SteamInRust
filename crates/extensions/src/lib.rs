@@ -154,6 +154,12 @@ pub trait Extension: 'static {
         None
     }
     fn load(&mut self, _data: &str) {}
+
+    /// The extension itself, for app code that knows its concrete type
+    /// (Big Picture reuses the Library's and Store's own logic this way).
+    fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 /// Everything an extension can see and do during a call.
@@ -326,6 +332,13 @@ impl Registry {
         };
         self.entries[index].ext = Some(ext);
         Some(r)
+    }
+
+    /// Call `f` on the extension with this id if it's a `T` (see
+    /// [`Extension::as_any`]), with a [`Ctx`] like a page gets.
+    pub fn with_ext<T: 'static, R>(&mut self, id: &str, env: Env<'_>, f: impl FnOnce(&mut T, &mut Ctx) -> R) -> Option<R> {
+        let index = self.entries.iter().position(|e| e.manifest.id == id)?;
+        self.with(index, env, |ext, ctx| ext.as_any().and_then(|a| a.downcast_mut::<T>()).map(|x| f(x, ctx))).flatten()
     }
 
     pub fn show_page(&mut self, page: &str, ui: &mut egui::Ui, env: Env<'_>) -> bool {

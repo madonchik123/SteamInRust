@@ -40,6 +40,10 @@ pub struct Prefs {
     /// Friends pinned to the top of the list ("Favorites"), like Steam.
     #[serde(default)]
     pub favorite_friends: Vec<u64>,
+    /// Big Picture's interface size (1.0 = sized for a 1080p TV).
+    pub bigpicture_scale: f32,
+    /// Open in Big Picture at startup.
+    pub bigpicture_start: bool,
 }
 
 fn yes() -> bool {
@@ -67,6 +71,8 @@ impl Default for Prefs {
             wants_offline: false,
             auto_offline: false,
             favorite_friends: Vec::new(),
+            bigpicture_scale: 1.0,
+            bigpicture_start: false,
         }
     }
 }
@@ -129,6 +135,12 @@ pub struct SteamApp {
     hidden: bool,
     applied_theme: Option<Theme>,
     applied_zoom: f32,
+    /// Big Picture (fullscreen TV mode) and its controller input.
+    pub bigpicture: crate::bigpicture::BigPicture,
+    bigpicture_was_on: bool,
+    /// When the first frame ran, and when we last asked to leave fullscreen.
+    started_at: Option<f64>,
+    unfullscreen_asked: f64,
 }
 
 impl SteamApp {
@@ -203,6 +215,10 @@ impl SteamApp {
         }
 
         let overlay = crate::overlay::Overlay::new(&cc.egui_ctx);
+        let mut bigpicture = crate::bigpicture::BigPicture::new(&cc.egui_ctx);
+        if prefs.bigpicture_start {
+            bigpicture.active = true;
+        }
         let mut app = Self {
             _rt: rt,
             client,
@@ -238,6 +254,10 @@ impl SteamApp {
             hidden: false,
             applied_theme: None,
             applied_zoom: 0.0,
+            bigpicture,
+            bigpicture_was_on: false,
+            started_at: None,
+            unfullscreen_asked: f64::MIN,
         };
         // `--page=inventory --arg=listings`: open a page at startup (handy with --demo).
         let flag = |name: &str| std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from));
@@ -515,6 +535,29 @@ impl SteamApp {
 }
 
 impl SteamApp {
+    /// eframe restores the last window state, fullscreen included, so after
+    /// quitting in Big Picture the next start would be fullscreen. Start in a
+    /// normal window (Big Picture asks for fullscreen itself once it shows).
+    /// (Saving never stores fullscreen any more, see `save`; this covers
+    /// state saved by older builds.) macOS may ignore the request while the
+    /// restored window is still going fullscreen, so keep asking for a few
+    /// seconds.
+    fn leave_restored_fullscreen(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        let start = *self.started_at.get_or_insert(now);
+        let big_picture = self.bigpicture.active && self.state.phase == Phase::LoggedIn;
+        // Not stopped early by what the window reports: on macOS it can read
+        // "not fullscreen" while the window is still in a fullscreen space.
+        if big_picture || now - start > 4.0 {
+            return;
+        }
+        if now - self.unfullscreen_asked >= 0.25 {
+            self.unfullscreen_asked = now;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+
     /// A download is running, paused or queued.
     pub fn downloading(&self) -> bool {
         !self.state.download_queue.is_empty() || self.state.downloads.values().any(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed))
@@ -608,6 +651,8 @@ impl eframe::App for SteamApp {
             }
         }
         self.drain_events(&ctx, &mut actions);
+        self.leave_restored_fullscreen(&ctx);
+        crate::bigpicture::poll(self, &ctx);
         self.handle_tray(&ctx, &mut actions);
         self.handle_links(&ctx, &mut actions);
 
@@ -651,6 +696,14 @@ impl eframe::App for SteamApp {
         } else {
             WindowMode::SignIn
         };
+        // Big Picture owns the window (fullscreen); size it again when it ends.
+        let big_picture = signed_in && self.bigpicture.active;
+        if big_picture {
+            self.window_mode = Some(mode);
+        } else if self.bigpicture_was_on {
+            self.window_mode = None;
+        }
+        self.bigpicture_was_on = big_picture;
         if self.window_mode != Some(mode) {
             self.window_mode = Some(mode);
             let (size, min, resizable) = match mode {
@@ -670,7 +723,13 @@ impl eframe::App for SteamApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos.to_pos2()));
             }
         }
-        if signed_in {
+        if signed_in && self.bigpicture.active {
+            crate::bigpicture::show(self, ui, &mut actions);
+            crate::friends_window::show(self, &ctx, &mut actions);
+            crate::overlay::show(self, &ctx, &mut actions);
+            crate::launch_popup::show(self, &ctx);
+            crate::tray::show(self, &ctx);
+        } else if signed_in {
             crate::shell::show(self, ui, &mut actions);
             crate::shell::activate_dialog(self, &ctx);
             crate::shell::friend_dialogs(self, &ctx);
@@ -687,15 +746,25 @@ impl eframe::App for SteamApp {
 
         self.apply_actions(&ctx, actions);
         crate::shell::toasts(self, &ctx);
-        if signed_in {
-            crate::chrome::resize_handles(&ctx);
+        if !(signed_in && self.bigpicture.active) {
+            if signed_in {
+                crate::chrome::resize_handles(&ctx);
+            }
+            crate::chrome::border(&ctx, &self.prefs.theme);
         }
-        crate::chrome::border(&ctx, &self.prefs.theme);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.prefs.ext_data = self.registry.save_all().into_iter().collect();
         eframe::set_value(storage, "prefs", &self.prefs);
+        // eframe has just saved the window's state (it runs before this).
+        // Fullscreen only ever comes from Big Picture, which asks for it
+        // again itself: never restore it, or a normal start after quitting
+        // in Big Picture opens fullscreen (macOS can't be talked out of it
+        // reliably once the window is restored that way).
+        if let Some(window) = storage.get_string("window").filter(|w| w.contains("fullscreen:true")) {
+            storage.set_string("window", window.replace("fullscreen:true", "fullscreen:false"));
+        }
     }
 }
 

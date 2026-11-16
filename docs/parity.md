@@ -22,7 +22,8 @@ Steam's website" still works; it just isn't native yet.
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games only (others get a window overlay); no in-game web browser or screenshots |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | English and Russian only; Windows only |
-| Big Picture, Remote Play | 0 | Not planned for now. Steam Input for games is under "Steam features inside games" |
+| Big Picture | 0.75 | Home, library, game pages, store with an on-screen keyboard, downloads, friends (read-only). No chat or settings pages inside Big Picture yet |
+| Remote Play | 0 | Not planned for now. Steam Input for games is under "Steam features inside games" |
 
 ---
 

@@ -79,6 +79,10 @@ Everything below is in the current release. Area-by-area status:
   game.
 - **Offline mode.** It works like Steam's. If the connection drops, SteamInRust
   reconnects without signing you out, and your running games keep going.
+- **Big Picture.** A full-screen mode for the TV, driven by a controller or the
+  keyboard: home, library, game pages, store with an on-screen keyboard,
+  downloads and friends. Open it from the menu, with the controller's Guide
+  button, or start with `--bigpicture`.
 - **Plugins.** Small [Rhai](https://rhai.rs) scripts can add pages,
   notifications and automations, with only the permissions you approve.
 - **English and Russian**, picked from your system language.
@@ -264,7 +268,8 @@ work are in [docs/parity.md](docs/parity.md).
 | Shift+Tab overlay | 0.75 |
 | Notifications and tray | 1 |
 | Settings, languages, updates | 0.75 |
-| Big Picture, Remote Play | 0 |
+| Big Picture | 0.75 |
+| Remote Play | 0 |
 
 0 is not started, 1 is complete. What's missing in each area:
 [docs/parity.md](docs/parity.md).

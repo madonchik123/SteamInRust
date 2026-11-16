@@ -7,7 +7,7 @@ pub mod community;
 mod downloads;
 pub mod hub;
 mod inventory;
-mod library;
+pub mod library;
 mod plugins;
 mod support;
 mod profile;
