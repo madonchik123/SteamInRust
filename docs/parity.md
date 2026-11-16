@@ -105,7 +105,7 @@ All native, no web view.
 | One-to-one chat with history, typing indicator and unread counts | Done |
 | Separate Friends & Chat window that works while the main window is in the tray | Done |
 | Right-click menu: join game, view server info (live A2S query), watch game, view game info, invite to play, nickname, favorites, remove, block | Done |
-| Add friends, friend code, accept or ignore requests | Done |
+| Add friends: friend code, Quick Invite links (make, copy, or open someone's), search profiles by name; accept or ignore requests | Done |
 | Group chats, voice chat | Not yet |
 
 ## Community

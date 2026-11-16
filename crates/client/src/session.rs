@@ -762,6 +762,26 @@ async fn online(
                         sink(Event::SteamCollections(result));
                     });
                 }
+                Some(Command::LoadQuickInvite { new }) => {
+                    let (conn, sink, me) = (conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        sink(Event::QuickInvite(crate::friends_add::invite(&conn, me, new).await));
+                    });
+                }
+                Some(Command::RedeemQuickInvite { steam_id, token }) => {
+                    let (conn, sink) = (conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        let result = crate::friends_add::redeem(&conn, steam_id, &token).await;
+                        sink(Event::QuickInviteRedeemed { steam_id, result });
+                    });
+                }
+                Some(Command::SearchUsers { text, page }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(web) => crate::friends_add::search(&web, &text, page).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::UserSearch(result));
+                }),
                 Some(Command::LoadComments { steam_id, start }) => st.with_web(sink, move |web, sink| async move {
                     let result = crate::social::comments(web.as_deref().ok(), steam_id, start).await;
                     sink(Event::Comments { steam_id, result });
