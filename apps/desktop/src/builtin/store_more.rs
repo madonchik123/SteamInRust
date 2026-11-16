@@ -330,7 +330,7 @@ impl Store {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn purchase_actions(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, package: Option<u32>, name: &str, price: Option<(String, Option<String>, u8)>, owned: bool) {
         let wished = ctx.state.wishlist.as_ref().is_some_and(|w| w.iter().any(|x| x.0 == id));
-        if !owned && w::icon_button(ui, t, icons::HEART, if wished { t!("On wishlist") } else { t!("Add to wishlist") }, wished, 0).clicked() {
+        if !owned && w::heart_button(ui, t, wished, if wished { t!("On wishlist") } else { t!("Add to wishlist") }).clicked() {
             ctx.send(if wished { Command::WishlistRemove { app_id: id } } else { Command::WishlistAdd { app_id: id } });
         }
         let Some(pkg) = package else { return };

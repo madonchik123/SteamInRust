@@ -127,7 +127,12 @@ struct Saved {
     /// Kept across restarts so a shortcut still appears if the app was
     /// closed during the download.
     pending_shortcuts: BTreeMap<AppId, std::path::PathBuf>,
+    /// What Steam had at the last sync. See [`Library::steam_base`].
+    steam_base: Collections,
 }
+
+/// Collections by Steam id ("favorite", "hidden", "uc-…"): name and games.
+type Collections = BTreeMap<String, (String, BTreeSet<AppId>)>;
 
 pub(crate) use news::Reader;
 
@@ -242,6 +247,12 @@ pub struct Library {
     install_dialog: Option<InstallDialog>,
     /// Games to put on the desktop once their install finishes.
     collections: Vec<Collection>,
+    /// What Steam had at the last sync, kept across restarts. Comparing it
+    /// with ours shows what changed here (sent to Steam), and with Steam's
+    /// what changed elsewhere (taken from Steam).
+    steam_base: Collections,
+    /// Steam's collections have loaded this session; edits go to Steam.
+    steam_loaded: bool,
     adv: AdvFilters,
     /// Naming a new collection (with a game to put in it), or renaming one.
     naming: Option<(Option<usize>, String, Option<AppId>)>,
@@ -298,7 +309,13 @@ impl Extension for Library {
                 self.auto_update(ctx);
             }
             client::Event::GameStopped { .. } => self.auto_update(ctx),
-            client::Event::SteamCollections(Ok(list)) => self.merge_steam_collections(list),
+            client::Event::SteamCollections(Ok(list)) => {
+                self.merge_steam_collections(list);
+                self.sync_collections(ctx);
+            }
+            client::Event::SteamCollectionsSaved(Err(e)) => {
+                ctx.toast(t!("Couldn't save your collections to Steam: {error}", error = e));
+            }
             client::Event::CloudReport { report, held_launch } => {
                 let name = ctx.state.app_name(report.app_id).unwrap_or_default().to_string();
                 if let Some(args) = held_launch {
@@ -360,6 +377,7 @@ impl Extension for Library {
         if let Some((id, act)) = self.menu_request.take() {
             self.apply_menu(ctx, id, act);
         }
+        self.sync_collections(ctx);
     }
 
     fn save(&self) -> Option<String> {
@@ -371,6 +389,7 @@ impl Extension for Library {
             custom: self.custom.clone(),
             collections: self.collections.clone(),
             pending_shortcuts: self.shortcut_after_install.clone(),
+            steam_base: self.steam_base.clone(),
         })
         .ok()
     }
@@ -388,6 +407,7 @@ impl Extension for Library {
         self.custom = saved.custom;
         self.collections = saved.collections;
         self.shortcut_after_install = saved.pending_shortcuts;
+        self.steam_base = saved.steam_base;
     }
 }
 
@@ -431,23 +451,95 @@ impl Library {
         ctx.send(Command::CloudSettings { steam_root: root, disabled });
     }
 
-    /// Bring in the collections made in the official Steam client: Favorites
-    /// and Hidden fill ours, the rest show up as collections here.
+    /// Our collections by Steam id. Collections made here get an id first.
+    fn collections_now(&mut self) -> Collections {
+        for c in self.collections.iter_mut().filter(|c| c.steam_id.is_none()) {
+            c.steam_id = Some(client::collections::new_id());
+        }
+        let name_of = |id: &str, fallback: &str| self.steam_base.get(id).map(|(n, _)| n.clone()).unwrap_or_else(|| fallback.to_string());
+        let mut now = Collections::new();
+        // Favorites and Hidden always exist; an empty one Steam doesn't have
+        // yet needn't be made.
+        if !self.favorites.is_empty() || self.steam_base.contains_key("favorite") {
+            now.insert("favorite".into(), (name_of("favorite", "Favorites"), self.favorites.clone()));
+        }
+        if !self.hidden.is_empty() || self.steam_base.contains_key("hidden") {
+            now.insert("hidden".into(), (name_of("hidden", "Hidden"), self.hidden.clone()));
+        }
+        for c in &self.collections {
+            now.insert(c.steam_id.clone().expect("set above"), (c.name.clone(), c.games.clone()));
+        }
+        now
+    }
+
+    /// Steam's collections arrived (Favorites, Hidden and your own; ones
+    /// built from filters are skipped). Anything changed here since the last
+    /// sync is kept and sent to Steam; everything else follows Steam, so edits
+    /// from the official client or another computer show up, removals too.
+    /// The very first time, both sides are merged so nothing is lost.
     fn merge_steam_collections(&mut self, list: &[model::SteamCollection]) {
-        for c in list {
-            match c.id.as_str() {
-                "favorite" => self.favorites.extend(c.games.iter().copied()),
-                "hidden" => self.hidden.extend(c.games.iter().copied()),
-                _ if c.dynamic => {}
-                _ => match self.collections.iter_mut().find(|x| x.steam_id.as_deref() == Some(c.id.as_str())) {
-                    Some(mine) => {
-                        mine.name = c.name.clone();
-                        mine.games = c.games.iter().copied().collect();
-                    }
-                    None => self.collections.push(Collection { name: c.name.clone(), games: c.games.iter().copied().collect(), steam_id: Some(c.id.clone()) }),
-                },
+        let steam: Collections = list.iter().filter(|c| !c.dynamic).map(|c| (c.id.clone(), (c.name.clone(), c.games.iter().copied().collect()))).collect();
+        let ours = self.collections_now();
+        let first = self.steam_base.is_empty();
+        let ids: BTreeSet<&String> = steam.keys().chain(ours.keys()).chain(self.steam_base.keys()).collect();
+        let mut merged = Collections::new();
+        for id in ids {
+            let (mine, theirs, base) = (ours.get(id), steam.get(id), self.steam_base.get(id));
+            let pick = if first {
+                match (mine, theirs) {
+                    (Some((_, a)), Some((name, b))) => Some((name.clone(), a | b)),
+                    (a, b) => a.or(b).cloned(),
+                }
+            } else if mine != base {
+                mine.cloned()
+            } else {
+                theirs.cloned()
+            };
+            if let Some(v) = pick {
+                merged.insert(id.clone(), v);
             }
         }
+        self.favorites = merged.get("favorite").map(|(_, g)| g.clone()).unwrap_or_default();
+        self.hidden = merged.get("hidden").map(|(_, g)| g.clone()).unwrap_or_default();
+        // Keep the order collections are listed in; new ones go at the end.
+        let mut rest = merged;
+        rest.remove("favorite");
+        rest.remove("hidden");
+        self.collections.retain_mut(|c| match c.steam_id.as_ref().and_then(|id| rest.remove(id)) {
+            Some((name, games)) => {
+                c.name = name;
+                c.games = games;
+                true
+            }
+            None => false,
+        });
+        self.collections.extend(rest.into_iter().map(|(id, (name, games))| Collection { name, games, steam_id: Some(id) }));
+        if let Filter::Collection(i) = self.filter
+            && i >= self.collections.len()
+        {
+            self.filter = Filter::All;
+        }
+        self.steam_base = steam;
+        self.steam_loaded = true;
+    }
+
+    /// Send Steam whatever changed here since it last had our collections.
+    fn sync_collections(&mut self, ctx: &mut Ctx) {
+        if !self.steam_loaded {
+            return;
+        }
+        let now = self.collections_now();
+        if now == self.steam_base {
+            return;
+        }
+        let mut edits: Vec<model::CollectionEdit> = now
+            .iter()
+            .filter(|(id, v)| self.steam_base.get(*id) != Some(*v))
+            .map(|(id, (name, games))| model::CollectionEdit { id: id.clone(), name: name.clone(), games: games.iter().copied().collect(), deleted: false })
+            .collect();
+        edits.extend(self.steam_base.keys().filter(|id| !now.contains_key(*id)).map(|id| model::CollectionEdit { id: id.clone(), deleted: true, ..Default::default() }));
+        self.steam_base = now;
+        ctx.send(Command::SaveSteamCollections(edits));
     }
 
     /// Name a new collection, or rename one.
@@ -981,11 +1073,11 @@ impl Library {
                     self.filter = if self.filter == Filter::Collection(i) { Filter::All } else { Filter::Collection(i) };
                 }
                 r.context_menu(|ui| {
-                    if ui.button(format!("{}   {}", icons::NOTE, t!("Rename"))).clicked() {
+                    if w::menu_item(ui, t, icons::NOTE, t!("Rename")).clicked() {
                         self.naming = Some((Some(i), c.name.clone(), None));
                         ui.close();
                     }
-                    if ui.button(format!("{}   {}", icons::TRASH, t!("Delete collection"))).clicked() {
+                    if w::menu_item_tinted(ui, t, icons::TRASH, t!("Delete collection"), Some(t.danger)).clicked() {
                         remove = Some(i);
                         ui.close();
                     }
@@ -1435,7 +1527,7 @@ impl Library {
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let fav = self.favorites.contains(&id);
-                        let heart = w::icon_button(ui, t, icons::HEART, if fav { t!("Remove from favorites") } else { t!("Add to favorites") }, fav, 0);
+                        let heart = w::heart_button(ui, t, fav, if fav { t!("Remove from favorites") } else { t!("Add to favorites") });
                         if heart.clicked() && !self.favorites.remove(&id) {
                             self.favorites.insert(id);
                         }
@@ -2126,3 +2218,52 @@ impl InstallDialog {
     }
 }
 
+
+#[cfg(test)]
+mod collection_sync_tests {
+    use super::*;
+
+    fn steam(list: &[(&str, &str, &[AppId])]) -> Vec<model::SteamCollection> {
+        list.iter().map(|(id, name, games)| model::SteamCollection { id: id.to_string(), name: name.to_string(), games: games.to_vec(), dynamic: false }).collect()
+    }
+
+    #[test]
+    fn first_sync_merges_both_sides() {
+        let mut l = Library::default();
+        l.favorites = [10, 20].into();
+        l.collections.push(Collection { name: "Mine".into(), games: [5].into(), steam_id: None });
+        l.merge_steam_collections(&steam(&[("favorite", "Favorites", &[20, 30]), ("uc-a", "Theirs", &[7])]));
+        assert_eq!(l.favorites, [10, 20, 30].into());
+        assert_eq!(l.collections.len(), 2);
+        // What Steam lacks is still to be sent.
+        assert_ne!(l.collections_now(), l.steam_base);
+    }
+
+    #[test]
+    fn steam_wins_where_nothing_changed_here() {
+        let mut l = Library::default();
+        l.merge_steam_collections(&steam(&[("favorite", "Favorites", &[1, 2]), ("uc-a", "A", &[3])]));
+        // Elsewhere: 2 un-favorited, collection A deleted, B made.
+        l.merge_steam_collections(&steam(&[("favorite", "Favorites", &[1]), ("uc-b", "B", &[4])]));
+        assert_eq!(l.favorites, [1].into());
+        assert_eq!(l.collections.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["B"]);
+        assert_eq!(l.collections_now(), l.steam_base);
+    }
+
+    #[test]
+    fn edits_made_before_steam_answers_are_kept() {
+        let mut l = Library::default();
+        l.merge_steam_collections(&steam(&[("favorite", "Favorites", &[1]), ("uc-a", "A", &[3])]));
+        l.steam_loaded = false;
+        // Next start: edits before Steam's copy arrives.
+        l.favorites.insert(2);
+        l.collections.retain(|c| c.name != "A");
+        l.merge_steam_collections(&steam(&[("favorite", "Favorites", &[1]), ("uc-a", "A", &[3])]));
+        assert_eq!(l.favorites, [1, 2].into());
+        assert!(l.collections.is_empty());
+        // Both changes go to Steam.
+        let now = l.collections_now();
+        assert_eq!(now.get("favorite").map(|(_, g)| g.clone()), Some([1, 2].into()));
+        assert!(!now.contains_key("uc-a") && l.steam_base.contains_key("uc-a"));
+    }
+}

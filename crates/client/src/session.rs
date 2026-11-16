@@ -377,6 +377,8 @@ struct Online {
     cache_saved: std::time::Instant,
     /// Games whose pending Steam Cloud upload is running.
     cloud_flushing: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<AppId>>>,
+    /// Library collections as last read from Steam.
+    collections: crate::collections::Shared,
 }
 
 /// Seconds before reconnect attempt `n` (1, 2, …), like Steam: quick at
@@ -481,6 +483,7 @@ async fn online(
         cache_dirty: false,
         cache_saved: std::time::Instant::now(),
         cloud_flushing: Default::default(),
+        collections: Default::default(),
         from_offline: false,
     };
     let (dl_tx, mut dl_rx) = mpsc::unbounded_channel::<(AppId, Result<String, String>)>();
@@ -751,15 +754,20 @@ async fn online(
                 Some(Command::SellItem { app_id, context_id, asset_id, amount, receive }) => st.sell_item(app_id, context_id, asset_id, amount, receive, sink),
                 Some(Command::LoadMyListings) => st.my_listings(sink),
                 Some(Command::LoadSteamCollections) => {
-                    let (conn, sink) = (conn.clone(), sink.clone());
+                    let (conn, sink, store) = (conn.clone(), sink.clone(), st.collections.clone());
                     tokio::spawn(async move {
-                        let req = proto::webui::CCloudConfigStoreDownloadRequest { versions: vec![proto::webui::CCloudConfigStoreNamespaceVersion { enamespace: Some(1), version: Some(0) }] };
-                        let result = conn
-                            .call::<_, proto::webui::CCloudConfigStoreDownloadResponse>("CloudConfigStore.Download#1", &req)
-                            .await
-                            .map_err(|e| e.to_string())
-                            .map(|r| crate::social::collections(r.data.iter().flat_map(|d| d.entries.iter()).map(|e| (e.key(), e.is_deleted(), e.value()))));
-                        sink(Event::SteamCollections(result));
+                        sink(Event::SteamCollections(crate::collections::download(&conn, &store).await));
+                    });
+                }
+                Some(Command::SaveSteamCollections(edits)) => {
+                    let (conn, sink, store) = (conn.clone(), sink.clone(), st.collections.clone());
+                    tokio::spawn(async move {
+                        let result = crate::collections::save(&conn, &store, &edits).await;
+                        if result.is_err() {
+                            // Read Steam's copy again, so the next edit starts from it.
+                            sink(Event::SteamCollections(crate::collections::download(&conn, &store).await));
+                        }
+                        sink(Event::SteamCollectionsSaved(result));
                     });
                 }
                 Some(Command::LoadQuickInvite { new }) => {

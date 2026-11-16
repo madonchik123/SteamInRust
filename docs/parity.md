@@ -1,7 +1,7 @@
 # Steam parity
 
 How much of the official Steam desktop client SteamInRust covers, area by
-area. Last checked against the code on 8 November 2026 (v0.3.0).
+area. Last checked against the code on 16 November 2026 (v0.6.0).
 
 Scores: **0** not started · **0.25** started · **0.5** usable, big parts
 missing · **0.75** mostly there · **1** complete. Anything marked "opens
@@ -9,9 +9,9 @@ Steam's website" still works; it just isn't native yet.
 
 | Area | Score | Main gaps |
 | --- | ---: | --- |
-| Sign-in and accounts | 0.75 | Tokens are in a per-user file, not the Windows credential store; changing email, password or phone opens Steam's website |
+| Sign-in and accounts | 0.75 | Changing email, password or phone opens Steam's website |
 | Offline mode and reconnecting | 1 | Whether Steam counts playtime recorded offline is unconfirmed |
-| Library | 0.75 | Collection edits aren't saved back to Steam; dynamic collections are skipped |
+| Library | 0.75 | Dynamic collections (built from filters) are skipped |
 | Downloads and installs | 0.75 | No drag to reorder the queue; no taskbar progress |
 | Store | 0.75 | Checkout happens on Steam's website (Steam requires it); no discovery queue; can't write reviews |
 | Friends and chat | 0.75 | No group chats or voice chat |
@@ -19,10 +19,10 @@ Steam's website" still works; it just isn't native yet.
 | Inventory and Market | 0.75 | Trade offers open Steam's website; no Market search page |
 | Steam Cloud | 1 | Can't delete files from the cloud |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers; inventory item definitions |
-| Shift+Tab overlay | 0.75 | Drawn inside D3D11 games only (others get a window overlay); no in-game web browser or screenshots |
+| Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser or screenshots |
 | Notifications and tray | 1 | |
-| Settings, languages, updates | 0.75 | English and Russian only; Windows only |
-| Big Picture | 0.75 | Home, library, game pages, store with an on-screen keyboard, downloads, friends (read-only). No chat or settings pages inside Big Picture yet |
+| Settings, languages, updates | 0.75 | English and Russian only; no Linux version; Mac builds aren't signed with an Apple developer ID |
+| Big Picture | 0.75 | No chat; friends are view-only; buying and most settings move to the normal window |
 | Remote Play | 0 | Not planned for now. Steam Input for games is under "Steam features inside games" |
 
 ---
@@ -34,7 +34,7 @@ Steam's website" still works; it just isn't native yet.
 | Password with Steam Guard (email code, mobile code, approve on the phone) | Done |
 | QR code from the Steam Mobile app | Done |
 | Remember me, several saved accounts, switch account, ask at startup | Done |
-| Refresh token storage | Per-user file in app data. Moving it to the Windows credential store is planned |
+| Saved sign-ins | In the system's password store: Windows Credential Manager, or the Keychain on a Mac. Sign-ins saved by older versions move there on first start |
 | Account details: email, phone, Steam Guard and authenticator with dates, password and email change dates, store country, wallet, VAC | Done, native (Credentials service) |
 | Purchase history with "load more", refunds marked | Done, native (read from Steam's history page, like Steam's client) |
 | Licenses and product key activations, searchable | Done, native |
@@ -59,13 +59,14 @@ Steam's website" still works; it just isn't native yet.
 | | |
 | --- | --- |
 | Every owned game (all licenses through PICS) and installed games | Done |
+| Which systems a game runs on: a **Runs on** filter, a game-page line, and "Not available on macOS" for Windows-only games on a Mac | Done |
 | Search, filters (genre, features, Steam Deck status, installed, played), sort by name, recent, hours, size | Done |
 | Home with recent games and shelves, game page with art, play bar, news and achievements | Done |
-| Collections, including your Steam Favorites and Hidden | Read from Steam. Edits stay local for now |
+| Collections, including your Steam Favorites and Hidden | Done, in step with Steam both ways. Edits made before Steam answers (or offline) are kept and sent once it does |
 | Non-Steam games | Done |
 | Install states everywhere: list row with progress, game page, right-click menu, Properties | Done |
 | Properties: general, launch options, language, updates, installed files, versions and betas (with private beta codes), DLC, Steam Cloud, Workshop, controller, privacy | Done |
-| Verify files, uninstall, desktop shortcuts, browse local files (also while installing) | Done |
+| Verify files, uninstall, desktop shortcuts, browse local files (also while installing) | Done. Uninstalling also removes the game's Workshop items and unused download manifests, like Steam |
 | Achievements with rarity, sorting and comparing with a friend | Done |
 
 ## Downloads and installs
@@ -73,7 +74,8 @@ Steam's website" still works; it just isn't native yet.
 | | |
 | --- | --- |
 | SteamInRust's own depot downloader (manifests, chunks, decryption, decompression) | Done |
-| Queue, pause, resume, cancel; the download survives a restart and resumes | Done |
+| Queue, pause, resume, cancel; the download survives a restart and resumes | Done. Cancelling frees the disk space it used |
+| The right version for your system: the macOS package on a Mac, with app bundles and run permissions restored | Done |
 | Separate network and disk speeds, and what it's doing (downloading, writing to disk, verifying) | Done |
 | Every Steam download region and partner CDNs, sorted by measured speed | Done |
 | Bandwidth limit, update schedule, downloads while playing, automatic updates | Done |
@@ -89,9 +91,9 @@ All native, no web view.
 | --- | --- |
 | Front page, search, tags and genres with filters, wishlist | Done |
 | Game pages: screenshots, trailers, description, requirements, languages, review score, tags, DLC | Done |
-| Trailers | Native player (`crates/video`): HLS streaming, Media Foundation H.264 and AAC, full screen, quality and volume |
+| Trailers | Native player (`crates/video`): HLS streaming, full screen, quality and volume. Decoded with Media Foundation on Windows and VideoToolbox/AudioToolbox on a Mac |
 | Prices in your wallet's currency, "In library" marks | Done |
-| Cart (the same cart as the website), product keys, wallet balance | Done |
+| Cart (the same cart as the website), Steam's "Added to your cart" popup, discount price tags, product keys, wallet balance | Done |
 | Gifts, including games you already own, with a check that Steam will deliver to the friend's region | Done |
 | Price history | Through IsThereAnyDeal, with your own free key |
 | Checkout | Opens Steam's website. Steam only takes payment there |
@@ -147,6 +149,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | | |
 | --- | --- |
 | Games without anti-cheat use SteamInRust's own `steamclient` DLL, 64-bit and 32-bit | Done |
+| The same on a Mac: one `steamclient.dylib` for Apple and Intel games (Intel games run under Rosetta) | Done. Tested with Human: Fall Flat: Workshop, stats, and joining a stranger's lobby on the official client |
 | Games with VAC, Easy Anti-Cheat or BattlEye start through the official client, silently | Done. Our DLL is never used for them |
 | User, apps, achievements, stats, cloud, friends, auth tickets, encrypted app tickets | Done |
 | Lobbies (`ISteamMatchmaking`) through Steam's matchmaking service | Done |
@@ -160,7 +163,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Inventory (`ISteamInventory`): items, drops, promos, crafting, properties | Done. Item definitions don't load yet; no purchases |
 | Server browser (`ISteamMatchmakingServers`): internet and LAN lists, ping, players, rules | Done |
 | Screenshots (`ISteamScreenshots`) into the Steam screenshot folder | Done. Not uploaded |
-| Steam Input on Xbox-style pads with the game's bindings | Done. No gyro, trackpads or binding panel |
+| Steam Input on Xbox-style pads with the game's bindings | Done on Windows. No gyro, trackpads or binding panel; no controllers in games on a Mac yet |
 | Hosting game servers (`ISteamGameServer`) | Not yet: needs a game-server sign-in to Steam |
 
 ## Shift+Tab overlay
@@ -169,6 +172,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | --- | --- |
 | Opens over the running game with Shift+Tab, only while the game's window is in front | Done |
 | Drawn inside the game, like Steam's, so it works in exclusive full screen and the game keeps focus | Done for D3D11 games SteamInRust starts with its steamclient (32- and 64-bit). D3D9, D3D12, OpenGL and Vulkan games get the window overlay, which shows over windowed and borderless games only |
+| On a Mac | A window over the game that also works over full-screen games. Shift+Tab needs the Input Monitoring permission; SteamInRust explains it on first start |
 | Mouse and keyboard go to the overlay while it's open; the cursor shows and the game gets `GameOverlayActivated_t` | Done |
 | Game overview, achievements, friends, chat, notes, guides, discussions, hub, store page | Done, in floating windows |
 | Pin windows over the game with adjustable opacity | Done |
@@ -190,6 +194,21 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Settings: account, friends, security, notifications, interface, appearance, store, library, downloads, storage, cloud, in game, accessibility, plugins | Done |
 | Themes, accent color, UI scale | Done |
 | English and Russian, picked from the system language | Done. Other languages aren't translated yet |
-| Installer, uninstaller, background updates checked with SHA-256 | Done |
+| Installer, uninstaller, background updates checked with SHA-256 | Done. On a Mac: a disk image, and the app replaces itself on update |
+| Copy, cut and paste in every text field, with a right-click menu | Done |
 | Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done. Network access for plugins is planned |
-| Linux and macOS | Not yet |
+| macOS | Done (macOS 11 or later). Builds aren't signed with an Apple developer ID, so macOS asks for the Keychain password and Input Monitoring again after each update |
+| Linux | Not yet |
+
+## Big Picture
+
+| | |
+| --- | --- |
+| Full screen for the TV, driven by a controller, the keyboard or the mouse | Done. Open it from the menu, the top bar, the controller's Guide button or `--bigpicture` |
+| Home: continue playing, recently played, what's new | Done |
+| Library: cover grid with Installed and All games | Done |
+| Game page: Play, Install, Update, Pause and Resume, play time, size, achievements | Done |
+| Store: front page, sections, search with an on-screen keyboard (English and Russian), store pages with screenshots, wishlist | Done. Buying moves to the normal window, because Steam only takes payment on its website |
+| Downloads: progress, pause, resume, cancel, queue | Done |
+| Friends | View only: status and the game they're in. No chat yet |
+| Settings | Interface size, start in Big Picture, language. Everything else moves to the normal window |
