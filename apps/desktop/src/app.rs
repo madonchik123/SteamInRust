@@ -434,7 +434,20 @@ impl SteamApp {
 }
 
 impl SteamApp {
-    fn show_window(&mut self, ctx: &egui::Context) {
+    /// May a window that doesn't exist yet open now? eframe can't create
+    /// one while the main window is hidden (it then paints outside the
+    /// event loop and gives up), so this brings the main window back first;
+    /// the other window opens on the next frame.
+    pub(crate) fn can_open_window(&mut self, ctx: &egui::Context, id: egui::ViewportId) -> bool {
+        if !self.hidden || ctx.input(|i| i.raw.viewports.contains_key(&id)) {
+            return true;
+        }
+        self.show_window(ctx);
+        ctx.request_repaint();
+        false
+    }
+
+    pub(crate) fn show_window(&mut self, ctx: &egui::Context) {
         self.hidden = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));

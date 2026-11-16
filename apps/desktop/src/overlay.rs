@@ -577,6 +577,9 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         .with_mouse_passthrough(!active)
         .with_taskbar(false);
     let opened_now = active && !app.overlay.focused;
+    if !app.can_open_window(ctx, viewport) {
+        return;
+    }
     ctx.show_viewport_immediate(viewport, builder, |ui, _class| {
         // macOS: full-screen games sit on their own space; the overlay joins it.
         #[cfg(target_os = "macos")]
