@@ -133,7 +133,7 @@ Shift+Tab в одном нативном процессе без встроен�
 | `SteamInRust-Setup-<версия>.exe` | Установщик. Ставит только для вашего пользователя, без прав администратора, в `%LOCALAPPDATA%\Programs\SteamInRust`, и обновляется сам |
 | `SteamInRust-<версия>-portable.zip` | То же приложение без установщика. Само не обновляется |
 | `SHA256SUMS.txt` | Контрольные суммы обоих файлов |
-| `SteamInRust-<версия>-macos.dmg` | macOS (игры для Apple Silicon и Intel, macOS 11 и новее). Перетащите SteamInRust в «Программы» |
+| `SteamInRust-<версия>-macos.dmg` | macOS (игры для Apple Silicon и Intel, macOS 11 и новее). Перетащите SteamInRust в «Программы», дальше оно обновляется само |
 | `SHA256SUMS-macos.txt` | Контрольная сумма образа диска |
 
 Нужны Windows 10 или 11 (64-бит) либо macOS 11 и новее на Apple Silicon, и

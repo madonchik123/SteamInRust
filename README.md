@@ -131,7 +131,7 @@ Get it from [the latest release](https://github.com/madonchik123/SteamInRust/rel
 | `SteamInRust-Setup-<version>.exe` | Installer. Installs for your user only, without administrator rights, into `%LOCALAPPDATA%\Programs\SteamInRust`, and updates itself |
 | `SteamInRust-<version>-portable.zip` | The same app with no installer. Doesn't update itself |
 | `SHA256SUMS.txt` | Checksums for both |
-| `SteamInRust-<version>-macos.dmg` | macOS (Apple Silicon and Intel games, macOS 11 or later). Drag SteamInRust to Applications |
+| `SteamInRust-<version>-macos.dmg` | macOS (Apple Silicon and Intel games, macOS 11 or later). Drag SteamInRust to Applications; it updates itself |
 | `SHA256SUMS-macos.txt` | Checksum for the disk image |
 
 Needs Windows 10 or 11 (64-bit), or macOS 11 or later on Apple Silicon, and a
