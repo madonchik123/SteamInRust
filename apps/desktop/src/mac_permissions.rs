@@ -68,7 +68,7 @@ pub fn show(ctx: &egui::Context, t: &Theme) {
         return;
     }
     let mut close = false;
-    egui::Modal::new(egui::Id::unique("macos-permissions")).frame(egui::Frame::popup(&ctx.style()).inner_margin(24)).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("macos-permissions")).frame(egui::Frame::new().fill(t.raised).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(t.corner()).inner_margin(24)).show(ctx, |ui| {
         ui.set_width(520.0);
         ui.spacing_mut().item_spacing.y = 6.0;
         ui.label(w::text_bold(t!("Allow SteamInRust to work with your games"), 19.0, t.text));
