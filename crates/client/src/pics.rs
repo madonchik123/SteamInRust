@@ -218,7 +218,9 @@ fn parse_app(id: AppId, text: &str) -> Option<OwnedApp> {
         name: common.str("name").unwrap_or("Unknown").to_string(),
         kind: common.str("type").unwrap_or_default().to_lowercase(),
         launch,
-        icon: common.str("clienticon").or(common.str("icon")).filter(|s| !s.is_empty()).map(String::from),
+        // "icon" is the .jpg the store and library show; "clienticon" is a
+        // Windows .ico, only used when there is no .jpg.
+        icon: common.str("icon").filter(|s| !s.is_empty()).or(common.str("clienticon")).filter(|s| !s.is_empty()).map(String::from),
         parent: common.u64("parent").map(|p| p as AppId).filter(|p| *p != 0),
         install_dir: info.path(&["config"]).and_then(|c| c.str("installdir")).unwrap_or_default().to_string(),
         depots: parse_depots(info),

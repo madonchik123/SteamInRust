@@ -298,7 +298,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auth"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "net",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "auth",
  "depot",
@@ -961,7 +961,7 @@ dependencies = [
 
 [[package]]
 name = "depot"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "extensions"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "client",
  "egui",
@@ -2132,6 +2132,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "h2"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c18c05b8ab635fc118"
+dependencies = [
+ "atomic-waker",
+ "bytes",
+ "fnv",
+ "futures-core",
+ "futures-sink",
+ "http",
+ "indexmap",
+ "slab",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2270,7 +2289,9 @@ checksum = "2c3e324da4c95177d6291d4c8730197c0d1822f8a9766814a4a44fa5ab797c9c"
 dependencies = [
  "atomic-waker",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "h2",
  "http",
  "http-body",
  "httparse",
@@ -2279,6 +2300,21 @@ dependencies = [
  "smallvec",
  "tokio",
  "want",
+]
+
+[[package]]
+name = "hyper-rustls"
+version = "0.27.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfa8e654703247911e29c23fbeaa261834bd9bb74efba2f9acddc37bfb127f53"
+dependencies = [
+ "http",
+ "hyper",
+ "hyper-util",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
 ]
 
 [[package]]
@@ -2316,14 +2352,16 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "socket2",
+ "system-configuration",
  "tokio",
  "tower-service",
  "tracing",
+ "windows-registry",
 ]
 
 [[package]]
 name = "i18n"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "sys-locale",
  "toml 1.2.1+spec-1.1.0",
@@ -2510,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "installer"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "directories",
  "eframe",
@@ -2834,7 +2872,7 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
 name = "local"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "model",
  "open",
@@ -3009,7 +3047,7 @@ dependencies = [
 
 [[package]]
 name = "model"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde",
 ]
@@ -3099,7 +3137,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "flate2",
  "futures-util",
@@ -3895,7 +3933,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plugins"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "model",
  "rhai",
@@ -4146,7 +4184,7 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -4385,10 +4423,12 @@ dependencies = [
  "cookie",
  "cookie_store",
  "futures-core",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
  "hyper",
+ "hyper-rustls",
  "hyper-tls",
  "hyper-util",
  "js-sys",
@@ -5067,7 +5107,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "steam-rs"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "client",
  "directories",
@@ -5104,7 +5144,7 @@ dependencies = [
 
 [[package]]
 name = "steamclient"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "aes-gcm",
  "crc32fast",
@@ -5124,7 +5164,7 @@ dependencies = [
 
 [[package]]
 name = "store"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "model",
  "reqwest",
@@ -5217,6 +5257,27 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
 dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "system-configuration"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a13f3d0daba03132c0aa9767f98351b3488edc2c100cda2d2ec2b04f3d8d3c8b"
+dependencies = [
+ "bitflags 2.13.2",
+ "core-foundation 0.9.4",
+ "system-configuration-sys",
+]
+
+[[package]]
+name = "system-configuration-sys"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
+dependencies = [
+ "core-foundation-sys",
  "libc",
 ]
 
@@ -5433,6 +5494,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-rustls"
+version = "0.26.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
+dependencies = [
+ "rustls",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-tungstenite"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5444,6 +5515,20 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tungstenite",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "libc",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
@@ -5724,7 +5809,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "egui",
  "i18n",
@@ -5893,7 +5978,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vdf"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -5945,7 +6030,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "egui",
  "i18n",
@@ -6317,6 +6402,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-registry"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
+dependencies = [
+ "windows-link",
+ "windows-result",
+ "windows-strings",
+]
+
+[[package]]
 name = "windows-result"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6666,7 +6762,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "sha2",
  "zip",

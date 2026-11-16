@@ -2023,7 +2023,7 @@ impl Online {
                 Err(e) => Err(e.to_string()),
                 Ok(schema) => {
                     let unlocked: HashMap<u32, u64> = mine.map(|m| m.achievements.iter().filter(|a| a.unlocked()).map(|a| (a.internal_key(), a.unlock_time() as u64)).collect()).unwrap_or_default();
-                    let image = |file: &str| if file.is_empty() { String::new() } else { format!("https://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/{app_id}/{file}") };
+                    let image = |file: &str| if file.is_empty() { String::new() } else { format!("https://shared.akamai.steamstatic.com/community_assets/images/apps/{app_id}/{file}") };
                     Ok(schema
                         .achievements
                         .iter()

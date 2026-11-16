@@ -5,7 +5,8 @@
 //! all existing image code uses it without changes. A picture is downloaded
 //! once, then read from disk on later starts (and offline). After a few days
 //! it's revalidated in the background (ETag / Last-Modified) while the saved
-//! copy keeps showing. Downloads run a few at a time, the folder is capped,
+//! copy keeps showing. Downloads run a few at a time, newest request first
+//! (what's on screen now, not what was scrolled past), the folder is capped,
 //! and the oldest pictures go first.
 
 use egui::load::{Bytes, BytesLoadResult, BytesLoader, BytesPoll, LoadError};
@@ -20,8 +21,9 @@ use std::time::{Duration, SystemTime};
 const FRESH_FOR: Duration = Duration::from_secs(3 * 24 * 60 * 60);
 /// Cache size limit; trimmed back to 80% of it, oldest first.
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
-/// Downloads at once (Steam's CDN drops connections when flooded).
-const PARALLEL: usize = 8;
+/// Downloads at once. HTTP/2 carries them over a few connections, so this
+/// is far below what makes Steam's CDN drop connections.
+const PARALLEL: usize = 16;
 
 #[derive(Clone)]
 enum Entry {
@@ -41,8 +43,51 @@ pub struct ImageCache {
     dir: PathBuf,
     rt: tokio::runtime::Handle,
     http: reqwest::Client,
-    slots: Arc<tokio::sync::Semaphore>,
+    slots: Arc<Gate>,
     entries: Arc<Mutex<HashMap<String, Entry>>>,
+}
+
+/// Lets `n` downloads run at once; the others wait, and a freed slot goes to
+/// the one that asked most recently. Pictures are asked for as they're drawn,
+/// so after scrolling, what's on screen loads before what scrolled past.
+struct Gate {
+    state: Mutex<(usize, Vec<tokio::sync::oneshot::Sender<()>>)>,
+}
+
+struct Slot(Arc<Gate>);
+
+impl Gate {
+    fn new(n: usize) -> Arc<Gate> {
+        Arc::new(Gate { state: Mutex::new((n, Vec::new())) })
+    }
+
+    async fn acquire(self: &Arc<Self>) -> Slot {
+        let rx = {
+            let mut s = self.state.lock().unwrap();
+            if s.0 > 0 {
+                s.0 -= 1;
+                return Slot(self.clone());
+            }
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            s.1.push(tx);
+            rx
+        };
+        let _ = rx.await;
+        Slot(self.clone())
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut s = self.0.state.lock().unwrap();
+        // Hand the slot to the newest waiter still there.
+        while let Some(tx) = s.1.pop() {
+            if tx.send(()).is_ok() {
+                return;
+            }
+        }
+        s.0 += 1;
+    }
 }
 
 /// Where pictures are kept: `<cache dir>/images`.
@@ -68,12 +113,16 @@ impl ImageCache {
         let http = reqwest::Client::builder()
             .user_agent(concat!("SteamInRust/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
+            // Now and then a picture stalls; give up on it sooner and try
+            // again rather than hold a download slot for half a minute.
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         // Keep the folder under its limit (in the background, at start).
         let trim_dir = dir.clone();
         rt.spawn_blocking(move || trim(&trim_dir));
-        ctx.add_bytes_loader(Arc::new(Self { dir, rt, http, slots: Arc::new(tokio::sync::Semaphore::new(PARALLEL)), entries: Default::default() }));
+        ctx.add_bytes_loader(Arc::new(Self { dir, rt, http, slots: Gate::new(PARALLEL), entries: Default::default() }));
     }
 
     fn key(uri: &str) -> String {
@@ -126,16 +175,24 @@ impl BytesLoader for ImageCache {
             }
             // 2. Download, or revalidate an old copy.
             let _slot = slots.acquire().await;
-            let mut req = http.get(&uri);
-            if saved.is_some() {
-                if let Some(etag) = &meta.etag {
-                    req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+            let request = || {
+                let mut req = http.get(&uri);
+                if saved.is_some() {
+                    if let Some(etag) = &meta.etag {
+                        req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+                    }
+                    if let Some(lm) = &meta.last_modified {
+                        req = req.header(reqwest::header::IF_MODIFIED_SINCE, lm);
+                    }
                 }
-                if let Some(lm) = &meta.last_modified {
-                    req = req.header(reqwest::header::IF_MODIFIED_SINCE, lm);
-                }
-            }
-            match req.send().await {
+                req.send()
+            };
+            // One retry for a stalled or dropped request.
+            let sent = match request().await {
+                Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => request().await,
+                r => r,
+            };
+            match sent {
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
                     // Still current: mark it fresh again.
                     if let Ok(f) = std::fs::File::options().append(true).open(&path) {
@@ -203,5 +260,34 @@ fn trim(dir: &PathBuf) {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("json"));
         total = total.saturating_sub(len);
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::Gate;
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn newest_waiter_goes_first() {
+        let gate = Gate::new(1);
+        let first = gate.acquire().await;
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut tasks = Vec::new();
+        for i in 0..3 {
+            let (gate, order) = (gate.clone(), order.clone());
+            tasks.push(tokio::spawn(async move {
+                let _slot = gate.acquire().await;
+                order.lock().unwrap().push(i);
+            }));
+            // Let each one start waiting before the next.
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+        }
+        drop(first);
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(*order.lock().unwrap(), vec![2, 1, 0]);
     }
 }

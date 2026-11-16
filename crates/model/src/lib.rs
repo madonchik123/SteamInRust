@@ -1473,7 +1473,7 @@ pub mod art {
         url(id, "logo.png")
     }
     pub fn icon(id: AppId, hash: &str) -> String {
-        format!("https://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/{id}/{hash}.jpg")
+        format!("https://shared.akamai.steamstatic.com/community_assets/images/apps/{id}/{hash}.jpg")
     }
     pub fn avatar_full(hash: Option<&str>) -> String {
         avatar(hash).replace("_medium.jpg", "_full.jpg")
