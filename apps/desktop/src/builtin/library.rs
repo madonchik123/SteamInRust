@@ -1395,7 +1395,12 @@ impl Library {
                             ui.add_space(20.0);
                             crate::offline_ui::playtime_stat(ui, t, ctx.state, id, g.playtime_minutes);
                             ui.add_space(20.0);
-                            w::stat(ui, t, t!("Size"), &ui::bytes(g.size_on_disk));
+                            // Like Steam: the game and its Workshop items together.
+                            let workshop = local::manage::workshop_size(g);
+                            let size = ui.scope(|ui| w::stat(ui, t, t!("Size"), &ui::bytes(g.size_on_disk + workshop))).response;
+                            if workshop > 0 {
+                                size.on_hover_text(t!("{game} game + {workshop} Workshop items", game = ui::bytes(g.size_on_disk), workshop = ui::bytes(workshop)));
+                            }
                             // Where the game's Steam features come from (see docs/steam-compatibility.md).
                             if let Some(o) = &owned {
                                 let (mode, why) = match client::launch_mode_cached(o, &g.install_dir) {
@@ -1882,8 +1887,12 @@ impl Library {
             ui.label(w::text(icons::TRASH, 28.0, t.danger));
             ui.label(w::text_bold(t!("Uninstall {name}?", name = name), 20.0, t.text));
             ui.add_space(4.0);
-            ui.add(egui::Label::new(w::text(t!("This deletes {size} from:", size = ui::bytes(g.size_on_disk)), 14.0, t.text_dim)).wrap());
+            let workshop = local::manage::workshop_size(g);
+            ui.add(egui::Label::new(w::text(t!("This deletes {size} from:", size = ui::bytes(g.size_on_disk + workshop)), 14.0, t.text_dim)).wrap());
             ui.label(w::text(g.install_dir.display().to_string(), 13.0, t.text).monospace());
+            if workshop > 0 {
+                ui.add(egui::Label::new(w::text(t!("Its Workshop items ({size}) are removed too.", size = ui::bytes(workshop)), 12.5, t.text_dim)).wrap());
+            }
             ui.add_space(4.0);
             ui.add(egui::Label::new(w::text(t!("Saves kept inside the game folder are deleted too. Steam Cloud saves aren't affected."), 12.5, t.text_faint)).wrap());
             if running {

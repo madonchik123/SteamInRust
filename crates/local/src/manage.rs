@@ -189,8 +189,9 @@ pub fn verify(steam_root: &Path, game: &InstalledGame, progress: &Progress) -> V
     report
 }
 
-/// Delete a game's files and its app manifest. Refuses anything that isn't
-/// a folder inside `<library>/steamapps/common`.
+/// Delete a game's files and its app manifest, like Steam: its Workshop
+/// items and their record, and the download manifests only it used, go
+/// too. Refuses anything that isn't a folder inside `<library>/steamapps/common`.
 pub fn uninstall(game: &InstalledGame) -> Result<(), String> {
     uninstall_with(game, &Progress::default())
 }
@@ -204,10 +205,13 @@ pub fn uninstall_with(game: &InstalledGame, progress: &Progress) -> Result<(), S
     if !inside {
         return Err(format!("refusing to delete {}: not a game folder in {}", dir.display(), common.display()));
     }
-    if dir.exists() {
+    // Read before the app manifest goes: which download manifests are its own.
+    let own_manifests = depot_manifests_only_for(game);
+    let workshop = workshop_dir(game);
+    if dir.exists() || workshop.exists() {
         // List the files first, so the total is known before deleting.
         let mut files = Vec::new();
-        let mut stack = vec![dir.clone()];
+        let mut stack = vec![dir.clone(), workshop.clone()];
         while let Some(d) = stack.pop() {
             let Ok(entries) = fs::read_dir(&d) else { continue };
             for e in entries.flatten() {
@@ -232,13 +236,57 @@ pub fn uninstall_with(game: &InstalledGame, progress: &Progress) -> Result<(), S
             }
             progress.done_bytes.fetch_add(size, Ordering::Relaxed);
         }
-        fs::remove_dir_all(dir).map_err(|e| format!("could not delete {}: {e}", dir.display()))?;
+        if dir.exists() {
+            fs::remove_dir_all(dir).map_err(|e| format!("could not delete {}: {e}", dir.display()))?;
+        }
+        if workshop.exists() {
+            fs::remove_dir_all(&workshop).map_err(|e| format!("could not delete {}: {e}", workshop.display()))?;
+        }
+    }
+    let _ = fs::remove_file(game.library.join("steamapps").join("workshop").join(format!("appworkshop_{}.acf", game.app_id)));
+    for m in own_manifests {
+        let _ = fs::remove_file(m);
     }
     let manifest = manifest_file(game);
     if manifest.exists() {
         fs::remove_file(&manifest).map_err(|e| format!("could not delete {}: {e}", manifest.display()))?;
     }
     Ok(())
+}
+
+/// `<library>/steamapps/workshop/content/<app>`: the game's Workshop items.
+fn workshop_dir(game: &InstalledGame) -> PathBuf {
+    game.library.join("steamapps").join("workshop").join("content").join(game.app_id.to_string())
+}
+
+/// Bytes of the game's Workshop items (what Steam counts with the game).
+pub fn workshop_size(game: &InstalledGame) -> u64 {
+    workshop_items(game).iter().map(|i| i.size).sum()
+}
+
+/// `depotcache/<depot>_<manifest>.manifest` files of this game's installed
+/// depots that no other installed game in the library lists.
+fn depot_manifests_only_for(game: &InstalledGame) -> Vec<PathBuf> {
+    let installed = |path: &Path| -> Vec<(String, String)> {
+        let Ok(text) = fs::read_to_string(path) else { return Vec::new() };
+        let Ok(doc) = vdf::parse(&text) else { return Vec::new() };
+        doc.path(&["AppState", "InstalledDepots"])
+            .map(|d| d.iter().filter_map(|(id, v)| Some((id.to_string(), v.as_obj()?.str("manifest")?.to_string()))).collect())
+            .unwrap_or_default()
+    };
+    let mine = installed(&manifest_file(game));
+    let steamapps = game.library.join("steamapps");
+    let others: std::collections::HashSet<String> = fs::read_dir(&steamapps)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("appmanifest_")) && *p != manifest_file(game))
+                .flat_map(|p| installed(&p).into_iter().map(|(id, _)| id))
+                .collect()
+        })
+        .unwrap_or_default();
+    let cache = game.library.join("depotcache");
+    mine.into_iter().filter(|(id, _)| !others.contains(id)).map(|(id, gid)| cache.join(format!("{id}_{gid}.manifest"))).filter(|p| p.is_file()).collect()
 }
 
 #[cfg(test)]
@@ -261,6 +309,50 @@ mod tests {
         let files = read_manifest(&data).unwrap().unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "bin/game.exe");
+    }
+
+    #[test]
+    fn uninstall_takes_workshop_items_and_own_manifests() {
+        let lib = std::env::temp_dir().join(format!("sir-uninstall-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&lib);
+        let apps = lib.join("steamapps");
+        let game_dir = apps.join("common").join("Game");
+        fs::create_dir_all(game_dir.join("bin")).unwrap();
+        fs::write(game_dir.join("bin").join("game"), b"x").unwrap();
+        let ws = apps.join("workshop");
+        fs::create_dir_all(ws.join("content").join("10").join("555")).unwrap();
+        fs::write(ws.join("content").join("10").join("555").join("level.dat"), b"lvl").unwrap();
+        fs::create_dir_all(ws.join("content").join("20")).unwrap();
+        fs::write(ws.join("appworkshop_10.acf"), "\"AppWorkshop\" { \"WorkshopItemsInstalled\" { \"555\" { \"size\" \"3\" } } }").unwrap();
+        fs::write(apps.join("appmanifest_10.acf"), "\"AppState\" { \"InstalledDepots\" { \"11\" { \"manifest\" \"1\" } \"99\" { \"manifest\" \"2\" } } }").unwrap();
+        // Another game shares depot 99.
+        fs::write(apps.join("appmanifest_20.acf"), "\"AppState\" { \"InstalledDepots\" { \"99\" { \"manifest\" \"2\" } } }").unwrap();
+        fs::create_dir_all(lib.join("depotcache")).unwrap();
+        fs::write(lib.join("depotcache").join("11_1.manifest"), b"m").unwrap();
+        fs::write(lib.join("depotcache").join("99_2.manifest"), b"m").unwrap();
+        let g = InstalledGame {
+            app_id: 10,
+            name: "Game".into(),
+            install_dir: game_dir.clone(),
+            library: lib.clone(),
+            size_on_disk: 1,
+            last_updated: None,
+            last_played: None,
+            playtime_minutes: None,
+            state: model::InstallState::Installed,
+            last_update_bytes: None,
+        };
+        assert_eq!(workshop_size(&g), 3);
+        uninstall(&g).unwrap();
+        assert!(!game_dir.exists());
+        assert!(!ws.join("content").join("10").exists());
+        assert!(!ws.join("appworkshop_10.acf").exists());
+        assert!(!apps.join("appmanifest_10.acf").exists());
+        assert!(!lib.join("depotcache").join("11_1.manifest").exists());
+        // Still used by the other game.
+        assert!(lib.join("depotcache").join("99_2.manifest").exists());
+        assert!(ws.join("content").join("20").exists());
+        let _ = fs::remove_dir_all(&lib);
     }
 
     #[test]

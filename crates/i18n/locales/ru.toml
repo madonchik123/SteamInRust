@@ -1708,3 +1708,5 @@
 "Not allowed" = "Не разрешено"
 "Open System Settings" = "Открыть Системные настройки"
 "Already allowed it? macOS forgets it when SteamInRust is updated: switch SteamInRust off and on again in that list." = "Уже разрешали? macOS забывает это после обновления SteamInRust: выключите и снова включите SteamInRust в этом списке."
+"{game} game + {workshop} Workshop items" = "{game} игра + {workshop} предметы Мастерской"
+"Its Workshop items ({size}) are removed too." = "Её предметы Мастерской ({size}) тоже удаляются."
