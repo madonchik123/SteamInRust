@@ -258,6 +258,34 @@ mod mac {
         }
     }
 
+    /// Let our window titled `title` show on other apps' full-screen spaces
+    /// (games), above them.
+    pub fn over_fullscreen(title: &str) {
+        // NSWindowCollectionBehaviorCanJoinAllSpaces | FullScreenAuxiliary.
+        const BEHAVIOR: usize = (1 << 0) | (1 << 8);
+        // NSStatusWindowLevel: above full-screen apps.
+        const LEVEL: isize = 25;
+        unsafe {
+            let Some(cls) = AnyClass::get(c"NSApplication") else { return };
+            let app: *mut AnyObject = msg_send![cls, sharedApplication];
+            let windows: *mut AnyObject = msg_send![app, windows];
+            let n: usize = msg_send![windows, count];
+            for i in 0..n {
+                let w: *mut AnyObject = msg_send![windows, objectAtIndex: i];
+                let t: *mut AnyObject = msg_send![w, title];
+                let s: *const c_char = if t.is_null() { std::ptr::null() } else { msg_send![t, UTF8String] };
+                if s.is_null() || CStr::from_ptr(s).to_bytes() != title.as_bytes() {
+                    continue;
+                }
+                let b: usize = msg_send![w, collectionBehavior];
+                if b & BEHAVIOR != BEHAVIOR {
+                    let _: () = msg_send![w, setCollectionBehavior: b | BEHAVIOR];
+                    let _: () = msg_send![w, setLevel: LEVEL];
+                }
+            }
+        }
+    }
+
     pub fn activate(pid: i32) {
         unsafe {
             let Some(cls) = AnyClass::get(c"NSRunningApplication") else { return };
@@ -501,6 +529,9 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         .with_taskbar(false);
     let opened_now = active && !app.overlay.focused;
     ctx.show_viewport_immediate(viewport, builder, |ui, _class| {
+        // macOS: full-screen games sit on their own space; the overlay joins it.
+        #[cfg(target_os = "macos")]
+        mac::over_fullscreen("SteamInRust Overlay");
         // Pinned windows over the game let clicks through; the open overlay takes them.
         if app.overlay.passthrough != Some(!active) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::MousePassthrough(!active));

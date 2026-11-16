@@ -11,6 +11,8 @@ mod ingame;
 mod launch_popup;
 mod links;
 mod login;
+#[cfg(target_os = "macos")]
+mod mac_permissions;
 mod offline_ui;
 mod overlay;
 mod shell;

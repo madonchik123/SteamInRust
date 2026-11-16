@@ -475,6 +475,26 @@ fn interface(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags, handler
     });
     *flags.lock().unwrap() = f;
     ui.add_space(12.0);
+    // macOS: what the system has to allow (Shift+Tab in games).
+    #[cfg(target_os = "macos")]
+    {
+        w::card(t).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(w::text_semibold(t!("macOS permissions"), 14.5, t.text));
+                    let state = if crate::mac_permissions::missing() { t!("Some features need your permission.") } else { t!("Everything SteamInRust needs is allowed.") };
+                    ui.label(w::text(state, 12.5, t.text_dim));
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if w::button(ui, t, None, t!("Review…"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                        crate::mac_permissions::open();
+                    }
+                });
+            });
+        });
+        ui.add_space(12.0);
+    }
     let mut on = *handler.get_or_insert_with(crate::links::is_default_handler);
     w::card(t).show(ui, |ui| {
         ui.set_width(ui.available_width());

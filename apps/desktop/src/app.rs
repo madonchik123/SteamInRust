@@ -652,6 +652,8 @@ impl eframe::App for SteamApp {
             crate::overlay::show(self, &ctx, &mut actions);
             crate::launch_popup::show(self, &ctx);
             crate::tray::show(self, &ctx);
+            #[cfg(target_os = "macos")]
+            crate::mac_permissions::show(&ctx, &self.prefs.theme);
         } else {
             crate::login::show(self, ui);
             crate::tray::show(self, &ctx);
