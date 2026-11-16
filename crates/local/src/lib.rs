@@ -59,6 +59,16 @@ pub fn find_steam_root() -> Option<PathBuf> {
         .find(|p| p.join("steamapps").is_dir())
 }
 
+/// Where the official client installs itself on this system, used as the
+/// first game library when Steam isn't installed.
+pub fn default_steam_root() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return Some(r"C:\Program Files (x86)\Steam".into());
+    }
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    Some(if cfg!(target_os = "macos") { home.join("Library/Application Support/Steam") } else { home.join(".local/share/Steam") })
+}
+
 #[cfg(windows)]
 fn windows_registry_path() -> Option<PathBuf> {
     use std::os::windows::process::CommandExt;

@@ -1359,7 +1359,7 @@ impl Library {
                                 ui.scope(|ui| w::stat(ui, t, t!("Steam features"), mode)).response.on_hover_text(why);
                             }
                         } else if let Some(o) = &owned {
-                            let size: u64 = o.depots.iter().filter(|d| d.dlc_app.is_none() && (d.os.is_empty() || d.os.contains("windows"))).filter_map(|d| d.manifest("public").map(|m| m.1)).sum();
+                            let size: u64 = o.depots.iter().filter(|d| d.dlc_app.is_none() && model::os_matches(&d.os, model::THIS_OS)).filter_map(|d| d.manifest("public").map(|m| m.1)).sum();
                             if size > 0 {
                                 w::stat(ui, t, t!("Download size"), &format!("≈ {}", ui::bytes(size)));
                             }
@@ -1942,8 +1942,13 @@ impl InstallDialog {
     pub(crate) fn new(app: AppId, ctx: &Ctx) -> Self {
         let mut libraries = ctx.local.libraries.clone();
         if libraries.is_empty() {
-            let default = client::store::config_dir().join("Library");
-            let _ = std::fs::create_dir_all(default.join("steamapps"));
+            // No Steam here: offer Steam's usual folder, like its installer
+            // would use (our own folder if that one can't be written).
+            let fallback = client::store::config_dir().join("Library");
+            let default = local::default_steam_root().filter(|d| std::fs::create_dir_all(d.join("steamapps")).is_ok()).unwrap_or_else(|| {
+                let _ = std::fs::create_dir_all(fallback.join("steamapps"));
+                fallback
+            });
             libraries.push(default);
         }
         let size = ctx
@@ -1951,7 +1956,7 @@ impl InstallDialog {
             .apps
             .as_ref()
             .and_then(|a| a.get(&app))
-            .map(|o| o.depots.iter().filter(|d| d.dlc_app.is_none() && !d.shared_install && (d.os.is_empty() || d.os.contains("windows"))).filter_map(|d| d.manifest("public").map(|m| m.1)).sum())
+            .map(|o| o.depots.iter().filter(|d| d.dlc_app.is_none() && !d.shared_install && model::os_matches(&d.os, model::THIS_OS)).filter_map(|d| d.manifest("public").map(|m| m.1)).sum())
             .unwrap_or(0);
         // Pick the library with the most free space.
         let library = libraries.iter().max_by_key(|l| fs4_free(l).unwrap_or(0)).cloned().unwrap_or_default();

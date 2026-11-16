@@ -532,7 +532,7 @@ impl Aac {
         let r = unsafe { AudioConverterSetProperty(conv, fourcc(b"dmgc"), cookie.len() as u32, cookie.as_ptr().cast()) };
         if r != 0 {
             unsafe { AudioConverterDispose(conv) };
-            return check("AAC config", r);
+            return Err(format!("AAC config failed ({r})"));
         }
         Ok(Self {
             conv,
