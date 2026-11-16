@@ -230,7 +230,7 @@ pub async fn run(
         return Err("This account can't download any of this game's content".into());
     }
 
-    let dir = req.library.join("steamapps").join("common").join(if app.install_dir.is_empty() { &app.name } else { &app.install_dir });
+    let dir = game_dir(&req, &app);
     // Make sure it fits (a rough upper bound: the full new size).
     let need: u64 = jobs.iter().map(|j| j.manifest.original_size).sum();
     if let Ok(free) = fs4::available_space(&req.library) {
@@ -258,7 +258,14 @@ pub async fn run(
     }
     installed.extend(kept.iter().copied());
     // A new install creates its folder; an update writes into the game's.
-    let fresh = !dir.exists();
+    // The folder is marked as new until the game is complete, so a new
+    // install resumed after a restart is still cleaned up fully if cancelled.
+    let fresh = is_new_install(&old, &dir);
+    let marker = dir.join(NEW_INSTALL);
+    if fresh {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let _ = std::fs::write(&marker, b"");
+    }
     let report = match depot::install(cdn, &dir, jobs, progress).await {
         Ok(r) => r,
         Err(depot::Error::Cancelled) => {
@@ -287,7 +294,35 @@ pub async fn run(
         let _ = std::fs::write(cache.join(format!("{}_{}.manifest", m.depot, m.gid)), m.to_bytes());
     }
     write_app_manifest(&req, &app, &installed, need, owner).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&marker);
     Ok(report)
+}
+
+/// Marks a game folder this client created for a download that hasn't
+/// finished yet.
+const NEW_INSTALL: &str = ".sirnew";
+
+/// A first install (not an update): Steam has no record of the game being
+/// installed, and the folder doesn't exist yet or was created by a download
+/// of ours that never finished.
+fn is_new_install(installed: &[(u32, u64)], dir: &Path) -> bool {
+    installed.is_empty() && (!dir.exists() || dir.join(NEW_INSTALL).exists())
+}
+
+pub fn game_dir(req: &InstallRequest, app: &OwnedApp) -> PathBuf {
+    req.library.join("steamapps").join("common").join(if app.install_dir.is_empty() { &app.name } else { &app.install_dir })
+}
+
+/// A download taken off the queue before it ran again (one left from the
+/// last session, say): remove what its earlier attempts left on disk, as
+/// cancelling a running download does. An update keeps the installed game.
+pub fn discard(req: &InstallRequest, app: &OwnedApp) {
+    let dir = game_dir(req, app);
+    if !dir.exists() {
+        return;
+    }
+    let fresh = is_new_install(&installed_manifests(req), &dir);
+    remove_unfinished(req, &dir, fresh);
 }
 
 /// Delete the files of depots that are no longer installed (a DLC turned
@@ -349,6 +384,8 @@ fn remove_unfinished(req: &InstallRequest, dir: &Path, fresh: bool) {
         }
         return;
     }
+    // The note of what those files held goes with them.
+    depot::resume::Record::remove(dir);
     let mut stack = vec![dir.to_path_buf()];
     let mut freed = 0u64;
     while let Some(d) = stack.pop() {
@@ -489,11 +526,13 @@ mod cancel_tests {
         std::fs::create_dir_all(game.join("data")).unwrap();
         std::fs::write(game.join("game.exe"), b"done").unwrap();
         std::fs::write(game.join("data").join("big.pak.sirpart"), b"half").unwrap();
+        std::fs::write(game.join(".sirresume"), b"sirresume 1\n").unwrap();
         let req = InstallRequest { app_id: 1, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![] };
         // An update: the finished file stays, the unfinished one goes.
         remove_unfinished(&req, &game, false);
         assert!(game.join("game.exe").exists());
         assert!(!game.join("data").join("big.pak.sirpart").exists());
+        assert!(!game.join(".sirresume").exists());
         // A new install: the whole folder goes.
         remove_unfinished(&req, &game, true);
         assert!(!game.exists());
@@ -502,6 +541,36 @@ mod cancel_tests {
         std::fs::create_dir_all(&other).unwrap();
         remove_unfinished(&req, &other, true);
         assert!(other.exists());
+        let _ = std::fs::remove_dir_all(lib);
+    }
+
+    #[test]
+    fn cancelling_a_queued_download_cleans_up_after_a_restart() {
+        let lib = std::env::temp_dir().join(format!("sir-discard-{}", std::process::id()));
+        let game = lib.join("steamapps").join("common").join("Game");
+        let app = OwnedApp { app_id: 7, name: "Game".into(), ..Default::default() };
+        let req = InstallRequest { app_id: 7, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![] };
+        let leave = |game: &Path| {
+            std::fs::create_dir_all(game).unwrap();
+            std::fs::write(game.join("done.pak"), b"done").unwrap();
+            std::fs::write(game.join("big.pak.sirpart"), b"half").unwrap();
+            std::fs::write(game.join(".sirresume"), b"sirresume 1\n").unwrap();
+        };
+        // A new install left by the last session: the whole folder goes.
+        leave(&game);
+        std::fs::write(game.join(NEW_INSTALL), b"").unwrap();
+        assert!(is_new_install(&[], &game));
+        discard(&req, &app);
+        assert!(!game.exists());
+        // An update of an installed game: only the unfinished parts go.
+        leave(&game);
+        std::fs::write(lib.join("steamapps").join("appmanifest_7.acf"), "\"AppState\" { \"InstalledDepots\" { \"8\" { \"manifest\" \"1\" } } }").unwrap();
+        discard(&req, &app);
+        assert!(game.join("done.pak").exists());
+        assert!(!game.join("big.pak.sirpart").exists() && !game.join(".sirresume").exists());
+        // A folder we didn't create is never treated as a new install.
+        std::fs::remove_file(lib.join("steamapps").join("appmanifest_7.acf")).unwrap();
+        assert!(!is_new_install(&[], &game));
         let _ = std::fs::remove_dir_all(lib);
     }
 }

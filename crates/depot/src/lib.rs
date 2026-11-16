@@ -13,6 +13,7 @@ pub mod chunk;
 pub mod crypto;
 pub mod install;
 pub mod manifest;
+pub mod resume;
 
 pub use cdn::{Cdn, Server};
 pub use install::{DepotJob, Phase, Progress, Report, install};

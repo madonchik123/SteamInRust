@@ -879,6 +879,13 @@ async fn online(
                 }
                 Some(Command::ResumeDownload { app_id }) => st.with_progress(app_id, |p| p.paused.store(false, std::sync::atomic::Ordering::Relaxed)),
                 Some(Command::CancelDownload { app_id }) => {
+                    // Not running now, but an earlier attempt (before a
+                    // restart) may have left files: they go too.
+                    let running = st.active.as_ref().is_some_and(|a| a.0 == app_id);
+                    let queued = st.queue.iter().find(|q| q.app_id == app_id).filter(|_| !running).cloned();
+                    if let (Some(req), Some(app)) = (queued, st.apps.get(&app_id).cloned()) {
+                        tokio::task::spawn_blocking(move || crate::download::discard(&req, &app));
+                    }
                     st.queue.retain(|q| q.app_id != app_id);
                     st.with_progress(app_id, |p| p.cancel.store(true, std::sync::atomic::Ordering::Relaxed));
                     if st.active_req.as_ref().is_some_and(|r| r.app_id == app_id) {
