@@ -281,6 +281,11 @@ mod tests {
             assert_eq!(u32::from_le_bytes(rep[28..32].try_into().unwrap()), VERSION);
         }
         loaded("t");
+        // The service stops on its own thread; give it a moment.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while taken() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         assert!(!taken());
         let _ = std::fs::remove_dir_all(&dir);
     }
