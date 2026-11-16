@@ -235,7 +235,9 @@ fn write(out: *mut u8, data: &[u8]) {
 
 extern "C" fn result(_t: This, h: u64, i: u32, out: *mut u8) -> bool {
     let Some(it) = item_of(h, i) else { return false };
-    write(out, &details(&it)[..DETAILS]);
+    // The struct itself, without the tail padding (Windows) / in 4-byte packing.
+    let d = if cfg!(windows) { details(&it)[..DETAILS].to_vec() } else { crate::pack::out(crate::pack::UGC_DETAILS, details(&it)) };
+    write(out, &d);
     true
 }
 

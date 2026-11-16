@@ -174,6 +174,8 @@ pub fn get(version: &str) -> *mut c_void {
     let slots: Vec<Fp> = match layout(version) {
         Some((kind, methods)) => {
             crate::log!("interface {version} ({kind}, {} methods)", methods.len());
+            #[cfg(not(windows))]
+            let methods = &itanium_order(methods)[..];
             methods.iter().map(|m| crate::ifaces::imp(kind, m).unwrap_or_else(|| stub(kind, m))).collect()
         }
         None => {
@@ -226,6 +228,43 @@ fn struct_return(kind: &str, name: &str) -> Option<usize> {
     })
 }
 
+/// The slot order of the macOS/Linux compilers (Itanium C++ ABI): the same
+/// as MSVC's except that MSVC reverses overloads of one name, e.g.
+/// GetStat(float) before GetStat(int32). Swap those pairs back.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn itanium_order(methods: &[&'static str]) -> Vec<&'static str> {
+    let overloads = |a: &str, b: &str| [("Float", "Int32"), ("Double", "Int64")].iter().any(|(x, y)| a.strip_suffix(x).is_some_and(|base| b.strip_suffix(y) == Some(base)));
+    let mut v = methods.to_vec();
+    let mut i = 0;
+    while i + 1 < v.len() {
+        if overloads(v[i], v[i + 1]) {
+            v.swap(i, i + 1);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    v
+}
+
+/// macOS and Linux: struct results come back by value (small ones in
+/// registers, bigger ones through x8 on ARM), so the stubs return zeroes.
+#[cfg(not(windows))]
+fn stub(kind: &str, name: &str) -> Fp {
+    #[repr(C)]
+    struct Zeros<const N: usize>([u8; N]);
+    extern "C" fn zeros<const N: usize>(_this: *mut c_void) -> Zeros<N> {
+        Zeros([0; N])
+    }
+    match struct_return(kind, name) {
+        Some(20) => zeros::<20> as Fp,
+        Some(40) => zeros::<40> as Fp,
+        Some(16) => zeros::<16> as Fp,
+        _ => zero as Fp,
+    }
+}
+
+#[cfg(windows)]
 fn stub(kind: &str, name: &str) -> Fp {
     match struct_return(kind, name) {
         Some(2) => sret::<2> as Fp,
@@ -242,6 +281,7 @@ pub extern "C" fn zero() -> usize {
     0
 }
 
+#[cfg(windows)]
 extern "C" fn sret<const N: usize>(_this: *mut c_void, ret: *mut u8) -> *mut u8 {
     if !ret.is_null() {
         unsafe { std::ptr::write_bytes(ret, 0, N) };
@@ -252,6 +292,18 @@ extern "C" fn sret<const N: usize>(_this: *mut c_void, ret: *mut u8) -> *mut u8 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn itanium_overload_order() {
+        let (_, m) = layout("STEAMUSERSTATS_INTERFACE_VERSION013").unwrap();
+        let m = itanium_order(m);
+        assert_eq!(&m[..4], &["GetStatInt32", "GetStatFloat", "SetStatInt32", "SetStatFloat"]);
+        let i = m.iter().position(|n| *n == "GetGlobalStatInt64").unwrap();
+        assert_eq!(m[i + 1], "GetGlobalStatDouble");
+        // Nothing else moves.
+        let (_, u) = layout("SteamUser023").unwrap();
+        assert_eq!(itanium_order(u), u.to_vec());
+    }
 
     #[test]
     fn finds_layouts() {

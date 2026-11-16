@@ -201,8 +201,9 @@ impl Global {
         p
     }
 
+    /// Queue a callback (built with Windows' packing; see [`crate::pack`]).
     pub fn post(&mut self, callback: i32, data: Vec<u8>) {
-        self.queue.push_back((callback, data));
+        self.queue.push_back((callback, crate::pack::small(callback, data)));
     }
 
     pub fn new_call(&mut self) -> u64 {
@@ -215,6 +216,7 @@ impl Global {
     /// SteamAPICallCompleted_t, which steam_api turns into the game's
     /// CCallResult.
     pub fn complete(&mut self, call: u64, callback: i32, data: Vec<u8>, failed: bool) {
+        let data = crate::pack::small(callback, data);
         let mut done = Bytes::new(16);
         done.u64(0, call).i32(8, callback).u32(12, data.len() as u32);
         self.calls.insert(call, Call { callback, data, failed });

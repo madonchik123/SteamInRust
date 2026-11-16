@@ -32,13 +32,13 @@ pub fn imp(name: &str) -> Option<Fp> {
         "AddRequestLobbyListFilterSlotsAvailable" => f!(filter_slots),
         "AddRequestLobbyListDistanceFilter" => f!(filter_distance),
         "AddRequestLobbyListResultCountFilter" => f!(filter_count),
-        "GetLobbyByIndex" => f!(lobby_by_index),
+        "GetLobbyByIndex" => f!(ret::lobby_by_index),
         "CreateLobby" => f!(create),
         "JoinLobby" => f!(join),
         "LeaveLobby" => f!(leave),
         "InviteUserToLobby" => f!(invite),
         "GetNumLobbyMembers" => f!(num_members),
-        "GetLobbyMemberByIndex" => f!(member_by_index),
+        "GetLobbyMemberByIndex" => f!(ret::member_by_index),
         "GetLobbyData" => f!(get_data),
         "SetLobbyData" => f!(set_data),
         "GetLobbyDataCount" => f!(data_count),
@@ -53,7 +53,7 @@ pub fn imp(name: &str) -> Option<Fp> {
         "GetLobbyMemberLimit" => f!(get_limit),
         "SetLobbyType" => f!(set_type),
         "SetLobbyJoinable" => f!(set_joinable),
-        "GetLobbyOwner" => f!(owner),
+        "GetLobbyOwner" => f!(ret::owner),
         "SetLobbyOwner" => f!(set_owner),
         _ => None,
     }
@@ -607,6 +607,32 @@ fn apply(e: GameEvent) {
                 lock().post(GAME_RICH_PRESENCE_JOIN_REQUESTED, b.0);
             }
         }
+    }
+}
+
+/// CSteamID results: hidden return pointer with MSVC, a register elsewhere.
+#[cfg(windows)]
+mod ret {
+    pub(super) use super::{lobby_by_index, member_by_index, owner};
+}
+
+#[cfg(not(windows))]
+mod ret {
+    use super::This;
+    pub extern "C" fn lobby_by_index(t: This, i: i32) -> u64 {
+        let mut v = 0;
+        super::lobby_by_index(t, &mut v, i);
+        v
+    }
+    pub extern "C" fn member_by_index(t: This, lobby: u64, i: i32) -> u64 {
+        let mut v = 0;
+        super::member_by_index(t, &mut v, lobby, i);
+        v
+    }
+    pub extern "C" fn owner(t: This, lobby: u64) -> u64 {
+        let mut v = 0;
+        super::owner(t, &mut v, lobby);
+        v
     }
 }
 

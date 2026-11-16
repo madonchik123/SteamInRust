@@ -167,7 +167,8 @@ extern "C" fn lb_entry(_t: This, set: u64, index: i32, out: *mut u8, details: *m
     if !out.is_null() {
         let mut b = Bytes::new(32);
         b.u64(0, e.steam_id).i32(8, e.rank).i32(12, e.score).i32(16, e.details.len() as i32).u64(24, e.ugc);
-        unsafe { std::ptr::copy_nonoverlapping(b.0.as_ptr(), out, 32) };
+        let d = crate::pack::out(crate::pack::LEADERBOARD_ENTRY, b.0);
+        unsafe { std::ptr::copy_nonoverlapping(d.as_ptr(), out, d.len()) };
     }
     if !details.is_null() {
         for (i, d) in e.details.iter().take(max.max(0) as usize).enumerate() {

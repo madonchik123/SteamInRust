@@ -40,7 +40,7 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
         // ISteamUser
         ("ISteamUser", "GetHSteamUser") => f!(one),
         ("ISteamUser", "BLoggedOn") => f!(logged_on),
-        ("ISteamUser", "GetSteamID") => f!(u_steam_id),
+        ("ISteamUser", "GetSteamID") => f!(ret::u_steam_id),
         ("ISteamUser", "GetUserDataFolder") => f!(u_userdata_folder),
         ("ISteamUser", "GetPlayerSteamLevel") => f!(u_level),
         ("ISteamUser", "UserHasLicenseForApp") => f!(u_has_license),
@@ -77,7 +77,7 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
         ("ISteamApps", "GetCurrentBetaName") => f!(a_beta_name),
         ("ISteamApps", "GetAppInstallDir") => f!(a_install_dir),
         ("ISteamApps", "BIsAppInstalled") => f!(a_installed),
-        ("ISteamApps", "GetAppOwner") => f!(u_steam_id),
+        ("ISteamApps", "GetAppOwner") => f!(ret::u_steam_id),
         ("ISteamApps", "GetLaunchQueryParam") => f!(empty_str),
         ("ISteamApps", "GetAppBuildId") => f!(a_build_id),
         ("ISteamApps", "SetDlcContext") => f!(yes),
@@ -86,7 +86,7 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
         ("ISteamFriends", "GetPersonaName") => f!(fr_persona_name),
         ("ISteamFriends", "GetPersonaState") => f!(one),
         ("ISteamFriends", "GetFriendCount") => f!(fr_count),
-        ("ISteamFriends", "GetFriendByIndex") => f!(fr_by_index),
+        ("ISteamFriends", "GetFriendByIndex") => f!(ret::fr_by_index),
         ("ISteamFriends", "GetFriendRelationship") => f!(fr_relationship),
         ("ISteamFriends", "GetFriendPersonaState") => f!(fr_state),
         ("ISteamFriends", "GetFriendPersonaName") => f!(fr_name),
@@ -1210,6 +1210,28 @@ extern "C" fn rs_quota(_t: This, total: *mut u64, available: *mut u64) -> bool {
 
 extern "C" fn nu_timestamp(_t: This) -> i64 {
     lock().started.elapsed().as_micros() as i64 + 1
+}
+
+/// Methods returning a class (CSteamID): MSVC passes a hidden return
+/// pointer after `this`; on macOS and Linux it comes back in a register.
+#[cfg(windows)]
+mod ret {
+    pub(super) use super::{fr_by_index, u_steam_id};
+}
+
+#[cfg(not(windows))]
+mod ret {
+    use super::This;
+    pub extern "C" fn u_steam_id(t: This) -> u64 {
+        let mut v = 0;
+        super::u_steam_id(t, &mut v);
+        v
+    }
+    pub extern "C" fn fr_by_index(t: This, i: i32, flags: i32) -> u64 {
+        let mut v = 0;
+        super::fr_by_index(t, &mut v, i, flags);
+        v
+    }
 }
 
 #[cfg(test)]

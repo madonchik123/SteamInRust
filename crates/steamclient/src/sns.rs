@@ -898,7 +898,7 @@ fn finish(n: &mut Net) {
     let mut g = crate::state::lock();
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     for (id, data, f) in events {
-        if f != 0 { pending.push((f, data)) } else { g.post(id, data) }
+        if f != 0 { pending.push((f, crate::pack::small(id, data))) } else { g.post(id, data) }
     }
 }
 

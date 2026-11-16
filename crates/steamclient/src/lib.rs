@@ -37,6 +37,7 @@ mod jingle;
 mod lobby;
 pub mod overlay;
 mod p2p;
+mod pack;
 mod pseudotcp;
 mod screenshots;
 mod servers;
@@ -127,8 +128,9 @@ pub unsafe extern "C" fn Steam_GetAPICallResult(pipe: i32, call: u64, buf: *mut 
     }
 }
 
-/// CallbackMsg_t
-#[repr(C)]
+/// CallbackMsg_t (callback packing: 4 bytes on macOS and Linux).
+#[cfg_attr(windows, repr(C))]
+#[cfg_attr(not(windows), repr(C, packed(4)))]
 struct CallbackMsg {
     user: i32,
     callback: i32,
