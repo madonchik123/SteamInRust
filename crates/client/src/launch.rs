@@ -37,15 +37,32 @@ pub fn mode(app: &OwnedApp, install_dir: &Path) -> LaunchMode {
     let Some(exe) = executable(app, install_dir) else {
         return LaunchMode::NoSteam { reason: "no launch option for this system".into() };
     };
-    let Some(is64) = pe_is_64bit(&exe) else {
+    let Some(is64) = exe_bitness(&exe) else {
         return LaunchMode::NoSteam { reason: "game file not found".into() };
     };
     if steamclient_dll(is64).is_none() {
-        return LaunchMode::NoSteam {
-            reason: if is64 { "steamclient.dll not found next to SteamInRust" } else { "steamclient32.dll (for 32-bit games) not found next to SteamInRust" }.into(),
-        };
+        return LaunchMode::NoSteam { reason: missing_steamclient(is64).into() };
     }
     LaunchMode::SteamInRust
+}
+
+#[cfg(windows)]
+fn missing_steamclient(is64: bool) -> &'static str {
+    if is64 { "steamclient.dll not found next to SteamInRust" } else { "steamclient32.dll (for 32-bit games) not found next to SteamInRust" }
+}
+
+#[cfg(not(windows))]
+fn missing_steamclient(_: bool) -> &'static str {
+    "libsteamclient.dylib not found next to SteamInRust"
+}
+
+/// Is the program 64-bit? `None` if it isn't there (or isn't a program).
+fn exe_bitness(path: &Path) -> Option<bool> {
+    if cfg!(windows) {
+        return pe_is_64bit(path);
+    }
+    // macOS and Linux games are 64-bit (Apple dropped 32-bit programs).
+    path.is_file().then_some(true)
 }
 
 /// [`mode`], remembered for a minute (for UI that asks every frame).
@@ -136,7 +153,50 @@ fn scan_markers(dir: &Path, depth: u32) -> Option<&'static str> {
 
 fn executable(app: &OwnedApp, install_dir: &Path) -> Option<PathBuf> {
     let opt = app.launch.iter().find(|o| o.runs_on_this_os() && !o.executable.is_empty())?;
-    Some(install_dir.join(normalize(&opt.executable)))
+    Some(program(&install_dir.join(normalize(&opt.executable))))
+}
+
+/// What actually runs for a launch option's executable: for a macOS app
+/// bundle (`Game.app`), the program inside it.
+fn program(path: &Path) -> PathBuf {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("app")) && path.is_dir() {
+        if let Some(p) = bundle_program(path) {
+            return p;
+        }
+    }
+    path.to_path_buf()
+}
+
+/// `Game.app/Contents/MacOS/<CFBundleExecutable>` from the bundle's
+/// Info.plist, or the program in `Contents/MacOS` named like the bundle
+/// (or the only one there).
+pub fn bundle_program(bundle: &Path) -> Option<PathBuf> {
+    let dir = bundle.join("Contents").join("MacOS");
+    let plist = bundle.join("Contents").join("Info.plist");
+    let named = plist_string(&plist, "CFBundleExecutable").map(|n| dir.join(n)).filter(|p| p.is_file());
+    named.or_else(|| {
+        let files: Vec<PathBuf> = std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+        let stem = bundle.file_stem().map(|s| s.to_string_lossy().to_lowercase());
+        files.iter().find(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()) == stem).cloned().or_else(|| (files.len() == 1).then(|| files[0].clone()))
+    })
+}
+
+/// A string value from a property list (XML; binary ones through `plutil` on macOS).
+fn plist_string(path: &Path, key: &str) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    if data.starts_with(b"bplist") {
+        #[cfg(target_os = "macos")]
+        {
+            let out = Command::new("plutil").args(["-extract", key, "raw", "-o", "-"]).arg(path).output().ok()?;
+            return out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty());
+        }
+        #[cfg(not(target_os = "macos"))]
+        return None;
+    }
+    let text = String::from_utf8_lossy(&data);
+    let after = text.split(&format!("<key>{key}</key>")).nth(1)?;
+    let value = after.trim_start().strip_prefix("<string>")?;
+    Some(value.split("</string>").next()?.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// 64-bit Windows executable? `None` if unreadable or not a PE file.
@@ -209,9 +269,11 @@ fn command(app: &OwnedApp, install_dir: &Path, extra_args: &str) -> Result<Comma
         .find(|o| o.runs_on_this_os() && !o.executable.is_empty())
         .ok_or_else(|| format!("{} has no launch option for this OS", app.name))?;
 
-    let exe = install_dir.join(normalize(&opt.executable));
+    let target = install_dir.join(normalize(&opt.executable));
+    let exe = program(&target);
     let cwd = if opt.working_dir.is_empty() {
-        exe.parent().unwrap_or(install_dir).to_path_buf()
+        // A bundle runs from the folder it's in, like Steam does on macOS.
+        if exe != target { target.parent() } else { exe.parent() }.unwrap_or(install_dir).to_path_buf()
     } else {
         install_dir.join(normalize(&opt.working_dir))
     };
@@ -450,7 +512,7 @@ pub fn repair_registry() {
 
 /// Is the game's executable 64-bit? (`None`: no executable / not a program.)
 pub fn exe_is_64bit(app: &OwnedApp, install_dir: &Path) -> Option<bool> {
-    pe_is_64bit(&executable(app, install_dir)?)
+    exe_bitness(&executable(app, install_dir)?)
 }
 
 pub fn reg_string(sub: &str, value: &str) -> Option<String> {
@@ -460,10 +522,26 @@ pub fn reg_string(sub: &str, value: &str) -> Option<String> {
 // -------------------------------------------- the official Steam client
 
 /// Where the official client is, from its own registry entry.
+#[cfg(windows)]
 pub fn steam_exe() -> Option<PathBuf> {
     let p = win::reg_string("Software\\Valve\\Steam", "SteamExe")?;
     let p = PathBuf::from(p.replace('/', "\\"));
     p.is_file().then_some(p)
+}
+
+/// The official client's program inside Steam.app (macOS).
+#[cfg(target_os = "macos")]
+pub fn steam_exe() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    [Some(PathBuf::from("/Applications/Steam.app")), home.map(|h| h.join("Applications/Steam.app"))]
+        .into_iter()
+        .flatten()
+        .find_map(|app| bundle_program(&app))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn steam_exe() -> Option<PathBuf> {
+    ["/usr/bin/steam", "/usr/games/steam"].into_iter().map(PathBuf::from).find(|p| p.is_file())
 }
 
 fn steam_running() -> bool {
@@ -558,8 +636,11 @@ fn quiet(cmd: &mut Command) -> &mut Command {
 }
 
 fn steam_config(file: &str) -> Option<PathBuf> {
-    let root = win::reg_string("Software\\Valve\\Steam", "SteamPath")?;
-    Some(PathBuf::from(root.replace('/', "\\")).join("config").join(file))
+    #[cfg(windows)]
+    let root = PathBuf::from(win::reg_string("Software\\Valve\\Steam", "SteamPath")?.replace('/', "\\"));
+    #[cfg(not(windows))]
+    let root = local::find_steam_root()?;
+    Some(root.join("config").join(file))
 }
 
 /// The account's login name, if the official client remembers its login
@@ -980,38 +1061,96 @@ mod win {
     }
 }
 
+/// macOS and Linux: the official client keeps its "registry" in
+/// `registry.vdf` (`Registry/HKCU/Software/Valve/Steam/…`), and processes
+/// are looked up with `ps`.
 #[cfg(not(windows))]
 mod win {
-    use std::path::Path;
-    pub fn reg_string(_: &str, _: &str) -> Option<String> {
-        None
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    fn registry_file() -> Option<PathBuf> {
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+        let candidates = [local::find_steam_root().map(|r| r.join("registry.vdf")), Some(home.join(".steam").join("registry.vdf"))];
+        candidates.into_iter().flatten().find(|p| p.is_file())
     }
-    pub fn reg_dword(_: &str, _: &str) -> Option<u32> {
-        None
+
+    /// The value at `HKCU\<sub>\<value>` in registry.vdf.
+    pub fn reg_string(sub: &str, value: &str) -> Option<String> {
+        let text = std::fs::read_to_string(registry_file()?).ok()?;
+        lookup(&vdf::parse(&text).ok()?, sub, value)
     }
+
+    pub(super) fn lookup(doc: &vdf::Obj, sub: &str, value: &str) -> Option<String> {
+        let mut keys = vec!["Registry", "HKCU"];
+        keys.extend(sub.split('\\').filter(|k| !k.is_empty()));
+        doc.path(&keys)?.str(value).map(String::from)
+    }
+
+    pub fn reg_dword(sub: &str, value: &str) -> Option<u32> {
+        reg_string(sub, value)?.trim().parse().ok()
+    }
+
+    // Steam rewrites registry.vdf while it runs: never write to it.
     pub fn set_string(_: &str, _: &str, _: &str) -> Result<(), String> {
-        Err("no registry".into())
+        Err("no registry on this system".into())
     }
     pub fn set_dword(_: &str, _: &str, _: u32) -> Result<(), String> {
-        Err("no registry".into())
+        Err("no registry on this system".into())
     }
     pub fn delete_value(_: &str, _: &str) -> Result<(), String> {
         Ok(())
     }
-    pub fn is_alive(_: u32) -> bool {
-        false
+
+    /// The program a process runs (full path), if it's alive.
+    fn image(pid: u32) -> Option<String> {
+        if pid == 0 {
+            return None;
+        }
+        let out = Command::new("ps").args(["-p", &pid.to_string(), "-o", "comm="]).output().ok()?;
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && !name.is_empty()).then_some(name)
     }
-    pub fn is_steam_process(_: u32) -> bool {
-        false
+
+    pub fn is_alive(pid: u32) -> bool {
+        image(pid).is_some()
     }
-    pub fn processes_in(_: &Path) -> Vec<u32> {
-        Vec::new()
+
+    pub fn is_steam_process(pid: u32) -> bool {
+        image(pid).is_some_and(|n| {
+            let n = n.to_lowercase();
+            n.ends_with("/steam_osx") || n.ends_with("/steam") || n == "steam"
+        })
+    }
+
+    /// Processes whose program lies inside `dir`.
+    pub fn processes_in(dir: &Path) -> Vec<u32> {
+        let Ok(out) = Command::new("ps").args(["-axo", "pid=,comm="]).output() else { return Vec::new() };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let (pid, exe) = l.trim().split_once(char::is_whitespace)?;
+                let pid: u32 = pid.parse().ok()?;
+                // Linux shows short names: ask /proc for the full path.
+                let exe = std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|_| PathBuf::from(exe.trim()));
+                (exe.starts_with(dir) && pid != std::process::id()).then_some(pid)
+            })
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn reads_steams_registry_file() {
+        let doc = vdf::parse("\"Registry\" { \"HKCU\" { \"Software\" { \"Valve\" { \"Steam\" { \"ActiveProcess\" { \"pid\" \"42\" } \"Apps\" { \"477160\" { \"Running\" \"1\" } } } } } } }").unwrap();
+        assert_eq!(win::lookup(&doc, "Software\\Valve\\Steam\\ActiveProcess", "pid").as_deref(), Some("42"));
+        assert_eq!(win::lookup(&doc, "Software\\Valve\\Steam\\Apps\\477160", "Running").as_deref(), Some("1"));
+        assert_eq!(win::lookup(&doc, "Software\\Valve\\Steam", "SteamExe"), None);
+    }
 
     #[test]
     fn splits_quoted_args() {
@@ -1105,8 +1244,41 @@ mod tests {
 
     #[test]
     fn reads_pe_bitness() {
-        let exe = std::env::current_exe().unwrap();
-        assert_eq!(pe_is_64bit(&exe), Some(cfg!(target_pointer_width = "64")));
+        if cfg!(windows) {
+            let exe = std::env::current_exe().unwrap();
+            assert_eq!(pe_is_64bit(&exe), Some(cfg!(target_pointer_width = "64")));
+        }
+        // A minimal PE header: "MZ", the PE offset at 60, then "PE\0\0" and the machine.
+        let dir = std::env::temp_dir().join(format!("sir-pe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut pe = vec![0u8; 70];
+        pe[..2].copy_from_slice(b"MZ");
+        pe[60] = 64;
+        pe[64..68].copy_from_slice(b"PE\0\0");
+        pe[68..70].copy_from_slice(&0x8664u16.to_le_bytes());
+        std::fs::write(dir.join("x64.exe"), &pe).unwrap();
+        pe[68..70].copy_from_slice(&0x014cu16.to_le_bytes());
+        std::fs::write(dir.join("x86.exe"), &pe).unwrap();
+        assert_eq!(pe_is_64bit(&dir.join("x64.exe")), Some(true));
+        assert_eq!(pe_is_64bit(&dir.join("x86.exe")), Some(false));
         assert_eq!(pe_is_64bit(Path::new("Cargo.toml")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finds_the_program_in_an_app_bundle() {
+        let dir = std::env::temp_dir().join(format!("sir-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let macos = dir.join("Human.app").join("Contents").join("MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::write(macos.join("Human Fall Flat"), b"x").unwrap();
+        std::fs::write(macos.join("helper"), b"x").unwrap();
+        // Named in Info.plist.
+        let plist = "<?xml version=\"1.0\"?><plist><dict>\n\t<key>CFBundleExecutable</key>\n\t<string>Human Fall Flat</string>\n</dict></plist>";
+        std::fs::write(dir.join("Human.app").join("Contents").join("Info.plist"), plist).unwrap();
+        assert_eq!(program(&dir.join("Human.app")), macos.join("Human Fall Flat"));
+        // A plain file stays as it is.
+        assert_eq!(program(&macos.join("helper")), macos.join("helper"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
