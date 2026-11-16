@@ -45,6 +45,7 @@ pub struct Focus {
     pub changed_at: f64,
     /// When this focus scope was first used.
     opened: f64,
+    last_pointer: Option<egui::Pos2>,
 }
 
 pub struct Hit {
@@ -67,7 +68,13 @@ impl Focus {
         let now = ui.input(|i| i.time);
         // The mouse takes focus only when it really moves (not when a page
         // scrolls under it, nor right as the screen opens).
-        self.pointer_moved = ui.input(|i| i.pointer.delta().length() > 1.0) && now - self.opened > 0.6;
+        // The first position seen is just where the cursor already was (the
+        // window appeared under it): only a move after that counts.
+        let pos = ui.input(|i| i.pointer.latest_pos());
+        self.pointer_moved = matches!((self.last_pointer, pos), (Some(a), Some(b)) if (a - b).length() > 1.0) && now - self.opened > 0.6;
+        if pos.is_some() {
+            self.last_pointer = pos;
+        }
         if let Some(d) = dir {
             self.step(d, now);
         }

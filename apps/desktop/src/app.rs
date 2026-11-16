@@ -135,8 +135,9 @@ pub struct SteamApp {
     /// Big Picture (fullscreen TV mode) and its controller input.
     pub bigpicture: crate::bigpicture::BigPicture,
     bigpicture_was_on: bool,
-    /// The first frame has run.
-    started: bool,
+    /// When the first frame ran, and when we last asked to leave fullscreen.
+    started_at: Option<f64>,
+    unfullscreen_asked: f64,
 }
 
 impl SteamApp {
@@ -251,7 +252,8 @@ impl SteamApp {
             applied_zoom: 0.0,
             bigpicture,
             bigpicture_was_on: false,
-            started: false,
+            started_at: None,
+            unfullscreen_asked: f64::MIN,
         };
         // `--page=inventory --arg=listings`: open a page at startup (handy with --demo).
         let flag = |name: &str| std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from));
@@ -507,6 +509,25 @@ impl SteamApp {
 }
 
 impl SteamApp {
+    /// eframe restores the last window state, fullscreen included, so after
+    /// quitting in Big Picture the next start would be fullscreen. Start in a
+    /// normal window (Big Picture asks for fullscreen itself once it shows).
+    /// macOS ignores the request while the restored window is still going
+    /// fullscreen, so keep asking for a few seconds until it's out.
+    fn leave_restored_fullscreen(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        let start = *self.started_at.get_or_insert(now);
+        let big_picture = self.bigpicture.active && self.state.phase == Phase::LoggedIn;
+        if big_picture || now - start > 5.0 || ctx.input(|i| i.viewport().fullscreen) == Some(false) {
+            return;
+        }
+        if now - self.unfullscreen_asked >= 0.25 {
+            self.unfullscreen_asked = now;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+
     /// A download is running, paused or queued.
     pub fn downloading(&self) -> bool {
         !self.state.download_queue.is_empty() || self.state.downloads.values().any(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed))
@@ -573,13 +594,6 @@ impl eframe::App for SteamApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if !self.started {
-            self.started = true;
-            // eframe restores the last window state, fullscreen included: if
-            // the app was closed in Big Picture, start in a normal window.
-            // Big Picture asks for fullscreen again itself once it shows.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-        }
         if self.applied_theme.as_ref() != Some(&self.prefs.theme) {
             self.prefs.theme.apply(&ctx);
             self.applied_theme = Some(self.prefs.theme.clone());
@@ -607,6 +621,7 @@ impl eframe::App for SteamApp {
             }
         }
         self.drain_events(&ctx, &mut actions);
+        self.leave_restored_fullscreen(&ctx);
         crate::bigpicture::poll(self, &ctx);
         self.handle_tray(&ctx, &mut actions);
         self.handle_links(&ctx, &mut actions);
