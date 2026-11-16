@@ -703,7 +703,8 @@ fn status_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
         match &active {
             Some(d) => {
                 let name = app.state.app_name(d.app_id).unwrap_or("").to_string();
-                let pct = d.disk_done as f64 * 100.0 / d.disk_total.max(1) as f64;
+                // The same measure as the Downloads page (what this download fetches).
+                let pct = d.fraction() as f64 * 100.0;
                 let text = if d.paused { t!("{game}: paused at {pct}%", game = name, pct = format!("{pct:.0}")) } else { t!("{game}: {pct}%", game = name, pct = format!("{pct:.0}")) };
                 ui.label(w::text(text, 12.5, t.accent));
                 w::progress(ui, t, (pct / 100.0) as f32, 90.0);

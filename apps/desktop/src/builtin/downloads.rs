@@ -52,11 +52,18 @@ pub struct Downloads {
     sent: Option<(u64, u32)>,
     /// Downloads we paused because a game started.
     auto_paused: Vec<model::AppId>,
+    /// Speed over the last minute for the graph: (seconds since start,
+    /// network bytes/s, disk bytes/s), at most two samples a second.
+    history: std::collections::VecDeque<(f64, u64, u64)>,
+    started: Option<std::time::Instant>,
 }
+
+/// How much speed history the graph shows.
+const GRAPH_SECS: f64 = 60.0;
 
 impl Downloads {
     pub fn new(flags: super::settings::SharedFlags) -> Self {
-        Self { flags, regions: None, probing: false, region_sent: false, settings: Default::default(), sent: None, auto_paused: Vec::new() }
+        Self { flags, regions: None, probing: false, region_sent: false, settings: Default::default(), sent: None, auto_paused: Vec::new(), history: Default::default(), started: None }
     }
 }
 
@@ -90,6 +97,7 @@ impl Extension for Downloads {
                     ctx.toast(t!("Downloads paused while you play"));
                 }
             }
+            client::Event::Download(_) => self.sample(ctx),
             client::Event::GameStopped { .. } => {
                 for id in self.auto_paused.drain(..) {
                     ctx.send(client::Command::ResumeDownload { app_id: id });
@@ -111,7 +119,10 @@ impl Extension for Downloads {
                 ui.add_space(20.0);
                 self.active(ui, &t, ctx);
 
-                let mut queue: Vec<_> = ctx.local.games.iter().filter(|g| matches!(g.state, InstallState::UpdateRequired | InstallState::Downloading)).collect();
+                // Games waiting for an update; one already downloading or
+                // queued is in the section above, not listed twice.
+                let busy = |id: model::AppId| ctx.state.download_queue.contains(&id) || ctx.state.downloads.get(&id).is_some_and(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed));
+                let mut queue: Vec<_> = ctx.local.games.iter().filter(|g| matches!(g.state, InstallState::UpdateRequired | InstallState::Downloading) && !busy(g.app_id)).collect();
                 queue.sort_by_key(|g| g.name.to_lowercase());
                 w::section(ui, &t, &t!("Up next ({n})", n = queue.len()), None);
                 if queue.is_empty() {
@@ -281,27 +292,84 @@ impl Downloads {
         ui.add_space(20.0);
     }
 
+    /// Downloads running right now (not paused or finished).
+    fn running<'a>(ctx: &'a Ctx<'_>) -> impl Iterator<Item = &'a model::DownloadStatus> + 'a {
+        ctx.state.downloads.values().filter(|d| !d.paused && !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed))
+    }
+
+    /// Note the current speed for the graph.
+    fn sample(&mut self, ctx: &Ctx) {
+        let started = *self.started.get_or_insert_with(std::time::Instant::now);
+        let now = started.elapsed().as_secs_f64();
+        if self.history.back().is_some_and(|s| now - s.0 < 0.5) {
+            return;
+        }
+        let (net, disk) = Self::running(ctx).fold((0, 0), |(n, d), x| (n + x.speed, d + x.disk_speed));
+        self.history.push_back((now, net, disk));
+        while self.history.front().is_some_and(|s| now - s.0 > GRAPH_SECS) {
+            self.history.pop_front();
+        }
+    }
+
     fn speed_card(&self, ui: &mut Ui, t: &Theme, ctx: &Ctx) {
         let total: u64 = ctx.local.games.iter().map(|g| g.size_on_disk).sum();
+        let active = Self::running(ctx).count() > 0;
+        let (net, disk) = Self::running(ctx).fold((0, 0), |(n, d), x| (n + x.speed, d + x.disk_speed));
+        let now = self.started.map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
+        let recent: Vec<(f64, u64, u64)> = self.history.iter().copied().filter(|s| now - s.0 <= GRAPH_SECS).collect();
+        let peak = recent.iter().map(|s| s.1.max(s.2)).max().unwrap_or(0).max(net).max(disk);
         w::card(t).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                w::stat(ui, t, t!("Current speed"), &if self.settings.show_bits { "0 Mbps".to_string() } else { "0 MB/s".to_string() });
+                w::stat(ui, t, t!("Current speed"), &self.rate(net));
+                ui.add_space(28.0);
+                w::stat(ui, t, t!("Disk"), &format!("{}/s", ui::bytes(disk)));
                 ui.add_space(28.0);
                 w::stat(ui, t, t!("Installed"), &t!("{n} games · {size}", n = ctx.local.games.len(), size = ui::bytes(total)));
                 ui.add_space(28.0);
                 w::stat(ui, t, t!("Libraries"), &ctx.local.libraries.len().to_string());
             });
             ui.add_space(8.0);
-            // Network graph area (fills in once transfers run).
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 70.0), Sense::hover());
-            ui.painter().rect_filled(rect, t.corner_small(), t.raised);
+            let p = ui.painter();
+            p.rect_filled(rect, t.corner_small(), t.raised);
             for i in 1..4 {
                 let y = rect.top() + rect.height() * i as f32 / 4.0;
-                ui.painter().hline(rect.x_range(), y, egui::Stroke::new(1.0, t.border));
+                p.hline(rect.x_range(), y, egui::Stroke::new(1.0, t.border));
             }
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, t!("No active downloads"), w::font(12.5), t.text_faint);
+            if !active || recent.len() < 2 {
+                let text = if active { t!("Measuring speed…") } else { t!("No active downloads") };
+                p.text(rect.center(), egui::Align2::CENTER_CENTER, text, w::font(12.5), t.text_faint);
+                return;
+            }
+            // The last minute, right edge = now; network filled, disk as a line.
+            let inner = rect.shrink2(vec2(6.0, 6.0));
+            let labels = inner;
+            // The line stays below the labels along the top.
+            let inner = Rect::from_min_max(inner.min + vec2(0.0, 16.0), inner.max);
+            let point = |at: f64, v: u64| {
+                let x = inner.right() - ((now - at) / GRAPH_SECS) as f32 * inner.width();
+                let y = inner.bottom() - (v as f32 / peak.max(1) as f32) * inner.height();
+                egui::pos2(x.max(inner.left()), y)
+            };
+            let net_line: Vec<egui::Pos2> = recent.iter().map(|s| point(s.0, s.1)).collect();
+            // Filled as thin columns (the outline isn't convex).
+            for w in net_line.windows(2) {
+                let quad = vec![w[0], w[1], egui::pos2(w[1].x, inner.bottom()), egui::pos2(w[0].x, inner.bottom())];
+                p.add(egui::Shape::convex_polygon(quad, t.accent.gamma_multiply(0.18), egui::Stroke::NONE));
+            }
+            p.add(egui::Shape::line(net_line, egui::Stroke::new(1.6, t.accent)));
+            p.add(egui::Shape::line(recent.iter().map(|s| point(s.0, s.2)).collect(), egui::Stroke::new(1.2, t.text_faint)));
+            p.text(labels.left_top(), egui::Align2::LEFT_TOP, t!("Peak {rate}", rate = self.rate(peak)), w::font(11.0), t.text_faint);
+            let key = format!("━ {}   ━ {}", t!("Network"), t!("Disk"));
+            let g = p.layout_no_wrap(key, w::font(11.0), t.text_faint);
+            let at = labels.right_top() - vec2(g.size().x, 0.0);
+            p.galley(at, g, t.text_faint);
+            p.text(at, egui::Align2::LEFT_TOP, "━", w::font(11.0), t.accent);
         });
+        if active {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        }
     }
 
     fn settings_card(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {

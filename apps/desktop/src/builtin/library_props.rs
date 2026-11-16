@@ -395,7 +395,8 @@ impl Library {
             super::Setup::Downloading(d) => {
                 w::panel(t).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    let pct = d.disk_done as f64 * 100.0 / d.disk_total.max(1) as f64;
+                    // The same measure as the Downloads page (what this download fetches).
+                    let pct = d.fraction() as f64 * 100.0;
                     let label = if d.paused { t!("Download paused at {pct}%", pct = format!("{pct:.0}")) } else { t!("Installing… {pct}%", pct = format!("{pct:.0}")) };
                     ui.label(w::text_semibold(label, 15.0, t.accent));
                     ui.label(w::text(format!("{} / {}", ui::bytes(d.disk_done), ui::bytes(d.disk_total)), 12.5, t.text_dim));

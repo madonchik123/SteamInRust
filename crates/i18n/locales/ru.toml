@@ -1780,3 +1780,7 @@
 "Invite sent" = "Приглашение отправлено"
 "Add as friend" = "Добавить в друзья"
 "Friend invite sent to {name}" = "Приглашение в друзья отправлено: {name}"
+"Disk" = "Диск"
+"Measuring speed…" = "Измеряем скорость…"
+"Peak {rate}" = "Пик {rate}"
+"Network" = "Сеть"
