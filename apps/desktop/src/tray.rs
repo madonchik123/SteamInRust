@@ -227,7 +227,7 @@ fn contents(d: &MenuData, ui: &mut Ui, t: &Theme) -> Option<TrayCmd> {
                     let (r, resp) = ui.allocate_exact_size(vec2(cell, 26.0), Sense::click());
                     let hover = resp.hovered();
                     ui.painter().rect_filled(r, CornerRadius::same(13), if on { color.gamma_multiply(0.2) } else if hover { t.surface_hover } else { t.raised });
-                    ui.painter().circle_filled(pos2(r.left() + 12.0, r.center().y), 4.0, *color);
+                    crate::shell::status_mark(ui.painter(), pos2(r.left() + 12.0, r.center().y), 4.0, *s, *color);
                     let label = i18n::tr_dyn(s.label());
                     ui.painter().text(pos2(r.left() + 22.0, r.center().y), Align2::LEFT_CENTER, &label, w::font_medium(11.5), if on { t.text } else { t.text_dim });
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {

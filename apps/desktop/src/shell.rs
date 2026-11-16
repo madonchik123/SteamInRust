@@ -664,7 +664,7 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
             }
             let probe = model::Persona { state: s, ..Default::default() };
             let dot = egui::pos2(r.left() + 18.0, r.center().y);
-            ui.painter().circle_filled(dot, 5.0, status_color(t, &probe));
+            status_mark(ui.painter(), dot, 5.0, s, status_color(t, &probe));
             ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, i18n::tr_dyn(s.label()), w::font_medium(13.5), t.text);
             if on {
                 ui.painter().text(egui::pos2(r.right() - 12.0, r.center().y), Align2::RIGHT_CENTER, icons::CHECK, w::font(13.0), t.accent);
@@ -737,13 +737,32 @@ fn status_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
     });
 }
 
+/// The mark for a status in pickers: a dot, with a bar for Do Not Disturb
+/// and an empty ring for Invisible, so they differ by more than color.
+pub fn status_mark(p: &egui::Painter, at: egui::Pos2, r: f32, state: PersonaState, color: egui::Color32) {
+    match state {
+        PersonaState::Invisible | PersonaState::Offline => {
+            p.circle_stroke(at, r - 0.75, egui::Stroke::new(1.5, color));
+        }
+        PersonaState::Busy => {
+            p.circle_filled(at, r, color);
+            p.line_segment([at - vec2(r * 0.55, 0.0), at + vec2(r * 0.55, 0.0)], egui::Stroke::new(1.6, egui::Color32::WHITE));
+        }
+        _ => {
+            p.circle_filled(at, r, color);
+        }
+    }
+}
+
 pub fn status_color(t: &Theme, p: &Persona) -> egui::Color32 {
     if p.in_game() {
         return t.in_game;
     }
     match p.state {
         PersonaState::Offline | PersonaState::Invisible => t.text_faint,
-        PersonaState::Away | PersonaState::Snooze | PersonaState::Busy => t.away,
+        // Do not disturb in red, like the tray menu; away and snooze in amber.
+        PersonaState::Busy => t.danger,
+        PersonaState::Away | PersonaState::Snooze => t.away,
         _ => t.online,
     }
 }
