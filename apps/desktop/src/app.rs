@@ -135,6 +135,8 @@ pub struct SteamApp {
     /// Big Picture (fullscreen TV mode) and its controller input.
     pub bigpicture: crate::bigpicture::BigPicture,
     bigpicture_was_on: bool,
+    /// The first frame has run.
+    started: bool,
 }
 
 impl SteamApp {
@@ -249,6 +251,7 @@ impl SteamApp {
             applied_zoom: 0.0,
             bigpicture,
             bigpicture_was_on: false,
+            started: false,
         };
         // `--page=inventory --arg=listings`: open a page at startup (handy with --demo).
         let flag = |name: &str| std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from));
@@ -570,6 +573,13 @@ impl eframe::App for SteamApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if !self.started {
+            self.started = true;
+            // eframe restores the last window state, fullscreen included: if
+            // the app was closed in Big Picture, start in a normal window.
+            // Big Picture asks for fullscreen again itself once it shows.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
         if self.applied_theme.as_ref() != Some(&self.prefs.theme) {
             self.prefs.theme.apply(&ctx);
             self.applied_theme = Some(self.prefs.theme.clone());

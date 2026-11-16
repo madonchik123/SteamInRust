@@ -15,6 +15,9 @@ pub struct Menu {
     closing: Option<f64>,
     dir: Option<Dir>,
     press: bool,
+    /// Quit was chosen while something downloads: ask first, here, so a
+    /// controller can answer (the desktop dialog needs a mouse).
+    confirm_quit: bool,
 }
 
 #[derive(PartialEq, Eq)]
@@ -25,7 +28,7 @@ pub enum Outcome {
 
 impl Menu {
     pub fn new(now: f64) -> Self {
-        Self { focus: Focus::default(), opened: now, closing: None, dir: None, press: false }
+        Self { focus: Focus::default(), opened: now, closing: None, dir: None, press: false, confirm_quit: false }
     }
 
     pub fn input(&mut self, presses: &[(Press, bool)], now: f64) -> Outcome {
@@ -90,24 +93,37 @@ pub fn show(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, screen: Rect) {
     paint::line(&p, pos2(av.right() + 22.0 * s, av.center().y - 4.0 * s), Align2::LEFT_BOTTOM, &f.app.state.persona_name, w::font_bold(30.0 * s), t.text, panel.right() - av.right() - pad - 22.0 * s);
     paint::line(&p, pos2(av.right() + 22.0 * s, av.center().y + 4.0 * s), Align2::LEFT_TOP, &status, w::font_medium(20.0 * s), color, panel.right() - av.right() - pad - 22.0 * s);
 
-    let items = [
-        (icons::DESKTOP, t!("Exit Big Picture"), false),
-        (icons::GEAR, t!("Settings"), false),
-        (icons::X, t!("Close menu"), false),
-        (icons::POWER, t!("Quit SteamInRust"), true),
-    ];
+    let (items, salt) = if m.confirm_quit {
+        (vec![(icons::POWER, t!("Exit anyway"), true), (icons::X, t!("Cancel"), false)], "bp-menu-quit")
+    } else {
+        let items = vec![
+            (icons::DESKTOP, t!("Exit Big Picture"), false),
+            (icons::GEAR, t!("Settings"), false),
+            (icons::X, t!("Close menu"), false),
+            (icons::POWER, t!("Quit SteamInRust"), true),
+        ];
+        (items, "bp-menu")
+    };
     let dir = if m.closing.is_none() { m.dir.take() } else { None };
     let press = std::mem::take(&mut m.press) && m.closing.is_none();
     m.focus.begin(ui, dir, press);
     let row_h = 84.0 * s;
     let mut y = av.bottom() + 60.0 * s;
+    if m.confirm_quit {
+        let game = f.app.state.downloads.values().find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).map(|d| d.app_id).or_else(|| f.app.state.download_queue.first().copied()).and_then(|id| f.app.state.app_name(id).map(String::from)).unwrap_or_default();
+        let x = panel.left() + pad;
+        p.text(pos2(x, y), Align2::LEFT_TOP, i18n::tr("A download is in progress"), w::font_bold(28.0 * s), t.text);
+        let body = i18n::trf("{game} is still downloading. If you exit, it continues the next time you open SteamInRust.", &[("game", game)]);
+        let r = paint::wrapped(&p, pos2(x, y + 44.0 * s), &body, w::font(20.0 * s), t.text_dim, width - pad * 2.0, 4);
+        y = r.bottom() + 30.0 * s;
+    }
     let mut chosen = None;
     for (i, (icon, label, danger)) in items.iter().enumerate() {
         // Rows arrive one after another as the panel opens.
         let k = ease(((now - m.opened) as f32 - i as f32 * 0.04) / OPEN_SECS);
         let dx = (1.0 - k) * 60.0 * s;
         let r = Rect::from_min_size(pos2(panel.left() + pad * 0.6 + dx, y), vec2(width - pad * 1.2, row_h));
-        let hit = m.focus.item(ui, Id::unique(("bp-menu", i)), r, screen, Place::Page);
+        let hit = m.focus.item(ui, Id::unique((salt, i)), r, screen, Place::Page);
         let fill = w::mix(Color32::TRANSPARENT, Color32::from_white_alpha(22), hit.glow);
         p.rect_filled(r, paint::radius(14.0 * s), fill);
         let c = if *danger { t.danger } else { t.text };
@@ -118,28 +134,34 @@ pub fn show(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, screen: Rect) {
         }
         y += row_h + 8.0 * s;
         // A line before the quit row.
-        if i == 2 {
+        if i == 2 && !m.confirm_quit {
             p.hline(r.x_range(), y + 4.0 * s, egui::Stroke::new(1.0, Color32::from_white_alpha(20)));
             y += 16.0 * s;
         }
     }
-    let ids: Vec<Id> = (0..items.len()).map(|i| Id::unique(("bp-menu", i))).collect();
+    let ids: Vec<Id> = (0..items.len()).map(|i| Id::unique((salt, i))).collect();
     m.focus.end(&ids[..1], ids[0]);
     m.focus.paint_ring(ui, &t, s, 14.0 * s);
     let tip = if bp.device == super::input::Device::Pad { t!("Press Guide again to leave Big Picture") } else { t!("Press Home to leave Big Picture") };
     p.text(pos2(panel.left() + pad, panel.bottom() - 40.0 * s), Align2::LEFT_BOTTOM, tip, w::font(17.0 * s), t.text_faint);
 
-    match chosen {
-        Some(0) => {
+    match (m.confirm_quit, chosen) {
+        (true, Some(0)) => {
+            f.app.exiting = true;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        (true, Some(_)) => m.confirm_quit = false,
+        (_, Some(0)) => {
             bp.leave(ui.ctx());
             return;
         }
-        Some(1) => {
+        (_, Some(1)) => {
             bp.open(Page::Settings, now);
             m.closing = Some(now);
         }
-        Some(2) => m.closing = Some(now),
-        Some(3) => {
+        (_, Some(2)) => m.closing = Some(now),
+        (_, Some(3)) if f.app.downloading() => m.confirm_quit = true,
+        (_, Some(3)) => {
             m.closing = Some(now);
             f.app.request_exit(ui.ctx());
         }
