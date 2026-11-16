@@ -8,11 +8,45 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
 }
+
+// The same two calls on macOS and Linux, through dlopen.
+#[cfg(unix)]
+unsafe extern "C" {
+    fn dlopen(path: *const c_char, mode: i32) -> *mut c_void;
+    fn dlsym(module: *mut c_void, name: *const c_char) -> *mut c_void;
+}
+
+#[cfg(unix)]
+#[allow(non_snake_case)]
+unsafe fn LoadLibraryW(name: *const u16) -> *mut c_void {
+    let len = (0..).take_while(|&i| unsafe { *name.add(i) } != 0).count();
+    let path = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(name, len) });
+    let c = CString::new(path).unwrap_or_default();
+    unsafe { dlopen(c.as_ptr(), 2) }
+}
+
+#[cfg(unix)]
+#[allow(non_snake_case)]
+unsafe fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void {
+    unsafe { dlsym(module, name.cast()) }
+}
+
+/// The game-side Steam API library this probe loads, next to the probe.
+const STEAM_API: &str = if cfg!(target_os = "macos") {
+    "libsteam_api.dylib"
+} else if cfg!(unix) {
+    "libsteam_api.so"
+} else if cfg!(target_pointer_width = "64") {
+    "steam_api64.dll"
+} else {
+    "steam_api.dll"
+};
 
 struct Api(*mut c_void);
 
@@ -716,7 +750,7 @@ fn main() {
         direct(&dll, arg("--role").as_deref() == Some("host"), arg("--peer").and_then(|p| p.parse().ok()).unwrap_or(0));
     }
     let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
-    let dll: Vec<u16> = dir.join(if cfg!(target_pointer_width = "64") { "steam_api64.dll" } else { "steam_api.dll" }).to_string_lossy().encode_utf16().chain([0]).collect();
+    let dll: Vec<u16> = dir.join(STEAM_API).to_string_lossy().encode_utf16().chain([0]).collect();
     let module = unsafe { LoadLibraryW(dll.as_ptr()) };
     assert!(!module.is_null(), "steam_api64.dll not next to the probe");
     let api = Api(module);
