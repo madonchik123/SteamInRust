@@ -367,6 +367,7 @@ pub fn wait(app_id: AppId, mut child: Child) -> AppId {
 const ACTIVE: &str = "Software\\Valve\\Steam\\ActiveProcess";
 
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 struct Saved {
     pid: Option<u32>,
     user: Option<u32>,
@@ -375,6 +376,7 @@ struct Saved {
     dll32: Option<String>,
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 struct Swap {
     saved: Saved,
     /// What we wrote, so we only put back values nobody changed since
@@ -386,6 +388,7 @@ struct Swap {
     running: std::collections::HashSet<String>,
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 static SWAP: Mutex<Option<Swap>> = Mutex::new(None);
 
 /// Point steam_api at our DLL (64-bit or 32-bit) for one launch.
@@ -487,6 +490,7 @@ fn swap_restore_now_registry() {
     *swap = None;
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn restore_dll(s: &Swap) {
     if s.ours.dll64.is_some() && win::reg_string(ACTIVE, "SteamClientDll64") == s.ours.dll64 {
         put_back_string("SteamClientDll64", &s.saved.dll64);
@@ -503,6 +507,7 @@ fn restore_dll(s: &Swap) {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn restore_all(s: &Swap) {
     restore_dll(s);
     if win::reg_dword(ACTIVE, "pid") == s.ours.pid {
@@ -510,6 +515,7 @@ fn restore_all(s: &Swap) {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn put_back_string(name: &str, v: &Option<String>) {
     let _ = match v {
         Some(v) => win::set_string(ACTIVE, name, v),
@@ -517,6 +523,7 @@ fn put_back_string(name: &str, v: &Option<String>) {
     };
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn put_back_dword(name: &str, v: Option<u32>) {
     let _ = match v {
         Some(v) => win::set_dword(ACTIVE, name, v),

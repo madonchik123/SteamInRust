@@ -13,6 +13,7 @@
 
 use sha2::{Digest, Sha256};
 use std::fs;
+#[cfg(not(target_os = "macos"))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;

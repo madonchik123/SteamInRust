@@ -16,7 +16,9 @@ use crate::protocol::{Reply, Request};
 use crate::state::{Bytes, lock};
 use crate::vt::Fp;
 use std::collections::HashMap;
-use std::ffi::{c_char, c_void};
+use std::ffi::c_char;
+#[cfg(windows)]
+use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 

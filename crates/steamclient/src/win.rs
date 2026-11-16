@@ -2,6 +2,7 @@
 
 #![allow(clippy::upper_case_acronyms)]
 
+#[cfg(windows)]
 use std::ffi::c_void;
 
 #[cfg(windows)]
@@ -23,9 +24,12 @@ unsafe extern "system" {
     fn ShellExecuteW(hwnd: *mut c_void, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32) -> *mut c_void;
 }
 
+#[cfg(windows)]
 const HKEY_CURRENT_USER: isize = 0x8000_0001u32 as i32 as isize;
+#[cfg(windows)]
 const RRF_RT_REG_SZ: u32 = 0x2;
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -45,6 +49,7 @@ pub fn reg_string(sub: &str, value: &str) -> Option<String> {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn reg_string(_sub: &str, _value: &str) -> Option<String> {
     None
 }
