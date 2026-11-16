@@ -673,7 +673,9 @@ async fn online(
                         Some(library) => {
                             let (conn, sink, tx, me, cell) = (st.conn.clone(), sink.clone(), ws_tx.clone(), st.me, st.download_cell.unwrap_or(st.cell_id));
                             tokio::spawn(async move {
-                                let result = crate::workshop::sync(&conn, me, app_id, &library, cell, Vec::new()).await;
+                                let shown = |done, total, title: &str| sink(Event::WorkshopPreparing { app_id, done, total, title: title.to_string() });
+                                let result = crate::workshop::sync_with_progress(&conn, me, app_id, &library, cell, Vec::new(), shown).await;
+                                sink(Event::WorkshopPreparing { app_id, done: 0, total: 0, title: String::new() });
                                 if !matches!(&result, Ok(r) if r.downloaded.is_empty() && r.failed.is_empty()) {
                                     sink(Event::WorkshopSync { app_id, result });
                                 }

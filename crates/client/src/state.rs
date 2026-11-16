@@ -39,6 +39,8 @@ pub struct State {
     /// Last Steam Cloud result per game, and games syncing right now.
     pub cloud: HashMap<AppId, model::CloudReport>,
     pub cloud_syncing: std::collections::HashSet<AppId>,
+    /// Games whose Workshop items download before they start: (done, total, current title).
+    pub workshop_preparing: HashMap<AppId, (u32, u32, String)>,
     pub comments: HashMap<SteamId, Result<model::Comments, String>>,
     pub badges: HashMap<SteamId, Result<model::Badges, String>>,
     pub notifications: Option<model::Notifications>,
@@ -174,7 +176,15 @@ impl State {
             Event::Regions(_) => {}
             Event::SteamCollections(_) => {}
             Event::CloudSyncing { app_id } => {
+                self.workshop_preparing.remove(app_id);
                 self.cloud_syncing.insert(*app_id);
+            }
+            Event::WorkshopPreparing { app_id, done, total, title } => {
+                if *total == 0 {
+                    self.workshop_preparing.remove(app_id);
+                } else {
+                    self.workshop_preparing.insert(*app_id, (*done, *total, title.clone()));
+                }
             }
             Event::CloudReport { report, .. } => {
                 self.cloud_syncing.remove(&report.app_id);

@@ -1348,6 +1348,17 @@ impl Library {
                                     self.queue_install(ctx, id, Some(g.library.clone()));
                                 }
                             }
+                            // Like Steam: Workshop items the game needs download before it starts.
+                            Some(_) if ctx.state.workshop_preparing.contains_key(&id) => {
+                                let (done, total, title) = ctx.state.workshop_preparing[&id].clone();
+                                ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::DOWNLOAD), t!("Preparing to play"), w::Kind::Play, w::Size::Lg));
+                                ui.add_space(12.0);
+                                ui.vertical(|ui| {
+                                    ui.label(w::text_semibold(t!("Updating Workshop items: {done} of {total}", done = done + 1, total = total), 13.0, t.text));
+                                    w::progress(ui, t, done as f32 / total.max(1) as f32, 260.0);
+                                    ui.label(w::text(&title, 12.0, t.text_faint));
+                                });
+                            }
                             Some(_) if ctx.state.cloud_syncing.contains(&id) => {
                                 // Like Steam: the game starts once its saves are in sync.
                                 ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::CLOUD_CHECK), t!("Syncing Steam Cloud…"), w::Kind::Play, w::Size::Lg));

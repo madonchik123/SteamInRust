@@ -59,6 +59,12 @@ pub async fn subscribed(conn: &Connection, me: SteamId, app: AppId) -> Result<Ve
 /// Download (or update) `items`, or every subscribed item when `items` is
 /// empty. Items already installed at the current version are skipped.
 pub async fn sync(conn: &Connection, me: SteamId, app: AppId, library: &Path, cell_id: u32, items: Vec<u64>) -> Result<Report, String> {
+    sync_with_progress(conn, me, app, library, cell_id, items, |_, _, _| {}).await
+}
+
+/// [`sync`], telling `progress(done, total, title)` before each item that
+/// needs downloading (for "Updating Workshop items… 3 of 12").
+pub async fn sync_with_progress(conn: &Connection, me: SteamId, app: AppId, library: &Path, cell_id: u32, items: Vec<u64>, progress: impl Fn(u32, u32, &str)) -> Result<Report, String> {
     let ids = if items.is_empty() { subscribed(conn, me, app).await? } else { items };
     let mut report = Report::default();
     if ids.is_empty() {
@@ -69,14 +75,16 @@ pub async fn sync(conn: &Connection, me: SteamId, app: AppId, library: &Path, ce
     let ws = library.join("steamapps").join("workshop");
     let mut record = Record::load(&ws, app);
     let mut cdn: Option<Arc<depot::Cdn>> = None;
-    for d in details.publishedfiledetails.iter().filter(|d| d.result() == 1) {
+    let dir_of = |id: u64| ws.join("content").join(app.to_string()).join(id.to_string());
+    let current = |d: &PublishedFileDetails| record.installed.get(&d.publishedfileid()).is_some_and(|i| i.manifest == d.hcontent_file() && i.updated >= d.time_updated()) && dir_of(d.publishedfileid()).is_dir();
+    let todo: Vec<&PublishedFileDetails> = details.publishedfiledetails.iter().filter(|d| d.result() == 1 && !current(d)).collect();
+    let total = todo.len() as u32;
+    for (n, d) in todo.into_iter().enumerate() {
         let id = d.publishedfileid();
         let title = d.title().to_string();
         let manifest = d.hcontent_file();
-        let dir = ws.join("content").join(app.to_string()).join(id.to_string());
-        if record.installed.get(&id).is_some_and(|i| i.manifest == manifest && i.updated >= d.time_updated()) && dir.is_dir() {
-            continue;
-        }
+        let dir = dir_of(id);
+        progress(n as u32, total, &title);
         let result = if manifest != 0 {
             if cdn.is_none() {
                 let servers = crate::download::content_servers(conn, cell_id).await?;

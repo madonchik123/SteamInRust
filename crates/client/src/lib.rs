@@ -242,6 +242,9 @@ pub enum Event {
     LaunchMode { app_id: AppId, mode: LaunchMode },
     /// Steam Cloud is syncing a game's saves (before launch or after exit).
     CloudSyncing { app_id: AppId },
+    /// Before a launch: subscribed Workshop items downloading (`done` of
+    /// `total`, the current one's title). `total` 0 = finished.
+    WorkshopPreparing { app_id: AppId, done: u32, total: u32, title: String },
     /// Result of a Steam Cloud sync. `held_launch` is set when the game
     /// wasn't started because of conflicts (its launch arguments).
     CloudReport { report: model::CloudReport, held_launch: Option<String> },

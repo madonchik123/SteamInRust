@@ -14,9 +14,12 @@
 //! client's ipcserver runs, games keep talking to real Steam.
 //!
 //! Messages (all with `msgh_id` 104, the protocol version):
-//! - request body `100001` (version) → reply of 40 bytes, version at 28;
-//! - request body `14` (GetSteamPath) → reply of 552 bytes: pid at 28,
+//! - request body `100001` (version) → reply of 32 bytes, version at 28;
+//! - request body `14` (GetSteamPath) → reply of 544 bytes: pid at 28,
 //!   path at 32;
+//!
+//! The client receives into 40- and 552-byte buffers, which must also hold
+//! the 8-byte trailer the kernel adds, hence the reply sizes.
 //! - request body `100000` (stop) → no reply.
 
 #![allow(non_camel_case_types)]
@@ -197,15 +200,15 @@ fn serve(port: mach_port_t, path: PathBuf, stop: std::sync::Arc<std::sync::atomi
 fn answer(command: u32, pid: u32, path: &str) -> Option<Vec<u8>> {
     match command {
         CMD_VERSION => {
-            let mut b = vec![0u8; 40];
+            let mut b = vec![0u8; 32];
             b[28..32].copy_from_slice(&VERSION.to_le_bytes());
             Some(b)
         }
         CMD_GET_STEAM_PATH => {
-            let mut b = vec![0u8; 552];
+            let mut b = vec![0u8; 544];
             b[24..28].copy_from_slice(&CMD_GET_STEAM_PATH.to_le_bytes());
             b[28..32].copy_from_slice(&pid.to_le_bytes());
-            let n = path.len().min(552 - 32 - 1);
+            let n = path.len().min(544 - 32 - 1);
             b[32..32 + n].copy_from_slice(&path.as_bytes()[..n]);
             Some(b)
         }
@@ -231,9 +234,9 @@ mod tests {
     #[test]
     fn replies() {
         let v = answer(CMD_VERSION, 1, "x").unwrap();
-        assert_eq!((v.len(), u32::from_le_bytes(v[28..32].try_into().unwrap())), (40, 104));
+        assert_eq!((v.len(), u32::from_le_bytes(v[28..32].try_into().unwrap())), (32, 104));
         let p = answer(CMD_GET_STEAM_PATH, 4321, "/a/b/steam").unwrap();
-        assert_eq!(p.len(), 552);
+        assert_eq!(p.len(), 544);
         assert_eq!(u32::from_le_bytes(p[28..32].try_into().unwrap()), 4321);
         assert_eq!(&p[32..42], b"/a/b/steam");
         assert_eq!(p[42], 0);
@@ -262,11 +265,20 @@ mod tests {
             (req.as_mut_ptr() as *mut Header).write_unaligned(h);
             req[24..28].copy_from_slice(&CMD_GET_STEAM_PATH.to_le_bytes());
             assert_eq!(mach_msg(req.as_mut_ptr() as *mut Header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, 32, 0, 0, 2000, 0), 0);
-            let mut rep = [0u8; 600];
-            assert_eq!(mach_msg(rep.as_mut_ptr() as *mut Header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, 600, reply_port, 2000, 0), 0);
+            // The same buffer size libsteam_api receives into (552, trailer included).
+            let mut rep = [0u8; 552];
+            assert_eq!(mach_msg(rep.as_mut_ptr() as *mut Header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, 552, reply_port, 2000, 0), 0);
             assert_eq!(u32::from_le_bytes(rep[28..32].try_into().unwrap()), std::process::id());
             let path = std::ffi::CStr::from_ptr(rep[32..].as_ptr() as *const c_char).to_string_lossy().into_owned();
             assert_eq!(path, dir.join("steam").to_string_lossy());
+            // The version check, into a 40-byte buffer like libsteam_api's.
+            let h = Header { bits: 0x1413, size: 32, remote: server, local: reply_port, voucher: 0, id: 104 };
+            (req.as_mut_ptr() as *mut Header).write_unaligned(h);
+            req[24..28].copy_from_slice(&CMD_VERSION.to_le_bytes());
+            assert_eq!(mach_msg(req.as_mut_ptr() as *mut Header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, 32, 0, 0, 2000, 0), 0);
+            let mut rep = [0u8; 40];
+            assert_eq!(mach_msg(rep.as_mut_ptr() as *mut Header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, 40, reply_port, 2000, 0), 0);
+            assert_eq!(u32::from_le_bytes(rep[28..32].try_into().unwrap()), VERSION);
         }
         loaded("t");
         assert!(!taken());
