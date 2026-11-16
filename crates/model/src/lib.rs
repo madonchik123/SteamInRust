@@ -338,11 +338,25 @@ impl OwnedApp {
     /// Steam: from the app's own system list, else its launch options;
     /// unknown counts as yes.
     pub fn runs_on_this_os(&self) -> bool {
+        self.runs_on(THIS_OS)
+    }
+
+    /// Does it have a version for `os` ("windows", "macos", "linux")?
+    pub fn runs_on(&self, os: &str) -> bool {
         if !self.os_list.trim().is_empty() {
-            return os_matches(&self.os_list, THIS_OS);
+            return os_matches(&self.os_list, os);
         }
         let launch: Vec<&LaunchOption> = self.launch.iter().filter(|o| !o.executable.is_empty()).collect();
-        launch.is_empty() || launch.iter().any(|o| o.runs_on_this_os())
+        launch.is_empty() || launch.iter().any(|o| os_matches(&o.os_list, os))
+    }
+
+    /// The systems it has versions for, in Steam's order (empty: unknown).
+    pub fn systems(&self) -> Vec<&'static str> {
+        let known = !self.os_list.trim().is_empty() || self.launch.iter().any(|o| !o.os_list.trim().is_empty());
+        if !known {
+            return Vec::new();
+        }
+        ["windows", "macos", "linux"].into_iter().filter(|os| self.runs_on(os)).collect()
     }
 }
 

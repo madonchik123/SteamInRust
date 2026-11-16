@@ -1686,3 +1686,7 @@
 "Not available on {os}" = "Недоступно в {os}"
 "This game doesn't run on {os}." = "Эта игра не работает в {os}."
 "Open SteamInRust from its app (SteamInRust.app) to handle steam:// links." = "Чтобы открывать ссылки steam://, запускайте SteamInRust из приложения (SteamInRust.app)."
+"Runs on" = "Работает на"
+"Only games that run on {os}" = "Только игры, которые работают в {os}"
+"Has a version made for {os}: it runs here as it is." = "Есть версия для {os}: игра работает здесь как есть."
+"Made for {list} only: it doesn't run on {os}." = "Сделана только для {list}: в {os} не работает."

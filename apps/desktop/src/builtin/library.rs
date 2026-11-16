@@ -64,13 +64,18 @@ struct AdvFilters {
     genres: BTreeSet<u32>,
     features: BTreeSet<u32>,
     deck: BTreeSet<u8>,
+    /// Systems the game has a version for ("windows", "macos", "linux").
+    systems: BTreeSet<&'static str>,
 }
 
 impl AdvFilters {
     fn count(&self) -> usize {
-        self.play.len() + self.kinds.len() + self.genres.len() + self.features.len() + self.deck.len()
+        self.play.len() + self.kinds.len() + self.genres.len() + self.features.len() + self.deck.len() + self.systems.len()
     }
 }
+
+/// The three systems Steam ships games for, with the names players know.
+const SYSTEMS: [&str; 3] = ["windows", "macos", "linux"];
 
 const GENRES: &[(u32, &str)] = &[
     (1, "Action"), (25, "Adventure"), (4, "Casual"), (23, "Indie"), (29, "Massively Multiplayer"), (9, "Racing"),
@@ -824,7 +829,9 @@ impl Library {
         let genre_ok = f.genres.is_empty() || o.is_some_and(|o| o.genres.iter().any(|g| f.genres.contains(g)));
         let feature_ok = f.features.is_empty() || o.is_some_and(|o| f.features.iter().all(|c| o.categories.contains(c)));
         let deck_ok = f.deck.is_empty() || f.deck.contains(&o.map(|o| o.deck).unwrap_or(0));
-        play_ok && kind_ok && genre_ok && feature_ok && deck_ok
+        // Installed games with no app info yet count as runnable here.
+        let system_ok = f.systems.is_empty() || f.systems.iter().any(|os| o.map_or(*os == model::THIS_OS && e.installed.is_some(), |o| o.runs_on(os)));
+        play_ok && kind_ok && genre_ok && feature_ok && deck_ok && system_ok
     }
 
     /// The filter popup, like Steam's library filters.
@@ -890,6 +897,13 @@ impl Library {
                     f.features.insert(c);
                 }
             }
+            group(ui, t!("Runs on"));
+            if let Some(i) = check_grid(ui, t, "f-system", 3, SYSTEMS.iter().map(|os| (f.systems.contains(os), client::download::os_name(os).to_string()))) {
+                let os = SYSTEMS[i];
+                if !f.systems.remove(os) {
+                    f.systems.insert(os);
+                }
+            }
             group(ui, t!("Steam Deck"));
             let deck = [(3u8, t!("Verified")), (2, t!("Playable")), (1, t!("Unsupported")), (0, t!("Unknown"))];
             if let Some(i) = check_grid(ui, t, "f-deck", 4, deck.iter().map(|(v, l)| (f.deck.contains(v), l.to_string()))) {
@@ -921,6 +935,19 @@ impl Library {
             for (f, label) in [(Filter::All, t!("All")), (Filter::Installed, t!("Installed")), (Filter::Favorites, icons::STAR), (Filter::Playing, t!("Played"))] {
                 if w::chip(ui, t, label, self.filter == f).clicked() {
                     self.filter = f;
+                }
+            }
+            // Off Windows many games have no version for this system: one
+            // click shows only the ones that run here.
+            if model::THIS_OS != "windows" {
+                let os = model::THIS_OS;
+                let on = self.adv.systems.len() == 1 && self.adv.systems.contains(os);
+                let chip = w::chip(ui, t, client::download::os_name(os), on).on_hover_text(t!("Only games that run on {os}", os = client::download::os_name(os)));
+                if chip.clicked() {
+                    self.adv.systems.clear();
+                    if !on {
+                        self.adv.systems.insert(os);
+                    }
                 }
             }
             // Steam-style filters in a popup.
@@ -1372,7 +1399,12 @@ impl Library {
                             let size: u64 = o.depots.iter().filter(|d| d.dlc_app.is_none() && model::os_matches(&d.os, model::THIS_OS)).filter_map(|d| d.manifest("public").map(|m| m.1)).sum();
                             if size > 0 {
                                 w::stat(ui, t, t!("Download size"), &format!("≈ {}", ui::bytes(size)));
+                                ui.add_space(20.0);
                             }
+                        }
+                        // Which systems it has versions for, and whether this one is among them.
+                        if let Some(o) = &owned {
+                            system_stat(ui, t, o);
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1934,6 +1966,23 @@ fn check_grid(ui: &mut Ui, t: &Theme, id: &str, cols: usize, items: impl Iterato
         }
     });
     hit
+}
+
+/// "Runs on: Windows · macOS", with how it runs here in the tooltip.
+fn system_stat(ui: &mut Ui, t: &Theme, o: &model::OwnedApp) {
+    let systems = o.systems();
+    if systems.is_empty() {
+        return;
+    }
+    let here = client::download::os_name(model::THIS_OS);
+    let names: Vec<&str> = systems.iter().map(|s| client::download::os_name(s)).collect();
+    let why = if o.runs_on_this_os() {
+        t!("Has a version made for {os}: it runs here as it is.", os = here).to_string()
+    } else {
+        t!("Made for {list} only: it doesn't run on {os}.", list = names.join(", "), os = here).to_string()
+    };
+    ui.add_space(20.0);
+    ui.scope(|ui| w::stat(ui, t, t!("Runs on"), &names.join(" · "))).response.on_hover_text(why);
 }
 
 fn fs4_free(path: &std::path::Path) -> Option<u64> {
