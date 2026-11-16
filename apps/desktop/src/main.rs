@@ -50,6 +50,10 @@ fn main() -> eframe::Result {
             .with_title("SteamInRust")
             // Starts at sign-in size; the app resizes itself after sign-in.
             .with_inner_size([720.0, 470.0])
+            // macOS: the GL setup is chosen with the first window; only a
+            // see-through-capable one lets the overlay window be see-through
+            // (the app paints its own background anyway).
+            .with_transparent(cfg!(target_os = "macos"))
             .with_icon(std::sync::Arc::new(egui::IconData { rgba: ui::brand::icon_rgba(256), width: 256, height: 256 })),
         ..Default::default()
     };
