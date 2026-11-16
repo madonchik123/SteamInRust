@@ -442,7 +442,9 @@ impl SteamApp {
         if !self.hidden || ctx.input(|i| i.raw.viewports.contains_key(&id)) {
             return true;
         }
-        self.show_window(ctx);
+        // Shown but not focused, so macOS stays on the game's space.
+        self.hidden = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.request_repaint();
         false
     }
