@@ -512,13 +512,17 @@ impl SteamApp {
     /// eframe restores the last window state, fullscreen included, so after
     /// quitting in Big Picture the next start would be fullscreen. Start in a
     /// normal window (Big Picture asks for fullscreen itself once it shows).
-    /// macOS ignores the request while the restored window is still going
-    /// fullscreen, so keep asking for a few seconds until it's out.
+    /// (Saving never stores fullscreen any more, see `save`; this covers
+    /// state saved by older builds.) macOS may ignore the request while the
+    /// restored window is still going fullscreen, so keep asking for a few
+    /// seconds.
     fn leave_restored_fullscreen(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         let start = *self.started_at.get_or_insert(now);
         let big_picture = self.bigpicture.active && self.state.phase == Phase::LoggedIn;
-        if big_picture || now - start > 5.0 || ctx.input(|i| i.viewport().fullscreen) == Some(false) {
+        // Not stopped early by what the window reports: on macOS it can read
+        // "not fullscreen" while the window is still in a fullscreen space.
+        if big_picture || now - start > 4.0 {
             return;
         }
         if now - self.unfullscreen_asked >= 0.25 {
@@ -725,6 +729,14 @@ impl eframe::App for SteamApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.prefs.ext_data = self.registry.save_all().into_iter().collect();
         eframe::set_value(storage, "prefs", &self.prefs);
+        // eframe has just saved the window's state (it runs before this).
+        // Fullscreen only ever comes from Big Picture, which asks for it
+        // again itself: never restore it, or a normal start after quitting
+        // in Big Picture opens fullscreen (macOS can't be talked out of it
+        // reliably once the window is restored that way).
+        if let Some(window) = storage.get_string("window").filter(|w| w.contains("fullscreen:true")) {
+            storage.set_string("window", window.replace("fullscreen:true", "fullscreen:false"));
+        }
     }
 }
 
