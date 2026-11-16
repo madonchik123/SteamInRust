@@ -79,12 +79,18 @@ struct Pad {
 type GetState = unsafe extern "system" fn(u32, *mut Pad) -> u32;
 type SetState = unsafe extern "system" fn(u32, *mut [u16; 2]) -> u32;
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
 }
 
+/// XInput is Windows-only: elsewhere no pads are read this way.
+#[cfg(not(windows))]
+static XINPUT: LazyLock<Option<(GetState, SetState)>> = LazyLock::new(|| None);
+
+#[cfg(windows)]
 static XINPUT: LazyLock<Option<(GetState, SetState)>> = LazyLock::new(|| {
     for dll in ["xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll"] {
         let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();

@@ -253,6 +253,23 @@ const INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf
 const INTER_BOLD: &[u8] = include_bytes!("../assets/fonts/Inter-Bold.ttf");
 const PHOSPHOR: &[u8] = include_bytes!("../assets/Phosphor.ttf");
 
+/// The operating system's fonts for Chinese, Japanese, Korean, Hindi, Thai,
+/// Arabic and symbols (whichever exist), in fallback order.
+fn system_font_files() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if cfg!(target_os = "macos") {
+        let dir = PathBuf::from("/System/Library/Fonts");
+        ["Hiragino Sans GB.ttc", "ヒラギノ角ゴシック W3.ttc", "AppleSDGothicNeo.ttc", "Kohinoor.ttc", "ThonburiUI.ttc", "SFArabic.ttf", "Apple Symbols.ttf"]
+            .iter()
+            .map(|f| dir.join(f))
+            .collect()
+    } else if let Some(dir) = std::env::var_os("WINDIR").map(|w| PathBuf::from(w).join("Fonts")) {
+        ["msyh.ttc", "YuGothM.ttc", "malgun.ttf", "Nirmala.ttc", "tahoma.ttf", "seguisym.ttf"].iter().map(|f| dir.join(f)).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Install Inter (four weights) plus the icon font. Call once at startup.
 pub fn install_fonts(ctx: &egui::Context) {
     use std::sync::Arc;
@@ -269,13 +286,11 @@ pub fn install_fonts(ctx: &egui::Context) {
     // System fonts for scripts Inter doesn't cover, so game names in Chinese,
     // Japanese, Korean, Thai, Arabic, Hindi… show instead of empty boxes.
     let mut system: Vec<String> = Vec::new();
-    if let Some(dir) = std::env::var_os("WINDIR").map(|w| std::path::PathBuf::from(w).join("Fonts")) {
-        for file in ["msyh.ttc", "YuGothM.ttc", "malgun.ttf", "Nirmala.ttc", "tahoma.ttf", "seguisym.ttf"] {
-            if let Ok(bytes) = std::fs::read(dir.join(file)) {
-                let name = format!("system-{file}");
-                fonts.font_data.insert(name.clone(), Arc::new(egui::FontData::from_owned(bytes)));
-                system.push(name);
-            }
+    for path in system_font_files() {
+        if let Ok(bytes) = std::fs::read(&path) {
+            let name = format!("system-{}", path.file_name().unwrap_or_default().to_string_lossy());
+            fonts.font_data.insert(name.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+            system.push(name);
         }
     }
     // egui's bundled fonts stay as fallbacks for emoji and rare scripts.
