@@ -714,6 +714,46 @@ pub struct Badges {
     pub items: Vec<Badge>,
 }
 
+/// Your Quick Invite link: anyone who opens it becomes your friend (once).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuickInvite {
+    /// `https://s.team/p/<code>/<token>`.
+    pub link: String,
+    /// Unix time it stops working.
+    pub expires: u32,
+}
+
+/// A page of profiles found by name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UserSearch {
+    pub text: String,
+    pub page: u32,
+    /// Matches in all, across pages (Steam shows 20 a page).
+    pub total: u32,
+    pub users: Vec<FoundUser>,
+}
+
+/// A profile in search results.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FoundUser {
+    pub steam_id: SteamId,
+    pub name: String,
+    pub avatar: String,
+    pub profile: String,
+    /// Real name, country and old names, one per line, when shown.
+    pub details: String,
+}
+
+/// A collection to write to Steam: its whole new content, or deleted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectionEdit {
+    /// "favorite", "hidden", or "uc-…".
+    pub id: String,
+    pub name: String,
+    pub games: Vec<AppId>,
+    pub deleted: bool,
+}
+
 /// A library collection from the official Steam client (synced by Steam).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SteamCollection {

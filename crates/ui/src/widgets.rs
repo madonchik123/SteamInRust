@@ -307,6 +307,36 @@ pub fn icon_button(ui: &mut Ui, t: &Theme, icon: &str, tooltip: &str, active: bo
     resp.on_hover_text(tooltip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// The favorite button: an outlined heart, filled in red once the game is a
+/// favorite, so you can see which it is at a glance.
+pub fn heart_button(ui: &mut Ui, t: &Theme, on: bool, tooltip: &str) -> Response {
+    if !on {
+        return icon_button(ui, t, crate::icons::HEART, tooltip, false, 0);
+    }
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+    let p = ui.painter();
+    p.rect_filled(rect, t.corner_small(), t.surface_hover);
+    // The classic heart curve, filled as a fan from a point inside it.
+    let c = rect.center() + vec2(0.0, 0.5);
+    let scale = 0.5 + 0.03 * hover;
+    let mut mesh = egui::Mesh::default();
+    let color = Color32::from_rgb(0xE8, 0x4A, 0x5F);
+    mesh.colored_vertex(c, color);
+    const N: u32 = 64;
+    for i in 0..=N {
+        let a = i as f32 / N as f32 * std::f32::consts::TAU;
+        let x = 16.0 * a.sin().powi(3);
+        let y = 13.0 * a.cos() - 5.0 * (2.0 * a).cos() - 2.0 * (3.0 * a).cos() - (4.0 * a).cos();
+        mesh.colored_vertex(c + vec2(x, -y) * scale, color);
+        if i > 0 {
+            mesh.add_triangle(0, i, i + 1);
+        }
+    }
+    p.add(mesh);
+    resp.on_hover_text(tooltip).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Top navigation tab with an animated underline.
 /// A row in a dropdown menu: icon and label, the full menu width, with a
 /// highlight while hovered so it's clear which item a click will hit.

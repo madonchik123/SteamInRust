@@ -174,7 +174,7 @@ impl State {
             Event::AppNames(list) => self.app_names.extend(list.iter().cloned()),
             Event::Email { address, validated } => self.email = Some((address.clone(), *validated)),
             Event::Regions(_) => {}
-            Event::SteamCollections(_) => {}
+            Event::SteamCollections(_) | Event::SteamCollectionsSaved(_) | Event::QuickInvite(_) | Event::QuickInviteRedeemed { .. } | Event::UserSearch(_) => {}
             Event::CloudSyncing { app_id } => {
                 self.workshop_preparing.remove(app_id);
                 self.cloud_syncing.insert(*app_id);

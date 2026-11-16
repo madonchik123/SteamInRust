@@ -1,0 +1,38 @@
+// Friend invite links (Quick Invite), from SteamTracking's
+// steam/steammessages_useraccount.steamclient.proto (UserAccount service).
+
+message CUserAccount_CreateFriendInviteToken_Request {
+	optional uint32 invite_limit = 1;
+	optional uint32 invite_duration = 2;
+	optional string invite_note = 3;
+}
+
+message CUserAccount_CreateFriendInviteToken_Response {
+	optional string invite_token = 1;
+	optional uint64 invite_limit = 2;
+	optional uint64 invite_duration = 3;
+	optional fixed32 time_created = 4;
+	optional bool valid = 5;
+}
+
+message CUserAccount_GetFriendInviteTokens_Request {
+}
+
+message CUserAccount_GetFriendInviteTokens_Response {
+	repeated .CUserAccount_CreateFriendInviteToken_Response tokens = 1;
+}
+
+message CUserAccount_RedeemFriendInviteToken_Request {
+	optional fixed64 steamid = 1;
+	optional string invite_token = 2;
+}
+
+message CUserAccount_RedeemFriendInviteToken_Response {
+}
+
+message CUserAccount_RevokeFriendInviteToken_Request {
+	optional string invite_token = 1;
+}
+
+message CUserAccount_RevokeFriendInviteToken_Response {
+}
