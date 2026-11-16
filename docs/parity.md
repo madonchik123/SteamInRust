@@ -21,7 +21,7 @@ Steam's website" still works; it just isn't native yet.
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers; inventory item definitions |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser or screenshots |
 | Notifications and tray | 1 | |
-| Settings, languages, updates | 0.75 | English and Russian only; no Linux version; Mac builds aren't signed with an Apple developer ID |
+| Settings, languages, updates | 0.75 | Seven languages (Steam has about 30); no Linux version; Mac builds aren't signed with an Apple developer ID |
 | Big Picture | 0.75 | No chat; friends are view-only; buying and most settings move to the normal window |
 | Remote Play | 0 | Not planned for now. Steam Input for games is under "Steam features inside games" |
 
@@ -193,7 +193,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | --- | --- |
 | Settings: account, friends, security, notifications, interface, appearance, store, library, downloads, storage, cloud, in game, accessibility, plugins | Done |
 | Themes, accent color, UI scale | Done |
-| English and Russian, picked from the system language | Done. Other languages aren't translated yet |
+| English, Russian, Simplified Chinese, Spanish, Brazilian Portuguese, German and French, picked from the system language | Done. Japanese, Korean, Traditional Chinese, Polish, Turkish and others aren't translated yet |
 | Installer, uninstaller, background updates checked with SHA-256 | Done. On a Mac: a disk image, and the app replaces itself on update |
 | Copy, cut and paste in every text field, with a right-click menu | Done |
 | Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done. Network access for plugins is planned |

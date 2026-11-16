@@ -9,8 +9,8 @@
 //!
 //! Other languages live in `locales/<code>.toml` as `"English" = "Translation"`.
 //! Missing entries fall back to English. To add a language, add a file and a
-//! [`Lang`] variant. A test checks that every `t!` string in the app has a
-//! Russian entry.
+//! [`Lang`] variant. A test checks that every `t!` string in the app has an
+//! entry in every language.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -20,15 +20,25 @@ use std::sync::atomic::{AtomicU8, Ordering};
 pub enum Lang {
     English,
     Russian,
+    Chinese,
+    Spanish,
+    Portuguese,
+    German,
+    French,
 }
 
 impl Lang {
-    pub const ALL: [Lang; 2] = [Lang::English, Lang::Russian];
+    pub const ALL: [Lang; 7] = [Lang::English, Lang::Russian, Lang::Chinese, Lang::Spanish, Lang::Portuguese, Lang::German, Lang::French];
 
     pub fn code(self) -> &'static str {
         match self {
             Lang::English => "en",
             Lang::Russian => "ru",
+            Lang::Chinese => "zh",
+            Lang::Spanish => "es",
+            Lang::Portuguese => "pt",
+            Lang::German => "de",
+            Lang::French => "fr",
         }
     }
     /// The language's own name.
@@ -36,6 +46,11 @@ impl Lang {
         match self {
             Lang::English => "English",
             Lang::Russian => "Русский",
+            Lang::Chinese => "简体中文",
+            Lang::Spanish => "Español",
+            Lang::Portuguese => "Português (Brasil)",
+            Lang::German => "Deutsch",
+            Lang::French => "Français",
         }
     }
     /// Name Steam's store API expects (`l=` parameter).
@@ -43,6 +58,11 @@ impl Lang {
         match self {
             Lang::English => "english",
             Lang::Russian => "russian",
+            Lang::Chinese => "schinese",
+            Lang::Spanish => "spanish",
+            Lang::Portuguese => "brazilian",
+            Lang::German => "german",
+            Lang::French => "french",
         }
     }
     pub fn from_code(code: &str) -> Option<Lang> {
@@ -61,18 +81,26 @@ pub fn set_language(lang: Lang) {
 }
 
 pub fn language() -> Lang {
-    match CURRENT.load(Ordering::Relaxed) {
-        1 => Lang::Russian,
-        _ => Lang::English,
-    }
+    Lang::ALL.get(CURRENT.load(Ordering::Relaxed) as usize).copied().unwrap_or(Lang::English)
 }
 
 fn table(lang: Lang) -> Option<&'static HashMap<String, &'static str>> {
-    static RU: OnceLock<HashMap<String, &'static str>> = OnceLock::new();
-    match lang {
-        Lang::English => None,
-        Lang::Russian => Some(RU.get_or_init(|| load(include_str!("../locales/ru.toml")))),
-    }
+    type Table = OnceLock<HashMap<String, &'static str>>;
+    static RU: Table = OnceLock::new();
+    static ZH: Table = OnceLock::new();
+    static ES: Table = OnceLock::new();
+    static PT: Table = OnceLock::new();
+    static DE: Table = OnceLock::new();
+    static FR: Table = OnceLock::new();
+    Some(match lang {
+        Lang::English => return None,
+        Lang::Russian => RU.get_or_init(|| load(include_str!("../locales/ru.toml"))),
+        Lang::Chinese => ZH.get_or_init(|| load(include_str!("../locales/zh.toml"))),
+        Lang::Spanish => ES.get_or_init(|| load(include_str!("../locales/es.toml"))),
+        Lang::Portuguese => PT.get_or_init(|| load(include_str!("../locales/pt.toml"))),
+        Lang::German => DE.get_or_init(|| load(include_str!("../locales/de.toml"))),
+        Lang::French => FR.get_or_init(|| load(include_str!("../locales/fr.toml"))),
+    })
 }
 
 fn load(src: &str) -> HashMap<String, &'static str> {
@@ -127,10 +155,10 @@ mod tests {
         set_language(Lang::English);
     }
 
-    /// Every `t!("...")` in the app must have a Russian translation.
+    /// Every `t!("...")` in the app must have a translation in every language.
     #[test]
-    fn russian_covers_all_strings() {
-        let ru = table(Lang::Russian).unwrap();
+    fn every_language_covers_all_strings() {
+        let tables: Vec<(Lang, &HashMap<String, &str>)> = Lang::ALL.into_iter().filter_map(|l| Some((l, table(l)?))).collect();
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut missing = Vec::new();
         let mut stack = vec![base.join("../../apps/desktop/src"), base.join("../../apps/installer/src"), base.join("../ui/src"), base.join("../video/src")];
@@ -150,12 +178,44 @@ mod tests {
                     }
                     let Some(end) = part.find('"') else { continue };
                     let key = &part[..end];
-                    if !ru.contains_key(key) && !missing.contains(&key.to_string()) {
-                        missing.push(key.to_string());
+                    for (lang, t) in &tables {
+                        let entry = format!("{}: \"{key}\"", lang.code());
+                        if !t.contains_key(key) && !missing.contains(&entry) {
+                            missing.push(entry);
+                        }
                     }
                 }
             }
         }
-        assert!(missing.is_empty(), "missing Russian strings:\n{}", missing.iter().map(|m| format!("\"{m}\" = \"\"")).collect::<Vec<_>>().join("\n"));
+        assert!(missing.is_empty(), "missing translations:\n{}", missing.join("\n"));
+    }
+
+    /// Every language has the same strings as Russian (the most complete),
+    /// and keeps each `{placeholder}`.
+    #[test]
+    fn languages_match_and_keep_placeholders() {
+        let ru = table(Lang::Russian).unwrap();
+        let holes = |s: &str| {
+            let mut v: Vec<String> = s.split('{').skip(1).filter_map(|p| p.split_once('}').map(|(n, _)| n.to_string())).filter(|n| n.chars().all(|c| c.is_ascii_lowercase() || c == '_')).collect();
+            v.sort();
+            v
+        };
+        for lang in Lang::ALL {
+            let Some(t) = table(lang) else { continue };
+            for key in ru.keys() {
+                let v = t.get(key).unwrap_or_else(|| panic!("{}: missing \"{key}\"", lang.code()));
+                assert_eq!(holes(key), holes(v), "{}: placeholders differ in \"{key}\"", lang.code());
+            }
+            assert_eq!(t.len(), ru.len(), "{}: extra strings", lang.code());
+        }
+    }
+
+    #[test]
+    fn picks_languages_from_codes() {
+        assert_eq!(Lang::from_code("zh-CN"), Some(Lang::Chinese));
+        assert_eq!(Lang::from_code("es-MX"), Some(Lang::Spanish));
+        assert_eq!(Lang::from_code("pt_BR"), Some(Lang::Portuguese));
+        assert_eq!(Lang::from_code("de-AT"), Some(Lang::German));
+        assert_eq!(Lang::from_code("fr-CA"), Some(Lang::French));
     }
 }

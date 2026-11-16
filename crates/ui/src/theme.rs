@@ -293,20 +293,31 @@ pub fn install_fonts(ctx: &egui::Context) {
             system.push(name);
         }
     }
+    // Bold Chinese for headings and buttons (Windows ships it separately).
+    let bold_cjk = std::env::var_os("WINDIR")
+        .map(|w| std::path::PathBuf::from(w).join("Fonts").join("msyhbd.ttc"))
+        .and_then(|p| std::fs::read(p).ok())
+        .map(|bytes| {
+            fonts.font_data.insert("system-msyhbd".into(), Arc::new(egui::FontData::from_owned(bytes)));
+            "system-msyhbd".to_string()
+        });
     // egui's bundled fonts stay as fallbacks for emoji and rare scripts.
     let mut fallbacks: Vec<String> = system;
     fallbacks.extend(fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
     // The bundled font files are trimmed so they never overlap:
     // Inter has no private-use glyphs and Phosphor has only private-use ones.
-    let family = |main: &str| {
+    let family = |main: &str, heavy: bool| {
         let mut v = vec![main.to_string(), "phosphor".to_string()];
+        if heavy {
+            v.extend(bold_cjk.clone());
+        }
         v.extend(fallbacks.iter().cloned());
         v
     };
-    fonts.families.insert(FontFamily::Proportional, family("inter"));
-    fonts.families.insert(medium(), family("inter-medium"));
-    fonts.families.insert(semibold(), family("inter-semibold"));
-    fonts.families.insert(bold(), family("inter-bold"));
+    fonts.families.insert(FontFamily::Proportional, family("inter", false));
+    fonts.families.insert(medium(), family("inter-medium", false));
+    fonts.families.insert(semibold(), family("inter-semibold", true));
+    fonts.families.insert(bold(), family("inter-bold", true));
     fonts.families.entry(FontFamily::Monospace).or_default().push("phosphor".into());
     ctx.set_fonts(fonts);
 }

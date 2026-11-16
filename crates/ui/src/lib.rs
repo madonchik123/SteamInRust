@@ -42,8 +42,12 @@ pub fn ago(unix: u64) -> String {
         0..60 => t!("just now").to_string(),
         60..3600 => t!("{n} min ago", n = s / 60),
         3600..86400 => t!("{n} hr ago", n = s / 3600),
-        86400..2_592_000 => t!("{n} days ago", n = s / 86400),
-        2_592_000..31_536_000 => t!("{n} months ago", n = s / 2_592_000),
+        // One day, month or year reads differently in most languages.
+        86400..172_800 => t!("1 day ago").to_string(),
+        172_800..2_592_000 => t!("{n} days ago", n = s / 86400),
+        2_592_000..5_184_000 => t!("1 month ago").to_string(),
+        5_184_000..31_536_000 => t!("{n} months ago", n = s / 2_592_000),
+        31_536_000..63_072_000 => t!("1 year ago").to_string(),
         _ => t!("{n} years ago", n = s / 31_536_000),
     }
 }

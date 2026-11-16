@@ -85,7 +85,8 @@ Everything below is in the current release. Area-by-area status:
   button, or start with `--bigpicture`.
 - **Plugins.** Small [Rhai](https://rhai.rs) scripts can add pages,
   notifications and automations, with only the permissions you approve.
-- **English and Russian**, picked from your system language.
+- **Seven languages**: English, Russian, Simplified Chinese, Spanish, Brazilian
+  Portuguese, German and French, picked from your system language.
 
 <table>
   <tr>

@@ -1077,7 +1077,9 @@ fn settings(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32 {
     p.text(pos2(left, y), Align2::LEFT_TOP, t!("Big Picture settings"), w::font_bold(40.0 * s), f.t.text);
     y += 80.0 * s;
     let lang = i18n::language();
-    let other = if lang == i18n::Lang::English { i18n::Lang::Russian } else { i18n::Lang::English };
+    // Selecting the row moves to the next language.
+    let all = i18n::Lang::ALL;
+    let other = all[(all.iter().position(|l| *l == lang).unwrap_or(0) + 1) % all.len()];
     let rows = [
         (icons::MONITOR, t!("Interface size"), format!("{}%", (f.app.prefs.bigpicture_scale * 100.0).round() as u32)),
         (icons::DESKTOP, t!("Start SteamInRust in Big Picture"), if f.app.prefs.bigpicture_start { t!("On") } else { t!("Off") }.to_string()),
