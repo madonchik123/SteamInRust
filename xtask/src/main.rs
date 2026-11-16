@@ -227,6 +227,17 @@ fn info_plist(version: &str) -> String {
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License. Not affiliated with Valve.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Steam links</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>steam</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
 "#

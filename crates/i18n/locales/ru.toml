@@ -1685,3 +1685,4 @@
 "Paste" = "Вставить"
 "Not available on {os}" = "Недоступно в {os}"
 "This game doesn't run on {os}." = "Эта игра не работает в {os}."
+"Open SteamInRust from its app (SteamInRust.app) to handle steam:// links." = "Чтобы открывать ссылки steam://, запускайте SteamInRust из приложения (SteamInRust.app)."

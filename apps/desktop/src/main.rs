@@ -20,6 +20,9 @@ mod updater;
 fn main() -> eframe::Result {
     // A `steam://` link (or a plain second launch) goes to the running copy.
     let link = std::env::args().skip(1).find(|a| a.starts_with("steam://"));
+    // macOS hands links over as events instead of arguments.
+    #[cfg(target_os = "macos")]
+    links::install_url_handler();
     // `--separate` runs a second copy (for previews and testing).
     let separate = std::env::args().any(|a| a == "--separate");
     if !separate && links::forward_to_running(link.as_deref().unwrap_or("show")) {

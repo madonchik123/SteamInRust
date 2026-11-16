@@ -4994,6 +4994,7 @@ dependencies = [
  "image",
  "local",
  "model",
+ "objc2 0.6.5",
  "open",
  "plugins",
  "qrcode",
