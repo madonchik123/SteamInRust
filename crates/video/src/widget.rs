@@ -92,6 +92,10 @@ pub fn show(ui: &mut Ui, t: &Theme, rect: Rect, p: &mut Player, poster: &str, ti
         if let Some(r) = area {
             builder = builder.with_position(r.min).with_inner_size(r.size());
         }
+        // macOS: the system's own full screen (hides the menu bar and Dock).
+        if cfg!(target_os = "macos") {
+            builder = builder.with_fullscreen(true);
+        }
         // The full-screen window is painted during the main window's pass:
         // keep both going (the player paces itself at the video's frame rate).
         ctx.request_repaint_after_for(std::time::Duration::from_millis(100), egui::ViewportId::ROOT);

@@ -25,13 +25,18 @@ pub struct InstallRequest {
     pub add_dlc: Vec<AppId>,
 }
 
-/// Choose the depots a Windows 64-bit install needs. `installed` = the
+/// Choose the depots an install on this system needs (see [`pick_depots_for`]).
+pub fn pick_depots<'a>(app: &'a OwnedApp, owned: &HashSet<AppId>, req: &InstallRequest, installed: &HashSet<u32>) -> Vec<&'a model::DepotInfo> {
+    pick_depots_for(model::THIS_OS, app, owned, req, installed)
+}
+
+/// Choose the depots a 64-bit install for `os` needs. `installed` = the
 /// depots on disk now (empty for a new install). Like Steam, a new install
 /// gets the owned DLC, and an update only keeps the DLC already installed
 /// (plus any the user turned on), so owned-but-uninstalled DLC never turns
 /// an update into a multi-gigabyte download.
-pub fn pick_depots<'a>(app: &'a OwnedApp, owned: &HashSet<AppId>, req: &InstallRequest, installed: &HashSet<u32>) -> Vec<&'a model::DepotInfo> {
-    let os_ok = |d: &&model::DepotInfo| d.os.is_empty() || d.os.split(',').any(|o| o.trim() == "windows");
+pub fn pick_depots_for<'a>(os: &str, app: &'a OwnedApp, owned: &HashSet<AppId>, req: &InstallRequest, installed: &HashSet<u32>) -> Vec<&'a model::DepotInfo> {
+    let os_ok = |d: &&model::DepotInfo| model::os_matches(&d.os, os);
     let lang_ok = |d: &&model::DepotInfo| d.language.is_empty() || d.language == req.language;
     // An update keeps every depot already installed (its language, 32 or
     // 64-bit), like Steam; the OS/language/arch choice is for new content.
@@ -59,6 +64,15 @@ pub fn pick_depots<'a>(app: &'a OwnedApp, owned: &HashSet<AppId>, req: &InstallR
         out.extend(extra);
     }
     out
+}
+
+/// How the player knows a system.
+pub fn os_name(os: &str) -> &'static str {
+    match os {
+        "macos" => "macOS",
+        "linux" => "Linux",
+        _ => "Windows",
+    }
 }
 
 pub async fn content_servers(conn: &Connection, cell_id: u32) -> Result<Vec<depot::Server>, String> {
@@ -163,7 +177,7 @@ pub async fn run(
     let on_disk: HashSet<u32> = old.iter().map(|(d, _)| *d).collect();
     let depots = pick_depots(&app, &owned, &req, &on_disk);
     if depots.is_empty() {
-        return Err(format!("{} has no downloadable content for Windows", app.name));
+        return Err(format!("{} has no downloadable content for {}", app.name, os_name(model::THIS_OS)));
     }
     let mut servers = content_servers(&conn, cell_id).await?;
     // A host the player picked goes first (the others stay as fallbacks).
@@ -425,34 +439,43 @@ mod tests {
         };
         let req = InstallRequest { app_id: 10, library: ".".into(), steam_root: ".".into(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![] };
         let fresh = HashSet::new();
-        let ids: Vec<u32> = pick_depots(&app, &HashSet::new(), &req, &fresh).iter().map(|d| d.id).collect();
+        let ids: Vec<u32> = pick_depots_for("windows", &app, &HashSet::new(), &req, &fresh).iter().map(|d| d.id).collect();
         assert_eq!(ids, vec![11]);
         let owned: HashSet<u32> = [99].into_iter().collect();
         // A new install gets the owned DLC.
-        let ids: Vec<u32> = pick_depots(&app, &owned, &req, &fresh).iter().map(|d| d.id).collect();
+        let ids: Vec<u32> = pick_depots_for("windows", &app, &owned, &req, &fresh).iter().map(|d| d.id).collect();
         assert_eq!(ids, vec![11, 15]);
         // An update of an install without it doesn't add it...
         let installed: HashSet<u32> = [11].into_iter().collect();
-        let ids: Vec<u32> = pick_depots(&app, &owned, &req, &installed).iter().map(|d| d.id).collect();
+        let ids: Vec<u32> = pick_depots_for("windows", &app, &owned, &req, &installed).iter().map(|d| d.id).collect();
         assert_eq!(ids, vec![11]);
         // ...unless the user turned it on.
         let on = InstallRequest { add_dlc: vec![99], ..req.clone() };
-        let ids: Vec<u32> = pick_depots(&app, &owned, &on, &installed).iter().map(|d| d.id).collect();
+        let ids: Vec<u32> = pick_depots_for("windows", &app, &owned, &on, &installed).iter().map(|d| d.id).collect();
         assert_eq!(ids, vec![11, 15]);
         // Installed DLC stays, and goes when turned off.
         let both: HashSet<u32> = [11, 15].into_iter().collect();
-        assert_eq!(pick_depots(&app, &owned, &req, &both).len(), 2);
+        assert_eq!(pick_depots_for("windows", &app, &owned, &req, &both).len(), 2);
         let off = InstallRequest { skip_dlc: vec![99], ..req.clone() };
-        assert_eq!(pick_depots(&app, &owned, &off, &both).iter().map(|d| d.id).collect::<Vec<_>>(), vec![11]);
+        assert_eq!(pick_depots_for("windows", &app, &owned, &off, &both).iter().map(|d| d.id).collect::<Vec<_>>(), vec![11]);
         // An update keeps an installed depot in another language, or 32-bit.
         let ru = InstallRequest { language: "russian".into(), ..req.clone() };
         let with_lang: HashSet<u32> = [11, 14].into_iter().collect();
-        let ids: Vec<u32> = pick_depots(&app, &HashSet::new(), &ru, &with_lang).iter().map(|d| d.id).collect();
+        let ids: Vec<u32> = pick_depots_for("windows", &app, &HashSet::new(), &ru, &with_lang).iter().map(|d| d.id).collect();
         assert!(ids.contains(&14), "kept the installed german depot: {ids:?}");
         let with32: HashSet<u32> = [11, 12].into_iter().collect();
-        let ids: Vec<u32> = pick_depots(&app, &HashSet::new(), &req, &with32).iter().map(|d| d.id).collect();
+        let ids: Vec<u32> = pick_depots_for("windows", &app, &HashSet::new(), &req, &with32).iter().map(|d| d.id).collect();
         assert!(ids.contains(&12), "kept the installed 32-bit depot: {ids:?}");
     }
+}
+
+#[test]
+fn picks_mac_depots() {
+    let d = |id, os: &str| model::DepotInfo { id, os: os.into(), manifests: vec![("public".into(), 1, 1)], ..Default::default() };
+    let app = OwnedApp { app_id: 10, depots: vec![d(11, "windows"), d(12, "macos"), d(13, ""), d(14, "windows,macos")], ..Default::default() };
+    let req = InstallRequest { app_id: 10, library: ".".into(), steam_root: ".".into(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![] };
+    let ids: Vec<u32> = pick_depots_for("macos", &app, &HashSet::new(), &req, &HashSet::new()).iter().map(|d| d.id).collect();
+    assert_eq!(ids, vec![12, 13, 14]);
 }
 
 #[cfg(test)]

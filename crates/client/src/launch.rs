@@ -1023,7 +1023,7 @@ mod tests {
             app_id: 1,
             name: "Test".into(),
             categories,
-            launch: vec![model::LaunchOption { executable: exe.into(), arguments: String::new(), working_dir: String::new(), description: String::new(), os_list: "windows".into() }],
+            launch: vec![model::LaunchOption { executable: exe.into(), arguments: String::new(), working_dir: String::new(), description: String::new(), os_list: String::new() }],
             ..Default::default()
         }
     }

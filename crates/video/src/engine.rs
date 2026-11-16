@@ -2,7 +2,7 @@
 //! the sound card (which also keeps the clock).
 
 use crate::mp4::{self, Codec, Sample, Track};
-use crate::{Audio, Frame, MAX_FRAMES, Plan, Shared, UNSEEN, mf, wasapi, yuv};
+use crate::{Audio, Frame, MAX_FRAMES, Plan, Shared, UNSEEN, codec, sound, yuv};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
@@ -24,10 +24,10 @@ fn track_of(data: &[u8], video: bool) -> Option<Track> {
 }
 
 pub fn video_thread(sh: Arc<Shared>) {
-    if let Err(e) = mf::init_thread() {
-        return sh.fail(format!("Media Foundation: {e}"));
+    if let Err(e) = codec::init_thread() {
+        return sh.fail(format!("video decoder: {e}"));
     }
-    let mut dec: Option<(mf::H264, String)> = None;
+    let mut dec: Option<(codec::H264, String)> = None;
     let mut track: Option<(String, Track)> = None;
     let mut epoch = u64::MAX;
     let mut target = 0.0;
@@ -73,7 +73,7 @@ pub fn video_thread(sh: Arc<Shared>) {
         let Codec::H264 { nal_len, sps, pps } = &t.codec else { return };
         if dec.as_ref().is_none_or(|(_, u)| *u != init_url) {
             drop(dec.take());
-            match mf::H264::new(t.width, t.height) {
+            match codec::H264::new(t.width, t.height) {
                 Ok(d) => dec = Some((d, init_url.clone())),
                 Err(e) => return sh.fail(format!("H.264 decoder: {e}")),
             }
@@ -131,7 +131,7 @@ pub fn video_thread(sh: Arc<Shared>) {
 }
 
 /// Convert a decoded picture and queue it (waiting for room).
-fn emit(sh: &Shared, epoch: u64, target: f64, t: &Track, pic: mf::Picture, px: &mut Vec<egui::Color32>) {
+fn emit(sh: &Shared, epoch: u64, target: f64, t: &Track, pic: codec::Picture, px: &mut Vec<egui::Color32>) {
     // Pictures between the key frame and a seek target are only decoded.
     if pic.pts < target - 0.02 {
         return;
@@ -169,8 +169,8 @@ fn audio_off(sh: &Shared, why: &str) {
 }
 
 pub fn audio_thread(sh: Arc<Shared>) {
-    if mf::init_thread().is_err() {
-        return audio_off(&sh, "Media Foundation");
+    if codec::init_thread().is_err() {
+        return audio_off(&sh, "audio decoder");
     }
     // Wait for the playlists.
     let plan = {
@@ -187,14 +187,14 @@ pub fn audio_thread(sh: Arc<Shared>) {
     let Some(init) = sh.wait_data(plan.init_url(), None) else { return };
     let Some(track) = track_of(&init, false) else { return audio_off(&sh, "no AAC track") };
     let Codec::Aac { config, channels, rate } = &track.codec else { return };
-    let mut aac = match mf::Aac::new(config, *rate, *channels) {
+    let mut aac = match codec::Aac::new(config, *rate, *channels) {
         Ok(a) => a,
         Err(e) => return audio_off(&sh, &format!("AAC decoder: {e}")),
     };
     let ch_in = aac.channels.max(1) as usize;
     let ch = ch_in.min(2);
     let rate = aac.rate.max(1);
-    let mut out = match wasapi::Output::new(rate, ch as u16) {
+    let mut out = match sound::Output::new(rate, ch as u16) {
         Ok(o) => o,
         Err(e) => return audio_off(&sh, &format!("audio device: {e}")),
     };
@@ -278,7 +278,7 @@ pub fn audio_thread(sh: Arc<Shared>) {
         }
 
         // Feed the device.
-        let result = (|| -> windows::core::Result<()> {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             let free = out.free()? as usize;
             let n = free.min(pcm.len() / ch);
             if n > 0 {
@@ -323,7 +323,7 @@ pub fn audio_thread(sh: Arc<Shared>) {
             tracing::info!("video: audio device: {e}");
             running = false;
             first = None;
-            match wasapi::Output::new(rate, ch as u16) {
+            match sound::Output::new(rate, ch as u16) {
                 Ok(o) => {
                     out = o;
                     vol_set = -1.0;

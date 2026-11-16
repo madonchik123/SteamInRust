@@ -2,9 +2,10 @@
 //!
 //! - Streams HLS (fMP4 segments, what Steam serves for trailers) or plain MP4
 //!   (Steam's microtrailers) over HTTP, a few segments ahead.
-//! - Decodes H.264 and AAC with Windows Media Foundation (built into Windows).
-//! - Plays audio through WASAPI; its clock drives A/V sync (a wall clock when
-//!   there's no audio).
+//! - Decodes H.264 and AAC with what the system has built in: Media
+//!   Foundation on Windows, VideoToolbox and AudioToolbox on macOS.
+//! - Plays audio through WASAPI (Windows) or the default output audio unit
+//!   (macOS); its clock drives A/V sync (a wall clock when there's no audio).
 //! - Hands frames to egui as a texture; [`widget`] draws a Steam-like player.
 //!
 //! Threads: a tokio task downloads, one thread decodes video into a short
@@ -17,12 +18,20 @@ pub mod mp4;
 pub mod widget;
 mod yuv;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod engine;
 #[cfg(windows)]
 mod mf;
 #[cfg(windows)]
 mod wasapi;
+#[cfg(target_os = "macos")]
+mod apple;
+
+// The decoders and the sound output, whichever this system has.
+#[cfg(windows)]
+use {mf as codec, wasapi as sound};
+#[cfg(target_os = "macos")]
+use {apple as codec, apple as sound};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -302,7 +311,7 @@ impl Player {
         };
         let sh = Arc::new(Shared { m: Mutex::new(st), cv: Condvar::new(), stop: AtomicBool::new(false), epoch: AtomicU64::new(0), ctx: ctx.clone() });
         rt.spawn(download(sh.clone(), source));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             let (a, b) = (sh.clone(), sh.clone());
             let ok = std::thread::Builder::new().name("video-decode".into()).spawn(move || engine::video_thread(a)).is_ok()
@@ -311,8 +320,8 @@ impl Player {
                 sh.fail("could not start decoder threads");
             }
         }
-        #[cfg(not(windows))]
-        sh.fail("video playback needs Windows Media Foundation");
+        #[cfg(not(any(windows, target_os = "macos")))]
+        sh.fail("video playback isn't available on this system yet");
         Self { sh, tex: None, shown_epoch: u64::MAX, shown_pts: 0.0, pos: 0.0, status: Status::Loading, ended_flag: false, fullscreen: false, ui: Default::default() }
     }
 

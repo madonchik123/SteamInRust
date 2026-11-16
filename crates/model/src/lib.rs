@@ -343,14 +343,7 @@ pub struct LaunchOption {
 
 impl LaunchOption {
     pub fn runs_on_this_os(&self) -> bool {
-        let os = if cfg!(windows) {
-            "windows"
-        } else if cfg!(target_os = "macos") {
-            "macos"
-        } else {
-            "linux"
-        };
-        self.os_list.is_empty() || self.os_list.split(',').any(|o| o.trim() == os)
+        os_matches(&self.os_list, THIS_OS)
     }
 }
 
@@ -1472,4 +1465,19 @@ pub mod art {
             .unwrap_or(DEFAULT_AVATAR);
         format!("https://avatars.steamstatic.com/{h}_medium.jpg")
     }
+}
+
+/// This computer's system, as Steam names it in `oslist` ("windows",
+/// "macos", "linux").
+pub const THIS_OS: &str = if cfg!(windows) {
+    "windows"
+} else if cfg!(target_os = "macos") {
+    "macos"
+} else {
+    "linux"
+};
+
+/// Does a Steam `oslist` ("windows,macos"; empty = every system) include `os`?
+pub fn os_matches(os_list: &str, os: &str) -> bool {
+    os_list.trim().is_empty() || os_list.split(',').any(|o| o.trim().eq_ignore_ascii_case(os))
 }

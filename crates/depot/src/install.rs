@@ -248,6 +248,8 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
 
     // Remove files the new version no longer has.
     progress.set_phase(Phase::Finishing);
+    #[cfg(unix)]
+    unix_finish(dir, &jobs)?;
     for job in &jobs {
         if let Some(old) = &job.old {
             let keep: std::collections::HashSet<&str> = job.manifest.files.iter().map(|f| f.name.as_str()).collect();
@@ -310,6 +312,49 @@ fn write_at(path: &Path, offset: u64, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// What Windows doesn't need: links inside the game (macOS app bundles are
+/// full of them) and permission to run its programs.
+#[cfg(unix)]
+fn unix_finish(dir: &Path, jobs: &[DepotJob]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    for f in jobs.iter().flat_map(|j| &j.manifest.files) {
+        let path = dir.join(&f.name);
+        if let Some(target) = &f.link {
+            let target = target.replace('\\', "/");
+            if fs::read_link(&path).is_ok_and(|t| t == Path::new(&target)) {
+                continue;
+            }
+            if let Ok(m) = fs::symlink_metadata(&path) {
+                if m.is_dir() && !m.file_type().is_symlink() {
+                    fs::remove_dir_all(&path)?;
+                } else {
+                    fs::remove_file(&path)?;
+                }
+            }
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            std::os::unix::fs::symlink(&target, &path)?;
+        } else if !f.directory && (f.executable || is_bundle_program(&f.name)) {
+            if let Ok(m) = fs::metadata(&path) {
+                let mode = m.permissions().mode();
+                if mode & 0o111 != 0o111 {
+                    fs::set_permissions(&path, fs::Permissions::from_mode(mode | 0o755))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The program inside a macOS app bundle (`X.app/Contents/MacOS/X`); some
+/// depots don't flag it as executable.
+#[cfg(unix)]
+fn is_bundle_program(name: &str) -> bool {
+    let name = name.replace('\\', "/");
+    name.split('/').collect::<Vec<_>>().windows(3).any(|w| w[0].ends_with(".app") && w[1] == "Contents" && w[2] == "MacOS")
+}
+
 fn finish_file(path: &Path) -> Result<()> {
     let part = part_path(path);
     if path.exists() {
@@ -317,4 +362,53 @@ fn finish_file(path: &Path) -> Result<()> {
     }
     fs::rename(&part, path)?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::manifest::{FileEntry, Manifest};
+
+    fn entry(name: &str, executable: bool, link: Option<&str>) -> FileEntry {
+        FileEntry { name: name.into(), size: 0, sha: Vec::new(), chunks: Vec::new(), directory: false, executable, link: link.map(String::from) }
+    }
+
+    #[test]
+    fn finds_bundle_programs() {
+        assert!(is_bundle_program("Human.app/Contents/MacOS/Human"));
+        assert!(!is_bundle_program("Human.app/Contents/Resources/icon.icns"));
+        assert!(!is_bundle_program("game.sh"));
+    }
+
+    #[test]
+    fn links_and_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("sir-unix-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("G.app/Contents/MacOS")).unwrap();
+        fs::create_dir_all(dir.join("Lib.framework/Versions/A")).unwrap();
+        for f in ["G.app/Contents/MacOS/G", "run.sh", "data.txt"] {
+            fs::write(dir.join(f), b"x").unwrap();
+            fs::set_permissions(dir.join(f), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let manifest = Manifest {
+            files: vec![
+                entry("G.app/Contents/MacOS/G", false, None),
+                entry("run.sh", true, None),
+                entry("data.txt", false, None),
+                entry("Lib.framework/Versions/Current", false, Some("A")),
+            ],
+            ..Default::default()
+        };
+        let jobs = vec![DepotJob { depot: 1, manifest, key: Vec::new(), old: None }];
+        unix_finish(&dir, &jobs).unwrap();
+        // Twice is fine (updates run it again).
+        unix_finish(&dir, &jobs).unwrap();
+        let mode = |f: &str| fs::metadata(dir.join(f)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode("G.app/Contents/MacOS/G"), 0o755);
+        assert_eq!(mode("run.sh"), 0o755);
+        assert_eq!(mode("data.txt"), 0o644);
+        assert_eq!(fs::read_link(dir.join("Lib.framework/Versions/Current")).unwrap(), Path::new("A"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
