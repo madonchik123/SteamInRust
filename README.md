@@ -15,6 +15,7 @@
   <a href="https://github.com/madonchik123/SteamInRust/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/madonchik123/SteamInRust?style=flat-square&color=4F8CFF"></a>
   <a href="https://github.com/madonchik123/SteamInRust/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/madonchik123/SteamInRust/ci.yml?branch=main&style=flat-square&label=CI"></a>
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows%2010%20%C2%B7%2011-4F8CFF?style=flat-square">
+  <img alt="macOS 11 and later" src="https://img.shields.io/badge/macOS%2011%2B-4F8CFF?style=flat-square">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2FB36B?style=flat-square">
 </p>
 
@@ -130,11 +131,21 @@ Get it from [the latest release](https://github.com/madonchik123/SteamInRust/rel
 | `SteamInRust-Setup-<version>.exe` | Installer. Installs for your user only, without administrator rights, into `%LOCALAPPDATA%\Programs\SteamInRust`, and updates itself |
 | `SteamInRust-<version>-portable.zip` | The same app with no installer. Doesn't update itself |
 | `SHA256SUMS.txt` | Checksums for both |
+| `SteamInRust-<version>-macos.dmg` | macOS (Apple Silicon and Intel games, macOS 11 or later). Drag SteamInRust to Applications |
+| `SHA256SUMS-macos.txt` | Checksum for the disk image |
 
-Needs Windows 10 or 11 (64-bit) and a Steam account. Sign in with your password
-and Steam Guard, or scan the QR code with the Steam Mobile app. Windows
-SmartScreen may warn about a new unsigned app: **More info → Run anyway**.
-Uninstall from **Settings → Apps**.
+Needs Windows 10 or 11 (64-bit), or macOS 11 or later on Apple Silicon, and a
+Steam account. Sign in with your password and Steam Guard, or scan the QR code
+with the Steam Mobile app. Windows SmartScreen may warn about a new unsigned
+app: **More info → Run anyway**. Uninstall from **Settings → Apps**.
+
+On macOS the app isn't signed by an Apple developer account, so the first time
+macOS says it can't check it for malicious software. Open it once with
+**right-click → Open → Open**, or allow it in **System Settings → Privacy &
+Security → Open Anyway**. On a Mac, games without a macOS version show as not
+available, like in Steam, and new installs go to Steam's usual folder
+(`~/Library/Application Support/Steam`) unless you pick another. To remove it,
+drag SteamInRust from Applications to the Bin.
 
 ## Is it safe to use?
 
@@ -183,8 +194,15 @@ more examples in [`crates/plugins/examples`](crates/plugins/examples).
 
 ## Build from source
 
-Needs [Rust](https://rustup.rs) and MinGW-w64. The project uses the GNU
-toolchain (see `rust-toolchain.toml`).
+Needs [Rust](https://rustup.rs). On Windows also MinGW-w64: the project uses the
+GNU toolchain there (see `rust-toolchain.toml`). On macOS, install the Xcode
+command line tools (`xcode-select --install`), then tell rustup to use the Mac's
+own toolchain in the project folder, once:
+
+```sh
+rustup override set stable
+cargo xtask steamclient-mac  # the steamclient games load, for Apple and Intel games
+```
 
 ```sh
 git clone https://github.com/madonchik123/SteamInRust.git
@@ -193,7 +211,7 @@ cargo run                  # sign in with your account
 cargo run -- --demo        # sample data, no sign-in
 cargo test --workspace
 cargo xtask steamclient32   # the DLL for 32-bit games (needs a 32-bit MinGW)
-cargo xtask package        # installer and portable zip in target/package/dist
+cargo xtask package        # installer and portable zip (macOS: a .dmg) in target/package/dist
 ```
 
 <details>
@@ -210,7 +228,8 @@ crates/
   depot          depot downloader
   steamclient    the steamclient DLL that games load
   store          store APIs: browse, reviews, tags, trailers, news
-  video          trailer player: HLS, Media Foundation, WASAPI
+  video          trailer player: HLS; Media Foundation and WASAPI (Windows),
+                 VideoToolbox and AudioToolbox (macOS)
   local          the Steam folders on disk: libraries, manifests, verify
   plugins        Rhai plugins
   extensions     the interface every page implements

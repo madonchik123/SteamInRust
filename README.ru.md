@@ -15,6 +15,7 @@
   <a href="https://github.com/madonchik123/SteamInRust/releases/latest"><img alt="Релиз" src="https://img.shields.io/github/v/release/madonchik123/SteamInRust?style=flat-square&color=4F8CFF"></a>
   <a href="https://github.com/madonchik123/SteamInRust/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/madonchik123/SteamInRust/ci.yml?branch=main&style=flat-square&label=CI"></a>
   <img alt="Windows 10 и 11" src="https://img.shields.io/badge/Windows%2010%20%C2%B7%2011-4F8CFF?style=flat-square">
+  <img alt="macOS 11 и новее" src="https://img.shields.io/badge/macOS%2011%2B-4F8CFF?style=flat-square">
   <img alt="Лицензия MIT" src="https://img.shields.io/badge/license-MIT-2FB36B?style=flat-square">
 </p>
 
@@ -132,11 +133,23 @@ Shift+Tab в одном нативном процессе без встроен�
 | `SteamInRust-Setup-<версия>.exe` | Установщик. Ставит только для вашего пользователя, без прав администратора, в `%LOCALAPPDATA%\Programs\SteamInRust`, и обновляется сам |
 | `SteamInRust-<версия>-portable.zip` | То же приложение без установщика. Само не обновляется |
 | `SHA256SUMS.txt` | Контрольные суммы обоих файлов |
+| `SteamInRust-<версия>-macos.dmg` | macOS (игры для Apple Silicon и Intel, macOS 11 и новее). Перетащите SteamInRust в «Программы» |
+| `SHA256SUMS-macos.txt` | Контрольная сумма образа диска |
 
-Нужны Windows 10 или 11 (64-бит) и аккаунт Steam. Войти можно паролем со Steam
-Guard или по QR-коду из мобильного приложения Steam. SmartScreen может
-предупредить о новом неподписанном приложении: **Подробнее → Выполнить в любом
-случае**. Удалить можно в **Параметры → Приложения**.
+Нужны Windows 10 или 11 (64-бит) либо macOS 11 и новее на Apple Silicon, и
+аккаунт Steam. Войти можно паролем со Steam Guard или по QR-коду из мобильного
+приложения Steam. SmartScreen может предупредить о новом неподписанном
+приложении: **Подробнее → Выполнить в любом случае**. Удалить можно в
+**Параметры → Приложения**.
+
+На macOS приложение не подписано аккаунтом разработчика Apple, поэтому при
+первом запуске macOS скажет, что не может проверить его на вредоносное ПО.
+Откройте его один раз через **правый клик → Открыть → Открыть** или разрешите в
+**Системные настройки → Конфиденциальность и безопасность → Всё равно
+открыть**. На Mac игры без версии для macOS показываются как недоступные, как в
+Steam, а новые игры ставятся в обычную папку Steam
+(`~/Library/Application Support/Steam`), если не выбрать другую. Чтобы удалить,
+перетащите SteamInRust из «Программ» в Корзину.
 
 ## Это безопасно?
 
@@ -185,8 +198,15 @@ fn page() {
 
 ## Сборка из исходников
 
-Нужны [Rust](https://rustup.rs) и MinGW-w64. Проект использует GNU-тулчейн
-(см. `rust-toolchain.toml`).
+Нужен [Rust](https://rustup.rs). На Windows ещё MinGW-w64: там проект использует
+GNU-тулчейн (см. `rust-toolchain.toml`). На macOS установите инструменты
+командной строки Xcode (`xcode-select --install`) и один раз попросите rustup
+использовать в папке проекта тулчейн самого Mac:
+
+```sh
+rustup override set stable
+cargo xtask steamclient-mac  # steamclient, который загружают игры (для Apple и Intel)
+```
 
 ```sh
 git clone https://github.com/madonchik123/SteamInRust.git
@@ -195,7 +215,7 @@ cargo run                  # вход в ваш аккаунт
 cargo run -- --demo        # тестовые данные, без входа
 cargo test --workspace
 cargo xtask steamclient32   # DLL для 32-битных игр (нужен 32-битный MinGW)
-cargo xtask package        # установщик и portable-архив в target/package/dist
+cargo xtask package        # установщик и portable-архив (на macOS — .dmg) в target/package/dist
 ```
 
 <details>
@@ -212,7 +232,8 @@ crates/
   depot          загрузчик депо
   steamclient    DLL steamclient, которую загружают игры
   store          API магазина: каталог, обзоры, метки, трейлеры, новости
-  video          плеер трейлеров: HLS, Media Foundation, WASAPI
+  video          плеер трейлеров: HLS; Media Foundation и WASAPI (Windows),
+                 VideoToolbox и AudioToolbox (macOS)
   local          папки Steam на диске: библиотеки, манифесты, проверка
   plugins        плагины на Rhai
   extensions     интерфейс, который реализует каждая страница
