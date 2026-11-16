@@ -3,6 +3,8 @@
 //!   cargo xtask package          release in target/package/dist: the setup
 //!                                (with the app inside), a portable zip and
 //!                                SHA256SUMS.txt. The release workflows run it.
+//!                                On macOS: SteamInRust.app in a .dmg and
+//!                                SHA256SUMS-macos.txt.
 //!   cargo xtask steamclient32    the 32-bit steamclient DLL for 32-bit games,
 //!     [--release]                where a debug/release build of the app finds it.
 
@@ -87,6 +89,15 @@ fn steamclient32(release: bool) -> Result<PathBuf> {
 }
 
 fn package() -> Result {
+    #[cfg(target_os = "macos")]
+    return package_macos();
+    #[cfg(not(target_os = "macos"))]
+    package_windows()
+}
+
+/// Windows: the setup with the app inside, a portable zip and checksums.
+#[cfg(not(target_os = "macos"))]
+fn package_windows() -> Result {
     let root = root();
     let version = version(&root)?;
     println!("Packaging SteamInRust {version}");
@@ -136,6 +147,105 @@ fn package() -> Result {
     Ok(())
 }
 
+/// macOS: `SteamInRust.app` (unsigned, ad-hoc code signature) inside a
+/// disk image with a link to Applications, plus its checksum.
+#[cfg(target_os = "macos")]
+fn package_macos() -> Result {
+    let root = root();
+    let version = version(&root)?;
+    println!("Packaging SteamInRust {version} for macOS");
+    let pkg = root.join("target").join("package");
+    let stage = pkg.join("stage");
+    let dist = pkg.join("dist");
+    let _ = fs::remove_dir_all(&pkg);
+    for dir in [&stage, &dist] {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    cargo(&root, &["build", "--release", "-p", "steam-rs"], &[], None)?;
+
+    let app = stage.join("SteamInRust.app");
+    let (macos, resources) = (app.join("Contents").join("MacOS"), app.join("Contents").join("Resources"));
+    for dir in [&macos, &resources] {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    copy(&root.join("target").join("release").join("steam-rs"), &macos.join("steam-rs"))?;
+    fs::write(app.join("Contents").join("Info.plist"), info_plist(&version)).map_err(|e| e.to_string())?;
+    let png = fs::read(root.join("assets").join("icon-256.png")).map_err(|e| e.to_string())?;
+    fs::write(resources.join("AppIcon.icns"), icns(&png)).map_err(|e| e.to_string())?;
+    copy(&root.join("LICENSE"), &resources.join("LICENSE"))?;
+    // Apple Silicon runs only signed programs: an ad-hoc signature (no
+    // developer account) is enough for that; Gatekeeper still asks once.
+    run(Command::new("codesign").args(["--force", "--deep", "--sign", "-"]).arg(&app))?;
+    std::os::unix::fs::symlink("/Applications", stage.join("Applications")).map_err(|e| e.to_string())?;
+
+    let dmg = dist.join(format!("SteamInRust-{version}-macos.dmg"));
+    run(Command::new("hdiutil").args(["create", "-volname", "SteamInRust", "-fs", "HFS+", "-format", "UDZO", "-ov", "-srcfolder"]).arg(&stage).arg(&dmg))?;
+
+    let bytes = fs::read(&dmg).map_err(|e| e.to_string())?;
+    let hash: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let name = dmg.file_name().unwrap().to_string_lossy();
+    fs::write(dist.join("SHA256SUMS-macos.txt"), format!("{hash}  {name}\n")).map_err(|e| e.to_string())?;
+    println!("{name:<44} {:>7.1} MB", bytes.len() as f64 / 1_048_576.0);
+    println!("Done: {}", dist.display());
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn run(cmd: &mut Command) -> Result {
+    let status = cmd.status().map_err(|e| format!("{cmd:?}: {e}"))?;
+    if status.success() { Ok(()) } else { Err(format!("{cmd:?} failed")) }
+}
+
+#[cfg(target_os = "macos")]
+fn info_plist(version: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>SteamInRust</string>
+	<key>CFBundleDisplayName</key>
+	<string>SteamInRust</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.madonchik123.steaminrust</string>
+	<key>CFBundleExecutable</key>
+	<string>steam-rs</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>{version}</string>
+	<key>CFBundleVersion</key>
+	<string>{version}</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.games</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT License. Not affiliated with Valve.</string>
+</dict>
+</plist>
+"#
+    )
+}
+
+/// An .icns file holding one 256×256 PNG (type `ic08`), which macOS scales.
+#[cfg(target_os = "macos")]
+fn icns(png: &[u8]) -> Vec<u8> {
+    let entry_len = 8 + png.len() as u32;
+    let mut v = b"icns".to_vec();
+    v.extend_from_slice(&(8 + entry_len).to_be_bytes());
+    v.extend_from_slice(b"ic08");
+    v.extend_from_slice(&entry_len.to_be_bytes());
+    v.extend_from_slice(png);
+    v
+}
+
+#[cfg(not(target_os = "macos"))]
 /// Zip every file directly inside `dir` (the stage folder is flat).
 fn zip_dir(dir: &Path, out: &Path) -> Result {
     let file = fs::File::create(out).map_err(|e| e.to_string())?;
