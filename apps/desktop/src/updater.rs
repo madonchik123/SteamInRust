@@ -83,14 +83,35 @@ fn save(s: &Settings) {
 }
 
 /// The folder the running app lives in.
+#[cfg(not(target_os = "macos"))]
 fn install_dir() -> Option<PathBuf> {
     std::env::current_exe().ok()?.parent().map(PathBuf::from)
 }
 
 /// Installed with the setup (it leaves `uninstall.exe` next to the app).
 /// Copies run from a build folder or a portable zip aren't replaced.
+#[cfg(not(target_os = "macos"))]
 pub fn is_installed() -> bool {
     install_dir().is_some_and(|d| d.join("uninstall.exe").exists())
+}
+
+/// macOS: running from an app bundle in a folder we may write to (so the
+/// new version can take its place), not from a build folder.
+#[cfg(target_os = "macos")]
+pub fn is_installed() -> bool {
+    let Some(app) = bundle() else { return false };
+    let Some(dir) = app.parent() else { return false };
+    let probe = dir.join(".steaminrust-update-check");
+    let writable = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    writable && !is_dev_build()
+}
+
+/// The `SteamInRust.app` this copy runs from (macOS).
+#[cfg(target_os = "macos")]
+fn bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(PathBuf::from)
 }
 
 /// "v1.2.3" -> (1, 2, 3).
@@ -115,6 +136,34 @@ pub fn apply_pending_on_start() -> bool {
     run_setup(&setup)
 }
 
+/// macOS: after this copy quits, put the app from the downloaded disk image
+/// in place of the running one and open it again. Arguments: our process
+/// id, the .dmg, the installed .app. A failed copy leaves the old app.
+#[cfg(target_os = "macos")]
+const MAC_UPDATE: &str = r#"
+while kill -0 "$1" 2>/dev/null; do sleep 0.3; done
+mnt=$(mktemp -d /tmp/steaminrust-update.XXXXXX) || exit 1
+hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mnt" "$2" >/dev/null || exit 1
+rm -rf "$3.new"
+if ditto "$mnt/SteamInRust.app" "$3.new"; then
+  rm -rf "$3.old"
+  if mv "$3" "$3.old"; then
+    if mv "$3.new" "$3"; then rm -rf "$3.old"; else mv "$3.old" "$3"; fi
+  fi
+fi
+rm -rf "$3.new"
+hdiutil detach "$mnt" -quiet
+rmdir "$mnt"
+[ -n "$4" ] || open "$3"
+"#;
+
+#[cfg(target_os = "macos")]
+fn run_setup(dmg: &std::path::Path) -> bool {
+    let Some(app) = bundle() else { return false };
+    std::process::Command::new("/bin/sh").arg("-c").arg(MAC_UPDATE).arg("sh").arg(std::process::id().to_string()).arg(dmg).arg(&app).spawn().is_ok()
+}
+
+#[cfg(not(target_os = "macos"))]
 fn run_setup(setup: &std::path::Path) -> bool {
     let Some(dir) = install_dir() else { return false };
     std::process::Command::new(setup).args(["--update", "--dir"]).arg(&dir).spawn().is_ok()
@@ -552,5 +601,33 @@ mod tests {
         assert!(!super::is_newer("v0.1.0", "0.1.0"));
         assert!(!super::is_newer("0.1.0-beta", "0.1.0"));
         assert!(super::is_newer("0.1.10", "0.1.9"));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_tests {
+    use std::process::Command;
+
+    /// The update script puts the disk image's app in place of the old one.
+    #[test]
+    fn replaces_the_app_from_a_disk_image() {
+        let dir = std::env::temp_dir().join(format!("sir-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let stage = dir.join("stage");
+        let new_app = stage.join("SteamInRust.app").join("Contents");
+        std::fs::create_dir_all(&new_app).unwrap();
+        std::fs::write(new_app.join("version"), b"new").unwrap();
+        let installed = dir.join("Applications").join("SteamInRust.app");
+        std::fs::create_dir_all(installed.join("Contents")).unwrap();
+        std::fs::write(installed.join("Contents").join("version"), b"old").unwrap();
+        let dmg = dir.join("update.dmg");
+        let made = Command::new("hdiutil").args(["create", "-quiet", "-fs", "HFS+", "-format", "UDZO", "-srcfolder"]).arg(&stage).arg(&dmg).status().unwrap();
+        assert!(made.success());
+        // A process id that is gone (so it doesn't wait), and "no reopen".
+        let ok = Command::new("/bin/sh").arg("-c").arg(super::MAC_UPDATE).arg("sh").arg("999999").arg(&dmg).arg(&installed).arg("test").status().unwrap();
+        assert!(ok.success());
+        assert_eq!(std::fs::read(installed.join("Contents").join("version")).unwrap(), b"new");
+        assert!(!dir.join("Applications").join("SteamInRust.app.old").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
