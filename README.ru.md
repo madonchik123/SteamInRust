@@ -99,6 +99,8 @@ Shift+Tab в одном нативном процессе без встроен�
   </tr>
 </table>
 
+<p align="center"><img src="docs/media/en/bigpicture.gif" alt="Big Picture: главный экран и библиотека, управление с клавиатуры" width="720"></p>
+
 <sub>Скриншоты сделаны в режиме <code>--demo</code> с тестовыми данными аккаунта.</sub>
 
 ## Производительность

@@ -98,6 +98,8 @@ Everything below is in the current release. Area-by-area status:
   </tr>
 </table>
 
+<p align="center"><img src="docs/media/en/bigpicture.gif" alt="Big Picture: the home screen and library, driven with the keyboard" width="720"></p>
+
 <sub>Screenshots from <code>--demo</code> mode, which uses sample account data.</sub>
 
 ## Performance
