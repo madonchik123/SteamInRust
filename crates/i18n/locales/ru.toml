@@ -1705,3 +1705,6 @@
 "Some features need your permission." = "Некоторым функциям нужно ваше разрешение."
 "Everything SteamInRust needs is allowed." = "Всё, что нужно SteamInRust, разрешено."
 "Review…" = "Проверить…"
+"Not allowed" = "Не разрешено"
+"Open System Settings" = "Открыть Системные настройки"
+"Already allowed it? macOS forgets it when SteamInRust is updated: switch SteamInRust off and on again in that list." = "Уже разрешали? macOS забывает это после обновления SteamInRust: выключите и снова включите SteamInRust в этом списке."

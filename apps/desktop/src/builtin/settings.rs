@@ -500,6 +500,8 @@ fn interface(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags, handler
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
+                // Leave room for the switch on the right.
+                ui.set_max_width(ui.available_width() - 64.0);
                 ui.label(w::text_semibold(t!("Open steam:// links with SteamInRust"), 14.5, t.text));
                 ui.add(egui::Label::new(w::text(t!("Store buttons, desktop shortcuts and links like steam://rungameid/570 will open here. Turning it off gives them back to the official Steam client."), 12.5, t.text_dim)).wrap());
             });

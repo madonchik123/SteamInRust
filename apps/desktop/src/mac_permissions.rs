@@ -59,59 +59,69 @@ pub fn show(ctx: &egui::Context, t: &Theme) {
     let mut s = STATE.lock().unwrap();
     if !s.started {
         s.started = true;
-        s.open = missing() && !answered_file().exists();
+        // Only on its own when macOS has never asked: a refusal (or a
+        // permission macOS forgot) is the player's call, reachable from
+        // Settings → Interface.
+        s.open = input_monitoring() == UNKNOWN && !answered_file().exists();
     }
     if !s.open {
         return;
     }
     let mut close = false;
-    egui::Modal::new(egui::Id::unique("macos-permissions")).show(ctx, |ui| {
-        ui.set_width(540.0);
-        ui.label(w::text_bold(t!("Allow SteamInRust to work with your games"), 20.0, t.text));
-        ui.add_space(6.0);
-        ui.label(w::text(t!("macOS asks before an app can do some things. Here is what SteamInRust needs and why. You can change these later in System Settings → Privacy & Security."), 13.0, t.text_dim));
-        ui.add_space(14.0);
+    egui::Modal::new(egui::Id::unique("macos-permissions")).frame(egui::Frame::popup(&ctx.style()).inner_margin(24)).show(ctx, |ui| {
+        ui.set_width(520.0);
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.label(w::text_bold(t!("Allow SteamInRust to work with your games"), 19.0, t.text));
+        ui.add(egui::Label::new(w::text(t!("macOS asks before an app can do some things. Here is what SteamInRust needs and why. You can change these later in System Settings → Privacy & Security."), 13.0, t.text_dim)).wrap());
+        ui.add_space(12.0);
 
         let status = input_monitoring();
-        w::card(t).show(ui, |ui| {
+        egui::Frame::new().fill(t.surface).corner_radius(t.corner()).inner_margin(16).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icons::SHIELD).size(22.0).color(t.accent));
-                ui.add_space(6.0);
-                ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() - 150.0);
-                    ui.label(w::text_semibold(t!("Input Monitoring"), 14.5, t.text));
-                    ui.add(egui::Label::new(w::text(t!("So Shift+Tab opens the overlay (friends, chat, achievements) while a game is in front. SteamInRust only listens for that shortcut."), 12.5, t.text_dim)).wrap());
-                });
+                ui.label(RichText::new(icons::SHIELD).size(18.0).color(t.accent));
+                ui.label(w::text_semibold(t!("Input Monitoring"), 15.0, t.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if status == GRANTED {
-                        ui.label(w::text_semibold(format!("{}  {}", icons::CHECK, t!("Allowed")), 13.0, t.play));
-                    } else if w::button(ui, t, None, t!("Allow…"), w::Kind::Primary, w::Size::Sm).clicked() {
-                        // The first time macOS asks itself; after a "Don't allow" only Settings can change it.
-                        if status == UNKNOWN {
-                            unsafe { IOHIDRequestAccess(LISTEN_EVENT) };
-                        } else {
-                            let _ = open::that_detached("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
-                        }
-                        s.granted_now = true;
+                        w::pill(ui, &format!("{}  {}", icons::CHECK, t!("Allowed")), t.play, t.play.gamma_multiply(0.15));
+                    } else {
+                        w::pill(ui, t!("Not allowed"), t.text_dim, t.surface_hover);
                     }
                 });
             });
-        });
-        // macOS applies Input Monitoring to an app when it starts.
-        if s.granted_now && status == GRANTED {
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.label(w::text(t!("Restart SteamInRust so the shortcut starts working."), 13.0, t.text));
-                if w::button(ui, t, None, t!("Restart now"), w::Kind::Secondary, w::Size::Sm).clicked() {
-                    restart();
+            ui.add(egui::Label::new(w::text(t!("So Shift+Tab opens the overlay (friends, chat, achievements) while a game is in front. SteamInRust only listens for that shortcut."), 13.0, t.text_dim)).wrap());
+            if status != GRANTED {
+                ui.add_space(4.0);
+                if status != UNKNOWN {
+                    ui.add(egui::Label::new(w::text(t!("Already allowed it? macOS forgets it when SteamInRust is updated: switch SteamInRust off and on again in that list."), 12.0, t.text_faint)).wrap());
                 }
-            });
-        }
-        ui.add_space(16.0);
-        ui.horizontal(|ui| {
-            let label = if missing() { t!("Not now") } else { t!("Done") };
-            if w::button(ui, t, None, label, w::Kind::Secondary, w::Size::Md).clicked() {
+                let label = if status == UNKNOWN { t!("Allow…") } else { t!("Open System Settings") };
+                if w::button(ui, t, None, label, w::Kind::Primary, w::Size::Sm).clicked() {
+                    // The first time macOS asks itself; after that only Settings can change it.
+                    if status == UNKNOWN {
+                        unsafe { IOHIDRequestAccess(LISTEN_EVENT) };
+                    } else {
+                        let _ = open::that_detached("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
+                    }
+                    s.granted_now = true;
+                }
+            }
+            // macOS applies Input Monitoring to an app when it starts.
+            if s.granted_now && status == GRANTED {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(w::text(t!("Restart SteamInRust so the shortcut starts working."), 13.0, t.text));
+                    if w::button(ui, t, None, t!("Restart now"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                        restart();
+                    }
+                });
+            }
+        });
+        ui.add_space(14.0);
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            let done = !missing();
+            let (label, kind) = if done { (t!("Done"), w::Kind::Primary) } else { (t!("Not now"), w::Kind::Secondary) };
+            if w::button(ui, t, None, label, kind, w::Size::Md).clicked() {
                 close = true;
             }
         });

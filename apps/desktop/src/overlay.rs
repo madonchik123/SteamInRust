@@ -282,6 +282,11 @@ mod mac {
                     let _: () = msg_send![w, setCollectionBehavior: b | BEHAVIOR];
                     let _: () = msg_send![w, setLevel: LEVEL];
                 }
+                // Onto the space in front (the game's), not the one it was made on.
+                let visible: bool = msg_send![w, isOnActiveSpace];
+                if !visible {
+                    let _: () = msg_send![w, orderFrontRegardless];
+                }
             }
         }
     }
