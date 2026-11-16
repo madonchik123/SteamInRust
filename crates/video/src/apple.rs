@@ -620,7 +620,6 @@ pub struct Output {
     rate: u32,
     /// Frames the queue holds at most (like WASAPI's buffer).
     buffer: u32,
-    pub channels: u16,
 }
 
 unsafe impl Send for Output {}
@@ -636,7 +635,7 @@ impl Output {
             }
             let mut unit: CFRef = std::ptr::null();
             check("audio output", AudioComponentInstanceNew(comp, &mut unit))?;
-            let out = Self { unit, sh: sh.clone(), rate, buffer: rate / 5, channels };
+            let out = Self { unit, sh: sh.clone(), rate, buffer: rate / 5 };
             // macOS converts our rate and layout to the device's.
             let fmt = ASBD::float(rate as f64, channels as u32);
             check("audio format", AudioUnitSetProperty(unit, 8, 1, 0, (&fmt as *const ASBD).cast(), std::mem::size_of::<ASBD>() as u32))?;
