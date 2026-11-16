@@ -31,6 +31,8 @@ qrcode.workspace = true
 global-hotkey.workspace = true
 tray-icon.workspace = true
 rfd = "0.18"
+# Game controllers for Big Picture (Windows, macOS and Linux).
+gilrs = "0.11"
 open.workspace = true
 directories.workspace = true
 sha2 = "0.10"

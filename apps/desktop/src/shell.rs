@@ -107,6 +107,9 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
                 wallet_button(ui, t, balance, currency, app.state.wallet_pending, actions);
             }
             let unread = app.state.total_unread();
+            if w::icon_button(ui, t, icons::MONITOR, t!("Big Picture mode"), false, 0).clicked() {
+                app.bigpicture.enter(ui.ctx());
+            }
             notifications_button(app, ui, t, actions);
             let fr = w::icon_button(ui, t, icons::USERS, t!("Friends"), app.prefs.friends_open, unread);
             if fr.clicked() {
@@ -484,6 +487,9 @@ fn app_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action
         }
         if item(ui, icons::DOWNLOAD, t!("Downloads")) {
             actions.push(Action::Navigate { page: "downloads".into(), arg: None });
+        }
+        if item(ui, icons::MONITOR, t!("Big Picture mode")) {
+            app.bigpicture.enter(ui.ctx());
         }
         if item(ui, icons::BACKPACK, t!("Inventory")) {
             actions.push(Action::Navigate { page: "inventory".into(), arg: None });

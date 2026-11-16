@@ -40,6 +40,10 @@ pub struct Prefs {
     /// Friends pinned to the top of the list ("Favorites"), like Steam.
     #[serde(default)]
     pub favorite_friends: Vec<u64>,
+    /// Big Picture's interface size (1.0 = sized for a 1080p TV).
+    pub bigpicture_scale: f32,
+    /// Open in Big Picture at startup.
+    pub bigpicture_start: bool,
 }
 
 fn yes() -> bool {
@@ -67,6 +71,8 @@ impl Default for Prefs {
             wants_offline: false,
             auto_offline: false,
             favorite_friends: Vec::new(),
+            bigpicture_scale: 1.0,
+            bigpicture_start: false,
         }
     }
 }
@@ -126,6 +132,9 @@ pub struct SteamApp {
     hidden: bool,
     applied_theme: Option<Theme>,
     applied_zoom: f32,
+    /// Big Picture (fullscreen TV mode) and its controller input.
+    pub bigpicture: crate::bigpicture::BigPicture,
+    bigpicture_was_on: bool,
 }
 
 impl SteamApp {
@@ -200,6 +209,10 @@ impl SteamApp {
         }
 
         let overlay = crate::overlay::Overlay::new(&cc.egui_ctx);
+        let mut bigpicture = crate::bigpicture::BigPicture::new(&cc.egui_ctx);
+        if prefs.bigpicture_start {
+            bigpicture.active = true;
+        }
         let mut app = Self {
             _rt: rt,
             client,
@@ -234,6 +247,8 @@ impl SteamApp {
             hidden: false,
             applied_theme: None,
             applied_zoom: 0.0,
+            bigpicture,
+            bigpicture_was_on: false,
         };
         // `--page=inventory --arg=listings`: open a page at startup (handy with --demo).
         let flag = |name: &str| std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from));
@@ -582,6 +597,7 @@ impl eframe::App for SteamApp {
             }
         }
         self.drain_events(&ctx, &mut actions);
+        crate::bigpicture::poll(self, &ctx);
         self.handle_tray(&ctx, &mut actions);
         self.handle_links(&ctx, &mut actions);
 
@@ -625,6 +641,14 @@ impl eframe::App for SteamApp {
         } else {
             WindowMode::SignIn
         };
+        // Big Picture owns the window (fullscreen); size it again when it ends.
+        let big_picture = signed_in && self.bigpicture.active;
+        if big_picture {
+            self.window_mode = Some(mode);
+        } else if self.bigpicture_was_on {
+            self.window_mode = None;
+        }
+        self.bigpicture_was_on = big_picture;
         if self.window_mode != Some(mode) {
             self.window_mode = Some(mode);
             let (size, min, resizable) = match mode {
@@ -644,7 +668,13 @@ impl eframe::App for SteamApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos.to_pos2()));
             }
         }
-        if signed_in {
+        if signed_in && self.bigpicture.active {
+            crate::bigpicture::show(self, ui, &mut actions);
+            crate::friends_window::show(self, &ctx, &mut actions);
+            crate::overlay::show(self, &ctx, &mut actions);
+            crate::launch_popup::show(self, &ctx);
+            crate::tray::show(self, &ctx);
+        } else if signed_in {
             crate::shell::show(self, ui, &mut actions);
             crate::shell::activate_dialog(self, &ctx);
             crate::shell::friend_dialogs(self, &ctx);
@@ -659,10 +689,12 @@ impl eframe::App for SteamApp {
 
         self.apply_actions(&ctx, actions);
         crate::shell::toasts(self, &ctx);
-        if signed_in {
-            crate::chrome::resize_handles(&ctx);
+        if !(signed_in && self.bigpicture.active) {
+            if signed_in {
+                crate::chrome::resize_handles(&ctx);
+            }
+            crate::chrome::border(&ctx, &self.prefs.theme);
         }
-        crate::chrome::border(&ctx, &self.prefs.theme);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

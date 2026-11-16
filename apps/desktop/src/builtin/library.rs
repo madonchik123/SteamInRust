@@ -176,6 +176,22 @@ pub(crate) enum Setup {
     Installed,
 }
 
+/// A game's main button, see [`Library::main_action`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum MainAction {
+    Play,
+    Running,
+    Update,
+    Install,
+    Syncing,
+    Queued,
+    Uninstalling,
+    /// Downloading or verifying.
+    Busy { fraction: f32, verifying: bool, paused: bool },
+    /// Not owned: only the store page.
+    StorePage,
+}
+
 pub(crate) fn setup_state(ctx: &Ctx, id: AppId, installed: bool) -> Setup {
     if let Some(d) = ctx.state.downloads.get(&id).filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)) {
         return Setup::Downloading(d.clone());
@@ -352,6 +368,10 @@ impl Extension for Library {
             pending_shortcuts: self.shortcut_after_install.clone(),
         })
         .ok()
+    }
+
+    fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn load(&mut self, data: &str) {
@@ -539,17 +559,9 @@ impl Library {
 
     /// "What's new": the latest update posts from games you play, newest first.
     fn whats_new(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, recent: &[(AppId, String, u64)]) {
-        let mut posts: Vec<(AppId, usize, store::events::GameEvent)> = Vec::new();
-        let mut loading = false;
-        for (id, _, _) in recent.iter().take(10) {
-            match self.events(*id) {
-                Some(list) => posts.extend(list.into_iter().enumerate().take(3).map(|(i, e)| (*id, i, e))),
-                None => loading = true,
-            }
-        }
+        let ids: Vec<AppId> = recent.iter().map(|g| g.0).collect();
+        let (posts, loading) = self.whats_new_posts(&ids);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        posts.retain(|p| now.saturating_sub(p.2.time) < 45 * 86_400);
-        posts.sort_by_key(|p| std::cmp::Reverse(p.2.time));
         if posts.is_empty() && !loading {
             return;
         }
@@ -677,8 +689,7 @@ impl Library {
         match act {
             MenuAct::Play => {
                 if let Some(g) = local {
-                    let args = self.games.get(&id).map(|s| s.args.clone()).unwrap_or_default();
-                    ctx.send(Command::Launch { app_id: id, install_dir: g.install_dir.clone(), args });
+                    self.launch_game(ctx, id, g.install_dir.clone());
                 }
             }
             MenuAct::Stop => ctx.send(Command::StopGame { app_id: id }),
@@ -1326,8 +1337,7 @@ impl Library {
                             Some(g) => {
                                 let r = w::button(ui, t, Some(icons::PLAY), t!("Play"), w::Kind::Play, w::Size::Lg);
                                 if r.clicked() {
-                                    let args = self.games.get(&id).map(|s| s.args.clone()).unwrap_or_default();
-                                    ctx.send(Command::Launch { app_id: id, install_dir: g.install_dir.clone(), args });
+                                    self.launch_game(ctx, id, g.install_dir.clone());
                                 }
                             }
                             None if owned.is_some() => {
@@ -1769,6 +1779,80 @@ impl Library {
         self.reports.insert(id, report);
     }
 
+    /// Start an installed game with its saved launch options.
+    fn launch_game(&mut self, ctx: &mut Ctx, id: AppId, install_dir: std::path::PathBuf) {
+        let args = self.games.get(&id).map(|s| s.args.clone()).unwrap_or_default();
+        ctx.send(Command::Launch { app_id: id, install_dir, args });
+    }
+
+    /// Recent news posts (last 45 days) from these games, newest first, as
+    /// (game, index in its feed, post); `true` while some are still loading.
+    pub(crate) fn whats_new_posts(&mut self, ids: &[AppId]) -> (Vec<(AppId, usize, store::events::GameEvent)>, bool) {
+        let mut posts: Vec<(AppId, usize, store::events::GameEvent)> = Vec::new();
+        let mut loading = false;
+        for id in ids.iter().take(10) {
+            match self.events(*id) {
+                Some(list) => posts.extend(list.into_iter().enumerate().take(3).map(|(i, e)| (*id, i, e))),
+                None => loading = true,
+            }
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        posts.retain(|p| now.saturating_sub(p.2.time) < 45 * 86_400);
+        posts.sort_by_key(|p| std::cmp::Reverse(p.2.time));
+        (posts, loading)
+    }
+
+    /// What the game's main button does right now (the library page and Big
+    /// Picture show the same thing).
+    pub(crate) fn main_action(&mut self, ctx: &Ctx, id: AppId) -> MainAction {
+        if let Some(d) = ctx.state.downloads.get(&id).filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)) {
+            return MainAction::Busy { fraction: d.fraction(), verifying: d.verifying(), paused: d.paused };
+        }
+        if ctx.state.download_queue.contains(&id) {
+            return MainAction::Queued;
+        }
+        let installed = ctx.local.games.iter().find(|g| g.app_id == id).cloned();
+        match installed {
+            Some(_) if self.uninstalling.contains_key(&id) => MainAction::Uninstalling,
+            Some(_) if ctx.state.playing == Some(id) => MainAction::Running,
+            Some(g) if self.needs_update(ctx, &g) => MainAction::Update,
+            Some(_) if ctx.state.cloud_syncing.contains(&id) => MainAction::Syncing,
+            Some(_) => MainAction::Play,
+            None if ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(&id)) => MainAction::Install,
+            None => MainAction::StorePage,
+        }
+    }
+
+    /// Do what the main button says: play, stop, update or install (to the
+    /// drive with the most free space, without asking: for Big Picture).
+    pub(crate) fn run_main_action(&mut self, ctx: &mut Ctx, id: AppId) {
+        let installed = ctx.local.games.iter().find(|g| g.app_id == id).cloned();
+        match (self.main_action(ctx, id), installed) {
+            (MainAction::Play, Some(g)) => self.launch_game(ctx, id, g.install_dir.clone()),
+            (MainAction::Running, _) => ctx.send(Command::StopGame { app_id: id }),
+            (MainAction::Update, Some(g)) => self.queue_install(ctx, id, Some(g.library.clone())),
+            (MainAction::Install, _) => {
+                let dialog = InstallDialog::new(id, ctx);
+                self.queue_install(ctx, id, Some(dialog.library));
+            }
+            (MainAction::Busy { paused: true, .. }, _) => ctx.send(Command::ResumeDownload { app_id: id }),
+            (MainAction::Busy { verifying: false, .. }, _) => ctx.send(Command::PauseDownload { app_id: id }),
+            _ => {}
+        }
+    }
+
+    /// Hidden from the library by the user.
+    pub(crate) fn is_hidden(&self, id: AppId) -> bool {
+        self.hidden.contains(&id)
+    }
+
+    /// Questions the library may need answered while another screen is up
+    /// (a Steam Cloud conflict before a game starts).
+    pub(crate) fn background_dialogs(&mut self, ui: &mut Ui, ctx: &mut Ctx) {
+        let t = ctx.theme.clone();
+        self.cloud_conflict_dialog(ui, &t, ctx);
+    }
+
     /// Is a newer build of the installed version out? (Cached: it reads the
     /// game's manifest from disk.)
     fn needs_update(&mut self, ctx: &Ctx, g: &InstalledGame) -> bool {
@@ -1805,8 +1889,7 @@ impl Library {
                 self.queue_install(ctx, id, Some(g.library.clone()));
             }
         } else if w::button(ui, t, Some(icons::PLAY), t!("Play"), w::Kind::Play, w::Size::Lg).clicked() {
-            let args = self.games.get(&id).map(|s| s.args.clone()).unwrap_or_default();
-            ctx.send(Command::Launch { app_id: id, install_dir: g.install_dir.clone(), args });
+            self.launch_game(ctx, id, g.install_dir.clone());
         }
     }
 
