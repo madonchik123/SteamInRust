@@ -250,7 +250,22 @@ fn foreground_window() -> isize {
 mod mac {
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::{Encode, Encoding};
     use std::ffi::{CStr, c_char};
+
+    /// NSRect / CGRect.
+    #[repr(C)]
+    #[derive(Clone, Copy, PartialEq)]
+    struct Rect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    }
+
+    unsafe impl Encode for Rect {
+        const ENCODING: Encoding = Encoding::Struct("CGRect", &[Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]), Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING])]);
+    }
 
     /// The frontmost app: (process id, its program's path).
     pub fn frontmost() -> Option<(i32, String)> {
@@ -291,6 +306,15 @@ mod mac {
                 if b & BEHAVIOR != BEHAVIOR {
                     let _: () = msg_send![w, setCollectionBehavior: b | BEHAVIOR];
                     let _: () = msg_send![w, setLevel: LEVEL];
+                }
+                // The whole screen: a full-screen space has no menu bar to stay under.
+                let screen: *mut AnyObject = msg_send![w, screen];
+                if !screen.is_null() {
+                    let full: Rect = msg_send![screen, frame];
+                    let now: Rect = msg_send![w, frame];
+                    if now != full {
+                        let _: () = msg_send![w, setFrame: full, display: true];
+                    }
                 }
                 // Onto the space in front (the game's), not the one it was made on.
                 let visible: bool = msg_send![w, isOnActiveSpace];
@@ -607,8 +631,24 @@ fn clock() -> String {
     }
     #[cfg(not(windows))]
     {
-        let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) % 86_400;
-        format!("{:02}:{:02}", s / 3600, (s / 60) % 60)
+        // struct tm, as far as hour and minute (the C library fills the rest).
+        #[repr(C)]
+        struct Tm {
+            sec: i32,
+            min: i32,
+            hour: i32,
+            rest: [i64; 8],
+        }
+        unsafe extern "C" {
+            fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let mut tm = Tm { sec: 0, min: 0, hour: 0, rest: [0; 8] };
+        if unsafe { localtime_r(&now, &mut tm) }.is_null() {
+            let s = now % 86_400;
+            return format!("{:02}:{:02}", s / 3600, (s / 60) % 60);
+        }
+        format!("{:02}:{:02}", tm.hour, tm.min)
     }
 }
 
