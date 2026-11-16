@@ -38,12 +38,11 @@ fn main() -> eframe::Result {
         .init();
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+        // Our own title bar (see chrome.rs) instead of the Windows one.
+        viewport: chrome::frame(egui::ViewportBuilder::default())
             .with_title("SteamInRust")
             // Starts at sign-in size; the app resizes itself after sign-in.
             .with_inner_size([720.0, 470.0])
-            // Our own title bar (see chrome.rs) instead of the Windows one.
-            .with_decorations(false)
             .with_icon(std::sync::Arc::new(egui::IconData { rgba: ui::brand::icon_rgba(256), width: 256, height: 256 })),
         ..Default::default()
     };

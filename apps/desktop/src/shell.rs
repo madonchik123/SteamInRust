@@ -62,6 +62,7 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
     crate::chrome::drag_area(ui, rect.expand2(vec2(16.0, 0.0)), true);
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
+        crate::chrome::traffic_light_space(ui);
         ui.add_enabled_ui(!app.back.is_empty(), |ui| {
             if w::icon_button(ui, t, icons::ARROW_LEFT, t!("Back"), false, 0).clicked() {
                 app.go_back();

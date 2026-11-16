@@ -1334,9 +1334,9 @@ impl Library {
                                 }
                             }
                             // Like Steam on a Mac: Windows-only games stay listed but can't be installed.
-                            None if owned.is_some_and(|o| !o.runs_on_this_os()) => {
+                            None if owned.as_ref().is_some_and(|o| !o.runs_on_this_os()) => {
                                 let os = client::download::os_name(model::THIS_OS);
-                                ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::DOWNLOAD), t!("Not available on {os}", os = os), w::Kind::Primary, w::Size::Lg))
+                                ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::DOWNLOAD), &t!("Not available on {os}", os = os), w::Kind::Primary, w::Size::Lg))
                                     .response
                                     .on_disabled_hover_text(t!("This game doesn't run on {os}.", os = os));
                             }

@@ -70,6 +70,7 @@ pub fn show(app: &mut SteamApp, ui: &mut Ui) {
         crate::chrome::drag_area(ui, bar, false);
         let mut strip = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(Layout::left_to_right(Align::Center)));
         strip.add_space(12.0);
+        crate::chrome::traffic_light_space(&mut strip);
         w::logo(&mut strip, &t, 16.0);
         strip.add_space(2.0);
         strip.label(w::text_semibold("SteamInRust", 12.5, t.text_dim));

@@ -1,8 +1,32 @@
 //! Our own window frame (the Windows title bar is turned off): a drag area,
 //! minimize / maximize / close buttons, and resize handles on the edges.
+//!
+//! On macOS the window keeps the system frame, with its title bar made
+//! see-through: the traffic-light buttons and the edges are the system's,
+//! and our bar is drawn underneath (room is left for the buttons).
 
-use egui::{Align2, Color32, CursorIcon, Id, Rect, ResizeDirection, Sense, Ui, Vec2, ViewportCommand, vec2};
+use egui::{Align2, Color32, CursorIcon, Id, Rect, ResizeDirection, Sense, Ui, Vec2, ViewportBuilder, ViewportCommand, vec2};
 use ui::{Theme, icons, widgets as w};
+
+/// The system draws the window buttons and resize edges (macOS).
+pub const SYSTEM_FRAME: bool = cfg!(target_os = "macos");
+
+/// A window with our own title bar: no system frame on Windows; on macOS
+/// the system frame with a see-through title bar over our content.
+pub fn frame(builder: ViewportBuilder) -> ViewportBuilder {
+    if SYSTEM_FRAME {
+        builder.with_decorations(true).with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false)
+    } else {
+        builder.with_decorations(false)
+    }
+}
+
+/// Room at the left of a title bar for the macOS traffic-light buttons.
+pub fn traffic_light_space(ui: &mut Ui) {
+    if SYSTEM_FRAME {
+        ui.add_space(72.0);
+    }
+}
 
 /// Make `rect` move the window when dragged (double-click maximizes).
 /// Call it before adding widgets on top, so they still get their clicks.
@@ -25,6 +49,9 @@ pub fn toggle_maximized(ctx: &egui::Context) {
 /// Minimize, maximize/restore and close, right to left (call inside a
 /// right-to-left layout). `height` is the bar height.
 pub fn window_buttons(ui: &mut Ui, t: &Theme, height: f32, can_maximize: bool) {
+    if SYSTEM_FRAME {
+        return;
+    }
     // In their own scope: buttons touch, like Windows', with no dead gaps,
     // and the spacing change doesn't leak into the rest of the bar.
     ui.scope(|ui| {
@@ -60,7 +87,7 @@ fn button(ui: &mut Ui, t: &Theme, icon: &str, height: f32, close: bool) -> egui:
 
 /// Invisible handles on the window edges for resizing (not when maximized).
 pub fn resize_handles(ctx: &egui::Context) {
-    if ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
+    if SYSTEM_FRAME || ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
         return;
     }
     let screen = ctx.content_rect();
@@ -95,7 +122,7 @@ pub fn resize_handles(ctx: &egui::Context) {
 
 /// A thin border, since a frameless window has none of its own.
 pub fn border(ctx: &egui::Context, t: &Theme) {
-    if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+    if SYSTEM_FRAME || ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
         return;
     }
     let rect = ctx.content_rect();
@@ -108,7 +135,7 @@ pub fn border(ctx: &egui::Context, t: &Theme) {
 /// thin edge strips sit on top of the window's content.
 pub fn resize_edges(ui: &mut Ui) {
     let ctx = ui.ctx().clone();
-    if ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
+    if SYSTEM_FRAME || ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
         return;
     }
     let screen = ctx.content_rect();

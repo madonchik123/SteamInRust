@@ -25,7 +25,7 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         .with_title(t!("Friends & Chat"))
         .with_inner_size([width, 720.0])
         .with_min_inner_size([300.0, 420.0])
-        .with_decorations(false)
+        .with_decorations(crate::chrome::SYSTEM_FRAME)
         .with_icon(std::sync::Arc::new(egui::IconData { rgba: ui::brand::icon_rgba(64), width: 64, height: 64 }));
     ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("friends-window"), builder, |ui, _| {
         if ui.input(|i| i.viewport().close_requested()) {
