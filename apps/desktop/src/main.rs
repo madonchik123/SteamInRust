@@ -43,6 +43,13 @@ fn main() -> eframe::Result {
         Some(f) => tracing_subscriber::fmt().with_env_filter(filter()).with_ansi(false).with_writer(std::sync::Mutex::new(f)).init(),
         None => tracing_subscriber::fmt().with_env_filter(filter()).init(),
     }
+    // A crash leaves its reason in the log too (an app started from Finder
+    // has no console for the panic message).
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {info}");
+        default_hook(info);
+    }));
 
     let options = eframe::NativeOptions {
         // Our own title bar (see chrome.rs) instead of the Windows one.
