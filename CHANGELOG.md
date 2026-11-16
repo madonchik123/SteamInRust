@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0](https://github.com/madonchik123/SteamInRust/compare/v0.6.0...v0.7.0) (2026-11-16)
+
+
+### New
+
+* Add a friend page like Steam's: Quick Invite links and profile search ([#49](https://github.com/madonchik123/SteamInRust/issues/49)) ([232acf7](https://github.com/madonchik123/SteamInRust/commit/232acf7ee54bdb1ee399ab8e59a5b8b09fc85d95))
+* library collections stay in step with Steam ([#48](https://github.com/madonchik123/SteamInRust/issues/48)) ([10bc6e8](https://github.com/madonchik123/SteamInRust/commit/10bc6e85eb0f64ceec7c5bc0f9f783f3ed097fdf))
+* Simplified Chinese, Spanish, Brazilian Portuguese, German and French ([#55](https://github.com/madonchik123/SteamInRust/issues/55)) ([55fed9f](https://github.com/madonchik123/SteamInRust/commit/55fed9f1d5c2b749c43b70049c2fbde11065f244))
+
+
+### Fixes
+
+* Away and Do Not Disturb look different ([#56](https://github.com/madonchik123/SteamInRust/issues/56)) ([e0bd11f](https://github.com/madonchik123/SteamInRust/commit/e0bd11f1da0796bcbb4f62ef62d325ba176edd02))
+* Downloads page shows the real speed and lists each game once ([#54](https://github.com/madonchik123/SteamInRust/issues/54)) ([31ef4d5](https://github.com/madonchik123/SteamInRust/commit/31ef4d5926b4740df393d7cb9722fd0540caf381))
+* downloads resume where they stopped after the app is closed or killed ([#53](https://github.com/madonchik123/SteamInRust/issues/53)) ([5f82688](https://github.com/madonchik123/SteamInRust/commit/5f82688702f8bc09ec438e0830dc8e7cfe47ac93))
+* game icons load again, and pictures load sooner ([#51](https://github.com/madonchik123/SteamInRust/issues/51)) ([b10b5cf](https://github.com/madonchik123/SteamInRust/commit/b10b5cfe9dc8f8d4c946ac925b1c4b2bae9f3de3))
+
 ## [0.6.0](https://github.com/madonchik123/SteamInRust/compare/v0.5.1...v0.6.0) (2026-11-16)
 
 
