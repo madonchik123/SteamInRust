@@ -35,12 +35,14 @@ fn main() -> eframe::Result {
         return Ok(());
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,eframe=warn,egui_glow=warn".into()),
-        )
-        .init();
+    let filter = || tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,eframe=warn,egui_glow=warn".into());
+    // STEAMINRUST_LOG_FILE: the log goes to that file too (an app opened
+    // from Finder or the Dock has no console to print to).
+    let file = std::env::var_os("STEAMINRUST_LOG_FILE").and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
+    match file {
+        Some(f) => tracing_subscriber::fmt().with_env_filter(filter()).with_ansi(false).with_writer(std::sync::Mutex::new(f)).init(),
+        None => tracing_subscriber::fmt().with_env_filter(filter()).init(),
+    }
 
     let options = eframe::NativeOptions {
         // Our own title bar (see chrome.rs) instead of the Windows one.
