@@ -263,6 +263,20 @@ mod mac {
         h: f64,
     }
 
+    /// NSEdgeInsets (top, left, bottom, right).
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Insets {
+        top: f64,
+        left: f64,
+        bottom: f64,
+        right: f64,
+    }
+
+    unsafe impl Encode for Insets {
+        const ENCODING: Encoding = Encoding::Struct("NSEdgeInsets", &[f64::ENCODING, f64::ENCODING, f64::ENCODING, f64::ENCODING]);
+    }
+
     unsafe impl Encode for Rect {
         const ENCODING: Encoding = Encoding::Struct("CGRect", &[Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]), Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING])]);
     }
@@ -307,10 +321,16 @@ mod mac {
                     let _: () = msg_send![w, setCollectionBehavior: b | BEHAVIOR];
                     let _: () = msg_send![w, setLevel: LEVEL];
                 }
-                // The whole screen: a full-screen space has no menu bar to stay under.
+                // The whole screen (a full-screen space has no menu bar to
+                // stay under), minus the strip beside the camera notch.
                 let screen: *mut AnyObject = msg_send![w, screen];
                 if !screen.is_null() {
-                    let full: Rect = msg_send![screen, frame];
+                    let mut full: Rect = msg_send![screen, frame];
+                    let has_insets: bool = msg_send![screen, respondsToSelector: objc2::sel!(safeAreaInsets)];
+                    if has_insets {
+                        let inset: Insets = msg_send![screen, safeAreaInsets];
+                        full.h -= inset.top.max(0.0);
+                    }
                     let now: Rect = msg_send![w, frame];
                     if now != full {
                         let _: () = msg_send![w, setFrame: full, display: true];
