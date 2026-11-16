@@ -7,6 +7,9 @@
 //!                                SHA256SUMS-macos.txt.
 //!   cargo xtask steamclient32    the 32-bit steamclient DLL for 32-bit games,
 //!     [--release]                where a debug/release build of the app finds it.
+//!   cargo xtask steamclient-mac  macOS: steamclient.dylib for Apple and Intel
+//!     [--release]                games (Intel ones run under Rosetta) in one
+//!                                file, next to the app's debug/release build.
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -21,7 +24,9 @@ fn main() {
     let result = match task.as_str() {
         "package" => package(),
         "steamclient32" => steamclient32(std::env::args().any(|a| a == "--release")).map(|dll| println!("Built {}", dll.display())),
-        _ => Err("usage: cargo xtask package | steamclient32 [--release]".into()),
+        #[cfg(target_os = "macos")]
+        "steamclient-mac" => steamclient_mac(std::env::args().any(|a| a == "--release")).map(|dll| println!("Built {}", dll.display())),
+        _ => Err("usage: cargo xtask package | steamclient32 [--release] | steamclient-mac [--release]".into()),
     };
     if let Err(e) = result {
         eprintln!("error: {e}");
@@ -162,6 +167,7 @@ fn package_macos() -> Result {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     cargo(&root, &["build", "--release", "-p", "steam-rs"], &[], None)?;
+    let steamclient = steamclient_mac(true)?;
 
     let app = stage.join("SteamInRust.app");
     let (macos, resources) = (app.join("Contents").join("MacOS"), app.join("Contents").join("Resources"));
@@ -169,6 +175,8 @@ fn package_macos() -> Result {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     copy(&root.join("target").join("release").join("steam-rs"), &macos.join("steam-rs"))?;
+    // What games load for Steam features (see client/src/ipctool.rs).
+    copy(&steamclient, &macos.join("steamclient.dylib"))?;
     fs::write(app.join("Contents").join("Info.plist"), info_plist(&version)).map_err(|e| e.to_string())?;
     let png = fs::read(root.join("assets").join("icon-256.png")).map_err(|e| e.to_string())?;
     fs::write(resources.join("AppIcon.icns"), icns(&png)).map_err(|e| e.to_string())?;
@@ -188,6 +196,29 @@ fn package_macos() -> Result {
     println!("{name:<44} {:>7.1} MB", bytes.len() as f64 / 1_048_576.0);
     println!("Done: {}", dist.display());
     Ok(())
+}
+
+/// The steamclient library for Apple Silicon and Intel games in one
+/// (universal) file: target/<profile>/steamclient.dylib.
+#[cfg(target_os = "macos")]
+fn steamclient_mac(release: bool) -> Result<PathBuf> {
+    let root = root();
+    let profile = if release { "release" } else { "debug" };
+    let mut parts = Vec::new();
+    for target in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+        run(Command::new("rustup").args(["target", "add", target]))?;
+        let mut args = vec!["build", "-p", "steamclient", "--lib", "--target", target];
+        if release {
+            args.push("--release");
+        }
+        cargo(&root, &args, &[], None)?;
+        parts.push(root.join("target").join(target).join(profile).join("libsteamclient.dylib"));
+    }
+    let out = root.join("target").join(profile).join("steamclient.dylib");
+    fs::create_dir_all(out.parent().unwrap()).map_err(|e| e.to_string())?;
+    run(Command::new("lipo").arg("-create").args(&parts).arg("-output").arg(&out))?;
+    run(Command::new("codesign").args(["--force", "--sign", "-"]).arg(&out))?;
+    Ok(out)
 }
 
 #[cfg(target_os = "macos")]

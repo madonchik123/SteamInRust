@@ -13,6 +13,8 @@ pub mod workshop;
 pub mod hub;
 pub mod ingame;
 pub mod ipc;
+#[cfg(target_os = "macos")]
+mod ipctool;
 mod launch;
 pub mod market;
 pub mod social;

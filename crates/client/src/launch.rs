@@ -222,6 +222,18 @@ fn pe_is_64bit(path: &Path) -> Option<bool> {
 /// `steamclient64.dll` / `steamclient.dll` (the cargo build name) and
 /// `steamclient32.dll`; while developing, also the cargo i686 build output
 /// (`target/i686-pc-windows-gnu/<profile>/steamclient.dll`).
+#[cfg(not(windows))]
+pub fn steamclient_dll(_is64: bool) -> Option<PathBuf> {
+    // macOS: one universal library for Intel (Rosetta) and Apple games,
+    // `cargo xtask steamclient-mac` while developing, in the app bundle once packaged.
+    if let Some(p) = std::env::var_os("STEAMINRUST_STEAMCLIENT64").map(PathBuf::from) {
+        return p.is_file().then_some(p);
+    }
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    [dir.join("steamclient.dylib"), dir.join("libsteamclient.dylib")].into_iter().find(|p| p.is_file())
+}
+
+#[cfg(windows)]
 pub fn steamclient_dll(is64: bool) -> Option<PathBuf> {
     let var = if is64 { "STEAMINRUST_STEAMCLIENT64" } else { "STEAMINRUST_STEAMCLIENT32" };
     if let Some(p) = std::env::var_os(var).map(PathBuf::from) {
@@ -377,6 +389,14 @@ struct Swap {
 static SWAP: Mutex<Option<Swap>> = Mutex::new(None);
 
 /// Point steam_api at our DLL (64-bit or 32-bit) for one launch.
+/// macOS: answer Steam's "where is Steam" service with our library instead
+/// (see ipctool.rs); the same begin / loaded / exited steps as the registry.
+#[cfg(target_os = "macos")]
+pub fn swap_begin(token: &str, dll: &Path, _is64: bool, _account_id: u32) -> Result<(), String> {
+    crate::ipctool::begin(token, dll)
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn swap_begin(token: &str, dll: &Path, is64: bool, account_id: u32) -> Result<(), String> {
     let mut swap = SWAP.lock().unwrap();
     let state = swap.get_or_insert_with(|| Swap {
@@ -411,6 +431,14 @@ pub fn swap_begin(token: &str, dll: &Path, is64: bool, account_id: u32) -> Resul
 /// away so nothing else picks it up. Steam's process id stays ours while
 /// our games run, unless the official client is running.
 pub fn swap_loaded(token: &str) {
+    #[cfg(target_os = "macos")]
+    crate::ipctool::loaded(token);
+    #[cfg(not(target_os = "macos"))]
+    swap_loaded_registry(token);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn swap_loaded_registry(token: &str) {
     let mut swap = SWAP.lock().unwrap();
     let Some(s) = swap.as_mut() else { return };
     if !s.pending.remove(token) || !s.pending.is_empty() {
@@ -421,6 +449,14 @@ pub fn swap_loaded(token: &str) {
 
 /// One of our games closed.
 pub fn swap_exited(token: &str) {
+    #[cfg(target_os = "macos")]
+    crate::ipctool::exited(token);
+    #[cfg(not(target_os = "macos"))]
+    swap_exited_registry(token);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn swap_exited_registry(token: &str) {
     let mut swap = SWAP.lock().unwrap();
     let Some(s) = swap.as_mut() else { return };
     s.pending.remove(token);
@@ -436,6 +472,14 @@ pub fn swap_exited(token: &str) {
 
 /// Undo everything now (before the official client launches a game).
 pub fn swap_restore_now() {
+    #[cfg(target_os = "macos")]
+    crate::ipctool::stop();
+    #[cfg(not(target_os = "macos"))]
+    swap_restore_now_registry();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn swap_restore_now_registry() {
     let mut swap = SWAP.lock().unwrap();
     if let Some(s) = swap.as_mut() {
         restore_all(s);
