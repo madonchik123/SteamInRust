@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/madonchik123/SteamInRust/compare/v0.5.1...v0.6.0) (2026-11-16)
+
+
+### New
+
+* Big Picture mode ([#45](https://github.com/madonchik123/SteamInRust/issues/45)) ([b1077e4](https://github.com/madonchik123/SteamInRust/commit/b1077e404741107f8c1f4927f869f86fd3cbb58c))
+* macOS support ([#46](https://github.com/madonchik123/SteamInRust/issues/46)) ([27ba783](https://github.com/madonchik123/SteamInRust/commit/27ba783e41f7672cbcfb84e48f12458076016668))
+
+
+### Fixes
+
+* menus fit their content and every row lines up ([#43](https://github.com/madonchik123/SteamInRust/issues/43)) ([8d60745](https://github.com/madonchik123/SteamInRust/commit/8d607450664e318ad1f22d385597a27e5e3cd169))
+
 ## [0.5.1](https://github.com/madonchik123/SteamInRust/compare/v0.5.0...v0.5.1) (2026-11-15)
 
 
