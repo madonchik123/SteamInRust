@@ -1759,3 +1759,4 @@
 "On" = "Вкл."
 "Off" = "Выкл."
 "All settings (leaves Big Picture)" = "Все настройки (выход из Big Picture)"
+"Couldn't save your collections to Steam: {error}" = "Не удалось сохранить коллекции в Steam: {error}"

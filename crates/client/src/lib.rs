@@ -19,6 +19,7 @@ mod launch;
 pub mod market;
 pub mod social;
 pub mod cloud;
+pub mod collections;
 pub mod regions;
 pub mod a2s;
 pub mod game_ugc;
@@ -120,6 +121,9 @@ pub enum Command {
     LoadMyListings,
     /// Your library collections from Steam (Favorites, Hidden, your own).
     LoadSteamCollections,
+    /// Write changed or deleted collections to Steam, so they show in the
+    /// official client and on other computers.
+    SaveSteamCollections(Vec<model::CollectionEdit>),
     /// Comments on a profile (newest first), from `start`.
     LoadComments { steam_id: SteamId, start: u32 },
     /// Leave a comment on a profile.
@@ -273,6 +277,8 @@ pub enum Event {
     ItemListed { asset_id: u64, result: Result<bool, String> },
     MyListings(Result<model::MyListings, String>),
     SteamCollections(Result<Vec<model::SteamCollection>, String>),
+    /// Result of [`Command::SaveSteamCollections`].
+    SteamCollectionsSaved(Result<(), String>),
     /// Comments on a profile, or why they can't be shown (private, turned off).
     Comments { steam_id: SteamId, result: Result<model::Comments, String> },
     CommentPosted { steam_id: SteamId, result: Result<(), String> },

@@ -714,6 +714,16 @@ pub struct Badges {
     pub items: Vec<Badge>,
 }
 
+/// A collection to write to Steam: its whole new content, or deleted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectionEdit {
+    /// "favorite", "hidden", or "uc-…".
+    pub id: String,
+    pub name: String,
+    pub games: Vec<AppId>,
+    pub deleted: bool,
+}
+
 /// A library collection from the official Steam client (synced by Steam).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SteamCollection {
