@@ -11,6 +11,17 @@ pub fn target() -> Option<(String, String)> {
     (!pipe.is_empty() && !token.is_empty()).then(|| (pipe.to_string(), token.to_string()))
 }
 
+/// The pipe (Windows) or socket file (macOS, Linux) SteamInRust listens on.
+#[cfg(windows)]
+fn open(pipe: &str) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().read(true).write(true).open(pipe)
+}
+
+#[cfg(unix)]
+fn open(pipe: &str) -> std::io::Result<std::os::unix::net::UnixStream> {
+    std::os::unix::net::UnixStream::connect(pipe)
+}
+
 /// Send one request and wait for the answer. `None` if SteamInRust can't be
 /// reached (closed, signed out) or answered nonsense.
 pub fn request(req: Request) -> Option<Reply> {
@@ -21,9 +32,9 @@ pub fn request(req: Request) -> Option<Reply> {
     // The server makes a new pipe instance after each connection; a busy
     // pipe just means another request is being accepted right now.
     let file = loop {
-        match std::fs::OpenOptions::new().read(true).write(true).open(&pipe) {
+        match open(&pipe) {
             Ok(f) => break f,
-            Err(e) if started.elapsed() < Duration::from_secs(3) && matches!(e.raw_os_error(), Some(231) | Some(2)) => {
+            Err(e) if started.elapsed() < Duration::from_secs(3) && (matches!(e.raw_os_error(), Some(231) | Some(2)) || e.kind() == std::io::ErrorKind::ConnectionRefused) => {
                 std::thread::sleep(Duration::from_millis(30));
             }
             Err(e) => {

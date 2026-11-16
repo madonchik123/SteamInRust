@@ -66,7 +66,11 @@ fn random_hex() -> String {
 impl Server {
     /// Start listening. Must run inside the tokio runtime.
     pub fn start() -> (Server, mpsc::UnboundedReceiver<Call>) {
+        // A named pipe on Windows; a socket file elsewhere (macOS, Linux).
+        #[cfg(windows)]
         let name = format!(r"\\.\pipe\steaminrust-{}-{}", std::process::id(), &random_hex()[..12]);
+        #[cfg(not(windows))]
+        let name = std::env::temp_dir().join(format!("steaminrust-{}-{}.sock", std::process::id(), &random_hex()[..12])).to_string_lossy().into_owned();
         let tokens: Tokens = Arc::default();
         let (tx, rx) = mpsc::unbounded_channel();
         // Also the in-game overlay's pipe, which checks the same launch tokens.
@@ -77,7 +81,9 @@ impl Server {
             let games = accept(name.clone(), tokens.clone(), tx);
             Some(tokio::spawn(async move { tokio::join!(games, overlay) }).abort_handle())
         };
-        #[cfg(not(windows))]
+        #[cfg(unix)]
+        let task = Some(tokio::spawn(accept(name.clone(), tokens.clone(), tx)).abort_handle());
+        #[cfg(not(any(windows, unix)))]
         let task = {
             drop(tx);
             None
@@ -149,8 +155,38 @@ async fn accept(name: String, tokens: Tokens, tx: mpsc::UnboundedSender<Call>) {
     }
 }
 
-#[cfg(windows)]
-async fn serve_one(pipe: tokio::net::windows::named_pipe::NamedPipeServer, tokens: Tokens, tx: mpsc::UnboundedSender<Call>) {
+/// macOS and Linux: games connect to a socket file only this user can open.
+#[cfg(unix)]
+async fn accept(name: String, tokens: Tokens, tx: mpsc::UnboundedSender<Call>) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::remove_file(&name);
+    let listener = match tokio::net::UnixListener::bind(&name) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!("steamclient socket {name}: {e}");
+            return;
+        }
+    };
+    let _ = std::fs::set_permissions(&name, std::fs::Permissions::from_mode(0o600));
+    // Removed when SteamInRust stops listening.
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(name);
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                tokio::spawn(serve_one(stream, tokens.clone(), tx.clone()));
+            }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+}
+
+async fn serve_one<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static>(pipe: S, tokens: Tokens, tx: mpsc::UnboundedSender<Call>) {
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let (r, mut w) = tokio::io::split(pipe);
@@ -185,7 +221,6 @@ async fn serve_one(pipe: tokio::net::windows::named_pipe::NamedPipeServer, token
 }
 
 /// Hand over queued events, waiting up to 20 s for the first one.
-#[cfg(windows)]
 async fn poll(tokens: &Tokens, token: &str) -> Vec<GameEvent> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
