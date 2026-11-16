@@ -90,6 +90,7 @@ fn reg(args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+#[cfg(windows)]
 const KEY: &str = r"HKCU\Software\Classes\steam\shell\open\command";
 
 /// The command currently registered for `steam://` links, if any.

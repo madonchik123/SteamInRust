@@ -43,6 +43,7 @@ pub fn set_waker(f: impl Fn() + Send + Sync + 'static) {
     let _ = WAKER.set(Arc::new(f));
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn wake() {
     if let Some(w) = WAKER.get() {
         w();

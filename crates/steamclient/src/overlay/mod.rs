@@ -78,6 +78,7 @@ fn resized(size: (u32, u32)) {
 
 /// GameOverlayActivated_t, so games pause or show their cursor like they do
 /// for Steam's overlay.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn post_activated(open: bool, by_user: bool) {
     const GAME_OVERLAY_ACTIVATED: i32 = 331;
     let mut g = crate::state::lock();
