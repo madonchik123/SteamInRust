@@ -1683,3 +1683,5 @@
 "Downloads ticked DLC and removes unticked DLC" = "Загружает отмеченные DLC и удаляет неотмеченные"
 "Cut" = "Вырезать"
 "Paste" = "Вставить"
+"Not available on {os}" = "Недоступно в {os}"
+"This game doesn't run on {os}." = "Эта игра не работает в {os}."

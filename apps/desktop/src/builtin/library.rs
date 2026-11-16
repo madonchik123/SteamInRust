@@ -685,6 +685,9 @@ impl Library {
             MenuAct::PauseDownload => ctx.send(Command::PauseDownload { app_id: id }),
             MenuAct::ResumeDownload => ctx.send(Command::ResumeDownload { app_id: id }),
             MenuAct::CancelDownload => ctx.send(Command::CancelDownload { app_id: id }),
+            MenuAct::Install if ctx.state.apps.as_ref().and_then(|a| a.get(&id)).is_some_and(|o| !o.runs_on_this_os()) => {
+                ctx.toast(t!("This game doesn't run on {os}.", os = client::download::os_name(model::THIS_OS)));
+            }
             MenuAct::Install => self.install_dialog = Some(InstallDialog::new(id, ctx)),
             MenuAct::Favorite => {
                 if !self.favorites.remove(&id) {
@@ -1329,6 +1332,13 @@ impl Library {
                                     let args = self.games.get(&id).map(|s| s.args.clone()).unwrap_or_default();
                                     ctx.send(Command::Launch { app_id: id, install_dir: g.install_dir.clone(), args });
                                 }
+                            }
+                            // Like Steam on a Mac: Windows-only games stay listed but can't be installed.
+                            None if owned.is_some_and(|o| !o.runs_on_this_os()) => {
+                                let os = client::download::os_name(model::THIS_OS);
+                                ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::DOWNLOAD), t!("Not available on {os}", os = os), w::Kind::Primary, w::Size::Lg))
+                                    .response
+                                    .on_disabled_hover_text(t!("This game doesn't run on {os}.", os = os));
                             }
                             None if owned.is_some() => {
                                 if w::button(ui, t, Some(icons::DOWNLOAD), t!("Install"), w::Kind::Primary, w::Size::Lg).clicked() {

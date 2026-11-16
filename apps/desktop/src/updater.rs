@@ -261,14 +261,17 @@ async fn latest() -> Result<Option<Release>, String> {
     if rel.draft || rel.prerelease {
         return Ok(None);
     }
-    let Some(setup) = rel.assets.iter().find(|a| a.name.starts_with("SteamInRust-Setup") && a.name.ends_with(".exe")) else { return Ok(None) };
+    // Windows: the setup; macOS: the disk image (opened from the release page).
+    let wanted = |n: &str| if cfg!(target_os = "macos") { n.starts_with("SteamInRust-") && n.ends_with("-macos.dmg") } else { n.starts_with("SteamInRust-Setup") && n.ends_with(".exe") };
+    let sums = if cfg!(target_os = "macos") { "SHA256SUMS-macos.txt" } else { "SHA256SUMS.txt" };
+    let Some(setup) = rel.assets.iter().find(|a| wanted(&a.name)) else { return Ok(None) };
     Ok(Some(Release {
         version: rel.tag_name.trim_start_matches('v').to_string(),
         notes: rel.body.unwrap_or_default(),
         page: rel.html_url,
         setup_url: setup.browser_download_url.clone(),
         setup_name: setup.name.clone(),
-        sums_url: rel.assets.iter().find(|a| a.name == "SHA256SUMS.txt").map(|a| a.browser_download_url.clone()),
+        sums_url: rel.assets.iter().find(|a| a.name == sums).map(|a| a.browser_download_url.clone()),
     }))
 }
 

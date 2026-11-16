@@ -72,3 +72,29 @@ jobs:
         with:
           name: SteamInRust
           path: target/package/dist/*
+
+  # The macOS disk image (SteamInRust-<version>-macos.dmg, unsigned).
+  release-macos:
+    runs-on: macos-latest
+    env:
+      # rust-toolchain.toml names the Windows toolchain; use the Mac's own.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace
+      - name: Package
+        run: cargo xtask package
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/package/dist/*
+      - name: Keep the build (manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamInRust-macos
+          path: target/package/dist/*

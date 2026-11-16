@@ -73,3 +73,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ needs.release-please.outputs.tag }}" (Get-ChildItem target/package/dist/* | ForEach-Object FullName) --clobber
+
+  # The macOS disk image for the same release.
+  build-macos:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: macos-latest
+    env:
+      # rust-toolchain.toml names the Windows toolchain; use the Mac's own.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+      - run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo xtask package
+      - name: Attach the files to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release-please.outputs.tag }}" target/package/dist/* --clobber

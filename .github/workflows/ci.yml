@@ -61,6 +61,19 @@ jobs:
       - run: cargo build --workspace
       - run: cargo test --workspace
 
+  # The same build and tests on macOS (Apple Silicon).
+  test-macos:
+    runs-on: macos-latest
+    env:
+      # rust-toolchain.toml names the Windows toolchain; use the Mac's own.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+
   # Every merge into main: a test build (setup + portable zip) attached to
   # the workflow run for trying changes before a release. Not an update:
   # installed copies only update from published releases.
@@ -99,5 +112,23 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: SteamInRust-preview-${{ github.sha }}
+          path: target/package/dist/*
+          retention-days: 14
+
+  # The macOS disk image of the same merge.
+  preview-macos:
+    if: github.event_name == 'push'
+    needs: test-macos
+    runs-on: macos-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SteamInRust-preview-macos-${{ github.sha }}
           path: target/package/dist/*
           retention-days: 14
