@@ -383,9 +383,39 @@ pub struct WorkshopItem {
     pub folder: PathBuf,
 }
 
+/// A value parsed from a file, re-read only when the file changes (its size
+/// or modification time): pages call these every frame, and a workshop
+/// manifest can list thousands of mods.
+fn cached_read<T: Clone + Send + 'static>(cache: &'static std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (Option<std::time::SystemTime>, u64, T)>>>, path: &Path, parse: impl FnOnce(Option<String>) -> T) -> T {
+    let stamp = fs::metadata(path).ok().map(|m| (m.modified().ok(), m.len()));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(Default::default);
+    if let (Some((modified, len)), Some((m, l, v))) = (stamp, map.get(path)) {
+        if *m == modified && *l == len {
+            return v.clone();
+        }
+    }
+    let value = parse(fs::read_to_string(path).ok());
+    match stamp {
+        Some((modified, len)) => {
+            map.insert(path.to_path_buf(), (modified, len, value.clone()));
+        }
+        None => {
+            map.remove(path);
+        }
+    }
+    value
+}
+
 pub fn workshop_items(game: &InstalledGame) -> Vec<WorkshopItem> {
+    static CACHE: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (Option<std::time::SystemTime>, u64, Vec<WorkshopItem>)>>> = std::sync::Mutex::new(None);
     let ws = game.library.join("steamapps").join("workshop");
-    let Ok(text) = fs::read_to_string(ws.join(format!("appworkshop_{}.acf", game.app_id))) else { return Vec::new() };
+    let acf = ws.join(format!("appworkshop_{}.acf", game.app_id));
+    cached_read(&CACHE, &acf, |text| parse_workshop_items(game, &ws, text))
+}
+
+fn parse_workshop_items(game: &InstalledGame, ws: &Path, text: Option<String>) -> Vec<WorkshopItem> {
+    let Some(text) = text else { return Vec::new() };
     let Ok(doc) = vdf::parse(&text) else { return Vec::new() };
     let content = ws.join("content").join(game.app_id.to_string());
     let mut items: Vec<WorkshopItem> = doc
@@ -425,10 +455,43 @@ pub fn delete_workshop_files(item: &WorkshopItem) -> Result<(), String> {
 
 /// Build id and branch Steam has installed (from the app manifest).
 pub fn installed_build(game: &InstalledGame) -> (u64, String) {
-    let Ok(text) = fs::read_to_string(manifest_file(game)) else { return (0, "public".into()) };
+    static CACHE: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (Option<std::time::SystemTime>, u64, (u64, String))>>> = std::sync::Mutex::new(None);
+    cached_read(&CACHE, &manifest_file(game), parse_installed_build)
+}
+
+fn parse_installed_build(text: Option<String>) -> (u64, String) {
+    let Some(text) = text else { return (0, "public".into()) };
     let Ok(doc) = vdf::parse(&text) else { return (0, "public".into()) };
     let app = doc.obj("AppState");
     let build = app.and_then(|a| a.u64("buildid")).unwrap_or(0);
     let branch = app.and_then(|a| a.path(&["UserConfig"])).and_then(|u| u.str("BetaKey")).filter(|b| !b.is_empty()).unwrap_or("public").to_string();
     (build, branch)
+}
+
+#[cfg(test)]
+mod cached_read_tests {
+    use super::*;
+
+    #[test]
+    fn rereads_only_when_the_file_changes() {
+        static CACHE: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (Option<std::time::SystemTime>, u64, String)>>> = std::sync::Mutex::new(None);
+        let dir = std::env::temp_dir().join(format!("sir-cached-read-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.acf");
+        fs::write(&path, "one").unwrap();
+        let read = |calls: &mut u32| cached_read(&CACHE, &path, |t| {
+            *calls += 1;
+            t.unwrap_or_default()
+        });
+        let mut calls = 0;
+        assert_eq!(read(&mut calls), "one");
+        assert_eq!(read(&mut calls), "one");
+        assert_eq!(calls, 1, "unchanged file: parsed once");
+        fs::write(&path, "two!").unwrap();
+        assert_eq!(read(&mut calls), "two!");
+        assert_eq!(calls, 2);
+        fs::remove_file(&path).unwrap();
+        assert_eq!(read(&mut calls), "");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

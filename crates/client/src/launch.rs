@@ -65,18 +65,66 @@ fn exe_bitness(path: &Path) -> Option<bool> {
     path.is_file().then_some(true)
 }
 
-/// [`mode`], remembered for a minute (for UI that asks every frame).
-pub fn mode_cached(app: &OwnedApp, install_dir: &Path) -> LaunchMode {
-    static CACHE: Mutex<Option<std::collections::HashMap<(AppId, PathBuf), (Instant, LaunchMode)>>> = Mutex::new(None);
+/// What [`mode_cached`] remembers.
+static MODE_CACHE: Mutex<Option<std::collections::HashMap<(AppId, PathBuf), (Instant, LaunchMode)>>> = Mutex::new(None);
+/// Games whose mode is being worked out in the background.
+static MODE_PENDING: Mutex<Option<std::collections::HashSet<(AppId, PathBuf)>>> = Mutex::new(None);
+/// How long a remembered mode counts as current.
+const MODE_FRESH: Duration = Duration::from_secs(60);
+
+fn mode_lookup(key: &(AppId, PathBuf)) -> Option<(bool, LaunchMode)> {
+    let cache = MODE_CACHE.lock().unwrap();
+    cache.as_ref()?.get(key).map(|(at, m)| (at.elapsed() < MODE_FRESH, m.clone()))
+}
+
+fn mode_store(key: (AppId, PathBuf), m: LaunchMode) {
+    MODE_CACHE.lock().unwrap().get_or_insert_with(Default::default).insert(key, (Instant::now(), m));
+}
+
+/// Work the mode out on a background thread (once at a time per game).
+fn mode_refresh(app: &OwnedApp, install_dir: &Path) {
     let key = (app.app_id, install_dir.to_path_buf());
-    let mut cache = CACHE.lock().unwrap();
-    let map = cache.get_or_insert_with(Default::default);
-    if let Some((_, m)) = map.get(&key).filter(|(at, _)| at.elapsed() < Duration::from_secs(60)) {
-        return m.clone();
+    if !MODE_PENDING.lock().unwrap().get_or_insert_with(Default::default).insert(key.clone()) {
+        return;
     }
-    let m = mode(app, install_dir);
-    map.insert(key, (Instant::now(), m.clone()));
-    m
+    let (owned, k) = (app.clone(), key.clone());
+    let spawned = std::thread::Builder::new().name("launch-mode".into()).spawn(move || {
+        let m = mode(&owned, &k.1);
+        mode_store(k.clone(), m);
+        MODE_PENDING.lock().unwrap().get_or_insert_with(Default::default).remove(&k);
+    });
+    if spawned.is_err() {
+        MODE_PENDING.lock().unwrap().get_or_insert_with(Default::default).remove(&key);
+    }
+}
+
+/// [`mode`], remembered: a stale answer is returned at once and refreshed in
+/// the background. Only the very first ask for a game waits for it.
+pub fn mode_cached(app: &OwnedApp, install_dir: &Path) -> LaunchMode {
+    let key = (app.app_id, install_dir.to_path_buf());
+    match mode_lookup(&key) {
+        Some((fresh, m)) => {
+            if !fresh {
+                mode_refresh(app, install_dir);
+            }
+            m
+        }
+        None => {
+            let m = mode(app, install_dir);
+            mode_store(key, m.clone());
+            m
+        }
+    }
+}
+
+/// [`mode_cached`] for UI drawn every frame: never waits (reading the install
+/// folder can take tens of milliseconds); `None` until the first answer is in.
+pub fn mode_peek(app: &OwnedApp, install_dir: &Path) -> Option<LaunchMode> {
+    let found = mode_lookup(&(app.app_id, install_dir.to_path_buf()));
+    if !found.as_ref().is_some_and(|(fresh, _)| *fresh) {
+        mode_refresh(app, install_dir);
+    }
+    found.map(|(_, m)| m)
 }
 
 // ---------------------------------------------------------- anti-cheat

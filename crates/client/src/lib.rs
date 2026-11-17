@@ -38,7 +38,7 @@ pub mod state;
 pub mod store;
 
 pub use auth::Guard;
-pub use launch::{LaunchMode, mode as launch_mode, mode_cached as launch_mode_cached};
+pub use launch::{LaunchMode, mode as launch_mode, mode_cached as launch_mode_cached, mode_peek as launch_mode_peek};
 pub use state::State;
 pub use store::SavedAccount;
 
