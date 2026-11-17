@@ -823,6 +823,19 @@ pub struct MyReview {
     pub votes_up: u32,
     pub votes_funny: u32,
     pub comments: u32,
+    /// Minutes played in total, and when it was written.
+    #[serde(default)]
+    pub playtime: u32,
+    #[serde(default)]
+    pub playtime_at_review: u32,
+}
+
+/// A vote on someone's review: "Was this review helpful?".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ReviewVote {
+    Yes,
+    No,
+    Funny,
 }
 
 /// A library collection from the official Steam client (synced by Steam).

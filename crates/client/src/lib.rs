@@ -218,6 +218,12 @@ pub enum Command {
     /// Post or change your review (`review.id` 0: a new one).
     SaveReview { app_id: AppId, review: model::MyReview },
     DeleteReview { app_id: AppId },
+    /// Your friends' reviews of a game.
+    LoadFriendReviews { app_id: AppId },
+    /// These people's reviews of a game (to vote on them).
+    LoadReviewsBy { app_id: AppId, people: Vec<SteamId> },
+    /// "Was this review helpful?" on someone's review.
+    VoteReview { review: u64, vote: model::ReviewVote },
     /// "Not interested" in a game (`ignore: false` undoes it).
     IgnoreApp { app_id: AppId, ignore: bool },
     WishlistRemove { app_id: AppId },
@@ -374,6 +380,11 @@ pub enum Event {
     MarketSearch { query: String, app: Option<AppId>, start: u32, result: Result<(Vec<model::MarketResult>, u32), String> },
     /// Your review of a game (`None`: not written).
     MyReview { app_id: AppId, result: Result<Option<model::MyReview>, String> },
+    /// Friends' reviews of a game, (friend, review).
+    FriendReviews { app_id: AppId, result: Result<Vec<(SteamId, model::MyReview)>, String> },
+    /// Reviews of a game by the people asked about.
+    ReviewsBy { app_id: AppId, reviews: Vec<(SteamId, model::MyReview)> },
+    ReviewVoted { review: u64, vote: model::ReviewVote, result: Result<(), String> },
     /// A review was posted, changed or deleted.
     ReviewSaved { app_id: AppId, deleted: bool, result: Result<(), String> },
     /// The discovery queue's games, in order.

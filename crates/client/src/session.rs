@@ -1033,6 +1033,25 @@ async fn online(
                         }
                     })
                 }
+                Some(Command::LoadFriendReviews { app_id }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move { sink(Event::FriendReviews { app_id, result: crate::reviews::friends(&conn, app_id).await }) });
+                }
+                Some(Command::LoadReviewsBy { app_id, people }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        if let Ok(reviews) = crate::reviews::of(&conn, &people, app_id).await {
+                            sink(Event::ReviewsBy { app_id, reviews });
+                        }
+                    });
+                }
+                Some(Command::VoteReview { review, vote }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::reviews::vote(&w, review, vote).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::ReviewVoted { review, vote, result });
+                }),
                 Some(Command::DeleteReview { app_id }) => st.with_web(sink, move |web, sink| async move {
                     let result = match web {
                         Ok(w) => crate::reviews::delete(&w, app_id).await,

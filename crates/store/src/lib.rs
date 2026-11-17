@@ -10,6 +10,7 @@ pub mod events;
 pub mod itad;
 pub mod query;
 pub mod html;
+pub mod reviews;
 
 use model::AppId;
 use serde::Deserialize;
@@ -93,6 +94,8 @@ pub struct Details {
     pub screenshots: Vec<Screenshot>,
     pub requirements_min: Vec<html::Block>,
     pub requirements_rec: Vec<html::Block>,
+    /// Requirements per system ("windows", "macos", "linux"): (minimum, recommended).
+    pub requirements: Vec<(&'static str, Vec<html::Block>, Vec<html::Block>)>,
     pub metacritic: Option<u32>,
     pub recommendations: Option<u64>,
     pub platforms: (bool, bool, bool),
@@ -262,13 +265,22 @@ impl StoreClient {
         let url = format!("{BASE}/appdetails?appids={id}&cc={}&l={}", self.country, self.language);
         let mut raw: HashMap<String, RawEnvelope> = self.get(&url).await?;
         let d = raw.remove(&id.to_string()).filter(|e| e.success).and_then(|e| e.data).ok_or(Error::NotFound(id))?;
-        let (min, rec) = match d.pc_requirements {
+        let split = |v: &serde_json::Value| match v {
             serde_json::Value::Object(m) => (
                 m.get("minimum").and_then(|v| v.as_str()).map(requirements).unwrap_or_default(),
                 m.get("recommended").and_then(|v| v.as_str()).map(requirements).unwrap_or_default(),
             ),
             _ => Default::default(),
         };
+        let (min, rec) = split(&d.pc_requirements);
+        let per_os: Vec<(&'static str, Vec<html::Block>, Vec<html::Block>)> = [("windows", &d.pc_requirements), ("macos", &d.mac_requirements), ("linux", &d.linux_requirements)]
+            .into_iter()
+            .map(|(os, v)| {
+                let (a, b) = split(v);
+                (os, a, b)
+            })
+            .filter(|(_, a, b)| !a.is_empty() || !b.is_empty())
+            .collect();
         Ok(Details {
             app_id: id,
             name: d.name,
@@ -294,6 +306,7 @@ impl StoreClient {
             screenshots: d.screenshots.into_iter().map(|s| Screenshot { thumb: s.path_thumbnail, full: s.path_full }).collect(),
             requirements_min: min,
             requirements_rec: rec,
+            requirements: per_os,
             metacritic: d.metacritic.map(|m| m.score),
             recommendations: d.recommendations.map(|r| r.total),
             platforms: d.platforms.map(|p| (p.windows, p.mac, p.linux)).unwrap_or((true, false, false)),
@@ -465,6 +478,10 @@ struct RawDetails {
     screenshots: Vec<RawShot>,
     #[serde(default)]
     pc_requirements: serde_json::Value,
+    #[serde(default)]
+    mac_requirements: serde_json::Value,
+    #[serde(default)]
+    linux_requirements: serde_json::Value,
     metacritic: Option<RawMeta>,
     recommendations: Option<RawRecs>,
     platforms: Option<RawPlatforms>,

@@ -22,6 +22,10 @@ mod discovery;
 mod review;
 #[path = "store_micro.rs"]
 mod micro;
+#[path = "store_reviews_list.rs"]
+mod reviews_list;
+#[path = "store_specs.rs"]
+mod specs;
 
 enum Load<T> {
     Loading,
@@ -68,6 +72,8 @@ pub struct Store {
     browse: HashMap<AppId, Shared<BrowseInfo>>,
     /// People playing each game right now, refreshed every minute.
     players: HashMap<AppId, Players>,
+    /// Up and down votes of the last 30 days, per game.
+    recent: HashMap<AppId, Shared<(u64, u64)>>,
     tags: Option<Shared<HashMap<u32, String>>>,
     /// (country, language) the caches were loaded with.
     locale: (String, String),
@@ -113,6 +119,10 @@ pub struct Store {
     review: review::ReviewBox,
     /// The clip playing on the card under the pointer.
     micro: micro::Micro,
+    /// What players wrote, on game pages.
+    reviews_list: reviews_list::ReviewList,
+    /// Requirements tab and languages table.
+    specs: specs::Specs,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -133,6 +143,7 @@ impl Store {
             details: HashMap::new(),
             browse: HashMap::new(),
             players: HashMap::new(),
+            recent: HashMap::new(),
             tags: None,
             locale: ("us".into(), "english".into()),
             ratings: Default::default(),
@@ -161,6 +172,8 @@ impl Store {
             discovery_wait: false,
             review: Default::default(),
             micro: Default::default(),
+            reviews_list: Default::default(),
+            specs: Default::default(),
             search: None,
             view: View::Home,
             hero: 0,
@@ -213,6 +226,18 @@ impl Store {
 
     /// People in the game right now (Steam's count). Asked again every
     /// minute while the page is open; the last number stays meanwhile.
+    fn recent_votes(&mut self, id: AppId) -> Option<(u64, u64)> {
+        if !self.recent.contains_key(&id) {
+            let api = self.api.clone();
+            let slot = self.fetch(async move { api.recent_votes(id).await });
+            self.recent.insert(id, slot);
+        }
+        match &*self.recent[&id].lock().unwrap() {
+            Load::Ready(v) => Some(*v),
+            _ => None,
+        }
+    }
+
     fn current_players(&mut self, id: AppId) -> Option<u32> {
         const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
         if self.players.get(&id).is_none_or(|p| p.asked.elapsed() >= EVERY) {
@@ -1009,11 +1034,15 @@ impl Store {
                     let info = self.browse_info(id);
                     egui::Grid::new("app-facts").num_columns(2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
                         if let Some(r) = info.as_ref().and_then(|i| i.reviews.clone()) {
-                            ui.label(w::text_bold(t!("REVIEWS"), 10.5, t.text_faint));
-                            ui.horizontal(|ui| {
-                                ui.label(w::text_semibold(i18n::tr_dyn(&r.label), 13.5, review_color(t, r.score)));
-                                ui.label(w::text(t!("({percent}% of {count})", percent = r.percent_positive, count = thousands(r.count)), 12.5, t.text_faint));
-                            });
+                            // Bars instead of Steam's "Very Positive": the share
+                            // of thumbs up and down says more at a glance.
+                            if let Some((up, down)) = self.recent_votes(id).filter(|(u, d)| u + d > 0) {
+                                ui.label(w::text_bold(t!("PAST MONTH"), 10.5, t.text_faint));
+                                rating_bar(ui, t, (up * 100 / (up + down)) as u32, up + down);
+                                ui.end_row();
+                            }
+                            ui.label(w::text_bold(t!("ALL TIME"), 10.5, t.text_faint));
+                            rating_bar(ui, t, r.percent_positive, r.count as u64);
                             ui.end_row();
                         } else if let Some(r) = d.recommendations {
                             fact(ui, t, t!("REVIEWS"), &format!("{} {}", icons::THUMBS_UP, thousands(r)));
@@ -1155,13 +1184,7 @@ impl Store {
                     w::section(ui, t, t!("About this game"), None);
                     blocks(ui, t, &d.about, left_w);
                     ui.add_space(24.0);
-                    w::section(ui, t, t!("System requirements"), None);
-                    ui.columns(2, |cols| {
-                        cols[0].label(w::text_semibold(t!("Minimum"), 14.0, t.text_dim));
-                        blocks(&mut cols[0], t, &d.requirements_min, left_w / 2.0);
-                        cols[1].label(w::text_semibold(t!("Recommended"), 14.0, t.text_dim));
-                        blocks(&mut cols[1], t, &d.requirements_rec, left_w / 2.0);
-                    });
+                    self.requirements(ui, t, &d, left_w);
                 });
                 ui.vertical(|ui| {
                     ui.set_width(right_w);
@@ -1181,10 +1204,16 @@ impl Store {
                         });
                         ui.add_space(12.0);
                     }
+                    let languages = self.browse_info(id).map(|b| b.languages).unwrap_or_default();
                     w::card(t).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(w::text_semibold(t!("Languages"), 14.0, t.text));
-                        ui.add(egui::Label::new(w::text(d.languages.replace("*languages with full audio support", ""), 12.5, t.text_dim)).wrap());
+                        ui.add_space(4.0);
+                        if languages.is_empty() {
+                            ui.add(egui::Label::new(w::text(d.languages.replace("*languages with full audio support", ""), 12.5, t.text_dim)).wrap());
+                        } else {
+                            self.languages_table(ui, t, &languages);
+                        }
                         if let Some(site) = &d.website {
                             ui.add_space(8.0);
                             if ui.link(w::text(format!("{}  {}", icons::GLOBE, t!("Official website")), 13.0, t.accent)).clicked() {
@@ -1194,6 +1223,9 @@ impl Store {
                     });
                 });
             });
+            // Reviews take the full width, like Steam's two columns.
+            ui.add_space(24.0);
+            self.review_list(ui, t, ctx, id);
         });
     }
 
@@ -1513,6 +1545,31 @@ impl Store {
             }
         });
     }
+}
+
+/// "90% 👍 … 10% 👎" over a split bar, and how many reviews: what share
+/// liked it, at a glance (in place of Steam's "Very Positive" words).
+pub(crate) fn rating_bar(ui: &mut Ui, t: &Theme, positive: u32, count: u64) {
+    let positive = positive.min(100);
+    let (up_c, down_c) = (Color32::from_rgb(0x66, 0xC0, 0xF4), Color32::from_rgb(0xC3, 0x5C, 0x4A));
+    ui.horizontal(|ui| {
+        let w = 190.0;
+        let (r, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
+        let p = ui.painter();
+        p.text(r.left_top(), Align2::LEFT_TOP, format!("{positive}% {}", icons::THUMBS_UP), w::font_semibold(12.0), up_c);
+        p.text(r.right_top(), Align2::RIGHT_TOP, format!("{}% {}", 100 - positive, icons::THUMBS_DOWN), w::font_semibold(12.0), down_c);
+        let bar = Rect::from_min_size(pos2(r.left(), r.bottom() - 5.0), vec2(w, 5.0));
+        let split = bar.left() + w * positive as f32 / 100.0;
+        let gap = if positive > 0 && positive < 100 { 2.0 } else { 0.0 };
+        if positive > 0 {
+            p.rect_filled(Rect::from_min_max(bar.min, pos2(split - gap / 2.0, bar.bottom())), CornerRadius::same(2), up_c);
+        }
+        if positive < 100 {
+            p.rect_filled(Rect::from_min_max(pos2(split + gap / 2.0, bar.top()), bar.max), CornerRadius::same(2), down_c);
+        }
+        ui.add_space(8.0);
+        ui.label(w::text(t!("{count} reviews", count = thousands(count)), 12.5, t.accent));
+    });
 }
 
 fn review_color(t: &Theme, score: u32) -> Color32 {

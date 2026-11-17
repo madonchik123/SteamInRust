@@ -54,6 +54,7 @@ pub const SPARKLE: &str = "\u{E6A2}";
 pub const CALENDAR: &str = "\u{E108}";
 pub const THUMBS_UP: &str = "\u{E48E}";
 pub const THUMBS_DOWN: &str = "\u{E48C}";
+pub const SMILEY: &str = "\u{E436}";
 pub const DOTS: &str = "\u{E1FE}";
 pub const EXTERNAL: &str = "\u{E5DE}";
 pub const CART: &str = "\u{E41E}";

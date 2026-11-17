@@ -84,6 +84,14 @@ impl Store {
                     ui.add(egui::Label::new(w::text(&r.text, 13.5, t.text_dim)).wrap());
                     ui.add_space(6.0);
                     let mut facts = vec![if r.public { t!("Public").to_string() } else { t!("Friends only").to_string() }];
+                    if r.playtime > 0 {
+                        let h = |m: u32| format!("{:.1}", m as f64 / 60.0);
+                        let mut hours = t!("{h} hrs on record", h = h(r.playtime)).to_string();
+                        if r.playtime_at_review > 0 && r.playtime_at_review != r.playtime {
+                            hours = format!("{hours} ({})", t!("{h} hrs at review time", h = h(r.playtime_at_review)));
+                        }
+                        facts.push(hours);
+                    }
                     if r.updated > 0 {
                         facts.push(ui::ago(r.updated));
                     }

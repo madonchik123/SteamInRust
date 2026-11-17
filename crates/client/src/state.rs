@@ -71,6 +71,11 @@ pub struct State {
     pub discovery: Option<Result<Vec<AppId>, String>>,
     /// Games running their first-time setup: (step, of, what).
     pub first_time_setup: HashMap<AppId, (usize, usize, String)>,
+    /// Friends' reviews per game, and reviews by other people (to vote on).
+    pub friend_reviews: HashMap<AppId, Result<Vec<(SteamId, model::MyReview)>, String>>,
+    pub reviews_by: HashMap<(AppId, SteamId), model::MyReview>,
+    /// Your votes on other people's reviews this session.
+    pub review_votes: HashMap<u64, model::ReviewVote>,
     /// Someone's friends, reviews and groups, per profile.
     pub profile_friends: HashMap<SteamId, Result<Vec<SteamId>, String>>,
     pub profile_reviews: HashMap<SteamId, Result<Vec<model::ProfileReview>, String>>,
@@ -352,6 +357,19 @@ impl State {
             }
             Event::Wishlist(w) => self.wishlist = Some(w.clone()),
             Event::DiscoveryQueue(q) => self.discovery = Some(q.clone()),
+            Event::FriendReviews { app_id, result } => {
+                self.friend_reviews.insert(*app_id, result.clone());
+            }
+            Event::ReviewsBy { app_id, reviews } => {
+                for (who, r) in reviews {
+                    self.reviews_by.insert((*app_id, *who), r.clone());
+                }
+            }
+            Event::ReviewVoted { review, vote, result } => {
+                if result.is_ok() {
+                    self.review_votes.insert(*review, *vote);
+                }
+            }
             Event::ProfileFriends { steam_id, result } => {
                 self.profile_friends.insert(*steam_id, result.clone());
             }

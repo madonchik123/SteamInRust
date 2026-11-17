@@ -18,19 +18,7 @@ pub async fn mine(conn: &Connection, me: SteamId, app: AppId) -> Result<Option<M
         requests: vec![CUserReviewsGetIndividualRecommendationsRequestRecommendationRequest { steamid: Some(me), appid: Some(app) }],
     };
     let r: CUserReviewsGetIndividualRecommendationsResponse = conn.call("UserReviews.GetIndividualRecommendations#1", &req).await.map_err(|e| e.to_string())?;
-    Ok(r.recommendations.into_iter().find(|d| d.appid() == app && d.recommendationid() != 0).map(|d| MyReview {
-        id: d.recommendationid(),
-        text: d.review().to_string(),
-        voted_up: d.voted_up(),
-        public: d.is_public(),
-        comments_disabled: d.comments_disabled(),
-        received_compensation: d.received_compensation(),
-        language: d.language().to_string(),
-        updated: d.time_updated().max(d.time_created()) as u64,
-        votes_up: d.votes_up(),
-        votes_funny: d.votes_funny(),
-        comments: d.comment_count(),
-    }))
+    Ok(r.recommendations.iter().find(|d| d.appid() == app && d.recommendationid() != 0).map(details))
 }
 
 /// Post a first review, or change the one you have (`review.id` set).
@@ -88,4 +76,63 @@ pub async fn delete(web: &crate::market::Web, app: AppId) -> Result<(), String> 
         .await
         .map_err(|e| e.to_string())?;
     if r.status().is_success() { Ok(()) } else { Err(format!("Steam answered {}", r.status())) }
+}
+
+/// Reviews of `app` by these people (those who wrote one), keyed by author.
+pub async fn of(conn: &Connection, people: &[SteamId], app: AppId) -> Result<Vec<(SteamId, MyReview)>, String> {
+    if people.is_empty() {
+        return Ok(Vec::new());
+    }
+    let req = CUserReviewsGetIndividualRecommendationsRequest {
+        requests: people.iter().map(|&p| CUserReviewsGetIndividualRecommendationsRequestRecommendationRequest { steamid: Some(p), appid: Some(app) }).collect(),
+    };
+    let r: CUserReviewsGetIndividualRecommendationsResponse = conn.call("UserReviews.GetIndividualRecommendations#1", &req).await.map_err(|e| e.to_string())?;
+    Ok(r.recommendations
+        .into_iter()
+        .filter(|d| d.appid() == app && d.recommendationid() != 0)
+        .map(|d| (d.steamid(), details(&d)))
+        .collect())
+}
+
+fn details(d: &proto::webui::RecommendationDetails) -> MyReview {
+    MyReview {
+        id: d.recommendationid(),
+        text: d.review().to_string(),
+        voted_up: d.voted_up(),
+        public: d.is_public(),
+        comments_disabled: d.comments_disabled(),
+        received_compensation: d.received_compensation(),
+        language: d.language().to_string(),
+        updated: d.time_updated().max(d.time_created()) as u64,
+        votes_up: d.votes_up(),
+        votes_funny: d.votes_funny(),
+        comments: d.comment_count(),
+        playtime: d.playtime_forever().max(0) as u32,
+        playtime_at_review: d.playtime_at_review().max(0) as u32,
+    }
+}
+
+/// Your friends' reviews of `app` (Steam's "Reviews by friends").
+pub async fn friends(conn: &Connection, app: AppId) -> Result<Vec<(SteamId, MyReview)>, String> {
+    let r: proto::webui::CUserReviewsGetFriendsRecommendedAppResponse =
+        conn.call("UserReviews.GetFriendsRecommendedApp#1", &proto::webui::CUserReviewsGetFriendsRecommendedAppRequest { appid: Some(app) }).await.map_err(|e| e.to_string())?;
+    let people: Vec<SteamId> = r.accountids_recommended.iter().chain(&r.accountids_not_recommended).map(|a| 76_561_197_960_265_728 + *a as SteamId).collect();
+    of(conn, &people, app).await
+}
+
+/// Vote on someone's review, like the buttons under it on Steam.
+pub async fn vote(web: &crate::market::Web, review: u64, vote: model::ReviewVote) -> Result<(), String> {
+    let (url, form) = match vote {
+        model::ReviewVote::Yes | model::ReviewVote::No => (
+            format!("https://steamcommunity.com/userreviews/rate/{review}"),
+            vec![("rateup", (vote == model::ReviewVote::Yes).to_string()), ("sessionid", web.session_id.clone())],
+        ),
+        model::ReviewVote::Funny => (
+            format!("https://steamcommunity.com/userreviews/votetag/{review}"),
+            vec![("tagid", "1".to_string()), ("rateup", "true".to_string()), ("sessionid", web.session_id.clone())],
+        ),
+    };
+    let r = web.http.post(url).form(&form).send().await.map_err(|e| e.to_string())?;
+    let v: serde_json::Value = r.json().await.map_err(|e| e.to_string())?;
+    if v.get("success").and_then(|s| s.as_i64()) == Some(1) { Ok(()) } else { Err("Steam didn't take the vote.".into()) }
 }

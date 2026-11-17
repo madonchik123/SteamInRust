@@ -38,6 +38,28 @@ pub struct BrowseInfo {
     pub tags: Vec<u32>,
     pub trailers: Vec<Trailer>,
     pub content_descriptors: Vec<u32>,
+    /// Languages with what each covers, Steam's order (English first).
+    pub languages: Vec<Language>,
+}
+
+/// One language a game supports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Language {
+    /// English name ("German", "Spanish - Latin America").
+    pub name: &'static str,
+    pub interface: bool,
+    pub full_audio: bool,
+    pub subtitles: bool,
+}
+
+/// Steam's language numbers (ELanguage), in English.
+pub fn language_name(n: i32) -> Option<&'static str> {
+    const NAMES: [&str; 30] = [
+        "English", "German", "French", "Italian", "Korean", "Spanish - Spain", "Simplified Chinese", "Traditional Chinese", "Russian", "Thai",
+        "Japanese", "Portuguese - Portugal", "Polish", "Danish", "Dutch", "Finnish", "Norwegian", "Swedish", "Hungarian", "Czech",
+        "Romanian", "Turkish", "Portuguese - Brazil", "Bulgarian", "Greek", "Arabic", "Ukrainian", "Spanish - Latin America", "Vietnamese", "Indonesian",
+    ];
+    usize::try_from(n).ok().and_then(|i| NAMES.get(i).copied())
 }
 
 #[derive(Debug, Clone)]
@@ -58,7 +80,7 @@ impl StoreClient {
         let input = serde_json::json!({
             "ids": ids.iter().map(|id| serde_json::json!({ "appid": id })).collect::<Vec<_>>(),
             "context": { "language": self.language, "country_code": self.country.to_uppercase() },
-            "data_request": { "include_reviews": true, "include_tag_count": 12, "include_trailers": true }
+            "data_request": { "include_reviews": true, "include_tag_count": 12, "include_trailers": true, "include_supported_languages": true }
         });
         let resp: Envelope<RawItems> = self
             .http
@@ -171,6 +193,20 @@ struct RawItem {
     trailers: Option<RawTrailers>,
     #[serde(default)]
     content_descriptorids: Vec<u32>,
+    #[serde(default)]
+    supported_languages: Vec<RawLanguage>,
+}
+
+#[derive(Deserialize)]
+struct RawLanguage {
+    #[serde(default)]
+    elanguage: i32,
+    #[serde(default)]
+    supported: bool,
+    #[serde(default)]
+    full_audio: bool,
+    #[serde(default)]
+    subtitles: bool,
 }
 
 #[derive(Deserialize)]
@@ -248,6 +284,16 @@ impl From<RawItem> for BrowseInfo {
             tags: r.tagids,
             trailers,
             content_descriptors: r.content_descriptorids,
+            languages: {
+                let mut l: Vec<Language> = r
+                    .supported_languages
+                    .iter()
+                    .filter_map(|x| Some(Language { name: language_name(x.elanguage)?, interface: x.supported, full_audio: x.full_audio, subtitles: x.subtitles }))
+                    .collect();
+                // Like Steam: English first, then by name.
+                l.sort_by_key(|x| (x.name != "English", x.name));
+                l
+            },
         }
     }
 }
