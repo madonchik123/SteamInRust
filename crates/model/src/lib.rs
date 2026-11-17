@@ -760,6 +760,50 @@ pub struct CollectionEdit {
     pub deleted: bool,
 }
 
+/// A review on someone's profile.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProfileReview {
+    pub app_id: AppId,
+    pub voted_up: bool,
+    /// e.g. "3,773.1 hrs on record".
+    pub hours: String,
+    /// e.g. "Posted 12 May, 2021."
+    pub posted: String,
+    pub text: String,
+    /// e.g. "12 people found this review helpful".
+    pub helpful: String,
+}
+
+/// A Steam group someone is in.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProfileGroup {
+    pub id: u64,
+    pub name: String,
+    /// The group's address name (steamcommunity.com/groups/<url>).
+    pub url: String,
+    pub headline: String,
+    pub avatar: String,
+    pub members: u32,
+    pub online: u32,
+    /// Their primary group.
+    pub primary: bool,
+}
+
+/// One result of a Community Market search.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MarketResult {
+    pub app_id: AppId,
+    pub app_name: String,
+    pub name: String,
+    pub hash_name: String,
+    pub icon: String,
+    /// Name color (hex, no #), for rarity.
+    pub color: String,
+    pub listings: u32,
+    /// Lowest price, as Steam formats it in your currency.
+    pub price: String,
+}
+
 /// Your review of a game (`id` 0: not written yet).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MyReview {

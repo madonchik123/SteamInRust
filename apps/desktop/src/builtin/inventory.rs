@@ -13,6 +13,8 @@ use ui::{Theme, icons, widgets as w};
 
 #[path = "inventory_market.rs"]
 mod market;
+#[path = "inventory_search.rs"]
+mod search;
 
 /// Games with community inventories: (app, context, name). 753/6 is Steam's
 /// own inventory (trading cards, backgrounds, emoticons, boosters).
@@ -44,6 +46,8 @@ enum View {
     #[default]
     Items,
     Listings,
+    /// The Community Market search.
+    Market,
 }
 
 #[derive(Default)]
@@ -73,6 +77,7 @@ pub struct Inventory {
     sell: Option<market::SellDialog>,
     gift: Option<u64>,
     listings_requested: bool,
+    market: search::MarketSearch,
 }
 
 impl Extension for Inventory {
@@ -88,6 +93,10 @@ impl Extension for Inventory {
         if arg == Some("listings") {
             self.owner = None;
             self.view = View::Listings;
+            return;
+        }
+        if arg == Some("market") {
+            self.view = View::Market;
             return;
         }
         let mut parts = arg.unwrap_or_default().split('/');
@@ -110,6 +119,9 @@ impl Extension for Inventory {
 
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {
         let t = ctx.theme.clone();
+        if self.view == View::Market {
+            return self.market_page(ui, &t, ctx);
+        }
         let owner = self.owner.filter(|o| *o != 0).unwrap_or(ctx.state.steam_id);
         let mine = owner == ctx.state.steam_id;
         if owner == 0 {
@@ -519,8 +531,8 @@ impl Inventory {
                 ui.label(w::text(t!("{n} items in {games} games", n = total, games = games), 13.0, t.text_dim));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if w::button(ui, &t, Some(icons::STOREFRONT), t!("Community Market"), w::Kind::Secondary, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked() {
-                    let _ = open::that_detached("https://steamcommunity.com/market/");
+                if w::button(ui, &t, Some(icons::STOREFRONT), t!("Community Market"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                    self.view = View::Market;
                 }
                 if mine {
                     if w::button(ui, &t, Some(icons::SWAP), t!("Trade offers"), w::Kind::Secondary, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked() {

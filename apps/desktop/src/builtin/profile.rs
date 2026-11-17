@@ -10,6 +10,9 @@ use model::{Relationship, SteamId, Visibility, art};
 use std::collections::HashSet;
 use ui::{Theme, icons, widgets as w};
 
+#[path = "profile_lists.rs"]
+mod lists;
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum GameSort {
     #[default]
@@ -24,14 +27,18 @@ pub struct Profile {
     viewing: Option<SteamId>,
     requested: HashSet<SteamId>,
     games_requested: HashSet<SteamId>,
-    /// Showing the full games list instead of the profile.
-    games_view: bool,
+    /// A list shown instead of the profile (games, friends, reviews, groups).
+    sub: Sub,
     games_search: String,
     games_sort: GameSort,
     showcase_requested: HashSet<SteamId>,
     social_requested: HashSet<SteamId>,
     comment_draft: String,
     all_badges: Option<SteamId>,
+    /// Friends, reviews and groups asked for, per profile.
+    lists_requested: HashSet<(SteamId, &'static str)>,
+    /// The search box on a profile's friends list.
+    list_search: String,
     /// Which page of comments shows (first comment's index), per profile.
     comment_start: std::collections::HashMap<SteamId, u32>,
 }
@@ -60,7 +67,13 @@ impl Extension for Profile {
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
         let mut parts = arg.unwrap_or_default().split('/');
         self.viewing = parts.next().and_then(|a| a.parse().ok());
-        self.games_view = parts.next() == Some("games");
+        self.sub = match parts.next() {
+            Some("games") => Sub::Games,
+            Some("friends") => Sub::Friends,
+            Some("reviews") => Sub::Reviews,
+            Some("groups") => Sub::Groups,
+            _ => Sub::None,
+        };
         self.games_search.clear();
     }
 
@@ -101,9 +114,12 @@ impl Extension for Profile {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(40.0);
             w::centered(ui, 1180.0, 32.0, |ui| {
-                if self.games_view {
-                    self.games_page(ui, &t, ctx, id, &display_name, mine);
-                    return;
+                match self.sub {
+                    Sub::None => {}
+                    Sub::Games => return self.games_page(ui, &t, ctx, id, &display_name, mine),
+                    Sub::Friends => return self.friends_page(ui, &t, ctx, id, &display_name, mine),
+                    Sub::Reviews => return self.reviews_page(ui, &t, ctx, id, &display_name, mine),
+                    Sub::Groups => return self.groups_page(ui, &t, ctx, id, &display_name, mine),
                 }
                 // Identity header on a translucent panel.
                 egui::Frame::new()
@@ -257,7 +273,19 @@ impl Extension for Profile {
 enum Link {
     Page(&'static str, Option<String>),
     Games,
-    Web(String),
+    /// The badges list (a window over the profile).
+    Badges,
+}
+
+/// The list a profile page shows instead of the profile itself.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Sub {
+    #[default]
+    None,
+    Games,
+    Friends,
+    Reviews,
+    Groups,
 }
 
 impl Profile {
@@ -278,23 +306,22 @@ impl Profile {
             Some(Ok(apps)) => apps.iter().flat_map(|a| a.contexts.iter()).map(|c| c.2 as u64).sum(),
             _ => ctx.state.inventories.iter().filter(|(k, _)| k.0 == id).map(|(_, v)| v.total as u64).sum(),
         };
-        let web = |path: &str| Link::Web(format!("https://steamcommunity.com/profiles/{id}/{path}"));
-        let friends_link = if mine { Link::Page("community", None) } else { web("friends/") };
+        let sub = |name: &str| Link::Page("profile", Some(format!("{id}/{name}")));
+        let friends_link = if mine { Link::Page("community", None) } else { sub("friends") };
         let friends_count = if mine { ctx.state.friend_list().len().to_string() } else { String::new() };
         let links: Vec<(&str, &str, String, Link)> = vec![
             (icons::BOOKS, t!("Games"), games, Link::Games),
             (icons::BACKPACK, t!("Inventory"), if items > 0 { items.to_string() } else { String::new() }, Link::Page("inventory", Some(id.to_string()))),
             (icons::USERS, t!("Friends"), friends_count, friends_link),
-            (icons::MEDAL, t!("Badges"), String::new(), web("badges/")),
+            (icons::MEDAL, t!("Badges"), String::new(), Link::Badges),
             (icons::CAMERA, t!("Screenshots"), String::new(), Link::Page("user_files", Some(format!("{id}/screenshots")))),
             (icons::CUBE, t!("Workshop items"), String::new(), Link::Page("user_files", Some(format!("{id}/workshop")))),
             (icons::BOOKS, t!("Guides"), String::new(), Link::Page("user_files", Some(format!("{id}/guides")))),
-            (icons::THUMBS_UP, t!("Reviews"), String::new(), web("recommended/")),
-            (icons::USERS_THREE, t!("Groups"), String::new(), web("groups/")),
+            (icons::THUMBS_UP, t!("Reviews"), String::new(), sub("reviews")),
+            (icons::USERS_THREE, t!("Groups"), String::new(), sub("groups")),
         ];
         panel(ui, t, |ui| {
             for (icon, label, count, link) in links {
-                let external = matches!(link, Link::Web(_));
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
                 let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
                 let p = ui.painter();
@@ -303,18 +330,13 @@ impl Profile {
                 p.text(pos2(r.left() + 34.0, r.center().y), Align2::LEFT_CENTER, label, w::font_medium(14.0), w::mix(t.text_dim, t.text, hover));
                 if !count.is_empty() {
                     p.text(pos2(r.right() - 10.0, r.center().y), Align2::RIGHT_CENTER, &count, w::font_bold(14.0), t.text);
-                } else if external {
-                    p.text(pos2(r.right() - 10.0, r.center().y), Align2::RIGHT_CENTER, icons::EXTERNAL, w::font(12.0), t.text_faint);
                 }
                 let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-                let resp = if external { resp.on_hover_text(t!("Opens in your browser")) } else { resp };
                 if resp.clicked() {
                     match link {
                         Link::Page(page, arg) => ctx.navigate(page, arg),
                         Link::Games => ctx.navigate("profile", Some(format!("{id}/games"))),
-                        Link::Web(url) => {
-                            let _ = open::that_detached(url);
-                        }
+                        Link::Badges => self.all_badges = Some(id),
                     }
                 }
             }
@@ -796,7 +818,7 @@ fn game_row(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, g: &model::PlayerGame) {
 }
 
 /// Translucent panel so the profile background shows through.
-fn panel(ui: &mut Ui, t: &Theme, add: impl FnOnce(&mut Ui)) {
+pub(super) fn panel(ui: &mut Ui, t: &Theme, add: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
         .fill(t.chrome.gamma_multiply(0.85))
         .stroke(Stroke::new(1.0, t.border))

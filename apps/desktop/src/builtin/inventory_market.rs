@@ -27,7 +27,7 @@ pub struct SellDialog {
     game_fee: f64,
 }
 
-fn money(cents: u64, currency: i32) -> String {
+pub(super) fn money(cents: u64, currency: i32) -> String {
     format_money(cents as i64, currency)
 }
 
@@ -479,7 +479,7 @@ fn market_link(ui: &mut Ui, t: &Theme, app: AppId, hash: &str) {
 /// Average sale price over time, with a range switch. Steam reports recent
 /// sales hour by hour; they're grouped (per day, or per 6 hours for a week)
 /// so the line shows the trend instead of every single sale.
-fn chart(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
+pub(super) fn chart(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
     let id = ui.scope_id().with("price-range");
     let mut days: u64 = ui.data(|d| d.get_temp(id)).unwrap_or(30);
     ui.label(w::text_semibold(t!("Average sale price"), 12.5, t.text_dim));
@@ -553,7 +553,7 @@ fn chart(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
 }
 
 /// Cheapest listings next to the highest buy orders, as a compact table.
-fn ladders(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
+pub(super) fn ladders(ui: &mut Ui, t: &Theme, p: &MarketPrice, currency: i32) {
     let rows = p.sell_ladder.len().max(p.buy_ladder.len()).min(5);
     let line = 18.0;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), line * (rows as f32 + 1.0) + 4.0), Sense::hover());

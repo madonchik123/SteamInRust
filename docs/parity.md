@@ -15,8 +15,8 @@ Steam's website" still works; it just isn't native yet.
 | Downloads and installs | 1 | |
 | Store | 1 | Checkout happens on Steam's website (Steam requires it) |
 | Friends and chat | 0.75 | No group chats or voice chat |
-| Community | 0.5 | Reading only for discussions; badge pages, groups and someone's reviews open Steam's website |
-| Inventory and Market | 0.75 | Trade offers open Steam's website; no Market search page |
+| Community | 0.75 | Reading only for discussions; a group's own page opens Steam's website |
+| Inventory and Market | 0.75 | Trade offers open Steam's website |
 | Steam Cloud | 1 | |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers; inventory item definitions |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser or screenshots |
@@ -127,7 +127,7 @@ All native, no web view.
 | Guides: list, sorts, search, reader with contents | Done |
 | Discussions: forums, topics, threads with quotes and spoilers | Reading only |
 | Steam Support: your requests and replies | Done. New requests open Steam's help site |
-| Badge pages, groups, someone's friends and reviews | Open Steam's website |
+| Someone's friends (online first, searchable), their latest reviews, their groups, and the badges list | Done, in the app. A group's own page opens Steam's website |
 
 ## Inventory and Market
 
@@ -137,7 +137,7 @@ All native, no web view.
 | Market price, order book, price chart, estimated value, in your currency | Done |
 | Sell, quick sell, sell to the highest buy order, your listings and buy orders | Done. Steam's fees per currency; you confirm in the Steam Mobile app |
 | Trade offers | Open Steam's website |
-| Market search and history pages | Open Steam's website |
+| Market search: by name and game, most popular first, with each item's price history and order book | Done, in the app. Your Market history opens Steam's website |
 
 ## Steam Cloud
 

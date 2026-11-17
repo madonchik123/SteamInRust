@@ -141,6 +141,12 @@ pub enum Command {
     /// Delete a comment (on your profile, or one you wrote).
     DeleteComment { steam_id: SteamId, comment_id: u64 },
     LoadBadges { steam_id: SteamId },
+    /// Someone's friends, latest reviews and groups (their profile pages).
+    LoadProfileFriends { steam_id: SteamId },
+    LoadProfileReviews { steam_id: SteamId },
+    LoadProfileGroups { steam_id: SteamId },
+    /// Search the Community Market (`app`: one game only; `start`: paging).
+    MarketSearch { query: String, app: Option<AppId>, start: u32 },
     LoadNotifications,
     /// Mark notifications as read (empty = all).
     MarkNotificationsRead { ids: Vec<u64> },
@@ -361,6 +367,11 @@ pub enum Event {
     WorkshopTags { app_id: AppId, result: Result<Vec<model::WorkshopTagCategory>, String> },
     /// (app id, date added)
     Wishlist(Vec<(AppId, u64)>),
+    ProfileFriends { steam_id: SteamId, result: Result<Vec<SteamId>, String> },
+    ProfileReviews { steam_id: SteamId, result: Result<Vec<model::ProfileReview>, String> },
+    ProfileGroups { steam_id: SteamId, result: Result<Vec<model::ProfileGroup>, String> },
+    /// Market search results: (query, game, start) they're for, then (results, total).
+    MarketSearch { query: String, app: Option<AppId>, start: u32, result: Result<(Vec<model::MarketResult>, u32), String> },
     /// Your review of a game (`None`: not written).
     MyReview { app_id: AppId, result: Result<Option<model::MyReview>, String> },
     /// A review was posted, changed or deleted.

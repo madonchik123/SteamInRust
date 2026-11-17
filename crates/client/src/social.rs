@@ -161,6 +161,97 @@ pub fn parse_badges(body: &str) -> model::Badges {
     model::Badges { level, xp, next, progress, items }
 }
 
+/// Someone's friends (their profile's friends page, which needs to be
+/// visible to you).
+pub async fn profile_friends(web: Option<&Web>, steam_id: SteamId) -> Result<Vec<SteamId>, String> {
+    let body = http(web).get(format!("{COMMUNITY}/profiles/{steam_id}/friends/")).send().await.map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
+    let ids = parse_friend_ids(&body, steam_id);
+    if ids.is_empty() && body.contains("profile_private_info") {
+        return Err("private".into());
+    }
+    Ok(ids)
+}
+
+/// The SteamIDs on a friends page (each friend block carries one), in order.
+pub fn parse_friend_ids(body: &str, owner: SteamId) -> Vec<SteamId> {
+    let mut out: Vec<SteamId> = Vec::new();
+    for part in body.split("data-steamid=\"").skip(1) {
+        let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(id) = digits.parse::<SteamId>() {
+            if id != owner && id > 76_561_197_960_265_728 && !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
+/// The latest reviews on someone's profile (Steam's first page of them).
+pub async fn profile_reviews(web: Option<&Web>, steam_id: SteamId) -> Result<Vec<model::ProfileReview>, String> {
+    let body = http(web).get(format!("{COMMUNITY}/profiles/{steam_id}/recommended/")).send().await.map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
+    let list = parse_reviews(&body);
+    if list.is_empty() && body.contains("profile_private_info") {
+        return Err("private".into());
+    }
+    Ok(list)
+}
+
+pub fn parse_reviews(body: &str) -> Vec<model::ProfileReview> {
+    // `review_box">` exactly: there's also a `review_box_content` inside each.
+    body.split("class=\"review_box\">")
+        .skip(1)
+        .filter_map(|row| {
+            let app = between(row, "/recommended/", "/").or_else(|| between(row, "steamcommunity.com/app/", "\""))?;
+            let app_id = app.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok()?;
+            // `class="content ">`: Steam leaves a space in the class.
+            let text = row.split("class=\"content").nth(1).and_then(|c| c.split_once('>')).and_then(|(_, c)| c.split("</div>").next()).map(clean).unwrap_or_default();
+            // "12 people found this review helpful<br>1 person found it funny", or one line.
+            let helpful = between(row, "class=\"header\">", "</div>").map(|h| clean(h.split("<br").next().unwrap_or(h))).unwrap_or_default();
+            Some(model::ProfileReview {
+                app_id,
+                voted_up: !row.contains("icon_thumbsDown"),
+                hours: between(row, "class=\"hours\">", "<").map(clean).unwrap_or_default(),
+                posted: between(row, "class=\"posted\">", "<").or_else(|| between(row, "class=\"date_posted\">", "<")).map(clean).unwrap_or_default(),
+                text: text.chars().take(1200).collect(),
+                helpful,
+            })
+        })
+        .collect()
+}
+
+/// The groups someone is in (from their profile's XML).
+pub async fn profile_groups(web: Option<&Web>, steam_id: SteamId) -> Result<Vec<model::ProfileGroup>, String> {
+    let body = http(web).get(format!("{COMMUNITY}/profiles/{steam_id}/?xml=1")).send().await.map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
+    if !body.contains("<groups>") && body.contains("<privacyState>private") {
+        return Err("private".into());
+    }
+    Ok(parse_groups(&body))
+}
+
+pub fn parse_groups(xml: &str) -> Vec<model::ProfileGroup> {
+    let field = |g: &str, tag: &str| -> String {
+        let raw = between(g, &format!("<{tag}>"), &format!("</{tag}>")).unwrap_or_default();
+        let raw = raw.trim().trim_start_matches("<![CDATA[").trim_end_matches("]]>");
+        clean(raw)
+    };
+    xml.split("<group ")
+        .skip(1)
+        .filter_map(|g| {
+            let id = field(g, "groupID64").parse().ok()?;
+            Some(model::ProfileGroup {
+                id,
+                name: field(g, "groupName"),
+                url: field(g, "groupURL"),
+                headline: field(g, "headline"),
+                avatar: field(g, "avatarMedium"),
+                members: field(g, "memberCount").replace(',', "").parse().unwrap_or(0),
+                online: field(g, "membersOnline").replace(',', "").parse().unwrap_or(0),
+                primary: g.starts_with("isPrimary=\"1\""),
+            })
+        })
+        .collect()
+}
+
 /// A game's Workshop tag groups, as its Workshop page declares them.
 pub async fn workshop_tags(app: model::AppId, language: &str) -> Result<Vec<model::WorkshopTagCategory>, String> {
     let body = reqwest::Client::new()
@@ -290,5 +381,48 @@ mod tests {
         assert_eq!(badges.items[0].title, "Power Player");
         assert_eq!(badges.items[0].detail, "340 XP");
         assert_eq!(badges.items[0].icon.as_deref(), Some("https://x/13.png"));
+    }
+}
+
+#[cfg(test)]
+mod profile_page_tests {
+    #[test]
+    fn reads_friends_reviews_and_groups() {
+        let friends = r#"<div class="selectable friend_block_v2 persona online" data-steamid="76561198000000001" data-search="a"></div>
+            <div class="selectable friend_block_v2 persona offline" data-steamid="76561198000000002"></div>
+            <a data-steamid="76561198000000001"></a><div data-steamid="76561198099999999"></div>"#;
+        assert_eq!(super::parse_friend_ids(friends, 76561198099999999), vec![76561198000000001, 76561198000000002]);
+
+        let reviews = r#"<div class="review_box">
+            <div class="leftcol"><a href="https://steamcommunity.com/app/570"><img src="x"></a>
+            <div class="hours">3,773.1 hrs on record</div></div>
+            <div class="rightcol"><div class="header">12 people found this review helpful<br>1 person found this review funny</div>
+            <div class="vote_header"><div class="thumb"><a href="https://steamcommunity.com/id/x/recommended/570/"><img src="https://x/icon_thumbsUp_v6.png"></a></div>
+            <div class="title"><a href="https://steamcommunity.com/id/x/recommended/570/">Recommended</a></div></div>
+            <div class="posted">Posted 12 May, 2021.</div>
+            <div class="content ">Great &amp; <b>fun</b></div></div></div>
+            <div class="review_box"><div class="header">
+            No one has rated this review as helpful yet
+            </div><div class="review_box_content"><a href="https://steamcommunity.com/id/x/recommended/730/"><img src="icon_thumbsDown.png"></a><div class="content ">No</div></div></div>"#;
+        let r = super::parse_reviews(reviews);
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[0].app_id, r[0].voted_up, r[0].hours.as_str(), r[0].text.as_str()), (570, true, "3,773.1 hrs on record", "Great & fun"));
+        assert_eq!(r[0].helpful, "12 people found this review helpful");
+        assert_eq!(r[0].posted, "Posted 12 May, 2021.");
+        assert_eq!((r[1].app_id, r[1].voted_up, r[1].text.as_str()), (730, false, "No"));
+        assert_eq!(r[1].helpful, "No one has rated this review as helpful yet");
+
+        let xml = r#"<groups><group isPrimary="1">
+            <groupID64>103582791430059237</groupID64>
+            <groupName><![CDATA[Ludum Dare]]></groupName>
+            <groupURL><![CDATA[ludumdare]]></groupURL>
+            <headline><![CDATA[Game jam]]></headline>
+            <avatarMedium><![CDATA[https://avatars.fastly.steamstatic.com/a_medium.jpg]]></avatarMedium>
+            <memberCount>12,345</memberCount><membersOnline>67</membersOnline>
+            </group><group isPrimary="0"><groupID64>103582791429521408</groupID64><groupName><![CDATA[Valve]]></groupName></group></groups>"#;
+        let g = super::parse_groups(xml);
+        assert_eq!(g.len(), 2);
+        assert_eq!((g[0].name.as_str(), g[0].url.as_str(), g[0].members, g[0].online, g[0].primary), ("Ludum Dare", "ludumdare", 12345, 67, true));
+        assert!(!g[1].primary);
     }
 }

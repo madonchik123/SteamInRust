@@ -458,3 +458,66 @@ pub async fn page(web: &Web, url: &str) -> Result<String, String> {
     }
     Ok(body)
 }
+
+/// Search the Community Market (Steam's market search, most popular first).
+/// `app` limits it to one game. Returns the results and how many there are.
+pub async fn search(web: Option<&Web>, query: &str, app: Option<model::AppId>, start: u32) -> Result<(Vec<model::MarketResult>, u32), String> {
+    let mut url = reqwest::Url::parse(&format!("{COMMUNITY}/market/search/render/")).map_err(|e| e.to_string())?;
+    url.query_pairs_mut()
+        .append_pair("query", query)
+        .append_pair("start", &start.to_string())
+        .append_pair("count", "30")
+        .append_pair("search_descriptions", "0")
+        .append_pair("sort_column", "popular")
+        .append_pair("sort_dir", "desc")
+        .append_pair("norender", "1");
+    if let Some(app) = app {
+        url.query_pairs_mut().append_pair("appid", &app.to_string());
+    }
+    let client = web.map(|w| w.http.clone()).unwrap_or_default();
+    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err("The Market is busy. Try again in a minute.".into());
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    parse_search(&v).ok_or_else(|| "The Market is busy. Try again in a minute.".into())
+}
+
+pub fn parse_search(v: &serde_json::Value) -> Option<(Vec<model::MarketResult>, u32)> {
+    let total = v.get("total_count")?.as_u64()? as u32;
+    let list = v
+        .get("results")?
+        .as_array()?
+        .iter()
+        .filter_map(|r| {
+            let d = r.get("asset_description");
+            let s = |o: Option<&serde_json::Value>, k: &str| o.and_then(|o| o.get(k)).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            Some(model::MarketResult {
+                app_id: d.and_then(|d| d.get("appid")).and_then(|a| a.as_u64()).unwrap_or(0) as model::AppId,
+                app_name: s(Some(r), "app_name"),
+                name: s(Some(r), "name"),
+                hash_name: Some(s(Some(r), "hash_name")).filter(|h| !h.is_empty())?,
+                icon: Some(s(d, "icon_url")).filter(|i| !i.is_empty()).map(|i| format!("https://community.fastly.steamstatic.com/economy/image/{i}/120x120")).unwrap_or_default(),
+                color: s(d, "name_color"),
+                listings: r.get("sell_listings").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+                price: s(Some(r), "sell_price_text"),
+            })
+        })
+        .collect();
+    Some((list, total))
+}
+
+#[cfg(test)]
+mod search_tests {
+    #[test]
+    fn reads_market_search() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"success":true,"start":0,"pagesize":30,"total_count":1234,"results":[
+            {"name":"Revolution Case","hash_name":"Revolution Case","sell_listings":98765,"sell_price":45,"sell_price_text":"$0.45","app_name":"Counter-Strike 2",
+             "asset_description":{"appid":730,"icon_url":"abc","name_color":"D2D2D2","type":"Base Grade Container"},"sale_price_text":"$0.43"}]}"#).unwrap();
+        let (list, total) = super::parse_search(&v).unwrap();
+        assert_eq!(total, 1234);
+        assert_eq!((list[0].app_id, list[0].hash_name.as_str(), list[0].listings, list[0].price.as_str()), (730, "Revolution Case", 98765, "$0.45"));
+        assert!(list[0].icon.ends_with("/abc/120x120"));
+        assert!(super::parse_search(&serde_json::Value::Null).is_none());
+    }
+}

@@ -71,6 +71,12 @@ pub struct State {
     pub discovery: Option<Result<Vec<AppId>, String>>,
     /// Games running their first-time setup: (step, of, what).
     pub first_time_setup: HashMap<AppId, (usize, usize, String)>,
+    /// Someone's friends, reviews and groups, per profile.
+    pub profile_friends: HashMap<SteamId, Result<Vec<SteamId>, String>>,
+    pub profile_reviews: HashMap<SteamId, Result<Vec<model::ProfileReview>, String>>,
+    pub profile_groups: HashMap<SteamId, Result<Vec<model::ProfileGroup>, String>>,
+    /// The latest Community Market search: (query, game, start) and its answer.
+    pub market_search: Option<((String, Option<AppId>, u32), Result<(Vec<model::MarketResult>, u32), String>)>,
     /// Your reviews, per game, once loaded (`None`: not written).
     pub my_reviews: HashMap<AppId, Result<Option<model::MyReview>, String>>,
     /// Games marked "Not interested" this session.
@@ -346,6 +352,16 @@ impl State {
             }
             Event::Wishlist(w) => self.wishlist = Some(w.clone()),
             Event::DiscoveryQueue(q) => self.discovery = Some(q.clone()),
+            Event::ProfileFriends { steam_id, result } => {
+                self.profile_friends.insert(*steam_id, result.clone());
+            }
+            Event::ProfileReviews { steam_id, result } => {
+                self.profile_reviews.insert(*steam_id, result.clone());
+            }
+            Event::ProfileGroups { steam_id, result } => {
+                self.profile_groups.insert(*steam_id, result.clone());
+            }
+            Event::MarketSearch { query, app, start, result } => self.market_search = Some(((query.clone(), *app, *start), result.clone())),
             Event::MyReview { app_id, result } => {
                 self.my_reviews.insert(*app_id, result.clone());
             }

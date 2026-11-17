@@ -853,6 +853,29 @@ async fn online(
                         Err(e) => sink(Event::Error(format!("Couldn't delete the comment: {e}"))),
                     }
                 }),
+                Some(Command::LoadProfileFriends { steam_id }) => {
+                    let conn = st.conn.clone();
+                    st.with_web(sink, move |web, sink| async move {
+                        let result = crate::social::profile_friends(web.as_deref().ok(), steam_id).await;
+                        // Names and avatars for the ones who aren't your friends.
+                        if let Ok(ids) = &result {
+                            for chunk in ids.chunks(100) {
+                                let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: chunk.to_vec() });
+                            }
+                        }
+                        sink(Event::ProfileFriends { steam_id, result });
+                    })
+                }
+                Some(Command::LoadProfileReviews { steam_id }) => st.with_web(sink, move |web, sink| async move {
+                    sink(Event::ProfileReviews { steam_id, result: crate::social::profile_reviews(web.as_deref().ok(), steam_id).await });
+                }),
+                Some(Command::LoadProfileGroups { steam_id }) => st.with_web(sink, move |web, sink| async move {
+                    sink(Event::ProfileGroups { steam_id, result: crate::social::profile_groups(web.as_deref().ok(), steam_id).await });
+                }),
+                Some(Command::MarketSearch { query, app, start }) => st.with_web(sink, move |web, sink| async move {
+                    let result = crate::market::search(web.as_deref().ok(), &query, app, start).await;
+                    sink(Event::MarketSearch { query, app, start, result });
+                }),
                 Some(Command::LoadBadges { steam_id }) => st.with_web(sink, move |web, sink| async move {
                     let result = crate::social::badges(web.as_deref().ok(), steam_id).await;
                     sink(Event::Badges { steam_id, result });
