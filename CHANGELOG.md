@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0](https://github.com/madonchik123/SteamInRust/compare/v0.7.0...v0.8.0) (2026-11-17)
+
+
+### New
+
+* Big Picture friend pages, steadier update downloads and a new logo ([#61](https://github.com/madonchik123/SteamInRust/issues/61)) ([a6e9336](https://github.com/madonchik123/SteamInRust/commit/a6e933661abb827ef0b1d5fa815be54ec0a718a0))
+* download queue controls, taskbar progress, discovery queue and dynamic collections ([#62](https://github.com/madonchik123/SteamInRust/issues/62)) ([731cef2](https://github.com/madonchik123/SteamInRust/commit/731cef24a27610c3d7eede30729e9f36508fd31f))
+
+
+### Faster
+
+* about 90 MB less memory and no CPU use while idle ([#57](https://github.com/madonchik123/SteamInRust/issues/57)) ([1a3cbf5](https://github.com/madonchik123/SteamInRust/commit/1a3cbf51109e1376399e2c11665401099834b50c))
+
 ## [0.7.0](https://github.com/madonchik123/SteamInRust/compare/v0.6.0...v0.7.0) (2026-11-16)
 
 
