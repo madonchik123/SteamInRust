@@ -39,6 +39,8 @@ pub fn draw(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, pos: f32) -> f32 {
         Page::Search => search(bp, ui, f, top),
         Page::Shots(id, i) => shots(bp, ui, f, id, i),
         Page::Settings => settings(bp, ui, f, top),
+        Page::Friend(id) => friend_page(bp, ui, f, top, id),
+        Page::Chat(id) => chat_page(bp, ui, f, top, id),
     }
 }
 
@@ -46,7 +48,7 @@ pub fn draw(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, pos: f32) -> f32 {
 pub fn x_hint(bp: &BigPicture) -> Option<String> {
     match bp.page() {
         Page::Tab(Tab::Library) => Some(t!("Installed / All").into()),
-        Page::Search => Some(t!("Delete").into()),
+        Page::Search | Page::Chat(_) => Some(t!("Delete").into()),
         _ => None,
     }
 }
@@ -795,48 +797,19 @@ fn search(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32 {
     y += 84.0 * s + 36.0 * s;
 
     // The keyboard.
-    let rows = if bp.cyrillic { KEYS_RU } else { KEYS_EN };
-    let key = 74.0 * s;
-    let gap = 10.0 * s;
-    let mut typed_char = None;
-    for (ri, row) in rows.iter().enumerate() {
-        for (ci, ch) in row.chars().enumerate() {
-            let r = Rect::from_min_size(pos2(left + ci as f32 * (key + gap), y), vec2(key, key));
-            if key_cap(bp, ui, f, Id::unique(("bp-key", ri, ci)), r, &ch.to_string(), false) {
-                typed_char = Some(ch);
-            }
-        }
-        y += key + gap;
-    }
-    let unit = key + gap;
-    let specials = [(4.0, " ", t!("Space")), (2.0, "del", t!("Delete")), (2.0, "lang", if bp.cyrillic { "ABC" } else { "АБВ" }), (3.0, "go", t!("Search"))];
-    let mut x = left;
-    let mut special = None;
-    for (i, (cols, what, label)) in specials.iter().enumerate() {
-        let r = Rect::from_min_size(pos2(x, y), vec2(cols * unit - gap, key));
-        if key_cap(bp, ui, f, Id::unique(("bp-key-special", i)), r, label, *what == "go") {
-            special = Some(*what);
-        }
-        x += cols * unit;
-    }
-    y += key + 50.0 * s;
-    if let Some(ch) = typed_char {
-        bp.query.push(ch);
-        bp.query_changed = f.now;
-    }
-    match special {
-        Some(" ") => {
-            bp.query.push(' ');
+    match keyboard(bp, ui, f, &mut y, t!("Search")) {
+        Some(Key::Char(ch)) => {
+            bp.query.push(ch);
             bp.query_changed = f.now;
         }
-        Some("del") => {
+        Some(Key::Del) => {
             bp.query.pop();
             bp.query_changed = f.now;
         }
-        Some("lang") => bp.cyrillic = !bp.cyrillic,
-        Some("go") => bp.submitted = bp.query.trim().to_string(),
-        _ => {}
+        Some(Key::Go) => bp.submitted = bp.query.trim().to_string(),
+        None => {}
     }
+    y += 50.0 * s - 10.0 * s;
     bp.preferred = Some(Id::unique(("bp-key", 1, 0)));
 
     // Results.
@@ -874,6 +847,53 @@ fn search(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32 {
         }
     }
     y - top + 20.0 * s
+}
+
+/// A key pressed on the on-screen keyboard.
+enum Key {
+    Char(char),
+    Del,
+    Go,
+}
+
+/// The on-screen keyboard (letters, Space, Delete, ABC/АБВ and `go`), from
+/// `y` down; `y` ends below it. Switching the alphabet is handled here.
+fn keyboard(bp: &mut BigPicture, ui: &mut Ui, f: &Frame, y: &mut f32, go: &str) -> Option<Key> {
+    let s = f.s;
+    let left = f.view.left() + f.pad;
+    let rows = if bp.cyrillic { KEYS_RU } else { KEYS_EN };
+    let key = 74.0 * s;
+    let gap = 10.0 * s;
+    let mut out = None;
+    for (ri, row) in rows.iter().enumerate() {
+        for (ci, ch) in row.chars().enumerate() {
+            let r = Rect::from_min_size(pos2(left + ci as f32 * (key + gap), *y), vec2(key, key));
+            if key_cap(bp, ui, f, Id::unique(("bp-key", ri, ci)), r, &ch.to_string(), false) {
+                out = Some(Key::Char(ch));
+            }
+        }
+        *y += key + gap;
+    }
+    let unit = key + gap;
+    let specials = [(4.0, " ", t!("Space")), (2.0, "del", t!("Delete")), (2.0, "lang", if bp.cyrillic { "ABC" } else { "АБВ" }), (3.0, "go", go)];
+    let mut x = left;
+    for (i, (cols, what, label)) in specials.iter().enumerate() {
+        let r = Rect::from_min_size(pos2(x, *y), vec2(cols * unit - gap, key));
+        if key_cap(bp, ui, f, Id::unique(("bp-key-special", i)), r, label, *what == "go") {
+            out = match *what {
+                " " => Some(Key::Char(' ')),
+                "del" => Some(Key::Del),
+                "lang" => {
+                    bp.cyrillic = !bp.cyrillic;
+                    None
+                }
+                _ => Some(Key::Go),
+            };
+        }
+        x += cols * unit;
+    }
+    *y += key + gap;
+    out
 }
 
 /// One key of the on-screen keyboard; true when pressed. Keys pop when hit.
@@ -1053,16 +1073,166 @@ fn friends(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32 {
                 bp.bg_want = Some(g);
             }
         }
-        // A on a friend in a game: that game's page.
+        // A on a friend: their page (message, join, invite, profile).
         if hit.activated {
-            if let Some(g) = fr.game_app_id {
-                open_game(bp, f, g);
-            }
+            bp.open(Page::Friend(fr.steam_id), f.now);
         }
     }
     let rows = list.len().div_ceil(cols);
     y += rows as f32 * (card_h + gap);
     y - top + 20.0 * s
+}
+
+/// A friend: who they are, what they play, and what you can do together.
+fn friend_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: model::SteamId) -> f32 {
+    let s = f.s;
+    let left = f.view.left() + f.pad;
+    let mut y = top + 24.0 * s;
+    let fr = f.app.state.persona(id);
+    let color = crate::shell::status_color(&f.t, &fr);
+    let p = ui.painter().clone();
+    let av = Rect::from_min_size(pos2(left, y), vec2(184.0 * s, 184.0 * s));
+    if !w::paint_cover(ui, av, &art::avatar_full(fr.avatar_hash.as_deref()), paint::radius(92.0 * s)) {
+        p.circle_filled(av.center(), 92.0 * s, f.t.raised);
+    }
+    p.circle_stroke(av.center(), 96.0 * s, egui::Stroke::new(4.0 * s, color));
+    let tx = av.right() + 44.0 * s;
+    let tw = f.view.right() - f.pad - tx;
+    paint::line(&p, pos2(tx, av.center().y - 10.0 * s), Align2::LEFT_BOTTOM, &fr.display_name(), w::font_bold(52.0 * s), f.t.text, tw);
+    paint::line(&p, pos2(tx, av.center().y + 6.0 * s), Align2::LEFT_TOP, &crate::shell::status_text(&f.app.state, &fr), w::font_medium(26.0 * s), color, tw);
+    if let Some(g) = fr.game_app_id.filter(|_| fr.in_game()) {
+        bp.bg_want = Some(g);
+    }
+    y = av.bottom() + 56.0 * s;
+
+    // What you can do, best first; the first is where focus starts.
+    let mut x = left;
+    let mut next = |bp: &mut BigPicture, ui: &mut Ui, f: &Frame, key: &str, icon: &str, label: &str, kind: Kind| {
+        let (r, hit) = button(bp, ui, f, Id::unique(("bp-friend-act", key)), pos2(x, y), 240.0 * s, Some(icon), label, kind, None);
+        x = r.right() + 20.0 * s;
+        hit.activated
+    };
+    let game = fr.game_app_id.filter(|_| fr.in_game());
+    let game_name = game.map(|g| f.app.state.app_name(g).map(String::from).unwrap_or_else(|| t!("the game").to_string()));
+    if let (Some(g), Some(args)) = (game, fr.join_args()) {
+        if next(bp, ui, f, "join", icons::PLAY, t!("Join game"), Kind::Play) {
+            let name = game_name.clone().unwrap_or_default();
+            match f.app.local.games.iter().find(|x| x.app_id == g) {
+                Some(installed) => {
+                    f.app.client.send(Command::Launch { app_id: g, install_dir: installed.install_dir.clone(), args });
+                    f.actions.push(Action::Toast(t!("Joining {name} in {game}…", name = fr.display_name(), game = name)));
+                }
+                None => f.actions.push(Action::Toast(t!("Install {game} to join {name}.", game = name, name = fr.display_name()))),
+            }
+        }
+    }
+    if next(bp, ui, f, "chat", icons::CHAT, t!("Send a message"), if game.is_some() { Kind::Secondary } else { Kind::Primary }) {
+        bp.open(Page::Chat(id), f.now);
+    }
+    for (i, (invite, label)) in crate::shell::invite_options(&f.app.state).into_iter().enumerate() {
+        if next(bp, ui, f, &format!("invite{i}"), icons::USER_PLUS, &label, Kind::Secondary) {
+            crate::shell::send_invite(f.app, &fr, invite, f.actions);
+        }
+    }
+    if let Some(g) = game {
+        if next(bp, ui, f, "game", icons::CONTROLLER, t!("Game details"), Kind::Secondary) {
+            open_game(bp, f, g);
+        }
+    }
+    if next(bp, ui, f, "profile", icons::USER_CIRCLE, t!("View profile"), Kind::Secondary) {
+        // Profiles live in the normal window.
+        bp.leave(ui.ctx());
+        f.actions.push(Action::Navigate { page: "profile".into(), arg: Some(id.to_string()) });
+    }
+    y += 72.0 * s + 24.0 * s;
+    p.text(pos2(left, y), Align2::LEFT_TOP, t!("View profile opens it in the normal window."), w::font(19.0 * s), f.t.text_faint);
+    y += 40.0 * s;
+    y - top
+}
+
+/// A conversation: the latest messages, and a box typed with the on-screen
+/// keyboard (or a real one; Enter sends).
+fn chat_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: model::SteamId) -> f32 {
+    let s = f.s;
+    let left = f.view.left() + f.pad;
+    let width = (f.view.width() - 2.0 * f.pad).min(1180.0 * s);
+    let mut y = top + 16.0 * s;
+    if bp.chats_loaded.insert(id) {
+        f.app.client.send(Command::LoadHistory { friend: id });
+    }
+    if f.app.state.unread.get(&id).is_some_and(|n| *n > 0) {
+        f.actions.push(Action::MarkRead(id));
+    }
+    let fr = f.app.state.persona(id);
+    let p = ui.painter().clone();
+    let typing = if f.app.state.is_typing(id) { format!("  ·  {}", t!("typing…")) } else { String::new() };
+    p.text(pos2(left, y), Align2::LEFT_TOP, format!("{}{typing}", fr.display_name()), w::font_bold(34.0 * s), f.t.text);
+    y += 54.0 * s;
+
+    // The last messages, oldest at the top.
+    let me = f.app.state.steam_id;
+    let messages: Vec<model::ChatMessage> = f.app.state.chats.get(&id).map(|c| c.iter().rev().take(4).rev().cloned().collect()).unwrap_or_default();
+    // Short enough that the whole keyboard fits on a 1080p screen.
+    let area = Rect::from_min_size(pos2(left, y), vec2(width, 200.0 * s));
+    p.rect_filled(area, paint::radius(18.0 * s), Color32::from_black_alpha(90));
+    if messages.is_empty() {
+        p.text(area.center(), Align2::CENTER_CENTER, t!("No messages yet"), w::font(22.0 * s), f.t.text_faint);
+    }
+    let mut by = area.bottom() - 18.0 * s;
+    let font = w::font(22.0 * s);
+    for m in messages.iter().rev() {
+        let mine = m.from == me;
+        let wrap = width * 0.68;
+        let job = egui::text::LayoutJob::simple(m.text.clone(), font.clone(), f.t.text, wrap);
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let size = galley.size() + vec2(36.0 * s, 24.0 * s);
+        let bx = if mine { area.right() - 18.0 * s - size.x } else { area.left() + 18.0 * s };
+        let bubble = Rect::from_min_size(pos2(bx, by - size.y), size);
+        if bubble.top() < area.top() + 10.0 * s {
+            break;
+        }
+        p.rect_filled(bubble, paint::radius(16.0 * s), if mine { f.t.accent.gamma_multiply(0.55) } else { f.t.raised });
+        p.galley(bubble.min + vec2(18.0 * s, 12.0 * s), galley, f.t.text);
+        by = bubble.top() - 12.0 * s;
+    }
+    y = area.bottom() + 18.0 * s;
+
+    // The message box.
+    if f.x {
+        bp.message.pop();
+    }
+    if f.y {
+        bp.message.push(' ');
+    }
+    let field = Rect::from_min_size(pos2(left, y), vec2(width, 64.0 * s));
+    p.rect_filled(field, paint::radius(32.0 * s), Color32::from_black_alpha(120));
+    p.rect_stroke(field, paint::radius(32.0 * s), egui::Stroke::new(2.0 * s, f.t.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+    let tx = field.left() + 32.0 * s;
+    let typed = if bp.message.is_empty() {
+        p.text(pos2(tx, field.center().y), Align2::LEFT_CENTER, t!("Message {name}", name = fr.display_name()), w::font(26.0 * s), f.t.text_faint);
+        Rect::from_min_size(pos2(tx, field.center().y), Vec2::ZERO)
+    } else {
+        paint::line(&p, pos2(tx, field.center().y), Align2::LEFT_CENTER, &bp.message, w::font_semibold(28.0 * s), f.t.text, field.right() - tx - 40.0 * s)
+    };
+    let blink = ((f.now * 3.0).sin() as f32 * 0.5 + 0.5).powf(0.6);
+    p.vline(typed.right() + 4.0 * s, (field.center().y - 18.0 * s)..=(field.center().y + 18.0 * s), egui::Stroke::new(3.0 * s, f.t.accent.gamma_multiply(blink)));
+    y = field.bottom() + 18.0 * s;
+    let mut send = std::mem::take(&mut bp.send_now);
+    match keyboard(bp, ui, f, &mut y, t!("Send")) {
+        Some(Key::Char(ch)) => bp.message.push(ch),
+        Some(Key::Del) => {
+            bp.message.pop();
+        }
+        Some(Key::Go) => send = true,
+        None => {}
+    }
+    bp.preferred = Some(Id::unique(("bp-key", 1, 0)));
+    let text = bp.message.trim().to_string();
+    if send && !text.is_empty() {
+        f.app.client.send(Command::SendMessage { to: id, text });
+        bp.message.clear();
+    }
+    y - top + 30.0 * s
 }
 
 // ---------- Settings ----------

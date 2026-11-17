@@ -29,6 +29,9 @@ struct Item {
 #[derive(Default)]
 pub struct Focus {
     pub current: Option<Id>,
+    /// The focus got where it is by the mouse pointing at it (not keys, a
+    /// controller or a click). Tabs only switch on a click then.
+    pub by_pointer: bool,
     items: Vec<Item>,
     last: Vec<Item>,
     press: bool,
@@ -85,6 +88,7 @@ impl Focus {
     }
 
     fn step(&mut self, dir: Dir, now: f64) {
+        self.by_pointer = false;
         let Some(from) = self.current.and_then(|c| self.last.iter().find(|i| i.id == c)).copied() else {
             self.current = self.last.first().map(|i| i.id);
             self.moved = true;
@@ -109,9 +113,11 @@ impl Focus {
             let r = ui.interact(visible, id, Sense::click());
             if r.hovered() && self.pointer_moved && self.current != Some(id) {
                 self.current = Some(id);
+                self.by_pointer = true;
             }
             if r.clicked() {
                 self.current = Some(id);
+                self.by_pointer = false;
                 activated = true;
             }
         }

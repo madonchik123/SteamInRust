@@ -19,7 +19,7 @@ use extensions::Action;
 use focus::{Dir, Focus, Place, Scroller, since};
 use i18n::t;
 use input::{Device, PadEvent, Press};
-use model::AppId;
+use model::{AppId, SteamId};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use ui::{Theme, icons, widgets as w};
@@ -61,6 +61,10 @@ pub enum Page {
     /// Screenshots of a store page, at one of them.
     Shots(AppId, usize),
     Settings,
+    /// A friend: message, join, invite, profile.
+    Friend(SteamId),
+    /// A conversation with a friend.
+    Chat(SteamId),
 }
 
 impl Page {
@@ -76,6 +80,10 @@ pub struct BigPicture {
     windowed: bool,
     fullscreen_sent: bool,
     fullscreen_asked: f64,
+    /// The normal window was maximized when Big Picture opened: it's
+    /// un-maximized first (Windows won't resize a maximized window to full
+    /// screen, leaving a taskbar-high strip undrawn) and maximized again on leaving.
+    was_maximized: bool,
     entered_at: f64,
     tab: Tab,
     stack: Vec<Page>,
@@ -103,6 +111,11 @@ pub struct BigPicture {
     query_changed: f64,
     submitted: String,
     cyrillic: bool,
+    /// Chat: the message being typed, Enter pressed on a real keyboard, and
+    /// conversations whose history was asked for.
+    message: String,
+    send_now: bool,
+    chats_loaded: HashSet<SteamId>,
     /// Background art: games and when each started fading in.
     bg: Vec<(AppId, f64)>,
     /// The game whose art the background should show this frame.
@@ -149,6 +162,12 @@ impl BigPicture {
         if !self.windowed {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
+    }
+
+    /// Whether the normal window was maximized before Big Picture opened (asked
+    /// once, after leaving, when the window gets its normal size back).
+    pub fn take_was_maximized(&mut self) -> bool {
+        std::mem::take(&mut self.was_maximized)
     }
 
     fn page(&self) -> Page {
@@ -285,25 +304,31 @@ impl BigPicture {
         // (signing in sets the normal window size).
         if !self.windowed && ctx.input(|i| i.viewport().fullscreen) != Some(true) && now - self.fullscreen_asked > 0.5 {
             self.fullscreen_asked = now;
+            if ctx.input(|i| i.viewport().maximized) == Some(true) {
+                self.was_maximized = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
 
         // ---- input ----
         let page = self.page();
-        let typing = page == Page::Search && self.menu.is_none();
+        let chat = matches!(page, Page::Chat(_));
+        let typing = (page == Page::Search || chat) && self.menu.is_none();
         let mut submit = false;
         if typing {
             let (text, back) = ctx.input_mut(|i| {
                 let text: String = i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.clone()) } else { None }).collect();
                 (text, i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
             });
+            let field = if chat { &mut self.message } else { &mut self.query };
             if !text.is_empty() {
-                self.query.push_str(&text);
+                field.push_str(&text);
                 self.query_changed = now;
                 self.device = Device::Keyboard;
             }
             if back {
-                if self.query.pop().is_none() {
+                if field.pop().is_none() {
                     self.queued.push(Press::B);
                 } else {
                     self.query_changed = now;
@@ -337,7 +362,8 @@ impl BigPicture {
                     Press::Move(d) => dir = Some(d),
                     // Typing on a real keyboard: Enter searches what was typed
                     // (and then selects, like everywhere else).
-                    Press::A if typing && from_keys && self.query.trim() != self.submitted => submit = true,
+                    Press::A if typing && from_keys && chat && !self.message.trim().is_empty() => self.send_now = true,
+                    Press::A if typing && from_keys && !chat && self.query.trim() != self.submitted => submit = true,
                     Press::A => press = true,
                     Press::B => self.back(now),
                     Press::X => x = true,
@@ -497,8 +523,9 @@ impl BigPicture {
             if selected {
                 selected_rect = Some(r);
             }
-            if hit.focused && !selected {
-                // Moving along the tabs shows each one.
+            if hit.focused && !selected && !self.focus.by_pointer {
+                // Moving along the tabs (D-pad, keys) shows each one; the
+                // mouse only highlights a tab until it's clicked.
                 self.switch_tab(*tab, f.now, false);
             }
             if hit.activated {
@@ -587,7 +614,7 @@ impl BigPicture {
             p.text(pos2(x, bar.center().y), Align2::LEFT_CENTER, label, w::font_medium(19.0 * s), t.text_dim);
             let (glyph, round) = match (press, pad_mode, self.page()) {
                 // Typing: X is a letter, Backspace deletes.
-                (Press::X, false, Page::Search) => ("Backspace", false),
+                (Press::X, false, Page::Search | Page::Chat(_)) => ("Backspace", false),
                 _ => glyph_for(*press, pad_mode),
             };
             let fl = flash.filter(|(fp, _)| fp == press).map(|(_, at)| 1.0 - ((f.now - at) / 0.3) as f32).unwrap_or(0.0);

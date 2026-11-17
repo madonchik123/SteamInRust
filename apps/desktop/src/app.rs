@@ -195,12 +195,16 @@ impl SteamApp {
         for id in &prefs.disabled {
             registry.set_enabled(id, false);
         }
-        for (id, data) in &prefs.ext_data {
-            registry.load(id, data);
+        let demo = std::env::args().any(|a| a == "--demo");
+        // The demo shows only its own made-up account: not your saved
+        // library state (favorites, collections), and it never saves over it.
+        if !demo {
+            for (id, data) in &prefs.ext_data {
+                registry.load(id, data);
+            }
         }
 
         let saved = client::store::load();
-        let demo = std::env::args().any(|a| a == "--demo");
         let mut auto_account = None;
         if demo {
             for e in crate::demo::events(&local) {
@@ -723,6 +727,10 @@ impl eframe::App for SteamApp {
                 let pos = ((monitor - egui::Vec2::from(size)) / 2.0).max(egui::Vec2::ZERO);
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos.to_pos2()));
             }
+            // Back from Big Picture: maximized again if it was before.
+            if mode == WindowMode::Main && !big_picture && self.bigpicture.take_was_maximized() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
         }
         if signed_in && self.bigpicture.active {
             crate::bigpicture::show(self, ui, &mut actions);
@@ -756,6 +764,9 @@ impl eframe::App for SteamApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if self.demo {
+            return;
+        }
         self.prefs.ext_data = self.registry.save_all().into_iter().collect();
         eframe::set_value(storage, "prefs", &self.prefs);
         // eframe has just saved the window's state (it runs before this).
