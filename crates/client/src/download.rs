@@ -266,6 +266,16 @@ pub async fn run(
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let _ = std::fs::write(&marker, b"");
     }
+    // Steam's shared redistributables (DirectX, Visual C++...) the game uses,
+    // into their own folder (`Steamworks Shared`), like Steam.
+    let shared = match install_shared(&conn, &cdn, &app, &req, &progress).await {
+        Ok(s) => s,
+        Err(e) if e == depot::Error::Cancelled.to_string() || e == depot::Error::Stopped.to_string() => return Err(e),
+        Err(e) => {
+            tracing::warn!("shared redistributables of {}: {e}", app.name);
+            Vec::new()
+        }
+    };
     let report = match depot::install(cdn, &dir, jobs, progress).await {
         Ok(r) => r,
         Err(depot::Error::Cancelled) => {
@@ -293,9 +303,143 @@ pub async fn run(
     for m in &manifests {
         let _ = std::fs::write(cache.join(format!("{}_{}.manifest", m.depot, m.gid)), m.to_bytes());
     }
-    write_app_manifest(&req, &app, &installed, need, owner).map_err(|e| e.to_string())?;
+    let scripts = install_scripts(&manifests, &req, app.app_id);
+    write_app_manifest(&req, &app, &installed, need, owner, &scripts, &shared).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&marker);
     Ok(report)
+}
+
+/// The install scripts (`installscript.vdf`, flagged in the manifests) per
+/// depot, for the app manifest's `InstallScripts` like Steam writes. Depots
+/// not downloaded this time keep what the old app manifest said.
+fn install_scripts(manifests: &[depot::Manifest], req: &InstallRequest, app_id: AppId) -> Vec<(u32, String)> {
+    let mut out: Vec<(u32, String)> = manifests
+        .iter()
+        .filter_map(|m| m.files.iter().find(|f| f.install_script).map(|f| (m.depot, f.name.replace('/', "\\"))))
+        .collect();
+    let old = std::fs::read_to_string(req.library.join("steamapps").join(format!("appmanifest_{app_id}.acf"))).ok().and_then(|t| vdf::parse(&t).ok());
+    if let Some(list) = old.as_ref().and_then(|d| d.path(&["AppState", "InstallScripts"])) {
+        for (depot, rel) in list.iter() {
+            if let (Ok(d), Some(rel)) = (depot.parse::<u32>(), rel.as_str()) {
+                if !manifests.iter().any(|m| m.depot == d) && !out.iter().any(|(x, _)| *x == d) {
+                    out.push((d, rel.to_string()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Download the shared redistributable depots a game lists (another app's
+/// depots, e.g. 228980 "Steamworks Common Redistributables") into that
+/// app's folder, and keep its app manifest (depots and install scripts) up
+/// to date like Steam does. Already-current depots are skipped. Returns the
+/// game's shared depots with the app they come from.
+async fn install_shared(conn: &Connection, cdn: &Arc<depot::Cdn>, app: &OwnedApp, req: &InstallRequest, progress: &Arc<depot::Progress>) -> Result<Vec<(u32, AppId)>, String> {
+    let wanted: Vec<(u32, AppId)> = app
+        .depots
+        .iter()
+        .filter(|d| d.shared_install && model::os_matches(&d.os, model::THIS_OS))
+        .filter_map(|d| Some((d.id, d.from_app?)))
+        .collect();
+    let mut by_app: std::collections::BTreeMap<AppId, Vec<u32>> = Default::default();
+    for (depot, from) in &wanted {
+        by_app.entry(*from).or_default().push(*depot);
+    }
+    for (from, depots) in by_app {
+        let Some(info) = crate::pics::raw_app_info(conn, from).await else { continue };
+        let source = crate::pics::parse_depots(&info);
+        let install_dir = info.path(&["config"]).and_then(|c| c.str("installdir")).unwrap_or("Steamworks Shared").to_string();
+        let name = info.path(&["common"]).and_then(|c| c.str("name")).unwrap_or("Steamworks Common Redistributables").to_string();
+        let dir = req.library.join("steamapps").join("common").join(&install_dir);
+        let acf_path = req.library.join("steamapps").join(format!("appmanifest_{from}.acf"));
+        let acf = std::fs::read_to_string(&acf_path).ok().and_then(|t| vdf::parse(&t).ok());
+        let have = |depot: u32| acf.as_ref().and_then(|d| d.path(&["AppState", "InstalledDepots", &depot.to_string()])).and_then(|o| o.u64("manifest"));
+        let mut jobs = Vec::new();
+        for depot in depots {
+            let Some((gid, _)) = source.iter().find(|d| d.id == depot).and_then(|d| d.manifest("public")) else { continue };
+            if have(depot) == Some(gid) && dir.exists() {
+                continue;
+            }
+            let key = match depot_key(conn, from, depot).await {
+                Ok(k) => k,
+                Err(_) => match depot_key(conn, app.app_id, depot).await {
+                    Ok(k) => k,
+                    Err(e) => {
+                        tracing::info!("shared depot {depot}: {e}");
+                        continue;
+                    }
+                },
+            };
+            let code = request_code(conn, from, depot, gid, "public").await;
+            let raw = cdn.manifest(depot, gid, code).await.map_err(|e| e.to_string())?;
+            let mut manifest = depot::Manifest::from_cdn(&raw).map_err(|e| e.to_string())?;
+            manifest.decrypt_names(&key).map_err(|e| e.to_string())?;
+            let old = have(depot)
+                .and_then(|m| std::fs::read(req.steam_root.join("depotcache").join(format!("{depot}_{m}.manifest"))).ok())
+                .and_then(|b| depot::Manifest::parse(&b).ok());
+            jobs.push(depot::DepotJob { depot, manifest, key, old });
+        }
+        if jobs.is_empty() {
+            continue;
+        }
+        tracing::info!("installing {} shared depot(s) of {name} for {}", jobs.len(), app.name);
+        let manifests: Vec<depot::Manifest> = jobs.iter().map(|j| j.manifest.clone()).collect();
+        depot::install(cdn.clone(), &dir, jobs, progress.clone()).await.map_err(|e| e.to_string())?;
+        let cache = req.steam_root.join("depotcache");
+        let _ = std::fs::create_dir_all(&cache);
+        for m in &manifests {
+            let _ = std::fs::write(cache.join(format!("{}_{}.manifest", m.depot, m.gid)), m.to_bytes());
+        }
+        write_shared_manifest(&acf_path, acf.as_ref(), from, &name, &install_dir, &manifests).map_err(|e| e.to_string())?;
+    }
+    Ok(wanted)
+}
+
+/// The shared app's manifest (`appmanifest_228980.acf`): its depots and
+/// their install scripts, merged with what was there.
+fn write_shared_manifest(path: &std::path::Path, old: Option<&vdf::Obj>, app_id: AppId, name: &str, install_dir: &str, new: &[depot::Manifest]) -> std::io::Result<()> {
+    let old_state = old.and_then(|d| d.obj("AppState"));
+    let mut depots: Vec<(String, u64, u64)> = old_state
+        .and_then(|s| s.obj("InstalledDepots"))
+        .map(|o| o.iter().filter_map(|(k, v)| Some((k.to_string(), v.as_obj()?.u64("manifest")?, v.as_obj()?.u64("size").unwrap_or(0)))).collect())
+        .unwrap_or_default();
+    let mut scripts: Vec<(String, String)> = old_state
+        .and_then(|s| s.obj("InstallScripts"))
+        .map(|o| o.iter().filter_map(|(k, v)| Some((k.to_string(), v.as_str()?.to_string()))).collect())
+        .unwrap_or_default();
+    for m in new {
+        let id = m.depot.to_string();
+        depots.retain(|(d, _, _)| *d != id);
+        depots.push((id.clone(), m.gid, m.original_size));
+        scripts.retain(|(d, _)| *d != id);
+        if let Some(f) = m.files.iter().find(|f| f.install_script) {
+            scripts.push((id, f.name.replace('/', "\\")));
+        }
+    }
+    depots.sort();
+    scripts.sort();
+    let mut installed = vdf::Obj::default();
+    for (d, gid, size) in &depots {
+        installed = installed.with_obj(d, vdf::Obj::default().with("manifest", gid.to_string()).with("size", size.to_string()));
+    }
+    let mut list = vdf::Obj::default();
+    for (d, rel) in &scripts {
+        list = list.with(d, rel);
+    }
+    let size: u64 = depots.iter().map(|(_, _, s)| s).sum();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let state = vdf::Obj::default()
+        .with("appid", app_id.to_string())
+        .with("universe", "1")
+        .with("name", name)
+        .with("StateFlags", "4")
+        .with("installdir", install_dir)
+        .with("LastUpdated", now.to_string())
+        .with("SizeOnDisk", size.to_string())
+        .with_obj("InstalledDepots", installed)
+        .with_obj("InstallScripts", list);
+    std::fs::write(path, vdf::write(&vdf::Obj::default().with_obj("AppState", state)))
 }
 
 /// Marks a game folder this client created for a download that hasn't
@@ -421,7 +565,7 @@ fn dir_size(dir: &Path) -> u64 {
     total
 }
 
-fn write_app_manifest(req: &InstallRequest, app: &OwnedApp, depots: &[(u32, u64, u64, Option<AppId>)], size: u64, owner: u64) -> std::io::Result<()> {
+fn write_app_manifest(req: &InstallRequest, app: &OwnedApp, depots: &[(u32, u64, u64, Option<AppId>)], size: u64, owner: u64, scripts: &[(u32, String)], shared: &[(u32, AppId)]) -> std::io::Result<()> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let build = app.branches.iter().find(|b| b.name == req.branch).map(|b| b.build_id).unwrap_or(0);
     let mut installed = vdf::Obj::default();
@@ -436,7 +580,7 @@ fn write_app_manifest(req: &InstallRequest, app: &OwnedApp, depots: &[(u32, u64,
     if req.branch != "public" {
         user = user.with("BetaKey", &req.branch);
     }
-    let state = vdf::Obj::default()
+    let mut state = vdf::Obj::default()
         .with("appid", app.app_id.to_string())
         .with("universe", "1")
         .with("name", &app.name)
@@ -447,9 +591,16 @@ fn write_app_manifest(req: &InstallRequest, app: &OwnedApp, depots: &[(u32, u64,
         .with("buildid", build.to_string())
         .with("LastOwner", owner.to_string())
         .with("AutoUpdateBehavior", "0")
-        .with_obj("InstalledDepots", installed)
-        .with_obj("UserConfig", user.clone())
-        .with_obj("MountedConfig", user);
+        .with_obj("InstalledDepots", installed);
+    // Like Steam: the install scripts per depot, and the shared
+    // redistributables (depot -> the app they come from).
+    if !scripts.is_empty() {
+        state = state.with_obj("InstallScripts", scripts.iter().fold(vdf::Obj::default(), |o, (d, rel)| o.with(&d.to_string(), rel)));
+    }
+    if !shared.is_empty() {
+        state = state.with_obj("SharedDepots", shared.iter().fold(vdf::Obj::default(), |o, (d, from)| o.with(&d.to_string(), from.to_string())));
+    }
+    let state = state.with_obj("UserConfig", user.clone()).with_obj("MountedConfig", user);
     let doc = vdf::Obj::default().with_obj("AppState", state);
     std::fs::write(req.library.join("steamapps").join(format!("appmanifest_{}.acf", app.app_id)), vdf::write(&doc))
 }

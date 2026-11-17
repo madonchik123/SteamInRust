@@ -202,6 +202,7 @@ mod tests {
             chunks: (0..chunks).map(|i| Chunk { sha: vec![i as u8; 20], offset: i as u64 * 10, size: 10, compressed: 8 }).collect(),
             directory: false,
             executable: false,
+            install_script: false,
             link: None,
         }
     }

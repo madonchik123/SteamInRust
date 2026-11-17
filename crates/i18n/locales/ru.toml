@@ -1808,3 +1808,6 @@
 "Start another queue" = "Новый список"
 "Discovery queue" = "Список рекомендаций"
 "A dynamic collection: Steam fills it from its filters. Change them in Steam." = "Динамическая коллекция: Steam заполняет её по фильтрам. Изменить их можно в Steam."
+"Performing first-time setup…" = "Первоначальная настройка…"
+"Installing: {step}" = "Установка: {step}"
+"Step {n} of {total}" = "Шаг {n} из {total}"

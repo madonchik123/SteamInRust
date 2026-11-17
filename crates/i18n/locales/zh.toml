@@ -1808,3 +1808,6 @@
 "Start another queue" = "开始新的队列"
 "Discovery queue" = "探索队列"
 "A dynamic collection: Steam fills it from its filters. Change them in Steam." = "动态收藏夹：Steam 根据其筛选条件自动填充。请在 Steam 中修改筛选条件。"
+"Performing first-time setup…" = "正在进行首次设置…"
+"Installing: {step}" = "正在安装：{step}"
+"Step {n} of {total}" = "第 {n} 步，共 {total} 步"

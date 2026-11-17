@@ -23,6 +23,13 @@ mod tray;
 mod updater;
 
 fn main() -> eframe::Result {
+    // The elevated helper for a game's first-time setup (install scripts):
+    // runs the steps it was given and exits, no window.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--install-script-steps") {
+        let code = args.get(2).map(|f| client::installscript::helper_main(std::path::Path::new(f))).unwrap_or(2);
+        std::process::exit(code);
+    }
     // A `steam://` link (or a plain second launch) goes to the running copy.
     let link = std::env::args().skip(1).find(|a| a.starts_with("steam://"));
     // macOS hands links over as events instead of arguments.

@@ -196,6 +196,8 @@ pub(crate) enum MainAction {
     Update,
     Install,
     Syncing,
+    /// Running the game's install scripts before it starts.
+    FirstTimeSetup,
     Queued,
     Uninstalling,
     /// Downloading or verifying.
@@ -1487,6 +1489,17 @@ impl Library {
                                     ui.label(w::text(&title, 12.0, t.text_faint));
                                 });
                             }
+                            Some(_) if ctx.state.first_time_setup.contains_key(&id) => {
+                                // Like Steam: DirectX, Visual C++ and the game's own setup first.
+                                let (done, total, step) = ctx.state.first_time_setup[&id].clone();
+                                ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::DOWNLOAD), t!("Performing first-time setup…"), w::Kind::Play, w::Size::Lg));
+                                ui.add_space(12.0);
+                                ui.vertical(|ui| {
+                                    ui.label(w::text_semibold(t!("Installing: {step}", step = step), 13.0, t.text));
+                                    w::progress(ui, t, done as f32 / total.max(1) as f32, 260.0);
+                                    ui.label(w::text(t!("Step {n} of {total}", n = (done + 1).min(total), total = total), 12.0, t.text_faint));
+                                });
+                            }
                             Some(_) if ctx.state.cloud_syncing.contains(&id) => {
                                 // Like Steam: the game starts once its saves are in sync.
                                 ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::CLOUD_CHECK), t!("Syncing Steam Cloud…"), w::Kind::Play, w::Size::Lg));
@@ -1998,6 +2011,7 @@ impl Library {
             Some(_) if ctx.state.playing == Some(id) => MainAction::Running,
             Some(g) if self.needs_update(ctx, &g) => MainAction::Update,
             Some(_) if ctx.state.cloud_syncing.contains(&id) => MainAction::Syncing,
+            Some(_) if ctx.state.first_time_setup.contains_key(&id) => MainAction::FirstTimeSetup,
             Some(_) => MainAction::Play,
             None if ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(&id)) => MainAction::Install,
             None => MainAction::StorePage,

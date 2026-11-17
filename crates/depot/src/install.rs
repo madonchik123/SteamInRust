@@ -517,7 +517,7 @@ mod tests {
     use crate::manifest::{FileEntry, Manifest};
 
     fn entry(name: &str, executable: bool, link: Option<&str>) -> FileEntry {
-        FileEntry { name: name.into(), size: 0, sha: Vec::new(), chunks: Vec::new(), directory: false, executable, link: link.map(String::from) }
+        FileEntry { name: name.into(), size: 0, sha: Vec::new(), chunks: Vec::new(), directory: false, executable, install_script: false, link: link.map(String::from) }
     }
 
     #[test]
@@ -587,6 +587,7 @@ mod resume_tests {
                 .collect(),
             directory: false,
             executable: false,
+            install_script: false,
             link: None,
         }
     }

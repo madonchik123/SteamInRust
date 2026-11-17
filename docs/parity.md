@@ -83,6 +83,8 @@ Steam's website" still works; it just isn't native yet.
 | Ask before quitting during a download | Done |
 | Reorder the queue (up, down, download now) | Done. "Download now" sets the running download aside; it goes back in the queue and continues from what it had |
 | Progress on the taskbar button (Windows) or the Dock icon (Mac) | Done |
+| Steam's shared redistributables (DirectX, Visual C++, .NET) a game uses | Downloaded into `Steamworks Shared` with the game, recorded in the app manifests like Steam |
+| First-time setup: the game's install scripts (installers, registry values, firewall rules) before its first launch | Done on Windows, with progress on the Play button. Steps Steam (or we) already did are skipped by the same registry markers; one UAC prompt when an administrator is needed. On a Mac Steam runs none either (only permissions and symlinks, which the downloader restores) |
 | Workshop items | Downloaded when you subscribe (installed games) and before each launch, like Steam; legacy single-file items too |
 
 ## Store

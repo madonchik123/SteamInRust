@@ -22,6 +22,7 @@ pub mod cloud;
 pub mod collections;
 pub mod friends_add;
 pub mod discovery;
+pub mod installscript;
 pub mod regions;
 pub mod a2s;
 pub mod game_ugc;
@@ -336,6 +337,9 @@ pub enum Event {
     Regions(Vec<model::DownloadRegion>),
     DownloadQueue(Vec<AppId>),
     DownloadFinished { app_id: AppId, result: Result<String, String> },
+    /// A game's first-time setup (Steam's install scripts) before it starts:
+    /// step `done` of `total` is running; `total` 0 = finished.
+    FirstTimeSetup { app_id: AppId, done: usize, total: usize, step: String },
     /// The running download was set aside for another ("download now") and
     /// is back in the queue; it continues from what's on disk.
     DownloadStopped { app_id: AppId },

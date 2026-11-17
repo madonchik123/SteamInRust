@@ -69,6 +69,8 @@ pub struct State {
     pub set_aside: HashMap<AppId, f32>,
     /// The store's discovery queue, once loaded.
     pub discovery: Option<Result<Vec<AppId>, String>>,
+    /// Games running their first-time setup: (step, of, what).
+    pub first_time_setup: HashMap<AppId, (usize, usize, String)>,
     /// Games marked "Not interested" this session.
     pub ignored: std::collections::HashSet<AppId>,
     pub wishlist: Option<Vec<(AppId, u64)>>,
@@ -342,6 +344,13 @@ impl State {
             }
             Event::Wishlist(w) => self.wishlist = Some(w.clone()),
             Event::DiscoveryQueue(q) => self.discovery = Some(q.clone()),
+            Event::FirstTimeSetup { app_id, done, total, step } => {
+                if *total == 0 {
+                    self.first_time_setup.remove(app_id);
+                } else {
+                    self.first_time_setup.insert(*app_id, (*done, *total, step.clone()));
+                }
+            }
             Event::AppIgnored { app_id, ignore, result } => {
                 if result.is_ok() {
                     if *ignore {

@@ -330,6 +330,11 @@ struct Online {
     active: Option<(AppId, std::sync::Arc<depot::Progress>)>,
     /// The running download's request, kept so it can be saved and resumed.
     active_req: Option<crate::download::InstallRequest>,
+    /// Games whose first-time setup was dealt with this session (done, or
+    /// tried and failed: it's tried again next time the app starts).
+    setup_checked: std::collections::HashSet<AppId>,
+    /// Where a launch goes to continue after its first-time setup.
+    launch_tx: Option<mpsc::UnboundedSender<(AppId, std::path::PathBuf, String)>>,
     /// The running download is being set aside for a queued one ("download
     /// now"); when it stops it goes back in the queue, second.
     set_aside: Option<crate::download::InstallRequest>,
@@ -462,6 +467,8 @@ async fn online(
         queue: Default::default(),
         active_req: None,
         set_aside: None,
+        setup_checked: Default::default(),
+        launch_tx: None,
         downloads_restored: false,
         apps_fresh: false,
         verifying: HashMap::new(),
@@ -495,6 +502,7 @@ async fn online(
     let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<AppId>();
     // Launches that waited for a Steam Cloud download.
     let (launch_tx, mut launch_rx) = mpsc::unbounded_channel::<(AppId, std::path::PathBuf, String)>();
+    st.launch_tx = Some(launch_tx.clone());
     // Launches that waited for Workshop downloads (Steam Cloud comes next).
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<(AppId, std::path::PathBuf, String)>();
     // Verifications that ended.
@@ -2237,6 +2245,27 @@ impl Online {
             return Ok(());
         }
         let mode = launch::mode(app, dir);
+        // Like Steam: install scripts (DirectX, Visual C++, registry…) run
+        // before the game, the first time. The official client does its own.
+        if !matches!(mode, crate::LaunchMode::OfficialSteam { .. }) && self.setup_checked.insert(app_id) {
+            let library = dir.parent().and_then(|c| c.parent()).and_then(|s| s.parent()).map(std::path::Path::to_path_buf);
+            let steps = library.as_deref().map(|l| crate::installscript::pending(l, app_id, self.steam_root.clone())).unwrap_or_default();
+            if let (false, Some(tx)) = (steps.is_empty(), self.launch_tx.clone()) {
+                tracing::info!("{}: first-time setup, {} step(s)", app.name, steps.len());
+                let (sink, dir, args, total) = (sink.clone(), dir.to_path_buf(), args.to_string(), steps.len());
+                sink(Event::FirstTimeSetup { app_id, done: 0, total, step: steps[0].label.clone() });
+                tokio::task::spawn_blocking(move || {
+                    let progress = |i: usize, label: &str| sink(Event::FirstTimeSetup { app_id, done: i, total, step: label.to_string() });
+                    if let Err(e) = crate::installscript::run(&steps, &progress) {
+                        tracing::warn!("first-time setup of {app_id}: {e}");
+                        sink(Event::Error(format!("First-time setup didn't finish: {e}")));
+                    }
+                    sink(Event::FirstTimeSetup { app_id, done: total, total: 0, step: String::new() });
+                    let _ = tx.send((app_id, dir, args));
+                });
+                return Ok(());
+            }
+        }
         tracing::info!("{} starts as {mode:?}", app.name);
         sink(Event::LaunchMode { app_id, mode: mode.clone() });
         match mode {

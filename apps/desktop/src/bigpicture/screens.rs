@@ -178,6 +178,7 @@ fn main_button(a: MainAction) -> (String, &'static str, Kind, Option<f32>) {
         MainAction::Update => (t!("Update").into(), icons::DOWNLOAD, Kind::Primary, None),
         MainAction::Install => (t!("Install").into(), icons::DOWNLOAD, Kind::Primary, None),
         MainAction::Syncing => (t!("Syncing Steam Cloud…").into(), icons::CLOUD_CHECK, Kind::Muted, None),
+        MainAction::FirstTimeSetup => (t!("Performing first-time setup…").into(), icons::DOWNLOAD, Kind::Muted, None),
         MainAction::Queued => (t!("Queued").into(), icons::CLOCK, Kind::Muted, None),
         MainAction::Uninstalling => (t!("Uninstalling…").into(), icons::TRASH, Kind::Muted, None),
         MainAction::Busy { fraction, verifying, paused } => {

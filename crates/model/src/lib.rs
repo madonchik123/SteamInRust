@@ -189,6 +189,9 @@ pub struct DepotInfo {
     pub dlc_app: Option<AppId>,
     /// Shared depot owned by another app (e.g. redistributables).
     pub shared_install: bool,
+    /// The app a shared depot comes from (228980 for Steam's redistributables).
+    #[serde(default)]
+    pub from_app: Option<AppId>,
     /// (branch, manifest gid, size in bytes)
     pub manifests: Vec<(String, u64, u64)>,
 }

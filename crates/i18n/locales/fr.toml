@@ -1808,3 +1808,6 @@
 "Start another queue" = "Nouvelle liste"
 "Discovery queue" = "Liste de découvertes"
 "A dynamic collection: Steam fills it from its filters. Change them in Steam." = "Une collection dynamique : Steam la remplit selon ses filtres. Modifiez-les dans Steam."
+"Performing first-time setup…" = "Configuration initiale en cours…"
+"Installing: {step}" = "Installation : {step}"
+"Step {n} of {total}" = "Étape {n} sur {total}"

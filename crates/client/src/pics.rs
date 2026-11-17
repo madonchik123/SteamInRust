@@ -288,7 +288,7 @@ fn parse_cloud(info: &vdf::Obj) -> Option<model::CloudConfig> {
     (quota > 0 || !save_files.is_empty()).then_some(model::CloudConfig { quota, max_files: ufs.u64("maxnumfiles").unwrap_or(0) as u32, save_files })
 }
 
-fn parse_depots(info: &vdf::Obj) -> Vec<model::DepotInfo> {
+pub(crate) fn parse_depots(info: &vdf::Obj) -> Vec<model::DepotInfo> {
     let Some(depots) = info.obj("depots") else { return Vec::new() };
     depots
         .iter()
@@ -318,6 +318,7 @@ fn parse_depots(info: &vdf::Obj) -> Vec<model::DepotInfo> {
                 low_violence: c("lowviolence") == "1",
                 dlc_app: o.u64("dlcappid").map(|d| d as AppId),
                 shared_install: o.str("sharedinstall") == Some("1") || o.u64("depotfromapp").is_some(),
+                from_app: o.u64("depotfromapp").map(|a| a as AppId),
                 manifests,
             })
         })

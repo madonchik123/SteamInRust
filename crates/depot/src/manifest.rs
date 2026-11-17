@@ -13,6 +13,8 @@ const END: u32 = 0x32C4_15AB;
 
 const FLAG_EXECUTABLE: u32 = 32;
 const FLAG_DIRECTORY: u32 = 64;
+/// Steam's install script (installscript.vdf), run before a game's first launch.
+const FLAG_INSTALL_SCRIPT: u32 = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
@@ -32,6 +34,8 @@ pub struct FileEntry {
     pub directory: bool,
     /// A program: needs the "may run" permission on macOS and Linux.
     pub executable: bool,
+    /// One of Steam's install scripts (`installscript.vdf`).
+    pub install_script: bool,
     pub link: Option<String>,
 }
 
@@ -95,6 +99,7 @@ impl Manifest {
                     chunks,
                     directory: f.flags() & FLAG_DIRECTORY != 0,
                     executable: f.flags() & FLAG_EXECUTABLE != 0,
+                    install_script: f.flags() & FLAG_INSTALL_SCRIPT != 0,
                     link: Some(f.linktarget().to_string()).filter(|l| !l.is_empty()),
                 }
             })
@@ -128,7 +133,7 @@ impl Manifest {
                 .map(|f| FileMapping {
                     filename: Some(f.name.replace('/', "\\")),
                     size: Some(f.size),
-                    flags: Some(if f.directory { FLAG_DIRECTORY } else { 0 } | if f.executable { FLAG_EXECUTABLE } else { 0 }),
+                    flags: Some(if f.directory { FLAG_DIRECTORY } else { 0 } | if f.executable { FLAG_EXECUTABLE } else { 0 } | if f.install_script { FLAG_INSTALL_SCRIPT } else { 0 }),
                     sha_content: Some(f.sha.clone()),
                     linktarget: f.link.clone(),
                     chunks: f
