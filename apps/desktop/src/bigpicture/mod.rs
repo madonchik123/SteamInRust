@@ -65,6 +65,10 @@ pub enum Page {
     Friend(SteamId),
     /// A conversation with a friend.
     Chat(SteamId),
+    /// A store trailer, playing over the page.
+    Video(AppId, usize),
+    /// Before installing: size, where, shortcut.
+    Install(AppId),
 }
 
 impl Page {
@@ -106,6 +110,12 @@ pub struct BigPicture {
     flash: Option<(Press, f64)>,
     /// Library filter: installed only (None = decide from the library).
     installed_only: Option<bool>,
+    /// Library filter: only games that run on this computer.
+    this_os_only: bool,
+    /// The install screen's choices: (game, library folder, desktop shortcut).
+    install: Option<(AppId, std::path::PathBuf, bool)>,
+    /// A trailer was playing (stopped when its page closes).
+    video_on: bool,
     // Search (on-screen keyboard).
     query: String,
     query_changed: f64,
@@ -133,13 +143,27 @@ pub struct BigPicture {
 impl BigPicture {
     pub fn new(ctx: &egui::Context) -> Self {
         let flag = std::env::args().find(|a| a == "--bigpicture" || a.starts_with("--bigpicture="));
-        Self {
+        let mut bp = Self {
             active: flag.is_some(),
             windowed: flag.as_deref() == Some("--bigpicture=window"),
             pad: Some(input::spawn(ctx.clone())),
             slide: 0.0,
             ..Default::default()
+        };
+        // `--bp-page=store:<app>|game:<app>|install:<app>|library` opens a
+        // page right away (previews and checks).
+        if let Some(arg) = std::env::args().find_map(|a| a.strip_prefix("--bp-page=").map(String::from)) {
+            let (kind, id) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+            let id = id.parse().unwrap_or(0);
+            match kind {
+                "library" => bp.tab = Tab::Library,
+                "store" => bp.stack.push(Page::StoreApp(id)),
+                "game" => bp.stack.push(Page::Game(id)),
+                "install" => bp.stack.push(Page::Install(id)),
+                _ => {}
+            }
         }
+        bp
     }
 
     pub fn enter(&mut self, ctx: &egui::Context) {
@@ -381,6 +405,19 @@ impl BigPicture {
         }
         // The page changed this frame: a move meant for the old one is dropped.
         if self.page() != page {
+            dir = None;
+            press = false;
+        }
+        // A trailer: A pauses, left/right move 10 seconds.
+        if let Page::Video(..) = self.page() {
+            let seconds = match dir {
+                Some(Dir::Left) => -10.0,
+                Some(Dir::Right) => 10.0,
+                _ => 0.0,
+            };
+            if press || seconds != 0.0 {
+                screens::with_store(app, actions, |st, _| st.trailer_control(press, seconds));
+            }
             dir = None;
             press = false;
         }

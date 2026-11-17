@@ -28,6 +28,11 @@ pub fn with_store<R>(app: &mut SteamApp, actions: &mut Vec<Action>, f: impl FnOn
 
 pub fn draw(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, pos: f32) -> f32 {
     let top = f.view.top() - pos;
+    // Leaving a trailer stops it.
+    if bp.video_on && !matches!(bp.page(), Page::Video(..)) {
+        bp.video_on = false;
+        with_store(f.app, f.actions, |st, _| st.stop_trailer());
+    }
     match bp.page() {
         Page::Tab(Tab::Home) => home(bp, ui, f, top),
         Page::Tab(Tab::Library) => library_tab(bp, ui, f, top),
@@ -41,13 +46,16 @@ pub fn draw(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, pos: f32) -> f32 {
         Page::Settings => settings(bp, ui, f, top),
         Page::Friend(id) => friend_page(bp, ui, f, top, id),
         Page::Chat(id) => chat_page(bp, ui, f, top, id),
+        Page::Video(id, i) => video_page(bp, ui, f, id, i),
+        Page::Install(id) => install_page(bp, ui, f, top, id),
     }
 }
 
 /// What X does on this page, for the hints.
 pub fn x_hint(bp: &BigPicture) -> Option<String> {
     match bp.page() {
-        Page::Tab(Tab::Library) => Some(t!("Installed / All").into()),
+        Page::Tab(Tab::Library) => Some(t!("Change filter").into()),
+        Page::Install(_) => Some(t!("Desktop shortcut").into()),
         Page::Search | Page::Chat(_) => Some(t!("Delete").into()),
         _ => None,
     }
@@ -344,32 +352,49 @@ fn home(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32 {
 fn library_tab(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32 {
     let s = f.s;
     let mut y = top + 16.0 * s;
-    let mut games: Vec<(AppId, String, bool)> = crate::builtin::entries(&f.app.state, &f.app.local).iter().map(|e| (e.app_id, e.name.to_string(), e.installed.is_some())).collect();
+    let entries = crate::builtin::entries(&f.app.state, &f.app.local);
+    // Games that can run here (a Mac lists Windows-only games too).
+    let runs: std::collections::HashSet<AppId> = entries.iter().filter(|e| e.installed.is_some() || e.owned.is_none_or(|o| o.runs_on_this_os())).map(|e| e.app_id).collect();
+    let mut games: Vec<(AppId, String, bool)> = entries.iter().map(|e| (e.app_id, e.name.to_string(), e.installed.is_some())).collect();
     let ids: Vec<AppId> = games.iter().map(|g| g.0).collect();
     let hidden: std::collections::HashSet<AppId> = with_library(f.app, f.actions, |lib, _| ids.iter().copied().filter(|id| lib.is_hidden(*id)).collect()).unwrap_or_default();
     games.retain(|g| !hidden.contains(&g.0));
     games.sort_by_key(|g| g.1.to_lowercase());
     let n_installed = games.iter().filter(|g| g.2).count();
+    let n_runs = games.iter().filter(|g| runs.contains(&g.0)).count();
     let installed_only = *bp.installed_only.get_or_insert(n_installed > 0);
-    if f.x {
-        bp.installed_only = Some(!installed_only);
+    // Installed, runs on this computer (only when some don't), or all.
+    let mut chips: Vec<(u8, String)> = vec![(0, t!("Installed ({n})", n = n_installed))];
+    if n_runs < games.len() {
+        chips.push((1, t!("Runs on this computer ({n})", n = n_runs)));
     }
-
-    // Filters.
-    let chips = [(true, t!("Installed ({n})", n = n_installed)), (false, t!("All games ({n})", n = games.len()))];
+    chips.push((2, t!("All games ({n})", n = games.len())));
+    let current = if installed_only { 0 } else if bp.this_os_only && n_runs < games.len() { 1 } else { 2 };
+    if f.x {
+        // X steps through the filters.
+        let next = chips[(chips.iter().position(|c| c.0 == current).unwrap_or(0) + 1) % chips.len()].0;
+        bp.installed_only = Some(next == 0);
+        bp.this_os_only = next == 1;
+    }
     let mut x = f.view.left() + f.pad;
     for (i, (value, label)) in chips.iter().enumerate() {
         let id = Id::unique(("bp-filter", i));
-        let on = installed_only == *value;
-        let (r, hit) = button(bp, ui, f, id, pos2(x, y), 0.0, None, label, if on { Kind::Primary } else { Kind::Secondary }, None);
+        let on = current == *value;
+        let icon = (*value == 1).then_some(if cfg!(target_os = "macos") { icons::APPLE } else if cfg!(windows) { icons::WINDOWS } else { icons::LINUX });
+        let (r, hit) = button(bp, ui, f, id, pos2(x, y), 0.0, icon, label, if on { Kind::Primary } else { Kind::Secondary }, None);
         if hit.activated {
-            bp.installed_only = Some(*value);
+            bp.installed_only = Some(*value == 0);
+            bp.this_os_only = *value == 1;
         }
         x = r.right() + 18.0 * s;
     }
     y += 72.0 * s + 40.0 * s;
 
-    let list: Vec<&(AppId, String, bool)> = games.iter().filter(|g| g.2 || !installed_only).collect();
+    let list: Vec<&(AppId, String, bool)> = games.iter().filter(|g| match current {
+        0 => g.2,
+        1 => runs.contains(&g.0),
+        _ => true,
+    }).collect();
     if list.is_empty() {
         let loading = f.app.state.apps.is_none();
         let (title, body) = if loading { (t!("Loading your library…"), "") } else { (t!("No games here"), t!("Switch to All games to see everything you own.")) };
@@ -387,7 +412,13 @@ fn library_tab(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32
         let r = Rect::from_min_size(pos2(f.view.left() + f.pad + col as f32 * (tile.x + gap), y + row as f32 * row_h), tile);
         let hit = bp.focus.item(ui, Id::unique(("bp-lib", *id)), r, clip, Place::Page);
         if r.bottom() + row_h > clip.top() && r.top() - row_h < clip.bottom() {
-            let caption = if *installed { String::new() } else { t!("Not installed").to_string() };
+            let caption = if *installed {
+                String::new()
+            } else if !runs.contains(id) {
+                t!("Doesn't run on this computer").to_string()
+            } else {
+                t!("Not installed").to_string()
+            };
             capsule(bp, ui, f, r, &hit, k, *id, name, &caption, !installed);
         }
         if hit.activated {
@@ -437,6 +468,10 @@ fn game(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: AppId) ->
     if main.activated {
         if action == MainAction::StorePage {
             bp.open(Page::StoreApp(id), f.now);
+        } else if action == MainAction::Install {
+            // Like Steam: size, where, and a shortcut, before anything starts.
+            bp.install = None;
+            bp.open(Page::Install(id), f.now);
         } else {
             with_library(f.app, f.actions, |lib, cx| lib.run_main_action(cx, id));
         }
@@ -695,6 +730,29 @@ fn store_app(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: AppI
     }
     y += 72.0 * s + 56.0 * s;
 
+    // Trailers: play over the page (A pauses, left/right seek, B closes).
+    let trailers = with_store(f.app, f.actions, |st, _| st.trailers_for(id)).unwrap_or_default();
+    if !trailers.is_empty() {
+        heading(ui, f, &mut y, t!("Trailers"));
+        let tiles = shelf(bp, ui, f, &mut y, "trailers", trailers.len(), vec2(480.0 * s, 270.0 * s), |i| Id::unique(("bp-trailer", i)));
+        for (i, r, hit) in tiles {
+            let (k, dy) = appear(ui, bp, i + 1);
+            let mut c = paint::faded(ui, r.expand(40.0 * s), k);
+            let sheen = (f.now - bp.focus.changed_at) as f32 / 0.7;
+            let shown = paint::art_tile(&mut c, &f.t, r.translate(vec2(0.0, dy * s)), &[&trailers[i].thumbnail], "", &hit, s, sheen);
+            c.painter().circle_filled(shown.center(), 38.0 * s, Color32::from_black_alpha(160));
+            w::icon_centered(c.painter(), shown.center(), icons::PLAY, 34.0 * s, Color32::WHITE);
+            paint::line(c.painter(), shown.left_bottom() + vec2(16.0 * s, -16.0 * s), Align2::LEFT_BOTTOM, &trailers[i].name, w::font_semibold(19.0 * s), Color32::WHITE, shown.width() - 32.0 * s);
+            if hit.focused {
+                bp.focus.ring_around(shown, 10.0 * s);
+            }
+            if hit.activated {
+                bp.open(Page::Video(id, i), f.now);
+            }
+        }
+        y += 60.0 * s;
+    }
+
     // Screenshots.
     if let Some(d) = &details {
         if !d.screenshots.is_empty() {
@@ -716,7 +774,155 @@ fn store_app(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: AppI
             y += 60.0 * s;
         }
     }
+
+    // Reviews: the share of thumbs up, then the most helpful ones.
+    let (recent, all) = with_store(f.app, f.actions, |st, _| st.ratings_for(id)).unwrap_or((None, None));
+    let reviews = with_store(f.app, f.actions, |st, _| st.top_reviews_for(id)).flatten().unwrap_or_default();
+    if all.is_some() || !reviews.is_empty() {
+        heading(ui, f, &mut y, t!("Reviews"));
+        let p = ui.painter().clone();
+        let mut x = left;
+        let bars = [(t!("PAST MONTH"), recent.map(|(u, d)| ((u * 100 / (u + d)) as u32, u + d))), (t!("ALL TIME"), all)];
+        for (label, value) in bars {
+            let Some((pct, count)) = value else { continue };
+            p.text(pos2(x, y), Align2::LEFT_TOP, label, w::font_bold(15.0 * s), f.t.text_faint);
+            p.text(pos2(x, y + 24.0 * s), Align2::LEFT_TOP, t!("{pct}% positive", pct = pct), w::font_semibold(28.0 * s), if pct >= 70 { Color32::from_rgb(0x66, 0xC0, 0xF4) } else if pct >= 40 { f.t.away } else { f.t.danger });
+            let bar = Rect::from_min_size(pos2(x, y + 66.0 * s), vec2(300.0 * s, 8.0 * s));
+            paint::bar(ui, &f.t, bar, pct as f32 / 100.0, false);
+            p.text(pos2(x, y + 82.0 * s), Align2::LEFT_TOP, t!("{count} reviews", count = crate::builtin::store::thousands(count)), w::font(17.0 * s), f.t.text_dim);
+            x += 380.0 * s;
+        }
+        y += 130.0 * s;
+        if !reviews.is_empty() {
+            let list: Vec<_> = reviews.into_iter().take(10).collect();
+            let tiles = shelf(bp, ui, f, &mut y, "reviews", list.len(), vec2(560.0 * s, 230.0 * s), |i| Id::unique(("bp-review", i)));
+            let mut focused = None;
+            for (i, r, hit) in tiles {
+                let rv = &list[i];
+                let shown = paint::grow(r, 1.0 + 0.03 * hit.glow);
+                paint::shadow(ui.painter(), shown, 12.0 * s, s, 0.4 + 0.6 * hit.glow, Color32::from_black_alpha(200));
+                ui.painter().rect_filled(shown, paint::radius(12.0 * s), f.t.surface);
+                let (icon, color, verdict) = if rv.voted_up { (icons::THUMBS_UP, Color32::from_rgb(0x66, 0xC0, 0xF4), t!("Recommended|review")) } else { (icons::THUMBS_DOWN, f.t.danger, t!("Not recommended|review")) };
+                let pad = 20.0 * s;
+                let q = ui.painter();
+                q.text(shown.left_top() + vec2(pad, pad), Align2::LEFT_TOP, format!("{icon}  {verdict}"), w::font_bold(20.0 * s), color);
+                paint::line(q, shown.left_top() + vec2(pad, pad + 32.0 * s), Align2::LEFT_TOP, &format!("{}   ·   {}", rv.author, rv.hours), w::font(16.0 * s), f.t.text_faint, shown.width() - 2.0 * pad);
+                paint::wrapped(q, shown.left_top() + vec2(pad, pad + 66.0 * s), &rv.text.replace('\n', " "), w::font(18.0 * s), f.t.text_dim, shown.width() - 2.0 * pad, 5);
+                if hit.focused {
+                    bp.focus.ring_around(shown, 12.0 * s);
+                    focused = Some(rv.clone());
+                }
+            }
+            y += 22.0 * s;
+            // The focused review in full, under the row.
+            if let Some(rv) = focused {
+                let r = paint::wrapped(&p, pos2(left, y), &rv.text, w::font(20.0 * s), f.t.text, f.view.width() - 2.0 * f.pad, 14);
+                y = r.bottom() + 20.0 * s;
+            }
+            y += 40.0 * s;
+        }
+    }
     y - top + 20.0 * s
+}
+
+/// A trailer over the whole page.
+fn video_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, id: AppId, i: usize) -> f32 {
+    let s = f.s;
+    bp.bg_want = Some(id);
+    bp.video_on = true;
+    let area = f.view.shrink2(vec2(f.pad, 10.0 * s));
+    let _ = bp.focus.item(ui, Id::unique("bp-video"), area, ui.clip_rect(), Place::Page);
+    // 16:9 inside the area.
+    let w_ = area.width().min(area.height() * 16.0 / 9.0);
+    let rect = Rect::from_center_size(area.center(), vec2(w_, w_ * 9.0 / 16.0));
+    let t = f.t.clone();
+    let ended = with_store(f.app, f.actions, |st, _| st.play_trailer(ui, &t, rect, id, i)).unwrap_or(false);
+    if ended {
+        bp.back(f.now);
+    }
+    f.view.height()
+}
+
+/// Before an install: the size, where it goes (with free space) and a
+/// desktop shortcut, like Steam's install dialog.
+fn install_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: AppId) -> f32 {
+    let s = f.s;
+    bp.bg_want = Some(id);
+    let Some(plan) = with_library(f.app, f.actions, |lib, cx| lib.install_plan(cx, id)) else { return 0.0 };
+    if bp.install.as_ref().is_none_or(|(g, _, _)| *g != id) {
+        bp.install = Some((id, plan.default.clone(), true));
+    }
+    if f.x {
+        if let Some(choice) = bp.install.as_mut() {
+            choice.2 = !choice.2;
+        }
+    }
+    let (_, chosen, shortcut) = bp.install.clone().expect("just set");
+    let name = f.app.state.app_name(id).unwrap_or_default().to_string();
+    let left = f.view.left() + f.pad;
+    let mut y = top + 20.0 * s;
+    let header = Rect::from_min_size(pos2(left, y), vec2(560.0 * s, 262.0 * s));
+    paint::shadow(ui.painter(), header, 14.0 * s, s, 0.8, Color32::from_black_alpha(220));
+    if !w::paint_cover(ui, header, &art::header(id), paint::radius(14.0 * s)) {
+        w::skeleton(ui, &f.t, header, paint::radius(14.0 * s));
+    }
+    let p = ui.painter().clone();
+    let tx = header.right() + 48.0 * s;
+    let tw = f.view.right() - f.pad - tx;
+    paint::wrapped(&p, pos2(tx, y), &t!("Install {game}", game = name), w::font_bold(40.0 * s), f.t.text, tw, 2);
+    let free = plan.libraries.iter().find(|(l, _)| *l == chosen).map(|(_, f)| *f).unwrap_or(0);
+    let enough = plan.size == 0 || free == 0 || free >= plan.size;
+    let facts = [
+        (t!("SIZE ON DISK"), if plan.size > 0 { ui::bytes(plan.size) } else { t!("Unknown").to_string() }),
+        (t!("FREE SPACE THERE"), if free > 0 { ui::bytes(free) } else { "—".to_string() }),
+    ];
+    let mut fx = tx;
+    for (label, value) in facts {
+        p.text(pos2(fx, y + 120.0 * s), Align2::LEFT_TOP, label, w::font_bold(15.0 * s), f.t.text_faint);
+        let r = p.text(pos2(fx, y + 146.0 * s), Align2::LEFT_TOP, value, w::font_semibold(28.0 * s), f.t.text);
+        fx = r.right().max(fx + 200.0 * s) + 60.0 * s;
+    }
+    if !enough {
+        p.text(pos2(tx, y + 200.0 * s), Align2::LEFT_TOP, t!("There isn't enough free space on this drive."), w::font_semibold(19.0 * s), f.t.danger);
+    }
+    y = header.bottom() + 50.0 * s;
+
+    heading(ui, f, &mut y, t!("Install location"));
+    for (k, (lib, free)) in plan.libraries.iter().enumerate() {
+        let label = format!("{}   ·   {}", lib.display(), t!("{free} free", free = ui::bytes(*free)));
+        let on = *lib == chosen;
+        let (_, hit) = button(bp, ui, f, Id::unique(("bp-install-lib", k)), pos2(left, y), 900.0 * s, Some(if on { icons::CHECK } else { icons::DRIVES }), &label, if on { Kind::Primary } else { Kind::Secondary }, None);
+        if hit.activated {
+            if let Some(choice) = bp.install.as_mut() {
+                choice.1 = lib.clone();
+            }
+        }
+        y += 72.0 * s + 14.0 * s;
+    }
+    y += 20.0 * s;
+    let label = if shortcut { t!("Desktop shortcut: on") } else { t!("Desktop shortcut: off") };
+    let (_, hit) = button(bp, ui, f, Id::unique("bp-install-shortcut"), pos2(left, y), 0.0, Some(icons::DESKTOP), label, Kind::Secondary, None);
+    if hit.activated {
+        if let Some(choice) = bp.install.as_mut() {
+            choice.2 = !choice.2;
+        }
+    }
+    y += 72.0 * s + 40.0 * s;
+    let go_id = Id::unique(("bp-install-go", id));
+    bp.preferred = Some(go_id);
+    let (r, go) = button(bp, ui, f, go_id, pos2(left, y), 280.0 * s, Some(icons::DOWNLOAD), t!("Install"), if enough { Kind::Play } else { Kind::Muted }, None);
+    if go.activated && enough {
+        with_library(f.app, f.actions, |lib, cx| lib.install_to(cx, id, chosen.clone(), shortcut));
+        bp.install = None;
+        bp.back(f.now);
+    }
+    let (_, cancel) = button(bp, ui, f, Id::unique(("bp-install-cancel", id)), pos2(r.right() + 20.0 * s, y), 0.0, Some(icons::X), t!("Cancel"), Kind::Secondary, None);
+    if cancel.activated {
+        bp.install = None;
+        bp.back(f.now);
+    }
+    y += 72.0 * s;
+    y - top + 40.0 * s
 }
 
 pub fn shot_count(app: &mut SteamApp, actions: &mut Vec<Action>, id: AppId) -> usize {

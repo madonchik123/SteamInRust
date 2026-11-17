@@ -309,3 +309,10 @@ fn votes(up: u64, funny: u64) -> String {
     }
     v.join("\n")
 }
+
+impl Store {
+    /// The most helpful reviews (first page), for Big Picture.
+    pub(crate) fn top_reviews_for(&mut self, id: AppId) -> Option<Vec<Review>> {
+        self.page(id, Order::Helpful).first().cloned().flatten().map(|p| p.reviews)
+    }
+}

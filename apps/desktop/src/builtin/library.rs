@@ -2325,3 +2325,29 @@ mod collection_sync_tests {
         assert!(!now.contains_key("uc-a") && l.steam_base.contains_key("uc-a"));
     }
 }
+
+/// What installing a game needs (for Big Picture's install screen).
+pub(crate) struct InstallPlan {
+    /// Library folders with their free space.
+    pub libraries: Vec<(std::path::PathBuf, u64)>,
+    /// The one with the most free space.
+    pub default: std::path::PathBuf,
+    /// Size on disk.
+    pub size: u64,
+}
+
+impl Library {
+    pub(crate) fn install_plan(&self, ctx: &Ctx, id: AppId) -> InstallPlan {
+        let d = InstallDialog::new(id, ctx);
+        let libraries = d.libraries.iter().map(|l| (l.clone(), fs4_free(l).unwrap_or(0))).collect();
+        InstallPlan { libraries, default: d.library, size: d.size }
+    }
+
+    /// Install to a chosen folder, with a desktop shortcut afterwards if asked.
+    pub(crate) fn install_to(&mut self, ctx: &mut Ctx, id: AppId, library: std::path::PathBuf, shortcut: bool) {
+        if shortcut {
+            self.shortcut_after_install.insert(id, library.clone());
+        }
+        self.queue_install(ctx, id, Some(library));
+    }
+}

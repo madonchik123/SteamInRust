@@ -1749,3 +1749,53 @@ fn nav_tab(ui: &mut Ui, t: &Theme, label: &str, on: bool) -> egui::Response {
     ui.painter().galley(pos2(r.left() + 12.0, r.center().y - galley.size().y / 2.0), galley, color);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
+
+/// For Big Picture: trailers, review summaries and a trailer player.
+impl Store {
+    pub(crate) fn trailers_for(&mut self, id: AppId) -> Vec<store::browse::Trailer> {
+        self.browse_info(id).map(|b| b.trailers).unwrap_or_default()
+    }
+
+    /// (past month: up, down), (all time: percent positive, count).
+    pub(crate) fn ratings_for(&mut self, id: AppId) -> (Option<(u64, u64)>, Option<(u32, u64)>) {
+        let all = self.browse_info(id).and_then(|b| b.reviews).map(|r| (r.percent_positive, r.count as u64));
+        (self.recent_votes(id).filter(|(u, d)| u + d > 0), all)
+    }
+
+    /// Play trailer `i` of a game in `rect` (started if it isn't the one
+    /// playing). True when it ended.
+    pub(crate) fn play_trailer(&mut self, ui: &mut Ui, t: &Theme, rect: Rect, id: AppId, i: usize) -> bool {
+        let trailers = self.trailers_for(id);
+        let Some(tr) = trailers.get(i) else { return false };
+        let Some(src) = tr.hls.clone().map(video::Source::Hls).or_else(|| tr.micro_mp4.clone().map(video::Source::Mp4)) else {
+            w::image_or_skeleton(ui, t, rect, &tr.thumbnail, t.corner());
+            return false;
+        };
+        if self.trailer.as_ref().is_none_or(|(url, _)| url != src.url()) {
+            let url = src.url().to_string();
+            let mut p = video::Player::new(&self.rt, ui.ctx(), src, video::widget::options(ui.ctx()));
+            p.play();
+            self.trailer = Some((url, p));
+        }
+        let (_, p) = self.trailer.as_mut().expect("just set");
+        p.fullscreen = false;
+        video::widget::show(ui, t, rect, p, &tr.thumbnail, &tr.name).ended
+    }
+
+    /// Pause/play, or move by `seconds`, the trailer playing.
+    pub(crate) fn trailer_control(&mut self, toggle: bool, seconds: f64) {
+        if let Some((_, p)) = self.trailer.as_mut() {
+            if toggle {
+                p.toggle();
+            }
+            if seconds != 0.0 {
+                let to = (p.position() + seconds).clamp(0.0, p.duration().max(0.0));
+                p.seek(to);
+            }
+        }
+    }
+
+    pub(crate) fn stop_trailer(&mut self) {
+        self.trailer = None;
+    }
+}
