@@ -85,6 +85,8 @@ pub struct Store {
     hidden: std::collections::BTreeSet<u32>,
     /// Mature pages the user chose to view this session.
     allowed: std::collections::HashSet<AppId>,
+    /// Open hidden games' pages without the warning ("Don't ask again").
+    never_ask: bool,
     search: Option<(String, Shared<Vec<Item>>)>,
     view: View,
     hero: usize,
@@ -129,6 +131,7 @@ pub struct Store {
 #[serde(default)]
 struct Saved {
     hidden: Vec<u32>,
+    never_ask: bool,
     itad_key: String,
     price_log: std::collections::BTreeMap<AppId, Vec<(u64, u64)>>,
 }
@@ -151,6 +154,7 @@ impl Store {
             ratings_busy: Default::default(),
             hidden: [3, 4].into_iter().collect(),
             allowed: Default::default(),
+            never_ask: false,
             filters: Default::default(),
             browse_page: 0,
             query: None,
@@ -573,6 +577,10 @@ impl Extension for Store {
                 }
             }
         }
+        let mut ask = !self.never_ask;
+        if w::check(ui, &t, &mut ask, w::text(t!("Warn me before opening a hidden game's page"), 14.0, t.text)).changed() {
+            self.never_ask = !ask;
+        }
         ui.add_space(14.0);
         ui.label(w::text_semibold(t!("Price history"), 15.0, t.text));
         ui.add(egui::Label::new(w::text(t!("Paste a free IsThereAnyDeal API key to see each game's price history and all-time low on its store page. Get one at isthereanydeal.com/apps/my."), 12.5, t.text_dim)).wrap());
@@ -593,12 +601,13 @@ impl Extension for Store {
     }
 
     fn save(&self) -> Option<String> {
-        serde_json::to_string(&Saved { hidden: self.hidden.iter().copied().collect(), itad_key: self.itad_key.clone(), price_log: self.price_log.clone() }).ok()
+        serde_json::to_string(&Saved { hidden: self.hidden.iter().copied().collect(), never_ask: self.never_ask, itad_key: self.itad_key.clone(), price_log: self.price_log.clone() }).ok()
     }
 
     fn load(&mut self, data: &str) {
         if let Ok(saved) = serde_json::from_str::<Saved>(data) {
             self.hidden = saved.hidden.into_iter().collect();
+            self.never_ask = saved.never_ask;
             self.itad_key = saved.itad_key;
             self.price_log = saved.price_log;
         } else if let Ok(h) = serde_json::from_str(data) {
@@ -1635,6 +1644,9 @@ const DESCRIPTORS: &[(u32, &str)] = &[
 impl Store {
     /// True if the app's page should be gated by the user's content settings.
     fn details_mature(&mut self, id: AppId) -> bool {
+        if self.never_ask {
+            return false;
+        }
         match self.safe(id) {
             Some(ok) => !ok,
             // Until we know, use the details call if it has already answered.
@@ -1665,6 +1677,12 @@ impl Store {
                     }
                     if w::button(ui, t, None, t!("View page"), w::Kind::Secondary, w::Size::Md).clicked() {
                         self.allowed.insert(id);
+                    }
+                    if w::button(ui, t, None, t!("Don't ask again"), w::Kind::Ghost, w::Size::Md)
+                        .on_hover_text(t!("Open these pages without this warning. You can turn it back on in the store's settings."))
+                        .clicked()
+                    {
+                        self.never_ask = true;
                     }
                 });
             });

@@ -373,6 +373,9 @@ pub enum Event {
     WorkshopTags { app_id: AppId, result: Result<Vec<model::WorkshopTagCategory>, String> },
     /// (app id, date added)
     Wishlist(Vec<(AppId, u64)>),
+    /// A wishlist change was asked for: shown right away, then corrected by
+    /// the [`Event::Wishlist`] that follows if Steam refused it.
+    WishlistChanging { app_id: AppId, add: bool },
     ProfileFriends { steam_id: SteamId, result: Result<Vec<SteamId>, String> },
     ProfileReviews { steam_id: SteamId, result: Result<Vec<model::ProfileReview>, String> },
     ProfileGroups { steam_id: SteamId, result: Result<Vec<model::ProfileGroup>, String> },

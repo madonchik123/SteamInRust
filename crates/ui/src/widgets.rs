@@ -374,23 +374,26 @@ pub fn heart_button(ui: &mut Ui, t: &Theme, on: bool, tooltip: &str) -> Response
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
     let p = ui.painter();
     p.rect_filled(rect, t.corner_small(), t.surface_hover);
-    // The classic heart curve, filled as a fan from a point inside it.
-    let c = rect.center() + vec2(0.0, 0.5);
-    let scale = 0.5 + 0.03 * hover;
-    let mut mesh = egui::Mesh::default();
+    // Two round lobes and a point, each drawn with smooth edges (a filled
+    // curve had jagged, clipped-looking edges).
     let color = Color32::from_rgb(0xE8, 0x4A, 0x5F);
-    mesh.colored_vertex(c, color);
-    const N: u32 = 64;
-    for i in 0..=N {
-        let a = i as f32 / N as f32 * std::f32::consts::TAU;
-        let x = 16.0 * a.sin().powi(3);
-        let y = 13.0 * a.cos() - 5.0 * (2.0 * a).cos() - 2.0 * (3.0 * a).cos() - (4.0 * a).cos();
-        mesh.colored_vertex(c + vec2(x, -y) * scale, color);
-        if i > 0 {
-            mesh.add_triangle(0, i, i + 1);
-        }
-    }
-    p.add(mesh);
+    let k = 1.0 + 0.06 * hover;
+    let (r, d, tip) = (4.7 * k, 3.5 * k, 9.6 * k);
+    // Centered: the shape spans from `-r` (lobe tops) to `tip`.
+    let o = rect.center() - vec2(0.0, (tip - r) / 2.0 - 0.5);
+    let left = o + vec2(-d, 0.0);
+    let right = o + vec2(d, 0.0);
+    let point = o + vec2(0.0, tip);
+    // Where the line from the point touches each lobe, on its outer side.
+    let touch = |c: egui::Pos2, side: f32| {
+        let v = point - c;
+        let a = (r / v.length()).acos() * side;
+        let u = v.normalized();
+        c + vec2(u.x * a.cos() - u.y * a.sin(), u.x * a.sin() + u.y * a.cos()) * r
+    };
+    p.circle_filled(left, r, color);
+    p.circle_filled(right, r, color);
+    p.add(egui::Shape::convex_polygon(vec![point, touch(left, 1.0), left, right, touch(right, -1.0)], color, Stroke::NONE));
     resp.on_hover_text(tooltip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 

@@ -356,6 +356,14 @@ impl State {
                 }
             }
             Event::Wishlist(w) => self.wishlist = Some(w.clone()),
+            Event::WishlistChanging { app_id, add } => {
+                let list = self.wishlist.get_or_insert_with(Vec::new);
+                list.retain(|(a, _)| a != app_id);
+                if *add {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    list.push((*app_id, now));
+                }
+            }
             Event::DiscoveryQueue(q) => self.discovery = Some(q.clone()),
             Event::FriendReviews { app_id, result } => {
                 self.friend_reviews.insert(*app_id, result.clone());

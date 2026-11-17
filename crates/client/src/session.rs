@@ -1823,6 +1823,7 @@ impl Online {
     /// can refuse the wishlist service from a client), with the service as a
     /// fallback. Steam's list is sent again afterwards either way.
     fn wishlist_change(&self, app_id: AppId, add: bool, sink: &Sink) {
+        sink(Event::WishlistChanging { app_id, add });
         let (conn, me) = (self.conn.clone(), self.me);
         self.with_web(sink, move |web, sink| async move {
             use proto::webui::*;
