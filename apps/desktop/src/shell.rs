@@ -245,7 +245,7 @@ pub fn notification_text(state: &client::State, n: &model::Notification) -> (&'s
     let game_of = |id: Option<model::AppId>| id.filter(|a| *a != 0 && *a != 753).and_then(|a| state.app_name(a).map(String::from)).or_else(|| n.text.clone());
     let game = |id: Option<model::AppId>| game_of(id).unwrap_or_else(|| t!("a game").to_string());
     let s = |x: &str| x.to_string();
-    match n.kind {
+    let (icon, text) = match n.kind {
         1 => (icons::BELL, t!("Test notification").to_string()),
         2 => match game_of(n.app_id) {
             Some(g) if n.from.is_some() => (icons::GIFT, t!("{name} sent you {game} as a gift", name = who(), game = g)),
@@ -285,7 +285,11 @@ pub fn notification_text(state: &client::State, n: &model::Notification) -> (&'s
         29 => (icons::WARNING, s(t!("A trade was reversed"))),
         30 => (icons::SHIELD, s(t!("Steam took action on content you reported"))),
         _ => (icons::BELL, n.text.clone().unwrap_or_else(|| s(t!("New Steam notification")))),
-    }
+    };
+    // "{game} ..." can open with the lowercase fallback "a game".
+    let mut chars = text.chars();
+    let text = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or(text);
+    (icon, text)
 }
 
 /// Where clicking a notification takes you.
