@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.9.0](https://github.com/madonchik123/SteamInRust/compare/v0.8.0...v0.9.0) (2026-11-17)
+
+
+### New
+
+* first-time setup with Steam's install scripts ([#63](https://github.com/madonchik123/SteamInRust/issues/63)) ([26e6c81](https://github.com/madonchik123/SteamInRust/commit/26e6c8141266201610e7281cd733cd76e76d5996))
+* **plugins:** network, timers, game and friend hooks, richer pages ([#65](https://github.com/madonchik123/SteamInRust/issues/65)) ([0be0bee](https://github.com/madonchik123/SteamInRust/commit/0be0bee2dbc3965db452397414d87740df75584d))
+* profiles' friends, reviews, groups and badges, and Market search in the app ([#66](https://github.com/madonchik123/SteamInRust/issues/66)) ([12f06d9](https://github.com/madonchik123/SteamInRust/commit/12f06d9520309cdc2c2d4377831e8a987a7db314))
+* **store:** reviews, rating bars, languages table and requirement tabs on game pages ([#67](https://github.com/madonchik123/SteamInRust/issues/67)) ([fed42a1](https://github.com/madonchik123/SteamInRust/commit/fed42a14ae5f1f933d32a4737dd51640c2afa8ea))
+* **store:** write reviews in the app; microtrailers on hover ([#64](https://github.com/madonchik123/SteamInRust/issues/64)) ([2e6e660](https://github.com/madonchik123/SteamInRust/commit/2e6e660626d894f7a517c16a9ae9e9736828780c))
+* trade offers in the app, fast market prices, and a trade plugin API ([#72](https://github.com/madonchik123/SteamInRust/issues/72)) ([d01267d](https://github.com/madonchik123/SteamInRust/commit/d01267d2b98e4f959e109e40ae801172c42a4aa6))
+
+
+### Fixes
+
+* notifications start with a capital letter ([#71](https://github.com/madonchik123/SteamInRust/issues/71)) ([3fd4e65](https://github.com/madonchik123/SteamInRust/commit/3fd4e65bf9bd5b2551bfa4274831d9c04525c926))
+* **store:** wishlist heart, demo tags, release dates and tidier result rows ([#68](https://github.com/madonchik123/SteamInRust/issues/68)) ([55a4da6](https://github.com/madonchik123/SteamInRust/commit/55a4da66775fe9c054af0b5a8ba4b97bc02bc3af))
+
+
+### Faster
+
+* pictures are decoded at the size they're drawn, on a few threads ([#69](https://github.com/madonchik123/SteamInRust/issues/69)) ([3a54744](https://github.com/madonchik123/SteamInRust/commit/3a547442a3dac05a7bb8b7a9050bbe4186b86d06))
+* the game page no longer reads the disk while it draws ([#70](https://github.com/madonchik123/SteamInRust/issues/70)) ([5d89494](https://github.com/madonchik123/SteamInRust/commit/5d89494e9a55f0366d0e51e17b86eae43d28c414))
+
 ## [0.8.0](https://github.com/madonchik123/SteamInRust/compare/v0.7.0...v0.8.0) (2026-11-17)
 
 
