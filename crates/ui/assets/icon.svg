@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The app icon: the logo (logo.svg) on a dark rounded tile. -->
+  <defs>
+    <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="60" x2="0" y2="4">
+      <stop offset="0" stop-color="#7B5CF5"/>
+      <stop offset="1" stop-color="#5EA2FF"/>
+    </linearGradient>
+  </defs>
+  <rect x="2.5" y="2.5" width="59" height="59" rx="14" fill="#171D29"/>
+  <g transform="translate(9 9) scale(.71875)">
+    <path d="M47.5 16.5 L41.5 7 L22.5 7 L15 19.5 L22.5 32 L41.5 32 L49 44.5 L41.5 57 L22.5 57 L16.5 47.5"
+          fill="none" stroke="url(#g)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

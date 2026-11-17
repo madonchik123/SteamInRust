@@ -512,12 +512,19 @@ impl Wizard {
     }
 }
 
-/// The app mark (a diamond), drawn without the app's theme.
+/// The app's logo, `2r` across, centered on `c` (rendered once per size).
 fn logo(p: &egui::Painter, c: Pos2, r: f32) {
-    let pts = |s: f32| vec![c - vec2(0.0, s), c + vec2(s, 0.0), c + vec2(0.0, s), c - vec2(s, 0.0)];
-    p.add(egui::Shape::convex_polygon(pts(r), Color32::from_rgb(0x4F, 0x8C, 0xFF), Stroke::NONE));
-    p.add(egui::Shape::convex_polygon(pts(r * 0.62), Color32::from_rgb(0x8B, 0x5C, 0xF6), Stroke::NONE));
-    p.add(egui::Shape::convex_polygon(pts(r * 0.28), Color32::from_rgb(0x0A, 0x0D, 0x12), Stroke::NONE));
+    let ctx = p.ctx();
+    let px = (2.0 * r * ctx.pixels_per_point()).round().max(1.0) as u32;
+    let id = egui::Id::unique(("installer-logo", px));
+    let tex = ctx.data_mut(|d| d.get_temp::<egui::TextureHandle>(id)).unwrap_or_else(|| {
+        let img = egui::ColorImage::from_rgba_unmultiplied([px as usize, px as usize], &ui::brand::logo_rgba(px));
+        let tex = ctx.load_texture(format!("logo-{px}"), img, egui::TextureOptions::LINEAR);
+        ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+        tex
+    });
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    p.image(tex.id(), Rect::from_center_size(c, vec2(2.0 * r, 2.0 * r)), uv, Color32::WHITE);
 }
 
 /// A Windows push button; `default` gets the blue focus border.

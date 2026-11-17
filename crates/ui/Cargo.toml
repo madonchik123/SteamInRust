@@ -10,6 +10,9 @@ egui = { workspace = true, features = ["serde"] }
 serde.workspace = true
 i18n.workspace = true
 memmap2 = "0.9"
+# Draws the SVG logo into window, tray and installer icons (the same resvg
+# egui_extras uses for the logo inside the app).
+resvg = { version = "0.45", default-features = false }
 
 [dev-dependencies]
 image.workspace = true

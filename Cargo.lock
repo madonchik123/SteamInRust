@@ -5816,6 +5816,7 @@ dependencies = [
  "i18n",
  "image",
  "memmap2",
+ "resvg",
  "serde",
 ]
 
