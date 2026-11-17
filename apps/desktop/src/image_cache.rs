@@ -104,7 +104,8 @@ pub fn trim_decoded(ctx: &egui::Context) {
         *last = Some(std::time::Instant::now());
     }
     for loader in ctx.loaders().image.lock().iter() {
-        if loader.id().ends_with("ImageCrateLoader") && loader.byte_size() > 4 * 1024 * 1024 && !loader.has_pending() {
+        let ours = loader.id().ends_with("ImageCrateLoader") || loader.id().ends_with("SizedLoader");
+        if ours && loader.byte_size() > 4 * 1024 * 1024 && !loader.has_pending() {
             loader.forget_all();
         }
     }
@@ -143,6 +144,8 @@ impl ImageCache {
         let trim_dir = dir.clone();
         rt.spawn_blocking(move || trim(&trim_dir));
         ctx.add_bytes_loader(Arc::new(Self { dir, rt, http, slots: Gate::new(PARALLEL), entries: Default::default() }));
+        // Still pictures decoded at the size they're drawn at (sized_images.rs).
+        crate::sized_images::SizedLoader::install(ctx);
     }
 
     fn key(uri: &str) -> String {

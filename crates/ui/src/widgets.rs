@@ -80,6 +80,47 @@ pub enum ImageState {
     Missing,
 }
 
+/// Pixel sizes still pictures are decoded at (the app's sized image
+/// loader): a few steps, so a picture drawn at slightly different sizes
+/// shares one texture.
+const STEPS: [u32; 11] = [64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048];
+const SIZED: &str = "#sir-fit=";
+
+fn step(px: f32) -> Option<u32> {
+    STEPS.iter().copied().find(|s| *s as f32 >= px.ceil())
+}
+
+/// `url` with the size it's drawn at (`px`, in pixels), so the picture is
+/// decoded at that size instead of in full: `<url>#sir-fit=<cover|contain>,<w>x<h>`.
+/// Animations, unknown formats and very large draws keep the plain URL.
+pub fn sized_url(url: &str, px: Vec2, cover: bool) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
+    let still = [".jpg", ".jpeg", ".png"].iter().any(|e| path.ends_with(e));
+    match (still, step(px.x), step(px.y)) {
+        (true, Some(w), Some(h)) if url.starts_with("http") && !url.contains('#') => format!("{url}{SIZED}{},{w}x{h}", if cover { "cover" } else { "contain" }),
+        _ => url.to_string(),
+    }
+}
+
+/// The parts of a [`sized_url`]: (plain URL, cover, width, height).
+pub fn parse_sized(uri: &str) -> Option<(&str, bool, u32, u32)> {
+    let (url, spec) = uri.split_once(SIZED)?;
+    let (mode, size) = spec.split_once(',')?;
+    let (w, h) = size.split_once('x')?;
+    Some((url, mode == "cover", w.parse().ok()?, h.parse().ok()?))
+}
+
+/// Plain URLs known missing for good, and ones asked for (see [`image_state`]).
+static SEEN: std::sync::Mutex<Option<std::collections::HashMap<String, ImageState>>> = std::sync::Mutex::new(None);
+
+fn note_state(url: &str, state: ImageState) {
+    let mut guard = SEEN.lock().unwrap();
+    let map = guard.get_or_insert_with(Default::default);
+    if map.get(url) != Some(&state) {
+        map.insert(url.to_string(), state);
+    }
+}
+
 /// Failed loads: url -> (attempts, when the last one failed).
 static FAILED: std::sync::Mutex<Option<std::collections::HashMap<String, (u32, f64)>>> = std::sync::Mutex::new(None);
 const RETRIES: u32 = 3;
@@ -87,11 +128,20 @@ const RETRIES: u32 = 3;
 /// Load an image, retrying failed downloads a few times with a pause.
 /// Steam's image servers sometimes drop a connection when many images load
 /// at once; without this a dropped one would stay blank.
-fn load(ui: &Ui, url: &str, size: Vec2) -> (ImageState, Option<egui::load::SizedTexture>) {
+fn load(ui: &Ui, url: &str, size: Vec2, cover: bool) -> (ImageState, Option<egui::load::SizedTexture>) {
+    let (state, texture) = load_sized(ui, url, size, cover);
+    if !url.is_empty() {
+        note_state(url, state);
+    }
+    (state, texture)
+}
+
+fn load_sized(ui: &Ui, url: &str, size: Vec2, cover: bool) -> (ImageState, Option<egui::load::SizedTexture>) {
     if url.is_empty() {
         return (ImageState::Missing, None);
     }
-    let img = egui::Image::new(url.to_owned());
+    let uri = sized_url(url, size * ui.ctx().pixels_per_point(), cover);
+    let img = egui::Image::new(uri.clone());
     match img.load_for_size(ui.ctx(), size) {
         Ok(TexturePoll::Ready { texture }) => (ImageState::Ready, Some(texture)),
         Ok(TexturePoll::Pending { .. }) => (ImageState::Loading, None),
@@ -108,6 +158,9 @@ fn load(ui: &Ui, url: &str, size: Vec2) -> (ImageState, Option<egui::load::Sized
                 entry.0 += 1;
                 entry.1 = now;
                 ui.ctx().forget_image(url);
+                if uri != url {
+                    ui.ctx().forget_image(&uri);
+                }
             }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
             (ImageState::Loading, None)
@@ -115,14 +168,18 @@ fn load(ui: &Ui, url: &str, size: Vec2) -> (ImageState, Option<egui::load::Sized
     }
 }
 
-/// Whether an image loaded, is loading, or is missing.
+/// Whether an image loaded, is loading, or is missing. For a picture drawn
+/// before, what that draw found (no extra texture at another size).
 pub fn image_state(ui: &Ui, url: &str) -> ImageState {
-    load(ui, url, Vec2::splat(64.0)).0
+    if let Some(state) = SEEN.lock().unwrap().as_ref().and_then(|m| m.get(url).copied()) {
+        return state;
+    }
+    load(ui, url, Vec2::splat(64.0), false).0
 }
 
 /// Draw a remote image covering `rect` (center-cropped). False while loading.
 pub fn paint_cover(ui: &Ui, rect: Rect, url: &str, radius: CornerRadius) -> bool {
-    let (_, Some(texture)) = load(ui, url, rect.size()) else {
+    let (_, Some(texture)) = load(ui, url, rect.size(), true) else {
         return false;
     };
     let tex = texture.size;
@@ -143,7 +200,7 @@ pub fn paint_cover(ui: &Ui, rect: Rect, url: &str, radius: CornerRadius) -> bool
 /// loading, so a fallback never competes with the image it stands in for.
 pub fn paint_cover_first(ui: &Ui, rect: Rect, urls: &[&str], radius: CornerRadius) -> bool {
     for url in urls {
-        match load(ui, url, rect.size()) {
+        match load(ui, url, rect.size(), true) {
             (_, Some(_)) => return paint_cover(ui, rect, url, radius),
             (ImageState::Missing, _) => continue,
             _ => return false,
@@ -154,7 +211,7 @@ pub fn paint_cover_first(ui: &Ui, rect: Rect, urls: &[&str], radius: CornerRadiu
 
 /// Draw a remote image as large as fits in `rect`, anchored by `align`.
 pub fn paint_contain(ui: &Ui, rect: Rect, url: &str, align: Align2) -> bool {
-    let (_, Some(texture)) = load(ui, url, rect.size()) else {
+    let (_, Some(texture)) = load(ui, url, rect.size(), false) else {
         return false;
     };
     let scale = (rect.width() / texture.size.x).min(rect.height() / texture.size.y);
