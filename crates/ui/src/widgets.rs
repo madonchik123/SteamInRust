@@ -23,6 +23,20 @@ pub fn text_bold(s: impl Into<String>, size: f32, color: Color32) -> RichText {
     RichText::new(s).size(size).color(color).family(bold())
 }
 
+/// Draw an icon glyph centered on `center` by its visible outline (text
+/// centering uses the line box, which leaves glyphs off-center). A play
+/// triangle is nudged right a little so it looks centered in a circle.
+pub fn icon_centered(painter: &egui::Painter, center: egui::Pos2, icon: &str, size: f32, color: Color32) {
+    let g = painter.layout_no_wrap(icon.to_string(), font(size), color);
+    let b = g.mesh_bounds;
+    if !b.is_positive() {
+        painter.text(center, Align2::CENTER_CENTER, icon, font(size), color);
+        return;
+    }
+    let nudge = if icon == crate::icons::PLAY { b.width() * 0.08 } else { 0.0 };
+    painter.galley(center - b.center().to_vec2() + vec2(nudge, 0.0), g, color);
+}
+
 pub fn font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Proportional)
 }

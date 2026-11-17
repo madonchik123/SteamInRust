@@ -53,6 +53,8 @@ pub async fn web(conn: &Connection, me: SteamId, refresh: &str, cache: &WebCache
         let host = url.host_str().unwrap_or_default().to_string();
         jar.add_cookie_str(&format!("steamLoginSecure={me}%7C%7C{}; Domain={host}; Path=/; Secure; HttpOnly", r.access_token()), &url);
         jar.add_cookie_str(&format!("sessionid={session_id}; Domain={host}; Path=/; Secure"), &url);
+        // Times on Steam's pages in your time zone, like a browser gets them.
+        jar.add_cookie_str(&format!("timezoneOffset={},0; Domain={host}; Path=/", utc_offset()), &url);
     }
     let http = reqwest::Client::builder()
         .cookie_provider(jar)
@@ -62,6 +64,39 @@ pub async fn web(conn: &Connection, me: SteamId, refresh: &str, cache: &WebCache
     let w = Arc::new(Web { http, me, session_id, access_token: r.access_token().to_string() });
     *slot = Some((w.clone(), Instant::now()));
     Ok(w)
+}
+
+/// Your time zone's offset from UTC right now, in seconds (east positive).
+pub fn utc_offset() -> i64 {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::SYSTEMTIME;
+        use windows_sys::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime};
+        let (mut local, mut utc) = unsafe { (std::mem::zeroed::<SYSTEMTIME>(), std::mem::zeroed::<SYSTEMTIME>()) };
+        unsafe {
+            GetLocalTime(&mut local);
+            GetSystemTime(&mut utc);
+        }
+        let secs = |t: &SYSTEMTIME| model::days_from_civil(t.wYear as i64, t.wMonth as i64, t.wDay as i64) * 86_400 + t.wHour as i64 * 3600 + t.wMinute as i64 * 60;
+        // Whole quarter hours (the two clocks are read a moment apart).
+        ((secs(&local) - secs(&utc)) as f64 / 900.0).round() as i64 * 900
+    }
+    #[cfg(not(windows))]
+    {
+        // struct tm up to tm_gmtoff (the same layout on macOS and Linux).
+        #[repr(C)]
+        struct Tm {
+            fields: [i32; 9],
+            gmtoff: std::ffi::c_long,
+            zone: *const std::ffi::c_char,
+        }
+        unsafe extern "C" {
+            fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let mut tm = Tm { fields: [0; 9], gmtoff: 0, zone: std::ptr::null() };
+        if unsafe { localtime_r(&now, &mut tm) }.is_null() { 0 } else { tm.gmtoff as i64 }
+    }
 }
 
 fn rand_byte() -> u8 {

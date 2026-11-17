@@ -58,3 +58,30 @@ pub fn entries<'a>(state: &'a client::State, local: &'a local::LocalState) -> Ve
     }
     out
 }
+
+/// A menu of a SteamID's formats (64-bit, SteamID3, STEAM_0, friend code,
+/// profile link), each with its value; the clicked one is copied. Returns
+/// what was copied, for a "copied" message.
+pub(crate) fn steam_id_menu(ui: &mut egui::Ui, t: &ui::Theme, id: u64) -> Option<String> {
+    let mut copied = None;
+    for (name, value) in model::steam_id_formats(id) {
+        let label = match name {
+            "friend_code" => i18n::t!("Friend code").to_string(),
+            "link" => i18n::t!("Profile link").to_string(),
+            other => other.to_string(),
+        };
+        let (rect, r) = ui.allocate_exact_size(egui::vec2(280.0, 40.0), egui::Sense::click());
+        if r.hovered() {
+            ui.painter().rect_filled(rect, t.corner_small(), t.surface_hover);
+        }
+        let p = ui.painter();
+        p.text(rect.left_top() + egui::vec2(10.0, 7.0), egui::Align2::LEFT_TOP, &label, ui::widgets::font_medium(13.0), t.text);
+        p.text(rect.left_bottom() + egui::vec2(10.0, -6.0), egui::Align2::LEFT_BOTTOM, &value, ui::widgets::font(11.5), t.text_faint);
+        if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            ui.ctx().copy_text(value);
+            copied = Some(label);
+            ui.close();
+        }
+    }
+    copied
+}

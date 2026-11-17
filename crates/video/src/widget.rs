@@ -215,8 +215,8 @@ fn draw(ui: &mut Ui, t: &Theme, rect: Rect, p: &mut Player, poster: &str, fullsc
         egui::Spinner::new().size(36.0).color(Color32::WHITE).paint_at(ui, Rect::from_center_size(rect.center(), vec2(36.0, 36.0)));
     } else if matches!(status, Status::Paused | Status::Ended) && st.drag.is_none() {
         painter.circle_filled(rect.center(), 34.0, Color32::from_black_alpha(160));
-        let (icon, dx) = if status == Status::Ended { (REPLAY, 0.0) } else { (PLAY, 3.0) };
-        painter.text(rect.center() + vec2(dx, 0.0), Align2::CENTER_CENTER, icon, w::font(30.0), Color32::WHITE);
+        let icon = if status == Status::Ended { REPLAY } else { PLAY };
+        w::icon_centered(&painter, rect.center(), icon, 30.0, Color32::WHITE);
     } else if status == Status::Failed {
         let msg = p.error().unwrap_or_default();
         painter.rect_filled(rect, radius, Color32::from_black_alpha(150));
@@ -277,7 +277,7 @@ fn icon_button(ui: &Ui, painter: &egui::Painter, r: Rect, id: Id, icon: &str, si
     if b.hovered() {
         painter.rect_filled(r, CornerRadius::same(5), Color32::from_white_alpha(28));
     }
-    painter.text(r.center(), Align2::CENTER_CENTER, icon, w::font(size), Color32::WHITE);
+    w::icon_centered(painter, r.center(), icon, size, Color32::WHITE);
     b.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip)
 }
 

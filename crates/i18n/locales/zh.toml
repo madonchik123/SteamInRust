@@ -1958,3 +1958,7 @@
 "This inventory is private." = "此库存为私密。"
 "No tradable items here." = "这里没有可交易的物品。"
 "Search for a game" = "搜索游戏"
+"Copied: {what}" = "已复制：{what}"
+"Friend code" = "好友代码"
+"Profile link" = "个人资料链接"
+"{xp} XP to reach level {level}" = "还需 {xp} 经验值升到 {level} 级"

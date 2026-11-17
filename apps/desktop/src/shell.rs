@@ -1034,10 +1034,9 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
                 }
                 ui.close();
             }
-            if ui.button(t!("Copy SteamID")).clicked() {
-                ui.ctx().copy_text(persona.steam_id.to_string());
-                ui.close();
-            }
+            ui.menu_button(t!("Copy SteamID"), |ui| {
+                crate::builtin::steam_id_menu(ui, &t, persona.steam_id);
+            });
             ui.separator();
             if ui.button(w::text(t!("Remove friend…"), 13.5, t.danger)).clicked() {
                 app.friend_dialog = Some((vp, FriendDialog::Remove { id: persona.steam_id, name: persona.display_name() }));

@@ -1958,3 +1958,7 @@
 "This inventory is private." = "Cet inventaire est privé."
 "No tradable items here." = "Aucun objet échangeable ici."
 "Search for a game" = "Rechercher un jeu"
+"Copied: {what}" = "Copié : {what}"
+"Friend code" = "Code ami"
+"Profile link" = "Lien du profil"
+"{xp} XP to reach level {level}" = "{xp} XP pour atteindre le niveau {level}"

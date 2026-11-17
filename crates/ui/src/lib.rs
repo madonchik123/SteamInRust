@@ -52,6 +52,19 @@ pub fn ago(unix: u64) -> String {
     }
 }
 
+/// A wall-clock time (seconds since 1970 read as UTC) as a date and time,
+/// e.g. "13 Jan 2025, 7:17 AM" in English or "13 янв. 2025, 07:17" in Russian.
+pub fn date_time(unix: u64) -> String {
+    let s = unix % 86_400;
+    let (h, m) = (s / 3600, (s / 60) % 60);
+    let time = if i18n::language().code() == "en" {
+        format!("{}:{m:02} {}", if h % 12 == 0 { 12 } else { h % 12 }, if h < 12 { "AM" } else { "PM" })
+    } else {
+        format!("{h:02}:{m:02}")
+    };
+    format!("{}, {time}", date(unix))
+}
+
 /// A unix time as a short date, e.g. "7 Oct 2026" (UTC, month names translated).
 pub fn date(unix: u64) -> String {
     let days = (unix / 86_400) as i64;

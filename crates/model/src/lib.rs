@@ -706,7 +706,35 @@ pub struct Badge {
     pub detail: String,
     /// e.g. "Unlocked Oct 14 @ 10:06am".
     pub unlocked: String,
+    /// When it was unlocked, as your clock showed it: seconds since 1970
+    /// read as UTC (0 if Steam's text couldn't be read).
+    pub unlocked_at: u64,
     pub url: String,
+}
+
+/// The ways a Steam account's id is written: (name, value). The names are
+/// the usual ones; "friend code" is the 32-bit account id Steam shows when
+/// adding friends.
+pub fn steam_id_formats(id: SteamId) -> [(&'static str, String); 5] {
+    let account = id & 0xFFFF_FFFF;
+    [
+        ("SteamID64", id.to_string()),
+        ("SteamID3", format!("[U:1:{account}]")),
+        ("SteamID", format!("STEAM_0:{}:{}", account & 1, account >> 1)),
+        ("friend_code", account.to_string()),
+        ("link", format!("https://steamcommunity.com/profiles/{id}")),
+    ]
+}
+
+/// Days since 1970-01-01 for a calendar date.
+pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1753,5 +1781,16 @@ mod os_tests {
         // Else its launch options; nothing known counts as yes.
         assert_eq!(app("", vec![launch("windows")]).runs_on_this_os(), THIS_OS == "windows");
         assert!(app("", vec![]).runs_on_this_os());
+    }
+}
+
+#[cfg(test)]
+mod steam_id_tests {
+    #[test]
+    fn writes_steam_ids_every_way() {
+        let f = super::steam_id_formats(76561197960287930);
+        assert_eq!(f[1].1, "[U:1:22202]");
+        assert_eq!(f[2].1, "STEAM_0:0:11101");
+        assert_eq!(f[3].1, "22202");
     }
 }

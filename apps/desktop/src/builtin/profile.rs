@@ -35,6 +35,8 @@ pub struct Profile {
     social_requested: HashSet<SteamId>,
     comment_draft: String,
     all_badges: Option<SteamId>,
+    /// Open the full badges list once the profile shows (from a link).
+    want_badges: bool,
     /// Friends, reviews and groups asked for, per profile.
     lists_requested: HashSet<(SteamId, &'static str)>,
     /// The search box on a profile's friends list.
@@ -74,6 +76,9 @@ impl Extension for Profile {
             Some("groups") => Sub::Groups,
             _ => Sub::None,
         };
+        // "<id>/badges" (or just "badges" for yours) opens the full badges list.
+        self.want_badges = arg.is_some_and(|a| a == "badges" || a.ends_with("/badges"));
+        self.all_badges = None;
         self.games_search.clear();
     }
 
@@ -81,6 +86,9 @@ impl Extension for Profile {
         let t = ctx.theme.clone();
         let id = self.viewing.filter(|id| *id != ctx.state.steam_id).unwrap_or(ctx.state.steam_id);
         let mine = id == ctx.state.steam_id;
+        if std::mem::take(&mut self.want_badges) {
+            self.all_badges = Some(id);
+        }
         if id != 0 && self.requested.insert(id) {
             ctx.send(Command::LoadProfile { steam_id: id });
         }
@@ -188,7 +196,7 @@ impl Extension for Profile {
                                 }
                                 if let Some(since) = info.as_ref().and_then(|i| i.member_since) {
                                     ui.add_space(6.0);
-                                    ui.label(w::text(t!("Member since {date}", date = ui::ago(since)), 12.5, t.text_faint));
+                                    ui.label(w::text(t!("Member since {date}", date = ui::date(since)), 12.5, t.text_faint)).on_hover_text(ui::ago(since));
                                 }
                                 ui.add_space(10.0);
                                 ui.horizontal(|ui| {
@@ -200,9 +208,9 @@ impl Extension for Profile {
                                         let url = if mine { format!("https://steamcommunity.com/profiles/{id}/edit/info") } else { format!("https://steamcommunity.com/profiles/{id}") };
                                         let _ = open::that_detached(url);
                                     }
-                                    if w::button(ui, &t, Some(icons::COPY), t!("Copy SteamID"), w::Kind::Ghost, w::Size::Sm).clicked() {
-                                        ui.ctx().copy_text(id.to_string());
-                                        ctx.toast(t!("SteamID copied"));
+                                    let r = w::button(ui, &t, Some(icons::COPY), &format!("{}  {}", t!("Copy SteamID"), icons::CARET_DOWN), w::Kind::Ghost, w::Size::Sm);
+                                    if let Some(Some(what)) = egui::Popup::from_toggle_button_response(&r).show(|ui| super::steam_id_menu(ui, &t, id)).map(|r| r.inner) {
+                                        ctx.toast(t!("Copied: {what}", what = what));
                                     }
                                 });
                             });
@@ -405,7 +413,7 @@ impl Profile {
                 ui.add_space(4.0);
                 let width = ui.available_width();
                 w::progress(ui, t, b.progress, width);
-                ui.label(w::text(&b.next, 11.5, t.text_faint));
+                ui.label(w::text(next_level_text(&b.next), 11.5, t.text_faint));
             }
             if !b.items.is_empty() {
                 ui.add_space(10.0);
@@ -460,7 +468,7 @@ impl Profile {
                         let x = img.right() + 12.0;
                         ui.painter().text(pos2(x, r.top() + 18.0), Align2::LEFT_CENTER, &badge.title, w::font_semibold(14.0), t.text);
                         ui.painter().text(pos2(x, r.top() + 36.0), Align2::LEFT_CENTER, &badge.detail, w::font(12.5), t.accent);
-                        ui.painter().text(pos2(x, r.top() + 53.0), Align2::LEFT_CENTER, &badge.unlocked, w::font(11.5), t.text_faint);
+                        ui.painter().text(pos2(x, r.top() + 53.0), Align2::LEFT_CENTER, unlocked_text(badge), w::font(11.5), t.text_faint);
                         if !badge.url.is_empty() && resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Opens in your browser")).clicked() {
                             let _ = open::that_detached(&badge.url);
                         }
@@ -840,6 +848,21 @@ fn level_badge(ui: &mut Ui, t: &Theme, level: u32) {
     ui.painter().text(r.center(), Align2::CENTER_CENTER, level.to_string(), w::font_bold(13.5), t.text);
 }
 
+/// "85 XP to reach Level 19" in your language (other XP lines stay as Steam
+/// writes them).
+fn next_level_text(s: &str) -> String {
+    let num = |x: &str| -> Option<String> { let x = x.trim(); (!x.is_empty() && x.chars().all(|c| c.is_ascii_digit() || c == ',')).then(|| x.to_string()) };
+    match s.trim().split_once(" XP to reach Level ") {
+        Some((xp, level)) if num(xp).is_some() && num(level).is_some() => t!("{xp} XP to reach level {level}", xp = xp.trim(), level = level.trim()),
+        _ => s.to_string(),
+    }
+}
+
+/// "Unlocked …" in your language and time zone.
+fn unlocked_text(b: &model::Badge) -> String {
+    if b.unlocked_at > 0 { t!("Unlocked {date}", date = ui::date_time(b.unlocked_at)) } else { b.unlocked.clone() }
+}
+
 /// A badge picture with its name and details on hover.
 fn badge_icon(ui: &mut Ui, t: &Theme, badge: &model::Badge, size: f32) {
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
@@ -851,7 +874,7 @@ fn badge_icon(ui: &mut Ui, t: &Theme, badge: &model::Badge, size: f32) {
         }
         None => w::placeholder(ui, t, r, "", CornerRadius::same(6)),
     }
-    let tip = [badge.title.as_str(), badge.detail.as_str(), badge.unlocked.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+    let tip = [badge.title.clone(), badge.detail.clone(), unlocked_text(badge)].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
     if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !badge.url.is_empty() {
         let _ = open::that_detached(&badge.url);
     }

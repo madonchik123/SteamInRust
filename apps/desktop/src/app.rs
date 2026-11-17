@@ -138,6 +138,9 @@ pub struct SteamApp {
     /// Big Picture (fullscreen TV mode) and its controller input.
     pub bigpicture: crate::bigpicture::BigPicture,
     bigpicture_was_on: bool,
+    /// A two-finger sideways swipe in progress (Mac trackpads): how far it
+    /// went, when it last moved, and whether it already went back/forward.
+    swipe: (egui::Vec2, f64, bool),
     /// When the first frame ran, and when we last asked to leave fullscreen.
     started_at: Option<f64>,
     unfullscreen_asked: f64,
@@ -262,6 +265,7 @@ impl SteamApp {
             applied_zoom: 0.0,
             bigpicture,
             bigpicture_was_on: false,
+            swipe: (egui::Vec2::ZERO, 0.0, false),
             started_at: None,
             unfullscreen_asked: f64::MIN,
             taskbar: Default::default(),
@@ -402,6 +406,43 @@ impl SteamApp {
         self.registry.navigate(&page, arg.as_deref());
         self.prefs.page = page;
         self.current_arg = arg;
+    }
+
+    /// Two fingers swiped sideways on a trackpad: back (to the right) or
+    /// forward (to the left), like Safari. Only scrolling that nothing on
+    /// the page used counts, so carousels and wide lists still scroll.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn swipe_navigation(&mut self, ctx: &egui::Context) {
+        const FAR: f32 = 160.0;
+        let (now, left, raw) = ctx.input(|i| {
+            // This frame's wheel/trackpad movement, before any list used it.
+            let raw = i.events.iter().fold(egui::Vec2::ZERO, |acc, e| match e {
+                egui::Event::MouseWheel { delta, .. } => acc + *delta,
+                _ => acc,
+            });
+            (i.time, i.smooth_scroll_delta, raw)
+        });
+        let (total, last, done) = &mut self.swipe;
+        if raw == egui::Vec2::ZERO && left == egui::Vec2::ZERO {
+            // A pause ends the gesture.
+            if now - *last > 0.35 {
+                *total = egui::Vec2::ZERO;
+                *done = false;
+            }
+            return;
+        }
+        *last = now;
+        total.x += left.x;
+        total.y += raw.y.abs();
+        if *done || total.x.abs() < FAR || total.x.abs() < total.y * 2.0 {
+            return;
+        }
+        *done = true;
+        if total.x > 0.0 {
+            self.go_back();
+        } else {
+            self.go_forward();
+        }
     }
 
     pub fn go_back(&mut self) {
@@ -764,6 +805,8 @@ impl eframe::App for SteamApp {
             crate::tray::show(self, &ctx);
             #[cfg(target_os = "macos")]
             crate::mac_permissions::show(&ctx, &self.prefs.theme);
+            #[cfg(target_os = "macos")]
+            self.swipe_navigation(&ctx);
         } else {
             crate::login::show(self, ui);
             crate::tray::show(self, &ctx);

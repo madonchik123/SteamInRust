@@ -152,13 +152,57 @@ pub fn parse_badges(body: &str) -> model::Badges {
             let info = between(row, "class=\"badge_info_description\">", "<div style=\"clear")?;
             let title = between(info, "class=\"badge_info_title\">", "</div>").map(clean).unwrap_or_default();
             let unlocked = between(info, "class=\"badge_info_unlocked\">", "</div>").map(clean).unwrap_or_default();
+            let unlocked_at = unlock_time(&unlocked, this_year()).unwrap_or(0);
             // The line between title and unlock date: level / XP.
             let after_title = info.split("badge_info_title").nth(1).unwrap_or_default();
             let detail = between(after_title, "<div>", "</div>").map(clean).unwrap_or_default();
-            (!title.is_empty()).then_some(model::Badge { title, icon, detail, unlocked, url })
+            (!title.is_empty()).then_some(model::Badge { title, icon, detail, unlocked, unlocked_at, url })
         })
         .collect();
     model::Badges { level, xp, next, progress, items }
+}
+
+fn this_year() -> i64 {
+    let days = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64 / 86_400).unwrap_or(0);
+    // The year of a day count (1970-based), by stepping a year at a time.
+    let mut y = 1970;
+    while model::days_from_civil(y + 1, 1, 1) <= days {
+        y += 1;
+    }
+    y
+}
+
+/// "Unlocked Jan 13, 2025 @ 7:17am" or "Unlocked Oct 14 @ 10:06am" (this
+/// year) as a wall-clock time: seconds since 1970 read as UTC.
+pub fn unlock_time(text: &str, year_now: i64) -> Option<u64> {
+    let rest = text.trim().strip_prefix("Unlocked").unwrap_or(text).trim();
+    let (date, time) = rest.split_once('@')?;
+    // "Jan 13, 2025" or "13 Jan, 2025" (Steam orders it by your region).
+    let mut month = None;
+    let (mut day, mut year) = (None, None);
+    for p in date.split(|c: char| c == ' ' || c == ',').filter(|p| !p.is_empty()) {
+        let lower = p.to_lowercase();
+        if let Some(m) = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].iter().position(|m| lower.starts_with(m)) {
+            month = Some(m as i64 + 1);
+        } else if let Ok(n) = p.parse::<i64>() {
+            if n > 31 { year = Some(n) } else { day = Some(n) }
+        }
+    }
+    let (month, day, year) = (month?, day?, year.unwrap_or(year_now));
+    let time = time.trim().to_lowercase();
+    let pm = time.ends_with("pm");
+    let (h, m) = time.trim_end_matches(|c: char| c.is_ascii_alphabetic()).trim().split_once(':')?;
+    let (mut h, m): (i64, i64) = (h.parse().ok()?, m.parse().ok()?);
+    if h == 12 {
+        h = 0;
+    }
+    if pm {
+        h += 12;
+    }
+    if !(1..=31).contains(&day) || h > 23 || m > 59 {
+        return None;
+    }
+    Some((model::days_from_civil(year, month, day) * 86_400 + h * 3600 + m * 60) as u64)
 }
 
 /// Someone's friends (their profile's friends page, which needs to be
@@ -375,6 +419,14 @@ mod tests {
         <div class="badge_row is_link"><a class="badge_row_overlay" href="https://x/badges/13"></a><div class="badge_info_image"><img src="trans.gif" data-delayed-image="https://x/13.png" class="badge_icon"></div><div class="badge_info_description"><div class="badge_info_title">Power Player</div><div> 340 XP </div><div class="badge_info_unlocked"> Unlocked Oct 14 @ 10:06am </div></div><div style="clear: both;"></div></div>"#;
         let badges = super::parse_badges(b);
         assert_eq!(badges.level, 18);
+        assert_eq!(badges.items[0].unlocked_at, super::unlock_time("Unlocked Oct 14 @ 10:06am", super::this_year()).unwrap());
+        // 13 Jan 2025 07:17 and 14 Oct 2026 22:06.
+        assert_eq!(super::unlock_time("Unlocked Jan 13, 2025 @ 7:17am", 2026), Some(1_736_752_620));
+        assert_eq!(super::unlock_time("Unlocked Oct 14 @ 10:06pm", 2026), Some(1_792_015_560));
+        assert_eq!(super::unlock_time("Unlocked Jan 1, 2020 @ 12:05am", 2026), Some(1_577_836_800 + 300));
+        assert_eq!(super::unlock_time("Unlocked 13 Jan, 2025 @ 7:17am", 2026), Some(1_736_752_620));
+        assert_eq!(super::unlock_time("Unlocked 14 Oct @ 10:06pm", 2026), Some(1_792_015_560));
+        assert_eq!(super::unlock_time("whenever", 2026), None);
         assert_eq!(badges.next, "85 XP to reach Level 19");
         assert!((badges.progress - 0.58).abs() < 0.01);
         assert_eq!(badges.items.len(), 1);

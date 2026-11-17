@@ -1362,7 +1362,7 @@ impl Store {
                                 let tr = &trailers[i];
                                 w::image_or_skeleton(ui, t, r, &tr.thumbnail, t.corner_small());
                                 ui.painter().circle_filled(r.center(), 14.0, Color32::from_black_alpha(150));
-                                ui.painter().text(r.center() + vec2(1.5, 0.0), Align2::CENTER_CENTER, icons::PLAY, w::font(14.0), Color32::WHITE);
+                                w::icon_centered(ui.painter(), r.center(), icons::PLAY, 14.0, Color32::WHITE);
                             } else {
                                 w::image_or_skeleton(ui, t, r, &d.screenshots[i - n_tr].thumb, t.corner_small());
                             }
@@ -1523,7 +1523,7 @@ pub fn blocks(ui: &mut Ui, t: &Theme, blocks: &[Block], width: f32) {
                 w::image_or_skeleton(ui, t, r, &format!("https://img.youtube.com/vi/{id}/hqdefault.jpg"), t.corner_small());
                 ui.painter().rect_filled(r, t.corner_small(), Color32::from_black_alpha(60));
                 ui.painter().circle_filled(r.center(), 30.0, Color32::from_rgb(0xE5, 0x2D, 0x27));
-                ui.painter().text(r.center() + vec2(2.0, 0.0), Align2::CENTER_CENTER, icons::PLAY, w::font(26.0), Color32::WHITE);
+                w::icon_centered(ui.painter(), r.center(), icons::PLAY, 26.0, Color32::WHITE);
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Watch on YouTube")).clicked() {
                     let _ = open::that_detached(format!("https://www.youtube.com/watch?v={id}"));
                 }

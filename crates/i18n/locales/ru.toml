@@ -1958,3 +1958,7 @@
 "This inventory is private." = "Этот инвентарь скрыт."
 "No tradable items here." = "Здесь нет предметов для обмена."
 "Search for a game" = "Найти игру"
+"Copied: {what}" = "Скопировано: {what}"
+"Friend code" = "Код друга"
+"Profile link" = "Ссылка на профиль"
+"{xp} XP to reach level {level}" = "{xp} XP до {level} уровня"
