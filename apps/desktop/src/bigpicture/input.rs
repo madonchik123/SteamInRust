@@ -52,16 +52,85 @@ const REPEAT: Duration = Duration::from_millis(120);
 const STICK_ON: f32 = 0.55;
 const STICK_OFF: f32 = 0.35;
 
+/// On Windows the gamepad library reads every pad 125 times a second, even
+/// with none plugged in, which was nearly all of the app's CPU use while
+/// idle. So it only runs while a controller is connected: Windows says when
+/// one is plugged in, and Guide then opens Big Picture as before.
 fn read_pads(tx: mpsc::Sender<PadEvent>, ctx: egui::Context) {
-    use gilrs::{Axis, Button, EventType, Gilrs};
-    let mut gilrs = match Gilrs::new() {
-        Ok(g) => g,
-        Err(gilrs::Error::NotImplemented(g)) => g,
-        Err(e) => {
-            tracing::warn!("controllers unavailable: {e}");
+    #[cfg(windows)]
+    let (wake_tx, wake_rx) = mpsc::channel::<()>();
+    #[cfg(windows)]
+    let _watch = plugged::on_added(move || {
+        let _ = wake_tx.send(());
+    });
+    #[cfg(windows)]
+    let mut announced = None;
+    loop {
+        #[cfg(windows)]
+        if plugged::count() == 0 {
+            if announced != Some(0) {
+                announced = Some(0);
+                if tx.send(PadEvent::Connected(0)).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+            }
+            // Sleep until one is plugged in (and look again now and then).
+            let _ = wake_rx.recv_timeout(Duration::from_secs(10));
+            while wake_rx.try_recv().is_ok() {}
+            continue;
+        }
+        #[cfg(windows)]
+        {
+            announced = None;
+        }
+        let gilrs = match gilrs::Gilrs::new() {
+            Ok(g) => g,
+            Err(gilrs::Error::NotImplemented(g)) => g,
+            Err(e) => {
+                tracing::warn!("controllers unavailable: {e}");
+                return;
+            }
+        };
+        if !read_connected(gilrs, &tx, &ctx) {
             return;
         }
-    };
+    }
+}
+
+/// Windows' own list of game controllers, for the cheap "is one plugged in?".
+#[cfg(windows)]
+mod plugged {
+    use windows::Foundation::EventHandler;
+    use windows::Gaming::Input::RawGameController;
+
+    pub fn count() -> u32 {
+        RawGameController::RawGameControllers().and_then(|list| list.Size()).unwrap_or(0)
+    }
+
+    /// Calls `wake` whenever a controller is plugged in, for as long as the
+    /// returned value is kept.
+    pub fn on_added(wake: impl Fn() + Send + Sync + 'static) -> Option<Watch> {
+        let handler = EventHandler::<RawGameController>::new(move |_, _| {
+            wake();
+            Ok(())
+        });
+        RawGameController::RawGameControllerAdded(&handler).ok().map(Watch)
+    }
+
+    pub struct Watch(i64);
+
+    impl Drop for Watch {
+        fn drop(&mut self) {
+            let _ = RawGameController::RemoveRawGameControllerAdded(self.0);
+        }
+    }
+}
+
+/// Read pads until the app is gone (`false`) or, on Windows, the last pad is
+/// unplugged (`true`).
+fn read_connected(mut gilrs: gilrs::Gilrs, tx: &mpsc::Sender<PadEvent>, ctx: &egui::Context) -> bool {
+    use gilrs::{Axis, Button, EventType};
     let send = |e: PadEvent| {
         let ok = tx.send(e).is_ok();
         ctx.request_repaint();
@@ -74,7 +143,7 @@ fn read_pads(tx: mpsc::Sender<PadEvent>, ctx: egui::Context) {
     let mut next: [Option<Instant>; 4] = [None; 4];
     let mut connected = gilrs.gamepads().count();
     if !send(PadEvent::Connected(connected)) {
-        return;
+        return false;
     }
     loop {
         while let Some(ev) = gilrs.next_event_blocking(Some(Duration::from_millis(30))) {
@@ -138,8 +207,12 @@ fn read_pads(tx: mpsc::Sender<PadEvent>, ctx: egui::Context) {
                     if now != connected {
                         connected = now;
                         if !send(PadEvent::Connected(now)) {
-                            return;
+                            return false;
                         }
+                    }
+                    if cfg!(windows) && now == 0 {
+                        // Back to waiting for Windows to say one is plugged in.
+                        return true;
                     }
                     None
                 }
@@ -147,7 +220,7 @@ fn read_pads(tx: mpsc::Sender<PadEvent>, ctx: egui::Context) {
             };
             if let Some(p) = press {
                 if !send(PadEvent::Press(p)) {
-                    return;
+                    return false;
                 }
             }
         }
@@ -159,13 +232,13 @@ fn read_pads(tx: mpsc::Sender<PadEvent>, ctx: egui::Context) {
                 (true, None) => {
                     next[i] = Some(now + FIRST_REPEAT);
                     if !send(PadEvent::Press(Press::Move(dirs[i]))) {
-                        return;
+                        return false;
                     }
                 }
                 (true, Some(at)) if now >= at => {
                     next[i] = Some(now + REPEAT);
                     if !send(PadEvent::Press(Press::Move(dirs[i]))) {
-                        return;
+                        return false;
                     }
                 }
                 (false, Some(_)) => next[i] = None,

@@ -90,6 +90,26 @@ impl Drop for Slot {
     }
 }
 
+/// egui keeps a decoded copy of every picture (4 bytes a pixel) after it's on
+/// the graphics card, where it's never used again; that was ~30 MB on the
+/// library alone. Drop those copies every few seconds. Only still images:
+/// animated GIF and WebP decode their frames from it as they play.
+pub fn trim_decoded(ctx: &egui::Context) {
+    static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    {
+        let mut last = LAST.lock().unwrap();
+        if last.is_some_and(|l| l.elapsed() < Duration::from_secs(5)) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    for loader in ctx.loaders().image.lock().iter() {
+        if loader.id().ends_with("ImageCrateLoader") && loader.byte_size() > 4 * 1024 * 1024 && !loader.has_pending() {
+            loader.forget_all();
+        }
+    }
+}
+
 /// Where pictures are kept: `<cache dir>/images`.
 pub fn dir() -> PathBuf {
     directories::ProjectDirs::from("dev", "SteamInRust", "SteamInRust").map(|d| d.cache_dir().join("images")).unwrap_or_else(|| PathBuf::from("cache/images"))

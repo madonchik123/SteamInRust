@@ -270,6 +270,17 @@ fn system_font_files() -> Vec<std::path::PathBuf> {
     }
 }
 
+/// A system font file, mapped into memory instead of copied: only the parts
+/// actually drawn get loaded, and they count as shared file cache rather than
+/// the app's own memory (the CJK fonts are 70+ MB together).
+fn map_font(path: &std::path::Path) -> Option<&'static [u8]> {
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: system font files don't change while the app runs; the mapping
+    // lives for the whole program, like the font itself.
+    let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+    Some(&Box::leak(Box::new(map))[..])
+}
+
 /// Install Inter (four weights) plus the icon font. Call once at startup.
 pub fn install_fonts(ctx: &egui::Context) {
     use std::sync::Arc;
@@ -287,18 +298,18 @@ pub fn install_fonts(ctx: &egui::Context) {
     // Japanese, Korean, Thai, Arabic, Hindi… show instead of empty boxes.
     let mut system: Vec<String> = Vec::new();
     for path in system_font_files() {
-        if let Ok(bytes) = std::fs::read(&path) {
+        if let Some(bytes) = map_font(&path) {
             let name = format!("system-{}", path.file_name().unwrap_or_default().to_string_lossy());
-            fonts.font_data.insert(name.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+            fonts.font_data.insert(name.clone(), Arc::new(egui::FontData::from_static(bytes)));
             system.push(name);
         }
     }
     // Bold Chinese for headings and buttons (Windows ships it separately).
     let bold_cjk = std::env::var_os("WINDIR")
         .map(|w| std::path::PathBuf::from(w).join("Fonts").join("msyhbd.ttc"))
-        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|p| map_font(&p))
         .map(|bytes| {
-            fonts.font_data.insert("system-msyhbd".into(), Arc::new(egui::FontData::from_owned(bytes)));
+            fonts.font_data.insert("system-msyhbd".into(), Arc::new(egui::FontData::from_static(bytes)));
             "system-msyhbd".to_string()
         });
     // egui's bundled fonts stay as fallbacks for emoji and rare scripts.

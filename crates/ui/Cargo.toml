@@ -9,6 +9,7 @@ license.workspace = true
 egui = { workspace = true, features = ["serde"] }
 serde.workspace = true
 i18n.workspace = true
+memmap2 = "0.9"
 
 [dev-dependencies]
 image.workspace = true

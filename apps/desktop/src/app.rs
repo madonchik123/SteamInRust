@@ -624,6 +624,7 @@ impl eframe::App for SteamApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        crate::image_cache::trim_decoded(&ctx);
         if self.applied_theme.as_ref() != Some(&self.prefs.theme) {
             self.prefs.theme.apply(&ctx);
             self.applied_theme = Some(self.prefs.theme.clone());

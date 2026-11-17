@@ -28,8 +28,8 @@ and talks to Steam's servers directly. Free, open source (MIT) and unofficial.
 
 The official client is a Chromium app: a dozen `steamwebhelper.exe` processes
 drawing web pages. SteamInRust draws everything itself on the GPU with
-[egui](https://github.com/emilk/egui), so it starts in about two seconds and
-idles at a quarter of a gigabyte.
+[egui](https://github.com/emilk/egui), so its window is up in about two and a half
+seconds and it idles at about 160 MB.
 
 <p align="center">
   <img src="docs/media/en/store.png" alt="A store page in SteamInRust with the Hades trailer playing" width="100%">
@@ -105,29 +105,30 @@ Everything below is in the current release. Area-by-area status:
 
 ## Performance
 
-**SteamInRust opens its window about 4 times sooner than Steam and uses less
-than a quarter of the memory**, on the same PC, account and network. Measured
-on 8 November 2026 on a Ryzen 5 5600 with 16 GB of RAM, Windows 11, SteamInRust
-0.4.0 against Steam 11.15.70.27. Both clients started on the library. Every
-figure is the typical (middle) result of 5 runs:
+**SteamInRust shows its window about 2.5 times sooner than Steam, has your
+library fully drawn about 3 times sooner, and uses about a sixth of the
+memory**, on the same PC, account and network. Measured on 17 November 2026 on
+a Ryzen 5 5600 with 16 GB of RAM, Windows 11, SteamInRust 0.7.1 against Steam
+11.23.65.88. Both clients started on the library. Every figure is the middle
+result of 3 runs:
 
 | | Steam | SteamInRust |
 | --- | ---: | ---: |
-| Start → main window | 9.4 s | 2.4 s |
-| Start → library fully drawn | 19.2 s | 10.0 s |
-| Memory when idle (private bytes) | 1,126 MB | 255 MB |
-| CPU when idle | 7.5 % of a core | 0.13 % |
+| Start → first window | 6.4 s | 2.6 s |
+| Start → main window | 9.0 s | 2.4 s |
+| Start → library fully drawn | 14.7 s | 4.8 s |
+| Memory when idle (private bytes) | 1,019 MB | 163 MB |
+| CPU when idle | 7.6 % of a core | 0.00 % |
 | Processes | 8 | 1 |
-| Program size | 1,083 MB | 27.2 MB |
-| Open the Store | 1.22 s | 0.56 s |
-| Open a game page in the library | 0.85 s | 0.06 s |
-| Open Friends & Chat | 1.32 s | 0.05 s |
+| Program size | 1,084 MB | 29.8 MB |
+| Open the Store | 1.33 s | 0.75 s |
+| Open a game page in the library | 0.70 s | 0.05 s |
+| Open Friends & Chat | 1.20 s | 0.06 s |
 
-Most of SteamInRust's time to a fully drawn library is library art arriving
-over the network. With the art already cached on disk (a warm start), it was
-7.2 s. Your games list itself shows about 1 s after start-up: SteamInRust shows
-the library saved at your last sign-in while Steam sends the current one. Method, ranges and what was left out:
-[docs/benchmarks.md](docs/benchmarks.md).
+Start times are cold starts (nothing in the file cache). 0.7.1 also cut
+SteamInRust's own idle memory from 253 MB to 163 MB and its idle CPU to zero,
+compared with 0.7.0 on the same run. Method, ranges, warm starts and what was
+left out: [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Download
 
