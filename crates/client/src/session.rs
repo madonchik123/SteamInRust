@@ -778,6 +778,62 @@ async fn online(
                 Some(Command::SellItem { app_id, context_id, asset_id, amount, receive }) => st.sell_item(app_id, context_id, asset_id, amount, receive, sink),
                 Some(Command::LoadMyListings) => st.my_listings(sink),
                 Some(Command::LoadTradeOffers { language }) => st.trade_offers(language, sink),
+                Some(Command::LoadProfileEdit { language }) => {
+                    let conn = st.conn.clone();
+                    st.with_web(sink, move |web, sink| async move {
+                        let r = match web {
+                            Ok(w) => crate::profile_edit::load(&w, &conn, &language).await,
+                            Err(e) => Err(e),
+                        };
+                        sink(Event::ProfileEdit(r));
+                    })
+                }
+                Some(Command::SaveProfileInfo(e)) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::profile_edit::save_info(&w, &e).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::ProfileSaved { what: model::ProfileSave::Info, result });
+                }),
+                Some(Command::SaveProfilePrivacy(p)) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::profile_edit::save_privacy(&w, &p).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::ProfileSaved { what: model::ProfileSave::Privacy, result });
+                }),
+                Some(Command::UploadAvatar { path }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match (web, std::fs::read(&path)) {
+                        (Ok(w), Ok(bytes)) => {
+                            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "avatar.jpg".into());
+                            crate::profile_edit::upload_avatar(&w, bytes, &name).await
+                        }
+                        (Err(e), _) => Err(e),
+                        (_, Err(e)) => Err(e.to_string()),
+                    };
+                    sink(Event::ProfileSaved { what: model::ProfileSave::Avatar, result });
+                }),
+                Some(Command::EquipProfileItem { kind, id }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        let result = crate::profile_edit::equip(&conn, kind, id).await;
+                        sink(Event::ProfileSaved { what: model::ProfileSave::Item, result });
+                    });
+                }
+                Some(Command::SetProfileTheme(theme)) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        let result = crate::profile_edit::set_theme(&conn, &theme).await;
+                        sink(Event::ProfileSaved { what: model::ProfileSave::Theme, result });
+                    });
+                }
+                Some(Command::LoadLocations { country, state }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::profile_edit::locations(&w, country.as_deref(), state.as_deref()).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::Locations { country, state, result });
+                }),
                 Some(Command::LoadPersonas { ids }) => {
                     for chunk in ids.chunks(100) {
                         let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: chunk.to_vec() });
@@ -907,6 +963,17 @@ async fn online(
                 Some(Command::MarketSearch { query, app, start }) => st.with_web(sink, move |web, sink| async move {
                     let result = crate::market::search(web.as_deref().ok(), &query, app, start).await;
                     sink(Event::MarketSearch { query, app, start, result });
+                }),
+                Some(Command::LoadBadge { url }) => st.with_web(sink, move |web, sink| async move {
+                    let result = crate::social::badge(web.as_deref().ok(), &url).await;
+                    sink(Event::Badge { url, result });
+                }),
+                Some(Command::CraftBadge { app_id, foil }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::social::craft_badge(&w, app_id, foil).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::BadgeCrafted { app_id, result });
                 }),
                 Some(Command::LoadBadges { steam_id }) => st.with_web(sink, move |web, sink| async move {
                     let result = crate::social::badges(web.as_deref().ok(), steam_id).await;

@@ -710,6 +710,33 @@ pub struct Badge {
     /// read as UTC (0 if Steam's text couldn't be read).
     pub unlocked_at: u64,
     pub url: String,
+    /// Game badges: hours played and card drops left, as Steam writes them
+    /// ("3,773 hrs on record", "3 card drops remaining").
+    pub playtime: String,
+    pub drops: String,
+}
+
+/// A trading card in a game badge's set.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BadgeCard {
+    pub name: String,
+    pub image: String,
+    /// How many you have (0 = missing).
+    pub owned: u32,
+    /// e.g. "3 of 8, Series 1".
+    pub position: String,
+}
+
+/// A badge's own page: the badge, and for a game badge its card set.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BadgeDetail {
+    /// e.g. "Dota 2 Badge".
+    pub title: String,
+    /// The level you have now (empty title if none yet).
+    pub current: Badge,
+    pub cards: Vec<BadgeCard>,
+    /// The game, for game badges.
+    pub app_id: Option<AppId>,
 }
 
 /// The ways a Steam account's id is written: (name, value). The names are
@@ -724,6 +751,65 @@ pub fn steam_id_formats(id: SteamId) -> [(&'static str, String); 5] {
         ("friend_code", account.to_string()),
         ("link", format!("https://steamcommunity.com/profiles/{id}")),
     ]
+}
+
+/// Who can see a part of your profile: 1 only you, 2 friends, 3 everyone.
+/// Comments: 0 friends, 1 everyone, 2 nobody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ProfilePrivacy {
+    pub profile: u8,
+    pub inventory: u8,
+    pub gifts: u8,
+    pub games: u8,
+    pub playtime: u8,
+    pub friends: u8,
+    pub comments: u8,
+}
+
+/// A profile item you own (background, frame...).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProfileItemChoice {
+    pub id: u64,
+    pub name: String,
+    pub image: String,
+    pub app_id: AppId,
+}
+
+/// Your profile as Steam's Edit Profile pages show it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProfileEdit {
+    pub persona_name: String,
+    pub real_name: String,
+    pub custom_url: String,
+    pub summary: String,
+    /// Location codes as Steam stores them (country "KZ", state, city id).
+    pub country: String,
+    pub state: String,
+    pub city: String,
+    /// "City, State, Country" as Steam names them.
+    pub location_text: String,
+    pub privacy: ProfilePrivacy,
+    pub hide_awards: bool,
+    pub theme: String,
+    /// (theme id, title)
+    pub themes: Vec<(String, String)>,
+    pub backgrounds: Vec<ProfileItemChoice>,
+    pub mini_backgrounds: Vec<ProfileItemChoice>,
+    pub frames: Vec<ProfileItemChoice>,
+    pub animated_avatars: Vec<ProfileItemChoice>,
+    /// Equipped item ids: background, mini profile background, frame,
+    /// animated avatar (0 = none).
+    pub equipped: [u64; 4],
+}
+
+/// Which part of the profile a save was for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProfileSave {
+    Info,
+    Privacy,
+    Avatar,
+    Item,
+    Theme,
 }
 
 /// Days since 1970-01-01 for a calendar date.

@@ -109,9 +109,17 @@ impl Extension for Inventory {
             self.view = View::Market;
             return;
         }
+        // "market:<app>:<query>": the Market search for something.
+        if let Some(rest) = arg.and_then(|a| a.strip_prefix("market:")) {
+            let (app, query) = rest.split_once(':').unwrap_or(("", rest));
+            self.market.open(app.parse().ok(), query);
+            self.view = View::Market;
+            return;
+        }
         // "trades", or "trade:<partner>" / "trade:<partner>:<app>:<context>:<asset>"
         // to start an offer (giving that item).
-        if arg == Some("trades") {
+        if arg == Some("trades") || arg == Some("trades:sent") {
+            self.trades.tab = if arg == Some("trades:sent") { trades::Tab::Sent } else { trades::Tab::Received };
             self.view = View::Trades;
             self.trades.builder = None;
             self.trades.loaded = false;
@@ -330,7 +338,9 @@ impl Extension for Inventory {
                 if w::chip(ui, &t, &format!("{}  {}", icons::COINS, t!("Show prices")), self.show_prices).on_hover_text(t!("Look up each item's market price (a few per second, so Steam doesn't block it)")).clicked() {
                     self.show_prices = !self.show_prices;
                 }
-                w::segmented(ui, &t, &mut self.sort, &[(Sort::Newest, &t!("Newest")), (Sort::Name, &t!("Name")), (Sort::Kind, &t!("Type")), (Sort::Price, &t!("Price"))]);
+                // A menu, not tabs: it wraps with the rest of the row when
+                // narrow (tabs overflowed and widened the whole page).
+                trades::sort_menu(ui, &t, owner, &mut self.sort, true);
             });
             if self.sort == Sort::Price {
                 self.show_prices = true;

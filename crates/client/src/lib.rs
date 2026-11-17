@@ -18,6 +18,7 @@ mod ipctool;
 mod launch;
 pub mod market;
 pub mod trade;
+pub mod profile_edit;
 pub mod social;
 pub mod cloud;
 pub mod collections;
@@ -128,6 +129,18 @@ pub enum Command {
     /// Steam then asks for confirmation in the Steam Mobile app.
     SellItem { app_id: AppId, context_id: u64, asset_id: u64, amount: u64, receive: u64 },
     LoadMyListings,
+    /// Your profile's editable details, privacy, owned items and themes.
+    LoadProfileEdit { language: String },
+    SaveProfileInfo(Box<model::ProfileEdit>),
+    SaveProfilePrivacy(model::ProfilePrivacy),
+    /// Upload a picture file as your avatar.
+    UploadAvatar { path: std::path::PathBuf },
+    /// Equip a profile item (0 background, 1 mini profile background, 2 avatar
+    /// frame, 3 animated avatar); `id` 0 takes it off.
+    EquipProfileItem { kind: u8, id: u64 },
+    SetProfileTheme(String),
+    /// Countries, a country's states, or a state's cities.
+    LoadLocations { country: Option<String>, state: Option<String> },
     /// Fetch names and avatars of people who aren't your friends.
     LoadPersonas { ids: Vec<SteamId> },
     /// Your trade offers (active ones and recent changes); item names in
@@ -156,11 +169,17 @@ pub enum Command {
     /// Delete a comment (on your profile, or one you wrote).
     DeleteComment { steam_id: SteamId, comment_id: u64 },
     LoadBadges { steam_id: SteamId },
+    /// A badge's own page (its link from the badges list).
+    LoadBadge { url: String },
+    /// Craft the next level of a game's badge (`foil`: the foil badge).
+    CraftBadge { app_id: AppId, foil: bool },
     /// Someone's friends, latest reviews and groups (their profile pages).
     LoadProfileFriends { steam_id: SteamId },
     LoadProfileReviews { steam_id: SteamId },
     LoadProfileGroups { steam_id: SteamId },
     /// Search the Community Market (`app`: one game only; `start`: paging).
+    /// Search the Community Market. A query of `cards:<appid>` lists that
+    /// game's trading cards (Steam's own filters, like its Market page).
     MarketSearch { query: String, app: Option<AppId>, start: u32 },
     LoadNotifications,
     /// Mark notifications as read (empty = all).
@@ -332,6 +351,10 @@ pub enum Event {
     ItemListed { asset_id: u64, result: Result<bool, String> },
     MyListings(Result<model::MyListings, String>),
     TradeOffers(Result<model::TradeOffers, String>),
+    ProfileEdit(Result<model::ProfileEdit, String>),
+    ProfileSaved { what: model::ProfileSave, result: Result<(), String> },
+    /// (code, name) for [`Command::LoadLocations`].
+    Locations { country: Option<String>, state: Option<String>, result: Result<Vec<(String, String)>, String> },
     /// Result of [`Command::RespondTradeOffer`]: `Ok(true)` = confirm it in
     /// the Steam Mobile app.
     TradeOfferAnswered { id: u64, action: model::TradeAction, result: Result<bool, String> },
@@ -350,6 +373,9 @@ pub enum Event {
     ServerInfo { addr: String, result: Result<crate::a2s::ServerInfo, String> },
     Blocked { steam_id: SteamId, result: Result<bool, String> },
     Badges { steam_id: SteamId, result: Result<model::Badges, String> },
+    Badge { url: String, result: Result<model::BadgeDetail, String> },
+    /// The new badge's name, or why not.
+    BadgeCrafted { app_id: AppId, result: Result<String, String> },
     /// The full notification list (replaces the old one).
     Notifications(model::Notifications),
     /// New notifications just arrived (for a toast).

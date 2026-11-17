@@ -12,6 +12,10 @@ use ui::{Theme, icons, widgets as w};
 
 #[path = "profile_lists.rs"]
 mod lists;
+#[path = "profile_edit.rs"]
+mod edit;
+#[path = "profile_badges.rs"]
+mod badges;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum GameSort {
@@ -34,15 +38,21 @@ pub struct Profile {
     showcase_requested: HashSet<SteamId>,
     social_requested: HashSet<SteamId>,
     comment_draft: String,
-    all_badges: Option<SteamId>,
-    /// Open the full badges list once the profile shows (from a link).
-    want_badges: bool,
+    /// The badge whose own page is open (its link), on the badges page.
+    badge_open: Option<String>,
+    badge_asked: HashSet<String>,
+    /// Crafting a badge: asking first, waiting for Steam, and which page.
+    craft_confirm: Option<model::AppId>,
+    crafting: bool,
+    craft_url: Option<String>,
     /// Friends, reviews and groups asked for, per profile.
     lists_requested: HashSet<(SteamId, &'static str)>,
     /// The search box on a profile's friends list.
     list_search: String,
     /// Which page of comments shows (first comment's index), per profile.
     comment_start: std::collections::HashMap<SteamId, u32>,
+    /// Editing your profile (the "Edit profile" pages).
+    edit: edit::EditState,
 }
 
 impl Extension for Profile {
@@ -55,6 +65,8 @@ impl Extension for Profile {
     }
 
     fn on_event(&mut self, event: &client::Event, ctx: &mut Ctx) {
+        self.edit_event(event, ctx);
+        self.badge_event(event, ctx);
         if let client::Event::CommentPosted { result, .. } = event {
             match result {
                 Ok(()) => {
@@ -67,6 +79,13 @@ impl Extension for Profile {
     }
 
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
+        // "edit" or "edit/<section>": your profile's settings.
+        if let Some(rest) = arg.and_then(|a| a.strip_prefix("edit")) {
+            self.viewing = None;
+            self.sub = Sub::Edit;
+            self.edit.section = edit::Section::from_arg(rest.trim_start_matches('/'));
+            return;
+        }
         let mut parts = arg.unwrap_or_default().split('/');
         self.viewing = parts.next().and_then(|a| a.parse().ok());
         self.sub = match parts.next() {
@@ -74,11 +93,18 @@ impl Extension for Profile {
             Some("friends") => Sub::Friends,
             Some("reviews") => Sub::Reviews,
             Some("groups") => Sub::Groups,
+            Some("badges") => Sub::Badges,
             _ => Sub::None,
         };
-        // "<id>/badges" (or just "badges" for yours) opens the full badges list.
-        self.want_badges = arg.is_some_and(|a| a == "badges" || a.ends_with("/badges"));
-        self.all_badges = None;
+        // Just "badges": your own.
+        if arg == Some("badges") {
+            self.sub = Sub::Badges;
+        }
+        self.badge_open = None;
+        // "<id>/badges/<app>": that game's badge.
+        if let (Some(id), Some(app)) = (self.viewing, parts.next().and_then(|a| a.parse::<u32>().ok())) {
+            self.badge_open = Some(format!("https://steamcommunity.com/profiles/{id}/gamecards/{app}/"));
+        }
         self.games_search.clear();
     }
 
@@ -86,9 +112,6 @@ impl Extension for Profile {
         let t = ctx.theme.clone();
         let id = self.viewing.filter(|id| *id != ctx.state.steam_id).unwrap_or(ctx.state.steam_id);
         let mine = id == ctx.state.steam_id;
-        if std::mem::take(&mut self.want_badges) {
-            self.all_badges = Some(id);
-        }
         if id != 0 && self.requested.insert(id) {
             ctx.send(Command::LoadProfile { steam_id: id });
         }
@@ -128,6 +151,8 @@ impl Extension for Profile {
                     Sub::Friends => return self.friends_page(ui, &t, ctx, id, &display_name, mine),
                     Sub::Reviews => return self.reviews_page(ui, &t, ctx, id, &display_name, mine),
                     Sub::Groups => return self.groups_page(ui, &t, ctx, id, &display_name, mine),
+                    Sub::Edit => return self.edit_page(ui, &t, ctx),
+                    Sub::Badges => return self.badges_page(ui, &t, ctx, id, &display_name),
                 }
                 // Identity header on a translucent panel.
                 egui::Frame::new()
@@ -203,10 +228,12 @@ impl Extension for Profile {
                                     if !mine && w::button(ui, &t, Some(icons::CHAT), t!("Send a message"), w::Kind::Primary, w::Size::Sm).clicked() {
                                         ctx.act(Action::OpenChat(id));
                                     }
-                                    let label = if mine { t!("Edit profile on Steam") } else { t!("View on Steam") };
-                                    if w::button(ui, &t, Some(icons::EXTERNAL), label, w::Kind::Secondary, w::Size::Sm).clicked() {
-                                        let url = if mine { format!("https://steamcommunity.com/profiles/{id}/edit/info") } else { format!("https://steamcommunity.com/profiles/{id}") };
-                                        let _ = open::that_detached(url);
+                                    if mine {
+                                        if w::button(ui, &t, Some(icons::NOTE), t!("Edit profile"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                                            ctx.navigate("profile", Some("edit".into()));
+                                        }
+                                    } else if w::button(ui, &t, Some(icons::EXTERNAL), t!("View on Steam"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                                        let _ = open::that_detached(format!("https://steamcommunity.com/profiles/{id}"));
                                     }
                                     let r = w::button(ui, &t, Some(icons::COPY), &format!("{}  {}", t!("Copy SteamID"), icons::CARET_DOWN), w::Kind::Ghost, w::Size::Sm);
                                     if let Some(Some(what)) = egui::Popup::from_toggle_button_response(&r).show(|ui| super::steam_id_menu(ui, &t, id)).map(|r| r.inner) {
@@ -294,6 +321,10 @@ pub(super) enum Sub {
     Friends,
     Reviews,
     Groups,
+    /// Your profile's settings.
+    Edit,
+    /// Every badge, and a badge's own page.
+    Badges,
 }
 
 impl Profile {
@@ -344,7 +375,7 @@ impl Profile {
                     match link {
                         Link::Page(page, arg) => ctx.navigate(page, arg),
                         Link::Games => ctx.navigate("profile", Some(format!("{id}/games"))),
-                        Link::Badges => self.all_badges = Some(id),
+                        Link::Badges => ctx.navigate("profile", Some(format!("{id}/badges"))),
                     }
                 }
             }
@@ -422,7 +453,7 @@ impl Profile {
                     ui.label(w::text(b.items.len().to_string(), 13.0, t.text_dim));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.link(w::text(t!("See all"), 12.5, t.accent)).clicked() {
-                            self.all_badges = Some(id);
+                            ctx.navigate("profile", Some(format!("{id}/badges")));
                         }
                     });
                 });
@@ -436,49 +467,6 @@ impl Profile {
             }
         });
         ui.add_space(12.0);
-        if self.all_badges == Some(id) {
-            let mut close = false;
-            egui::Modal::new(egui::Id::unique(("all-badges", id))).show(ui.ctx(), |ui| {
-                ui.set_width(520.0);
-                ui.horizontal(|ui| {
-                    ui.label(w::text_bold(t!("Badges"), 20.0, t.text));
-                    ui.label(w::text(b.items.len().to_string(), 15.0, t.text_dim));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if w::icon_button(ui, t, icons::X, t!("Close"), false, 0).clicked() {
-                            close = true;
-                        }
-                    });
-                });
-                ui.add_space(8.0);
-                egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
-                    for badge in &b.items {
-                        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 70.0), Sense::click());
-                        if resp.hovered() {
-                            ui.painter().rect_filled(r, t.corner_small(), t.surface_hover);
-                        }
-                        let img = Rect::from_min_size(r.min + vec2(6.0, 5.0), vec2(60.0, 60.0));
-                        match &badge.icon {
-                            Some(u) => {
-                                if !w::paint_contain(ui, img, u, Align2::CENTER_CENTER) {
-                                    w::skeleton(ui, t, img, CornerRadius::same(6));
-                                }
-                            }
-                            None => w::placeholder(ui, t, img, "", CornerRadius::same(6)),
-                        }
-                        let x = img.right() + 12.0;
-                        ui.painter().text(pos2(x, r.top() + 18.0), Align2::LEFT_CENTER, &badge.title, w::font_semibold(14.0), t.text);
-                        ui.painter().text(pos2(x, r.top() + 36.0), Align2::LEFT_CENTER, &badge.detail, w::font(12.5), t.accent);
-                        ui.painter().text(pos2(x, r.top() + 53.0), Align2::LEFT_CENTER, unlocked_text(badge), w::font(11.5), t.text_faint);
-                        if !badge.url.is_empty() && resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Opens in your browser")).clicked() {
-                            let _ = open::that_detached(&badge.url);
-                        }
-                    }
-                });
-            });
-            if close || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.all_badges = None;
-            }
-        }
     }
 
     /// Profile comments, with posting. Respects profiles that hide or turn

@@ -499,7 +499,17 @@ pub async fn page(web: &Web, url: &str) -> Result<String, String> {
 /// Search the Community Market (Steam's market search, most popular first).
 /// `app` limits it to one game. Returns the results and how many there are.
 pub async fn search(web: Option<&Web>, query: &str, app: Option<model::AppId>, start: u32) -> Result<(Vec<model::MarketResult>, u32), String> {
+    // "cards:<appid>": a game's trading cards, filtered the way Steam's
+    // Market page does it (matching names finds the wrong things).
+    let cards = query.strip_prefix("cards:").and_then(|g| g.trim().parse::<model::AppId>().ok());
+    let (query, app) = match cards {
+        Some(_) => ("", Some(753)),
+        None => (query, app),
+    };
     let mut url = reqwest::Url::parse(&format!("{COMMUNITY}/market/search/render/")).map_err(|e| e.to_string())?;
+    if let Some(game) = cards {
+        url.query_pairs_mut().append_pair("category_753_Game[]", &format!("tag_app_{game}")).append_pair("category_753_item_class[]", "tag_item_class_2");
+    }
     url.query_pairs_mut()
         .append_pair("query", query)
         .append_pair("start", &start.to_string())

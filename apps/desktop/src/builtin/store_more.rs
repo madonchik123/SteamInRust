@@ -201,33 +201,53 @@ impl Store {
         }
         let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
         ui.painter().rect_filled(rect, t.corner_small(), w::mix(t.surface, t.surface_hover, hover));
-        let img = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(116.0 * 460.0 / 215.0, 116.0));
+        // Narrow (a small window, or the friends list open): a smaller
+        // picture and price column, so the middle keeps room for tags.
+        let compact = rect.width() < 980.0;
+        let img_h = if compact { 92.0 } else { 116.0 };
+        let img = Rect::from_min_size(rect.min + vec2(8.0, (h - img_h) / 2.0), vec2(img_h * 460.0 / 215.0, img_h));
         w::image_or_skeleton(ui, t, img, &it.header, t.corner_small());
         let owned = ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(&it.app_id));
         let wished = ctx.state.wishlist.as_ref().is_some_and(|l| l.iter().any(|(a, _)| *a == it.app_id));
-        let right_w = 320.0;
+        let right_w = if compact { 230.0 } else { 320.0 };
         let mid = Rect::from_min_max(pos2(img.right() + 16.0, rect.top() + 8.0), pos2(rect.right() - right_w, rect.bottom() - 8.0));
         let opened = resp.clicked();
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(mid).layout(Layout::top_down(Align::Min)));
+        // Nothing in the middle may run under the price on the right.
+        c.set_clip_rect(mid.intersect(ui.clip_rect()));
         c.spacing_mut().item_spacing.y = 4.0;
         c.add(egui::Label::new(w::text_semibold(&it.name, 16.0, t.text)).truncate());
         // Top tags, like Steam's: "+N" opens the rest in a popup (the row
         // keeps its size), and a tag opens the store filtered by it.
         let mut open_tag = None;
         let names: Vec<(u32, String)> = it.tags.iter().filter_map(|tag| Some((*tag, self.tag_name(*tag)?))).collect();
+        // As many tags as fit (up to four) with the "+N" and demo pill, so a
+        // narrow row (friends list open) never spills out of its card.
+        let measure = |s: &str| c.painter().layout_no_wrap(s.to_string(), w::font_semibold(11.0), t.text_dim).size().x + 14.0 + 4.0;
+        let room = c.available_width() - if it.demo.is_some() { measure(&t!("Demo available")) + 8.0 } else { 0.0 };
+        let mut shown = 0;
+        let mut used = 0.0;
+        for (i, (_, name)) in names.iter().enumerate().take(4) {
+            let more = if i + 1 < names.len() { measure(&format!("+{}", names.len() - i - 1)) } else { 0.0 };
+            if used + measure(name) + more > room {
+                break;
+            }
+            used += measure(name);
+            shown = i + 1;
+        }
         c.horizontal(|ui| {
             ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-            for (tag, name) in names.iter().take(4) {
+            for (tag, name) in names.iter().take(shown) {
                 if small_tag(ui, t, name).on_hover_text(t!("Browse games with this tag")).clicked() {
                     open_tag = Some(*tag);
                 }
             }
-            if names.len() > 4 {
-                let more = small_tag(ui, t, &format!("+{}", names.len() - 4)).on_hover_text(t!("More tags"));
+            if names.len() > shown {
+                let more = small_tag(ui, t, &format!("+{}", names.len() - shown)).on_hover_text(t!("More tags"));
                 egui::Popup::from_toggle_button_response(&more).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(320.0).show(|ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-                        for (tag, name) in names.iter().skip(4) {
+                        for (tag, name) in names.iter().skip(shown) {
                             if small_tag(ui, t, name).on_hover_text(t!("Browse games with this tag")).clicked() {
                                 open_tag = Some(*tag);
                             }
@@ -266,10 +286,22 @@ impl Store {
         if w::heart_button(&mut r, t, wished, heart).clicked() {
             ctx.send(if wished { Command::WishlistRemove { app_id: it.app_id } } else { Command::WishlistAdd { app_id: it.app_id } });
         }
+        // How long the discount lasts, like the redesign's game cards: just
+        // above the price.
+        if let Some(ends) = discount_ends_text(it.discount_ends) {
+            let g = ui.painter().layout_no_wrap(format!("{}  {ends}", icons::CLOCK), w::font(12.0), t.away);
+            let pos = pos2(side.right() - g.size().x, side.bottom() - 44.0 - g.size().y);
+            ui.painter().galley(pos, g, t.away);
+        }
         let mut b = ui.new_child(egui::UiBuilder::new().max_rect(side).layout(Layout::right_to_left(Align::Max)));
         if !owned && !it.coming_soon {
             if let Some(pkg) = it.package_id {
-                if w::button(&mut b, t, None, t!("Add to cart"), w::Kind::Primary, w::Size::Sm).clicked() {
+                let add = if compact {
+                    w::button(&mut b, t, Some(icons::CART), "", w::Kind::Primary, w::Size::Sm).on_hover_text(t!("Add to cart"))
+                } else {
+                    w::button(&mut b, t, None, t!("Add to cart"), w::Kind::Primary, w::Size::Sm)
+                };
+                if add.clicked() {
                     self.add_to_cart(ctx, it.app_id, pkg, &it.name, None, owned);
                 }
             }
@@ -782,4 +814,16 @@ fn small_tag(ui: &mut Ui, t: &Theme, text: &str) -> egui::Response {
     let color = w::mix(t.text_dim, t.text, hover);
     ui.painter().galley(r.center() - galley.size() / 2.0, galley, color);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// "Ends in 5 hours" when close, else "Offer ends 21 Nov"; `None` without
+/// an end date (or once it's over).
+pub(super) fn discount_ends_text(ends: u64) -> Option<String> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let left = ends.checked_sub(now).filter(|l| *l > 0 && ends > 0)?;
+    Some(match left {
+        0..3600 => t!("Ends in {n} min", n = (left / 60).max(1)),
+        3600..172_800 => t!("Ends in {n} hours", n = left / 3600),
+        _ => t!("Offer ends {date}", date = ui::date(ends)),
+    })
 }

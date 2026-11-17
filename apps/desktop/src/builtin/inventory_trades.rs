@@ -324,15 +324,23 @@ impl Inventory {
                 });
             }
             ui.add_space(8.0);
-            let half = (ui.available_width() - 40.0) / 2.0;
+            // Two columns, the arrow (28) and the gaps between them.
+            let half = (ui.available_width() - 28.0 - 2.0 * ui.spacing().item_spacing.x - 4.0) / 2.0;
+            let mut load = Vec::new();
+            let me = ctx.state.steam_id;
             ui.horizontal_top(|ui| {
-                item_column(ui, t, ctx, half, &t!("You get"), &o.get, &t!("Nothing — it's a gift from you"));
+                item_column(ui, t, ctx, half, &t!("You get"), &o.get, &t!("Nothing — it's a gift from you"), o.partner, &mut load);
                 ui.allocate_ui(vec2(28.0, 70.0), |ui| {
                     ui.add_space(30.0);
                     ui.label(w::text(icons::SWAP, 18.0, t.text_faint));
                 });
-                item_column(ui, t, ctx, half, &t!("You give"), &o.give, &t!("Nothing — it's a gift to you"));
+                item_column(ui, t, ctx, half, &t!("You give"), &o.give, &t!("Nothing — it's a gift to you"), me, &mut load);
             });
+            for (owner, app, cx) in load {
+                if self.requested.insert((owner, app, cx)) {
+                    ctx.send(Command::LoadInventory { steam_id: owner, app_id: app, context_id: cx, language: lang() });
+                }
+            }
             if o.escrow_end > 0 {
                 ui.add_space(4.0);
                 ui.label(w::text(format!("{}  {}", icons::CLOCK, t!("Steam holds these items until {date}.", date = ui::date(o.escrow_end))), 12.5, t.away));
@@ -491,17 +499,18 @@ impl Inventory {
         self.want_prices(ui, ctx, wants);
         let Some(b) = self.trades.builder.as_mut() else { return };
         ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut b.message).hint_text(t!("Add a message (optional)")).desired_width((ui.available_width() - 200.0).max(160.0)).margin(vec2(10.0, 8.0)).char_limit(128))
+        // The button first (right), then the message box fills what's left,
+        // so the two never overlap.
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), Layout::right_to_left(Align::Center), |ui| {
+            let empty = b.give.is_empty() && b.get.is_empty();
+            if b.sending {
+                ui.add(egui::Spinner::new().size(18.0));
+            } else if ui.add_enabled_ui(!empty, |ui| w::button(ui, t, Some(icons::SWAP), t!("Send offer"), w::Kind::Primary, w::Size::Md)).inner.clicked() {
+                b.review = true;
+            }
+            ui.add_space(4.0);
+            ui.add(egui::TextEdit::singleline(&mut b.message).hint_text(t!("Add a message (optional)")).desired_width(ui.available_width()).margin(vec2(10.0, 6.0)).char_limit(128))
                 .with_edit_menu();
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let empty = b.give.is_empty() && b.get.is_empty();
-                if b.sending {
-                    ui.add(egui::Spinner::new().size(18.0));
-                } else if ui.add_enabled_ui(!empty, |ui| w::button(ui, t, Some(icons::SWAP), t!("Send offer"), w::Kind::Primary, w::Size::Md)).inner.clicked() {
-                    b.review = true;
-                }
-            });
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -592,7 +601,31 @@ fn state_pill(ui: &mut Ui, t: &Theme, s: TradeState) {
 }
 
 /// One side of an offer: a title and its items' pictures.
-fn item_column(ui: &mut Ui, t: &Theme, ctx: &Ctx, width: f32, title: &str, items: &[TradeItem], none: &str) {
+/// Steam's offer list sometimes leaves out an item's details (name,
+/// picture); they're filled in from the owner's inventory, loaded if needed.
+#[allow(clippy::too_many_arguments)]
+fn item_column(ui: &mut Ui, t: &Theme, ctx: &Ctx, width: f32, title: &str, items: &[TradeItem], none: &str, owner: SteamId, load: &mut Vec<(SteamId, AppId, u64)>) {
+    let items: Vec<TradeItem> = items
+        .iter()
+        .map(|x| {
+            if !x.item.icon.is_empty() {
+                return x.clone();
+            }
+            match ctx.state.inventories.get(&(owner, x.app_id, x.item.context_id)) {
+                Some(inv) => match inv.items.iter().find(|i| i.asset_id == x.item.asset_id) {
+                    Some(i) => TradeItem { item: InventoryItem { amount: x.item.amount, ..i.clone() }, ..x.clone() },
+                    None => x.clone(),
+                },
+                None => {
+                    if !load.contains(&(owner, x.app_id, x.item.context_id)) {
+                        load.push((owner, x.app_id, x.item.context_id));
+                    }
+                    x.clone()
+                }
+            }
+        })
+        .collect();
+    let items = &items[..];
     ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
         ui.set_width(width);
         let (total, all) = value(ctx, items.iter().map(|x| (x.app_id, x.item.clone())));
@@ -890,7 +923,7 @@ fn game_picker(ui: &mut Ui, t: &Theme, owner: SteamId, tabs: &[(AppId, u64, Stri
 }
 
 /// Sort order as a small menu (takes less room than a row of tabs).
-fn sort_menu(ui: &mut Ui, t: &Theme, owner: SteamId, sort: &mut Sort, prices: bool) {
+pub(super) fn sort_menu(ui: &mut Ui, t: &Theme, owner: SteamId, sort: &mut Sort, prices: bool) {
     let opts = [(Sort::Newest, t!("Newest")), (Sort::Name, t!("Name")), (Sort::Kind, t!("Type")), (Sort::Price, t!("Price"))];
     let cur = opts.iter().find(|o| o.0 == *sort).map(|o| o.1.to_string()).unwrap_or_default();
     let r = w::chip(ui, t, &format!("{}  {cur}  {}", icons::SORT, icons::CARET_DOWN), false).on_hover_text(t!("Sort"));

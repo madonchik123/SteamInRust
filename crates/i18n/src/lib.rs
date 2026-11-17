@@ -112,8 +112,11 @@ fn load(src: &str) -> HashMap<String, &'static str> {
 }
 
 /// Translate a fixed English string.
+/// Keys can carry a context after `|` when one English word needs
+/// different translations ("Recommended|review" vs the store's
+/// "Recommended"); the context is never shown.
 pub fn tr(english: &'static str) -> &'static str {
-    table(language()).and_then(|t| t.get(english).copied()).unwrap_or(english)
+    table(language()).and_then(|t| t.get(english).copied()).unwrap_or_else(|| english.split_once('|').map_or(english, |(text, _)| text))
 }
 
 /// Translate a string only known at runtime (e.g. an error from the engine).
@@ -143,6 +146,12 @@ macro_rules! t {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_after_a_bar_is_hidden() {
+        set_language(Lang::English);
+        assert_eq!(tr("Recommended|review"), "Recommended");
+    }
 
     #[test]
     fn falls_back_and_formats() {

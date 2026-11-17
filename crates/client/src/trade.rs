@@ -97,7 +97,10 @@ fn item(a: &Value, info: &HashMap<(u64, u64, u64), &Value>) -> TradeItem {
         amount: field(a, "amount").max(1),
         ..Default::default()
     };
-    if let Some(d) = info.get(&(app_id as u64, class_id, field(a, "instanceid"))) {
+    // By class and instance, else by class alone (Steam sometimes gives the
+    // description a different instance id than the item).
+    let d = info.get(&(app_id as u64, class_id, field(a, "instanceid"))).or_else(|| info.iter().find(|((ap, cl, _), _)| *ap == app_id as u64 && *cl == class_id).map(|(_, d)| d));
+    if let Some(d) = d {
         let name = text(d, "name");
         item.name = if name.is_empty() { text(d, "market_name") } else { name };
         item.kind = text(d, "type");

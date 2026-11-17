@@ -33,12 +33,69 @@ pub struct ReviewPage {
     pub more: bool,
 }
 
-/// Which reviews: Steam's "Most helpful", or the newest first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Which reviews: Steam's "Most helpful", the newest first, or the funniest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Order {
     #[default]
     Helpful,
     Recent,
+    Funny,
+}
+
+/// Recommended, not recommended, or both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Kind {
+    #[default]
+    All,
+    Positive,
+    Negative,
+}
+
+/// How far back "Most helpful" looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Window {
+    #[default]
+    AllTime,
+    Day,
+    Week,
+    Month,
+    ThreeMonths,
+    SixMonths,
+    Year,
+}
+
+/// The filters on Steam's reviews (the Community hub's own).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Filter {
+    pub kind: Kind,
+    /// Every language, not just yours.
+    pub all_languages: bool,
+    pub window: Window,
+}
+
+impl Filter {
+    /// The hub page and its `browsefilter` for an order.
+    fn path_and_sort(&self, order: Order) -> (&'static str, &'static str) {
+        let path = match self.kind {
+            Kind::All => "reviews",
+            Kind::Positive => "positivereviews",
+            Kind::Negative => "negativereviews",
+        };
+        let sort = match order {
+            Order::Recent => "mostrecent",
+            Order::Funny => "funny",
+            Order::Helpful => match self.window {
+                Window::AllTime => "toprated",
+                Window::Day => "trendday",
+                Window::Week => "trendweek",
+                Window::Month => "trendmonth",
+                Window::ThreeMonths => "trendthreemonths",
+                Window::SixMonths => "trendsixmonths",
+                Window::Year => "trendyear",
+            },
+        };
+        (path, sort)
+    }
 }
 
 fn between<'a>(s: &'a str, start: &str, end: &str) -> Option<&'a str> {
@@ -102,12 +159,13 @@ pub(crate) fn parse(body: &str) -> ReviewPage {
 }
 
 impl StoreClient {
-    /// Page `page` (from 1) of a game's reviews in your language.
-    pub async fn reviews(&self, app: AppId, order: Order, page: u32) -> Result<ReviewPage> {
-        let mut url = reqwest::Url::parse(&format!("https://steamcommunity.com/app/{app}/reviews/")).expect("valid url");
+    /// Page `page` (from 1) of a game's reviews, filtered like the hub.
+    pub async fn reviews(&self, app: AppId, order: Order, filter: Filter, page: u32) -> Result<ReviewPage> {
+        let (path, sort) = filter.path_and_sort(order);
+        let mut url = reqwest::Url::parse(&format!("https://steamcommunity.com/app/{app}/{path}/")).expect("valid url");
         url.query_pairs_mut()
-            .append_pair("browsefilter", if order == Order::Recent { "mostrecent" } else { "toprated" })
-            .append_pair("filterLanguage", &self.language)
+            .append_pair("browsefilter", sort)
+            .append_pair("filterLanguage", if filter.all_languages { "all" } else { &self.language })
             .append_pair("l", &self.language)
             .append_pair("p", &page.max(1).to_string())
             .append_pair("appHubSubSection", "10");
@@ -118,6 +176,15 @@ impl StoreClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn filters_pick_the_hub_page() {
+        use super::{Filter, Kind, Order, Window};
+        let f = Filter { kind: Kind::Negative, window: Window::Week, ..Default::default() };
+        assert_eq!(f.path_and_sort(Order::Helpful), ("negativereviews", "trendweek"));
+        assert_eq!(f.path_and_sort(Order::Recent), ("negativereviews", "mostrecent"));
+        assert_eq!(Filter::default().path_and_sort(Order::Funny), ("reviews", "funny"));
+    }
+
     #[test]
     fn reads_hub_review_cards() {
         let body = r#"<div class="apphub_Card modalContentLink interactable" style="display: none" data-modal-content-url="https://steamcommunity.com/profiles/76561199579272739/recommended/570/" data-modal-content-sizetofit="false">

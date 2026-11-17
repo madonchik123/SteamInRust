@@ -21,11 +21,43 @@ pub(super) struct MarketSearch {
     /// What was last asked for: (query, game, start).
     asked: Option<(String, Option<AppId>, u32)>,
     selected: Option<MarketResult>,
+    /// Only this game's trading cards.
+    cards: Option<AppId>,
+}
+
+impl MarketSearch {
+    /// Start a search (from a link).
+    pub(super) fn open(&mut self, app: Option<AppId>, query: &str) {
+        // "cards:<appid>": that game's trading cards, shown as a chip.
+        self.cards = query.strip_prefix("cards:").and_then(|g| g.parse().ok());
+        self.query = if self.cards.is_some() { String::new() } else { query.to_string() };
+        self.app = if self.cards.is_some() { Some(753) } else { app };
+        self.start = 0;
+        self.selected = None;
+    }
 }
 
 impl Inventory {
     pub(super) fn market_page(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
-        let want = (self.market.query.trim().to_string(), self.market.app, self.market.start);
+        // "<game> trading card(s)": Steam's text search matches the wrong
+        // items, so use its card filter for that game (one in your library).
+        if self.market.cards.is_none() {
+            let q = self.market.query.trim().to_lowercase();
+            let game = ["trading cards", "trading card"].iter().find_map(|end| q.strip_suffix(end)).map(str::trim).filter(|g| !g.is_empty());
+            if let Some(g) = game {
+                if let Some(id) = ctx.state.apps.as_ref().and_then(|apps| apps.keys().copied().find(|id| ctx.state.app_name(*id).is_some_and(|n| n.to_lowercase() == g))) {
+                    self.market.cards = Some(id);
+                    self.market.query.clear();
+                    self.market.app = Some(753);
+                    self.market.start = 0;
+                }
+            }
+        }
+        let query = match self.market.cards {
+            Some(game) => format!("cards:{game}"),
+            None => self.market.query.trim().to_string(),
+        };
+        let want = (query, self.market.app, self.market.start);
         if self.market.asked.as_ref() != Some(&want) {
             self.market.asked = Some(want.clone());
             ctx.send(Command::MarketSearch { query: want.0.clone(), app: want.1, start: want.2 });
@@ -40,9 +72,17 @@ impl Inventory {
                 });
                 w::page_title(ui, t, t!("Community Market"), Some(&t!("Buy and sell items with other players")));
                 ui.horizontal(|ui| {
-                    let r = w::search(ui, t, &mut self.market.query, &t!("Search the Market"), 360.0);
-                    if r.changed() {
-                        self.market.start = 0;
+                    if let Some(game) = self.market.cards {
+                        let name = ctx.state.app_name(game).map(String::from).unwrap_or_else(|| game.to_string());
+                        if w::chip(ui, t, &format!("{}  {name} · {}  {}", icons::STACK, t!("Trading cards"), icons::X), true).on_hover_text(t!("Show everything")).clicked() {
+                            self.market.cards = None;
+                            self.market.start = 0;
+                        }
+                    } else {
+                        let r = w::search(ui, t, &mut self.market.query, &t!("Search the Market"), 360.0);
+                        if r.changed() {
+                            self.market.start = 0;
+                        }
                     }
                     ui.add_space(8.0);
                     if w::chip(ui, t, &t!("All games"), self.market.app.is_none()).clicked() {

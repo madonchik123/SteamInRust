@@ -118,6 +118,8 @@ pub struct QueryItem {
     pub is_free: bool,
     /// Its demo, if it has one.
     pub demo: Option<AppId>,
+    /// When the discount ends (unix seconds, 0 = no end date or no discount).
+    pub discount_ends: u64,
 }
 
 impl StoreClient {
@@ -290,6 +292,7 @@ impl From<RawItem> for QueryItem {
             formatted_original: bpo.as_ref().filter(|b| b.discount_pct.unwrap_or(0) > 0).and_then(|b| b.formatted_original_price.clone()),
             package_id: bpo.as_ref().and_then(|b| b.packageid),
             giftable: bpo.as_ref().and_then(|b| b.user_can_purchase_as_gift).unwrap_or(false),
+            discount_ends: bpo.as_ref().filter(|b| b.discount_pct.unwrap_or(0) > 0).and_then(|b| b.active_discounts.iter().filter_map(|d| d.discount_end_date).filter(|d| *d > 0).min()).unwrap_or(0),
             review_label: reviews.as_ref().map(|r| r.review_score_label.clone()).filter(|l| !l.is_empty()),
             review_percent: reviews.as_ref().map(|r| r.percent_positive).unwrap_or(0),
             review_score: reviews.as_ref().map(|r| r.review_score).unwrap_or(0),
@@ -423,6 +426,13 @@ struct RawPurchase {
     formatted_final_price: Option<String>,
     formatted_original_price: Option<String>,
     user_can_purchase_as_gift: Option<bool>,
+    #[serde(default)]
+    active_discounts: Vec<RawDiscount>,
+}
+
+#[derive(Deserialize)]
+struct RawDiscount {
+    discount_end_date: Option<u64>,
 }
 
 #[derive(Deserialize)]

@@ -73,7 +73,7 @@ impl Store {
                 // Your review, as posted.
                 (Some(r), false) => {
                     ui.horizontal(|ui| {
-                        let (icon, label, color) = if r.voted_up { (icons::THUMBS_UP, t!("Recommended"), t.play) } else { (icons::THUMBS_DOWN, t!("Not recommended"), t.danger) };
+                        let (icon, label, color) = if r.voted_up { (icons::THUMBS_UP, t!("Recommended|review"), t.play) } else { (icons::THUMBS_DOWN, t!("Not recommended|review"), t.danger) };
                         ui.label(w::text(icon, 22.0, color));
                         ui.vertical(|ui| {
                             ui.label(w::text_bold(t!("Your review of {name}", name = name), 16.0, t.text));

@@ -240,7 +240,7 @@ fn account(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pages: &mut super::settings_ac
             web("https://store.steampowered.com/steamaccount/addfunds");
         }
         if tile(ui, t, icons::EYE_SLASH, t!("Privacy settings"), t!("Profile, games, inventory and more"), width) {
-            web(&format!("https://steamcommunity.com/profiles/{}/edit/settings", ctx.state.steam_id));
+            ctx.navigate("profile", Some("edit/privacy".into()));
         }
         if tile(ui, t, icons::NOTE, t!("Account details"), t!("Contact, Steam Guard, password, devices"), width) {
             pages.open(AccountView::Details);
@@ -291,7 +291,7 @@ fn friends_chat(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
         ctx.navigate("community", None);
     }
     if info_row(ui, t, t!("Who can see your status and send invites"), "", Some(t!("Privacy settings"))) {
-        web(&format!("https://steamcommunity.com/profiles/{}/edit/settings", ctx.state.steam_id));
+        ctx.navigate("profile", Some("edit/privacy".into()));
     }
 }
 

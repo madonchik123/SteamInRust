@@ -84,9 +84,9 @@ impl Extension for Community {
     }
 
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
-        if let Some(id) = arg.and_then(|a| a.parse().ok()) {
-            self.selected = Some(id);
-        }
+        // A friend opens their chat; nothing (the Friends button, "All
+        // friends") goes back to the friends page.
+        self.selected = arg.and_then(|a| a.parse().ok());
     }
 
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {

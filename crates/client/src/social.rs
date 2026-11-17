@@ -153,13 +153,90 @@ pub fn parse_badges(body: &str) -> model::Badges {
             let title = between(info, "class=\"badge_info_title\">", "</div>").map(clean).unwrap_or_default();
             let unlocked = between(info, "class=\"badge_info_unlocked\">", "</div>").map(clean).unwrap_or_default();
             let unlocked_at = unlock_time(&unlocked, this_year()).unwrap_or(0);
+            let playtime = between(row, "class=\"badge_title_stats_playtime\">", "</div>").map(clean).unwrap_or_default();
+            let drops = drops_text(row);
             // The line between title and unlock date: level / XP.
             let after_title = info.split("badge_info_title").nth(1).unwrap_or_default();
             let detail = between(after_title, "<div>", "</div>").map(clean).unwrap_or_default();
-            (!title.is_empty()).then_some(model::Badge { title, icon, detail, unlocked, unlocked_at, url })
+            (!title.is_empty()).then_some(model::Badge { title, icon, detail, unlocked, unlocked_at, url, playtime, drops })
         })
         .collect();
     model::Badges { level, xp, next, progress, items }
+}
+
+/// A badge's own page (`…/badges/<n>` or `…/gamecards/<app>/`).
+pub async fn badge(web: Option<&Web>, url: &str) -> Result<model::BadgeDetail, String> {
+    if !url.starts_with(COMMUNITY) {
+        return Err("not a Steam Community badge".into());
+    }
+    let body = http(web).get(url).send().await.map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
+    let mut d = parse_badge(&body);
+    d.app_id = url.split("/gamecards/").nth(1).and_then(|r| r.split('/').next()).and_then(|a| a.parse().ok());
+    d.current.url = url.to_string();
+    Ok(d)
+}
+
+pub fn parse_badge(body: &str) -> model::BadgeDetail {
+    let title = between(body, "class=\"badge_title\">", "</div>").map(clean).unwrap_or_default();
+    let info = between(body, "class=\"badge_info_description\">", "<div style=\"clear").unwrap_or_default();
+    let item_title = between(info, "class=\"badge_info_title\">", "</div>").map(clean).unwrap_or_default();
+    let unlocked = between(info, "class=\"badge_info_unlocked\">", "</div>").map(clean).unwrap_or_default();
+    let after_title = info.split("badge_info_title").nth(1).unwrap_or_default();
+    let current = model::Badge {
+        title: item_title,
+        icon: between(body, "class=\"badge_info_image\">", "</div>").and_then(|b| between(b, "src=\"", "\"")).map(String::from).filter(|u| !u.contains("trans.gif")),
+        detail: between(after_title, "<div>", "</div>").map(clean).unwrap_or_default(),
+        unlocked_at: unlock_time(&unlocked, this_year()).unwrap_or(0),
+        unlocked,
+        playtime: between(body, "class=\"badge_title_stats_playtime\">", "</div>").map(clean).unwrap_or_default(),
+        drops: drops_text(body),
+        ..Default::default()
+    };
+    let cards = body
+        .split("class=\"badge_card_set_card ")
+        .skip(1)
+        .map(|c| {
+            let name_block = between(c, "badge_card_set_title ellipsis\">", "<div style=\"clear").unwrap_or_default();
+            let owned = between(name_block, "badge_card_set_text_qty\">", "</div>").map(|q| q.trim_matches(|ch: char| !ch.is_ascii_digit()).parse().unwrap_or(1)).unwrap_or(0);
+            let name = match name_block.split_once("</div>") {
+                Some((_, rest)) if owned > 0 => clean(rest),
+                _ => clean(name_block),
+            };
+            let position = c.split("badge_card_set_title").nth(1).and_then(|r| r.split("class=\"badge_card_set_text ellipsis\">").nth(1)).and_then(|r| r.split("</div>").next()).map(clean).unwrap_or_default();
+            model::BadgeCard { name, image: between(c, "class=\"gamecard\" src=\"", "\"").unwrap_or_default().to_string(), owned, position }
+        })
+        .collect();
+    model::BadgeDetail { title, current, cards, app_id: None }
+}
+
+/// Craft the next level of a game's badge from a full card set. Returns
+/// the new badge's name, as Steam reports it.
+pub async fn craft_badge(web: &Web, app: model::AppId, foil: bool) -> Result<String, String> {
+    let v: Value = web
+        .http
+        .post(format!("{COMMUNITY}/profiles/{}/ajaxcraftbadge/", web.me))
+        .header("Referer", format!("{COMMUNITY}/profiles/{}/gamecards/{app}/", web.me))
+        .form(&[("appid", app.to_string()), ("series", "1".into()), ("border_color", if foil { "1" } else { "0" }.into()), ("levels", "1".into()), ("sessionid", web.session_id.clone())])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    match v.get("success").and_then(|s| s.as_i64()) {
+        Some(1) => Ok(v.get("Badge").and_then(|b| b.get("title")).and_then(|t| t.as_str()).unwrap_or_default().to_string()),
+        _ => Err("Steam didn't craft the badge. You need one of every card in the set.".into()),
+    }
+}
+
+/// "3 card drops remaining" from a badge's stats (without Steam's help link
+/// and "Card drops earned" after it).
+fn drops_text(block: &str) -> String {
+    let Some(d) = between(block, "class=\"badge_title_stats_drops\">", "</div>") else { return String::new() };
+    match between(d, "class=\"progress_info_bold\">", "</span>") {
+        Some(b) => clean(b),
+        None => clean(d),
+    }
 }
 
 fn this_year() -> i64 {
@@ -427,6 +504,14 @@ mod tests {
         assert_eq!(super::unlock_time("Unlocked 13 Jan, 2025 @ 7:17am", 2026), Some(1_736_752_620));
         assert_eq!(super::unlock_time("Unlocked 14 Oct @ 10:06pm", 2026), Some(1_792_015_560));
         assert_eq!(super::unlock_time("whenever", 2026), None);
+        let page = r#"<div class="badge_title"> Dota 2 Badge </div><div class="badge_info"><div class="badge_info_image"><img src="https://x/570/b.png" class="badge_icon"></div><div class="badge_info_description"><div class="badge_info_title">Disabler</div><div> Level 2, 200 XP </div><div class="badge_info_unlocked"> Unlocked 13 Jan, 2025 @ 7:17am </div></div><div style="clear: inline-start;"></div></div>
+            <div class="badge_card_set_card unowned"><div class="game_card_ctn "><img class="gamecard" src="https://x/c1"></div><div class="badge_card_set_text badge_card_set_title ellipsis"> Bounty Hunter <div style="clear: inline-end"></div></div><div class="badge_card_set_text ellipsis"> 1 of 8, Series 1 </div></div>
+            <div class="badge_card_set_card owned"><div class="game_card_ctn "><img class="gamecard" src="https://x/c3"></div><div class="badge_card_set_text badge_card_set_title ellipsis"> <div class="badge_card_set_text_qty">(2)</div> Razor <div style="clear: inline-end"></div></div><div class="badge_card_set_text ellipsis"> 3 of 8, Series 1 </div></div>"#;
+        let d = super::parse_badge(page);
+        assert_eq!((d.title.as_str(), d.current.title.as_str(), d.current.detail.as_str()), ("Dota 2 Badge", "Disabler", "Level 2, 200 XP"));
+        assert_eq!(d.cards.len(), 2);
+        assert_eq!((d.cards[0].name.as_str(), d.cards[0].owned, d.cards[0].position.as_str()), ("Bounty Hunter", 0, "1 of 8, Series 1"));
+        assert_eq!((d.cards[1].name.as_str(), d.cards[1].owned, d.cards[1].image.as_str()), ("Razor", 2, "https://x/c3"));
         assert_eq!(badges.next, "85 XP to reach Level 19");
         assert!((badges.progress - 0.58).abs() < 0.01);
         assert_eq!(badges.items.len(), 1);

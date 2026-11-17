@@ -34,6 +34,11 @@ pub struct State {
     pub market_prices: HashMap<(AppId, String), Result<model::MarketPrice, String>>,
     pub my_listings: Option<Result<model::MyListings, String>>,
     pub trade_offers: Option<Result<model::TradeOffers, String>>,
+    pub profile_edit: Option<Result<model::ProfileEdit, String>>,
+    /// Badge pages by their link.
+    pub badge_pages: HashMap<String, Result<model::BadgeDetail, String>>,
+    /// Location lists by (country, state).
+    pub locations: HashMap<(Option<String>, Option<String>), Vec<(String, String)>>,
     /// Names of games not in your library.
     pub app_names: HashMap<AppId, String>,
     pub email: Option<(String, bool)>,
@@ -181,6 +186,15 @@ impl State {
             }
             Event::MyListings(r) => self.my_listings = Some(r.clone()),
             Event::TradeOffers(r) => self.trade_offers = Some(r.clone()),
+            Event::ProfileEdit(r) => self.profile_edit = Some(r.clone()),
+            Event::Badge { url, result } => {
+                self.badge_pages.insert(url.clone(), result.clone());
+            }
+            Event::BadgeCrafted { .. } => {}
+            Event::Locations { country, state, result: Ok(l) } => {
+                self.locations.insert((country.clone(), state.clone()), l.clone());
+            }
+            Event::Locations { .. } | Event::ProfileSaved { .. } => {}
             // Shown right away; the list is loaded again afterwards.
             Event::TradeOfferAnswered { id, action, result: Ok(confirm) } => {
                 if let Some(Ok(o)) = &mut self.trade_offers {

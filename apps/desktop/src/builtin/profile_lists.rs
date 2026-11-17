@@ -114,7 +114,7 @@ impl Profile {
                         ui.vertical(|ui| {
                             let game = ctx.state.app_name(r.app_id).map(String::from).unwrap_or_else(|| t!("App {id}", id = r.app_id).to_string());
                             ui.label(w::text_semibold(game, 15.0, t.text));
-                            let (icon, label, color) = if r.voted_up { (icons::THUMBS_UP, t!("Recommended"), t.play) } else { (icons::THUMBS_DOWN, t!("Not recommended"), t.danger) };
+                            let (icon, label, color) = if r.voted_up { (icons::THUMBS_UP, t!("Recommended|review"), t.play) } else { (icons::THUMBS_DOWN, t!("Not recommended|review"), t.danger) };
                             ui.horizontal(|ui| {
                                 ui.label(w::text(icon, 15.0, color));
                                 ui.label(w::text_semibold(label, 13.0, color));

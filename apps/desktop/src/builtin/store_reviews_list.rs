@@ -10,13 +10,17 @@ use extensions::Ctx;
 use i18n::t;
 use model::{AppId, ReviewVote, SteamId, art};
 use std::collections::{HashMap, HashSet};
-use store::reviews::{Order, Review, ReviewPage};
+use store::reviews::{Filter, Kind, Order, Review, ReviewPage, Window};
 use ui::{Theme, icons, widgets as w};
 
 #[derive(Default)]
 pub(super) struct ReviewList {
-    /// Pages loaded so far, per (game, newest first).
-    pages: HashMap<(AppId, bool), Vec<Shared<ReviewPage>>>,
+    /// Pages loaded so far, per (game, order, filters).
+    pages: HashMap<(AppId, Order, Filter), Vec<Shared<ReviewPage>>>,
+    /// The filters chosen (for every game), and the left column's order
+    /// (most helpful or funniest).
+    filter: Filter,
+    sort: Order,
     /// Reviews opened in full.
     expanded: HashSet<String>,
     /// Games whose friends' reviews were asked for.
@@ -47,10 +51,11 @@ struct Card<'a> {
 
 impl Store {
     fn page(&mut self, id: AppId, order: Order) -> Vec<Option<ReviewPage>> {
-        let key = (id, order == Order::Recent);
+        let filter = self.reviews_list.filter;
+        let key = (id, order, filter);
         if !self.reviews_list.pages.contains_key(&key) {
             let api = self.api.clone();
-            let first = self.fetch(async move { api.reviews(id, order, 1).await });
+            let first = self.fetch(async move { api.reviews(id, order, filter, 1).await });
             self.reviews_list.pages.insert(key, vec![first]);
         }
         self.reviews_list.pages[&key]
@@ -64,9 +69,53 @@ impl Store {
     }
 
     fn more(&mut self, id: AppId, order: Order, next: u32) {
+        let filter = self.reviews_list.filter;
         let api = self.api.clone();
-        let page = self.fetch(async move { api.reviews(id, order, next).await });
-        self.reviews_list.pages.get_mut(&(id, order == Order::Recent)).expect("loaded").push(page);
+        let page = self.fetch(async move { api.reviews(id, order, filter, next).await });
+        self.reviews_list.pages.get_mut(&(id, order, filter)).expect("loaded").push(page);
+    }
+
+    /// Steam's review filters: which reviews, which languages, and how the
+    /// left column sorts (most helpful over a time window, or funniest).
+    fn review_filters(&mut self, ui: &mut Ui, t: &Theme) {
+        let f = &mut self.reviews_list.filter;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
+            w::segmented(ui, t, &mut f.kind, &[(Kind::All, &t!("All reviews")), (Kind::Positive, &t!("Positive")), (Kind::Negative, &t!("Negative"))]);
+            w::toggle_chip(ui, t, &format!("{}  {}", icons::GLOBE, t!("All languages")), &mut f.all_languages);
+            let sort = &mut self.reviews_list.sort;
+            let windows = [
+                (Window::AllTime, t!("All time")),
+                (Window::Day, t!("Today")),
+                (Window::Week, t!("This week")),
+                (Window::Month, t!("This month")),
+                (Window::ThreeMonths, t!("Past 3 months")),
+                (Window::SixMonths, t!("Past 6 months")),
+                (Window::Year, t!("This year")),
+            ];
+            let label = if *sort == Order::Funny {
+                t!("Funniest").to_string()
+            } else {
+                format!("{} · {}", t!("Most helpful"), windows.iter().find(|w| w.0 == f.window).map(|w| w.1).unwrap_or_default())
+            };
+            let r = w::chip(ui, t, &format!("{}  {label}  {}", icons::SORT, icons::CARET_DOWN), false).on_hover_text(t!("Sort"));
+            egui::Popup::from_toggle_button_response(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(200.0).show(|ui| {
+                ui.label(w::text_semibold(t!("Most helpful"), 12.0, t.text_faint));
+                for (win, l) in &windows {
+                    if w::menu_item(ui, t, if *sort == Order::Helpful && f.window == *win { icons::CHECK } else { "" }, l).clicked() {
+                        *sort = Order::Helpful;
+                        f.window = *win;
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if w::menu_item(ui, t, if *sort == Order::Funny { icons::CHECK } else { "" }, t!("Funniest")).clicked() {
+                    *sort = Order::Funny;
+                    ui.close();
+                }
+            });
+        });
+        ui.add_space(12.0);
     }
 
     /// Ask Steam for these authors' review ids (to vote), once.
@@ -81,7 +130,9 @@ impl Store {
         if ctx.state.steam_id != 0 && self.reviews_list.friends_asked.insert(id) {
             ctx.send(Command::LoadFriendReviews { app_id: id });
         }
-        let helpful = self.page(id, Order::Helpful);
+        self.review_filters(ui, t);
+        let sort = self.reviews_list.sort;
+        let helpful = self.page(id, sort);
         let recent = self.page(id, Order::Recent);
         for p in helpful.iter().chain(recent.iter()).flatten() {
             self.want_ids(ctx, id, &p.reviews);
@@ -118,8 +169,8 @@ impl Store {
                     }
                     ui.add_space(12.0);
                 }
-                w::section(ui, t, t!("Most helpful reviews"), None);
-                self.list(ui, t, ctx, id, &helpful, Order::Helpful, false);
+                w::section(ui, t, if sort == Order::Funny { t!("Funniest reviews") } else { t!("Most helpful reviews") }, None);
+                self.list(ui, t, ctx, id, &helpful, sort, false);
             });
             ui.vertical(|ui| {
                 ui.set_width(right_w);
@@ -143,7 +194,7 @@ impl Store {
                     avatar: r.avatar.clone(),
                     products: r.products.clone(),
                     voted_up: r.voted_up,
-                    title: if r.voted_up { t!("Recommended").to_string() } else { t!("Not recommended").to_string() },
+                    title: if r.voted_up { t!("Recommended|review").to_string() } else { t!("Not recommended|review").to_string() },
                     // Steam's own numbers (total and at review time) once known.
                     hours: known.map(|k| hours(k.playtime, k.playtime_at_review)).filter(|h| !h.is_empty()).unwrap_or_else(|| r.hours.clone()),
                     posted: r.posted.clone(),
@@ -161,7 +212,8 @@ impl Store {
                 ui.label(w::text(t!("Loading reviews…"), 13.0, t.text_dim));
             });
         } else if seen.is_empty() {
-            ui.label(w::text(t!("No reviews in your language yet."), 13.0, t.text_faint));
+            let none = if self.reviews_list.filter.all_languages { t!("No reviews match these filters.") } else { t!("No reviews in your language match these filters.") };
+            ui.label(w::text(none, 13.0, t.text_faint));
         } else if pages.last().and_then(|p| p.as_ref()).is_some_and(|p| p.more) && w::button(ui, t, Some(icons::CARET_DOWN), t!("Show more reviews"), w::Kind::Secondary, w::Size::Sm).clicked() {
             self.more(id, order, pages.len() as u32 + 1);
         }
@@ -186,7 +238,8 @@ impl Store {
                             ui.label(w::text(&c.products, 12.0, t.text_faint));
                         }
                     });
-                    ui.horizontal(|ui| {
+                    // Wraps in a narrow column instead of pushing the card wider.
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(w::text(icon, if compact { 15.0 } else { 18.0 }, color));
                         ui.label(w::text_semibold(&c.title, if compact { 12.5 } else { 14.0 }, color));
                         if !c.hours.is_empty() {

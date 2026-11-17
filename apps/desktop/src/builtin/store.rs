@@ -645,52 +645,71 @@ impl Store {
         }
     }
 
+    /// The store's own bar, like the redesign's: a few plain tabs (the
+    /// lists move into "Browse"), and Wishlist and Cart on the right. One
+    /// line at any width: nothing runs into anything else.
     fn subnav(&mut self, ui: &mut Ui, t: &Theme, ctx: &Ctx) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            if w::chip(ui, t, &format!("{}  {}", icons::SPARKLE, t!("Featured")), self.view == View::Home).clicked() {
-                self.open(View::Home);
-            }
-            if w::chip(ui, t, &format!("{}  {}", icons::SLIDERS, t!("Browse")), self.view == View::Browse).clicked() {
+        let width = ui.available_width();
+        let (bar, _) = ui.allocate_exact_size(vec2(width, 42.0), Sense::hover());
+        ui.painter().rect_filled(bar, t.corner(), t.chrome);
+        ui.painter().rect_stroke(bar, t.corner(), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+        let mut row = ui.new_child(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(6.0, 5.0))).layout(Layout::left_to_right(Align::Center)));
+        let ui = &mut row;
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let sections = match self.front_data() {
+            Some(Ok((_, sections))) => sections,
+            _ => Vec::new(),
+        };
+        if nav_tab(ui, t, &t!("Home"), self.view == View::Home).clicked() {
+            self.open(View::Home);
+        }
+        // Browse: every game with filters, or one of the store's lists.
+        let in_list = matches!(&self.view, View::Browse | View::Section(_));
+        let r = nav_tab(ui, t, &format!("{}  {}", t!("Browse|store"), icons::CARET_DOWN), in_list);
+        egui::Popup::from_toggle_button_response(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(220.0).show(|ui| {
+            if w::menu_item(ui, t, icons::SLIDERS, t!("All games, with filters")).clicked() {
                 self.open(View::Browse);
+                ui.close();
             }
-            if ctx.state.steam_id != 0 && w::chip(ui, t, &format!("{}  {}", icons::STACK, t!("Discovery queue")), false).clicked() {
-                self.open(View::Discovery(0));
-            }
-            if let Some(Ok((_, sections))) = self.front_data() {
-                for s in &sections {
-                    let icon = match s.id.as_str() {
-                        "specials" => icons::TAG,
-                        "top_sellers" => icons::FIRE,
-                        "new_releases" => icons::STAR,
-                        _ => icons::CALENDAR,
-                    };
-                    if w::chip(ui, t, &format!("{icon}  {}", i18n::tr_dyn(&s.title)), self.view == View::Section(s.id.clone())).clicked() {
-                        self.open(View::Section(s.id.clone()));
-                    }
-                }
-            }
-            if let Some((q, _)) = &self.search {
-                let q = q.clone();
-                // The last search, or the developer/publisher page you came from.
-                let (label, view) = match q.split_once(':') {
-                    Some((kind, name)) if kind == "developer" || kind == "publisher" => (format!("{}  {name}", icons::USERS), View::Creator(kind.to_string(), name.to_string())),
-                    _ => (format!("{}  \"{q}\"", icons::SEARCH), View::Search(q.clone())),
+            for sec in &sections {
+                let icon = match sec.id.as_str() {
+                    "specials" => icons::TAG,
+                    "top_sellers" => icons::FIRE,
+                    "new_releases" => icons::STAR,
+                    _ => icons::CALENDAR,
                 };
-                if w::chip(ui, t, &label, self.view == view).clicked() {
-                    self.open(view);
+                if w::menu_item(ui, t, icon, &i18n::tr_dyn(&sec.title)).clicked() {
+                    self.open(View::Section(sec.id.clone()));
+                    ui.close();
                 }
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let cart = ctx.state.cart.as_ref().map(|c| c.len()).unwrap_or(0);
-                if w::chip(ui, t, &format!("{}  {} ({cart})", icons::CART, t!("Cart")), self.view == View::Cart).clicked() {
-                    self.open(View::Cart);
-                }
-                let wish = ctx.state.wishlist.as_ref().map(|w| w.len()).unwrap_or(0);
-                if w::chip(ui, t, &format!("{}  {} ({wish})", icons::HEART, t!("Wishlist")), self.view == View::Wishlist).clicked() {
-                    self.open(View::Wishlist);
-                }
-            });
+        });
+        if ctx.state.steam_id != 0 && nav_tab(ui, t, &t!("Discovery queue"), matches!(self.view, View::Discovery(_))).clicked() {
+            self.open(View::Discovery(0));
+        }
+        if let Some((q, _)) = &self.search {
+            let q = q.clone();
+            // The last search, or the developer/publisher page you came from.
+            let (label, view) = match q.split_once(':') {
+                Some((kind, name)) if kind == "developer" || kind == "publisher" => (format!("{}  {name}", icons::USERS), View::Creator(kind.to_string(), name.to_string())),
+                _ => (format!("{}  \"{q}\"", icons::SEARCH), View::Search(q.clone())),
+            };
+            if ui.available_width() > 320.0 && nav_tab(ui, t, &label, self.view == view).clicked() {
+                self.open(view);
+            }
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let cart = ctx.state.cart.as_ref().map(|c| c.len()).unwrap_or(0);
+            let label = if cart > 0 { format!("{}  {} ({cart})", icons::CART, t!("Cart")) } else { format!("{}  {}", icons::CART, t!("Cart")) };
+            if nav_tab(ui, t, &label, self.view == View::Cart).clicked() {
+                self.open(View::Cart);
+            }
+            let wish = ctx.state.wishlist.as_ref().map(|w| w.len()).unwrap_or(0);
+            let label = if wish > 0 { format!("{}  {} ({wish})", icons::HEART, t!("Wishlist")) } else { format!("{}  {}", icons::HEART, t!("Wishlist")) };
+            if nav_tab(ui, t, &label, self.view == View::Wishlist).clicked() {
+                self.open(View::Wishlist);
+            }
         });
     }
 
@@ -1041,7 +1060,9 @@ impl Store {
                     ui.add(egui::Label::new(w::text(&d.short_description, 14.0, t.text_dim)).wrap());
                     ui.add_space(10.0);
                     let info = self.browse_info(id);
-                    egui::Grid::new("app-facts").num_columns(2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
+                    // Capped, so the bars and links stay inside the column (it's narrow
+                    // with the friends list open).
+                    egui::Grid::new("app-facts").num_columns(2).spacing(vec2(14.0, 6.0)).max_col_width((right_w - 110.0).max(150.0)).show(ui, |ui| {
                         if let Some(r) = info.as_ref().and_then(|i| i.reviews.clone()) {
                             // Bars instead of Steam's "Very Positive": the share
                             // of thumbs up and down says more at a glance.
@@ -1587,8 +1608,16 @@ impl Store {
 pub(crate) fn rating_bar(ui: &mut Ui, t: &Theme, positive: u32, count: u64) {
     let positive = positive.min(100);
     let (up_c, down_c) = (Color32::from_rgb(0x66, 0xC0, 0xF4), Color32::from_rgb(0xC3, 0x5C, 0x4A));
-    ui.horizontal(|ui| {
-        let w = 190.0;
+    let label = t!("{count} reviews", count = thousands(count));
+    // Narrow (a list beside the friends panel): a shorter bar, and the count
+    // moves into the bar's tooltip rather than running past the space.
+    let label_w = ui.painter().layout_no_wrap(label.clone(), w::font(12.5), t.accent).size().x + 8.0 + ui.spacing().item_spacing.x * 2.0;
+    let room = ui.available_width();
+    let show_label = room >= 120.0 + label_w;
+    let bar_w = if show_label { (room - label_w).min(190.0) } else { room.clamp(90.0, 190.0) };
+    // Top-aligned: the count lines up with the percentages.
+    ui.horizontal_top(|ui| {
+        let w = bar_w;
         let (r, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
         let p = ui.painter();
         p.text(r.left_top(), Align2::LEFT_TOP, format!("{positive}% {}", icons::THUMBS_UP), w::font_semibold(12.0), up_c);
@@ -1602,8 +1631,12 @@ pub(crate) fn rating_bar(ui: &mut Ui, t: &Theme, positive: u32, count: u64) {
         if positive < 100 {
             p.rect_filled(Rect::from_min_max(pos2(split + gap / 2.0, bar.top()), bar.max), CornerRadius::same(2), down_c);
         }
-        ui.add_space(8.0);
-        ui.label(w::text(t!("{count} reviews", count = thousands(count)), 12.5, t.accent));
+        if show_label {
+            ui.add_space(8.0);
+            ui.label(w::text(&label, 12.5, t.accent));
+        } else {
+            ui.allocate_rect(r, Sense::hover()).on_hover_text(&label);
+        }
     });
 }
 
@@ -1703,4 +1736,16 @@ fn view_arg(view: &View) -> Option<String> {
         View::Cart => Some("cart".into()),
         View::Discovery(i) => Some(format!("discovery:{i}")),
     }
+}
+
+/// A tab on the store's bar: plain text, filled when it's the page you're on.
+fn nav_tab(ui: &mut Ui, t: &Theme, label: &str, on: bool) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(label.to_string(), w::font_medium(13.5), t.text);
+    let (r, resp) = ui.allocate_exact_size(vec2(galley.size().x + 24.0, 32.0), Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    let fill = if on { t.accent.gamma_multiply(0.22) } else { t.surface_hover.gamma_multiply(hover) };
+    ui.painter().rect_filled(r, t.corner_small(), fill);
+    let color = if on { t.text } else { w::mix(t.text_dim, t.text, hover) };
+    ui.painter().galley(pos2(r.left() + 12.0, r.center().y - galley.size().y / 2.0), galley, color);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

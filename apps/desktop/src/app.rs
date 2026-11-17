@@ -281,6 +281,10 @@ impl SteamApp {
         if std::env::args().any(|a| a == "--friends") {
             app.friends_window.open = true;
         }
+        // `--friends-panel` starts with the friends list beside the page (checks).
+        if std::env::args().any(|a| a == "--friends-panel") {
+            app.prefs.friends_open = true;
+        }
         // `--tray-menu` opens the tray menu near the screen corner (previews).
         if std::env::args().any(|a| a == "--tray-menu") {
             app.tray.open_menu(egui::pos2(900.0, 700.0));
