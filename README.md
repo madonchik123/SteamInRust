@@ -84,7 +84,8 @@ Everything below is in the current release. Area-by-area status:
   downloads and friends. Open it from the menu, with the controller's Guide
   button, or start with `--bigpicture`.
 - **Plugins.** Small [Rhai](https://rhai.rs) scripts can add pages,
-  notifications and automations, with only the permissions you approve.
+  buttons on game pages, items in friends' menus, timers, notifications and
+  web requests to the sites they list, with only the permissions you approve.
 - **Seven languages**: English, Russian, Simplified Chinese, Spanish, Brazilian
   Portuguese, German and French, picked from your system language.
 
@@ -196,9 +197,15 @@ fn page() {
 }
 ```
 
-Scripts can't reach files, the network or other programs, only the API they
-were granted. The API is in [`crates/plugins`](crates/plugins/src/lib.rs), with
-more examples in [`crates/plugins/examples`](crates/plugins/examples).
+Scripts can't reach files or other programs, only the API they were granted.
+The network is opt-in per plugin: `network` plus a `hosts` list in the manifest
+(https only), which you see before enabling it. Plugins can also run on a
+timer (`tick`), add buttons to game pages and items to friends' menus, launch
+installed games, read downloads and the wishlist, and draw inputs, switches,
+tables and images on their page. The API is in
+[`crates/plugins`](crates/plugins/src/lib.rs), with examples in
+[`crates/plugins/examples`](crates/plugins/examples) (Wishlist Sales checks
+your wishlist's prices every hour and tells you about discounts).
 
 ## Build from source
 

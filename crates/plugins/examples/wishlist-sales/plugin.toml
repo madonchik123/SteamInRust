@@ -1,0 +1,14 @@
+id = "wishlist-sales"
+name = "Wishlist Sales"
+version = "1.0.0"
+author = "SteamInRust"
+description = "Checks your wishlist's prices every hour and tells you when a game goes on sale."
+permissions = ["store.read", "network", "notifications", "storage", "clipboard"]
+# The only website it talks to: Steam's store (for prices).
+hosts = ["store.steampowered.com"]
+# Seconds between checks.
+tick = 3600
+
+[page]
+title = "Wishlist Sales"
+icon = "tag"

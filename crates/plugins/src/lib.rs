@@ -26,19 +26,36 @@
 //! | `set_status("online" / "away" / "busy" / "invisible")` | `status.write` |
 //! | `send_message(steam_id, text)` | `chat.write` |
 //! | `storage_get(key)`, `storage_set(key, value)` | `storage` |
+//! | `http_get(url)`, `http_post(url, body)`, `http_request(method, url, body, headers)`: start a request, returns its id; the answer comes to `on_http` | `network` (only to the `hosts` in the manifest) |
+//! | `launch(app_id)` (an installed game) | `games.launch` |
+//! | `downloads()`: running and queued downloads | `downloads.read` |
+//! | `wishlist()`: app ids on your wishlist | `store.read` |
+//! | `copy(text)`: to the clipboard | `clipboard` |
+//! | `navigate(page, arg)`: open a page of the app (`"store"`, `"library"`, `"community"`, `"profile"`, `"downloads"`, `"settings"`, or this plugin's page) | none |
+//! | `language()`, `platform()`, `json_parse(text)`, `json_string(value)` | none |
 //!
 //! ## Hooks (define any of these functions)
 //! - `on_load()`
 //! - `on_event(name, data)`: `"friend_online"`, `"friend_offline"`, `"friend_game"`
 //!   (need `friends.read`), `"message"` (needs `chat.read`), `"game_started"`,
-//!   `"game_stopped"`, `"logged_in"`.
+//!   `"game_stopped"`, `"logged_in"`, `"download_finished"` (needs `downloads.read`).
+//! - `on_tick()`: every `tick` seconds (manifest, at least 10).
+//! - `on_http(id, status, body)`: the answer to a request (`status` 0: it failed, `body` says why).
 //! - `page()`: returns an array of widgets for the plugin's page (needs `[page]` in the manifest).
 //! - `on_click(id)`: a button on the page was clicked.
+//! - `on_input(id, text)`, `on_toggle(id, on)`: a text field or switch on the page changed.
+//! - `game_actions(app_id)`: buttons on a game's page in the library, as
+//!   `[#{id, text}]`; a click calls `on_game_action(id, app_id)`.
+//! - `friend_menu(steam_id)`: items in a friend's right-click menu, as
+//!   `[#{id, text}]`; a click calls `on_friend_menu(id, steam_id)`.
 //!
 //! Widgets are maps: `#{type: "heading", text: "Hi"}`, `"text"`, `"muted"`,
 //! `#{type: "button", id: "go", text: "Go"}`, `#{type: "stat", label, value}`,
 //! `"separator"`, `#{type: "row", items: [...]}`, `#{type: "progress", value: 0.5}`,
-//! `#{type: "game", app_id: 440}` (a game card).
+//! `#{type: "game", app_id: 440}` (a game card), `#{type: "input", id, value, hint}`,
+//! `#{type: "toggle", id, text, value}`, `#{type: "link", text, page, arg}`,
+//! `#{type: "table", columns: [...], rows: [[...]]}`, `#{type: "pill", text}`,
+//! `#{type: "image", url, width, height}` (Steam's image servers, or the plugin's hosts).
 
 use rhai::{AST, Array, Dynamic, Engine, EvalAltResult, ImmutableString, Map, Scope};
 use serde::Deserialize;
@@ -56,10 +73,15 @@ pub enum Permission {
     StatusWrite,
     Notifications,
     Storage,
+    Network,
+    GamesLaunch,
+    DownloadsRead,
+    StoreRead,
+    Clipboard,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 8] = [
+    pub const ALL: [Permission; 13] = [
         Self::AccountRead,
         Self::FriendsRead,
         Self::LibraryRead,
@@ -68,6 +90,11 @@ impl Permission {
         Self::StatusWrite,
         Self::Notifications,
         Self::Storage,
+        Self::Network,
+        Self::GamesLaunch,
+        Self::DownloadsRead,
+        Self::StoreRead,
+        Self::Clipboard,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -79,6 +106,11 @@ impl Permission {
             Self::StatusWrite => "status.write",
             Self::Notifications => "notifications",
             Self::Storage => "storage",
+            Self::Network => "network",
+            Self::GamesLaunch => "games.launch",
+            Self::DownloadsRead => "downloads.read",
+            Self::StoreRead => "store.read",
+            Self::Clipboard => "clipboard",
         }
     }
     pub fn describe(self) -> &'static str {
@@ -91,11 +123,16 @@ impl Permission {
             Self::StatusWrite => "Change your online status",
             Self::Notifications => "Show notifications",
             Self::Storage => "Save its own settings",
+            Self::Network => "Connect to the websites it lists",
+            Self::GamesLaunch => "Start your installed games",
+            Self::DownloadsRead => "See your downloads",
+            Self::StoreRead => "See your wishlist",
+            Self::Clipboard => "Copy text to your clipboard",
         }
     }
-    /// Permissions that act on your behalf get a warning in the UI.
+    /// Permissions that act on your behalf or send data out get a warning in the UI.
     pub fn sensitive(self) -> bool {
-        matches!(self, Self::ChatRead | Self::ChatWrite | Self::StatusWrite)
+        matches!(self, Self::ChatRead | Self::ChatWrite | Self::StatusWrite | Self::Network)
     }
     fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.key() == s)
@@ -117,6 +154,11 @@ struct RawManifest {
     #[serde(default = "default_main")]
     main: String,
     page: Option<PageDecl>,
+    /// Hosts `network` may reach ("api.example.com", "*.example.com").
+    #[serde(default)]
+    hosts: Vec<String>,
+    /// Seconds between `on_tick()` calls.
+    tick: Option<u64>,
 }
 
 fn default_version() -> String {
@@ -142,6 +184,10 @@ pub struct Manifest {
     pub description: String,
     pub permissions: Vec<Permission>,
     pub page: Option<PageDecl>,
+    /// Hosts the plugin may connect to (with `network`).
+    pub hosts: Vec<String>,
+    /// Seconds between `on_tick()` calls (at least 10).
+    pub tick: Option<u64>,
     main: String,
 }
 
@@ -153,6 +199,11 @@ pub struct Snapshot {
     pub friends: Vec<(u64, String, String, Option<String>)>,
     /// (app_id, name, installed, playtime minutes)
     pub library: Vec<(u32, String, bool, u64)>,
+    /// (app_id, name, progress 0..1, bytes per second, paused, queued)
+    pub downloads: Vec<(u32, String, f32, u64, bool, bool)>,
+    pub wishlist: Vec<u32>,
+    /// The app's language code ("en", "ru"...).
+    pub language: String,
 }
 
 /// Things a plugin asked the host to do.
@@ -161,6 +212,11 @@ pub enum Request {
     Notify(String),
     SetStatus(model::PersonaState),
     SendMessage(u64, String),
+    /// A web request; the answer goes to `Plugin::http_done`.
+    Http { id: u64, method: String, url: String, body: String, headers: Vec<(String, String)> },
+    Launch(u32),
+    Navigate(String, Option<String>),
+    Copy(String),
 }
 
 /// Events delivered to `on_event`.
@@ -173,6 +229,7 @@ pub enum HostEvent {
     Message { steam_id: u64, name: String, text: String },
     GameStarted { app_id: u32 },
     GameStopped { app_id: u32 },
+    DownloadFinished { app_id: u32, ok: bool },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -186,6 +243,19 @@ pub enum Widget {
     Row(Vec<Widget>),
     Progress(f32),
     Game(u32),
+    Input { id: String, value: String, hint: String },
+    Toggle { id: String, text: String, value: bool },
+    Link { text: String, page: String, arg: Option<String> },
+    Table { columns: Vec<String>, rows: Vec<Vec<String>> },
+    Pill(String),
+    Image { url: String, width: f32, height: f32 },
+}
+
+/// An item a plugin adds to a game's page or a friend's menu.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuItem {
+    pub id: String,
+    pub text: String,
 }
 
 #[derive(Default)]
@@ -196,6 +266,10 @@ struct Host {
     storage: BTreeMap<String, String>,
     storage_dirty: bool,
     logs: VecDeque<String>,
+    hosts: Vec<String>,
+    next_request: u64,
+    /// When recent requests were made (at most 30 a minute).
+    request_times: VecDeque<std::time::Instant>,
 }
 
 impl Host {
@@ -234,6 +308,8 @@ pub struct Plugin {
     running: bool,
     /// Last error (compile or runtime), shown in the plugin manager.
     pub error: Option<String>,
+    /// When `on_tick` last ran (seconds since the epoch).
+    last_tick: u64,
 }
 
 const MAX_OPERATIONS: u64 = 2_000_000;
@@ -260,11 +336,13 @@ impl Plugin {
             description: raw.description,
             permissions,
             page: raw.page,
+            hosts: raw.hosts.iter().map(|h| h.trim().to_ascii_lowercase()).filter(|h| !h.is_empty()).collect(),
+            tick: raw.tick.map(|t| t.max(10)),
             main: raw.main,
         };
         let host = Arc::new(Mutex::new(Host::default()));
         let engine = sandboxed_engine(host.clone());
-        Ok(Plugin { manifest, dir: dir.to_path_buf(), engine, ast: None, scope: Scope::new(), host, running: false, error: None })
+        Ok(Plugin { manifest, dir: dir.to_path_buf(), engine, ast: None, scope: Scope::new(), host, running: false, error: None, last_tick: 0 })
     }
 
     pub fn is_running(&self) -> bool {
@@ -286,6 +364,7 @@ impl Plugin {
         {
             let mut h = self.host.lock().unwrap();
             h.granted = self.manifest.permissions.iter().copied().collect();
+            h.hosts = self.manifest.hosts.clone();
             h.storage = storage;
             h.storage_dirty = false;
         }
@@ -356,6 +435,9 @@ impl Plugin {
                     ("game", game.clone().map(Dynamic::from).unwrap_or(Dynamic::UNIT)),
                 ]),
             ),
+            HostEvent::DownloadFinished { app_id, ok } if granted.contains(&Permission::DownloadsRead) => {
+                ("download_finished", map([("app_id", (*app_id as i64).into()), ("ok", (*ok).into())]))
+            }
             HostEvent::Message { steam_id, name, text } if granted.contains(&Permission::ChatRead) => (
                 "message",
                 map([("steam_id", steam_id.to_string().into()), ("name", name.clone().into()), ("text", text.clone().into())]),
@@ -377,6 +459,59 @@ impl Plugin {
         self.call("on_click", (ImmutableString::from(id),));
     }
 
+    pub fn input(&mut self, id: &str, text: &str) {
+        self.call("on_input", (ImmutableString::from(id), ImmutableString::from(text)));
+    }
+
+    pub fn toggle(&mut self, id: &str, on: bool) {
+        self.call("on_toggle", (ImmutableString::from(id), on));
+    }
+
+    /// The answer to a request made with `http_get` and friends.
+    pub fn http_done(&mut self, id: u64, status: u16, body: String) {
+        self.call("on_http", (id.to_string(), status as i64, body));
+    }
+
+    /// Call `on_tick` if it's due (`now` in seconds since the epoch).
+    /// Returns when it's due next.
+    pub fn tick(&mut self, now: u64) -> Option<u64> {
+        let every = self.manifest.tick?;
+        if !self.running {
+            return None;
+        }
+        if self.last_tick == 0 {
+            // The first tick comes one period after start.
+            self.last_tick = now;
+        } else if now >= self.last_tick + every {
+            self.last_tick = now;
+            self.call("on_tick", ());
+        }
+        Some(self.last_tick + every)
+    }
+
+    /// Buttons for a game's page in the library.
+    pub fn game_actions(&mut self, app_id: u32) -> Vec<MenuItem> {
+        self.call("game_actions", (app_id as i64,)).map(menu_items).unwrap_or_default()
+    }
+
+    pub fn game_action(&mut self, id: &str, app_id: u32) {
+        self.call("on_game_action", (ImmutableString::from(id), app_id as i64));
+    }
+
+    /// Items for a friend's right-click menu.
+    pub fn friend_menu(&mut self, steam_id: u64) -> Vec<MenuItem> {
+        self.call("friend_menu", (steam_id.to_string(),)).map(menu_items).unwrap_or_default()
+    }
+
+    pub fn friend_menu_click(&mut self, id: &str, steam_id: u64) {
+        self.call("on_friend_menu", (ImmutableString::from(id), steam_id.to_string()));
+    }
+
+    /// Whether the script defines a hook (so the host can skip asking).
+    pub fn defines(&self, name: &str) -> bool {
+        self.running && self.has_fn(name)
+    }
+
     /// Take the requests made since the last call.
     pub fn drain(&self) -> Vec<Request> {
         std::mem::take(&mut self.host.lock().unwrap().outbox)
@@ -395,6 +530,66 @@ impl Plugin {
         } else {
             None
         }
+    }
+}
+
+fn menu_items(d: Dynamic) -> Vec<MenuItem> {
+    let Some(arr) = d.try_cast::<Array>() else { return Vec::new() };
+    arr.into_iter()
+        .filter_map(|v| {
+            let m = v.try_cast::<Map>()?;
+            let s = |k: &str| m.get(k).map(|v| v.to_string()).unwrap_or_default();
+            let (id, text) = (s("id"), s("text"));
+            (!id.is_empty() && !text.is_empty()).then(|| MenuItem { id, text: text.chars().take(60).collect() })
+        })
+        .take(8)
+        .collect()
+}
+
+/// Whether `url` may be reached: https, to one of the plugin's hosts.
+fn host_allowed(url: &str, hosts: &[String]) -> Result<(), String> {
+    let rest = url.strip_prefix("https://").ok_or("only https:// addresses are allowed")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = host.rsplit('@').next().unwrap_or(host).split(':').next().unwrap_or_default().to_ascii_lowercase();
+    let ok = hosts.iter().any(|h| match h.strip_prefix("*.") {
+        Some(base) => host == base || host.ends_with(&format!(".{base}")),
+        None => host == *h,
+    });
+    if ok { Ok(()) } else { Err(format!("'{host}' isn't in this plugin's hosts")) }
+}
+
+/// JSON text to Rhai values (maps, arrays, strings, numbers, bools, ()).
+fn from_json(v: serde_json::Value) -> Dynamic {
+    use serde_json::Value as J;
+    match v {
+        J::Null => Dynamic::UNIT,
+        J::Bool(b) => b.into(),
+        J::Number(n) => match n.as_i64() {
+            Some(i) => i.into(),
+            None => n.as_f64().unwrap_or(0.0).into(),
+        },
+        J::String(s) => s.into(),
+        J::Array(a) => Dynamic::from_array(a.into_iter().map(from_json).collect()),
+        J::Object(o) => Dynamic::from_map(o.into_iter().map(|(k, v)| (k.into(), from_json(v))).collect()),
+    }
+}
+
+fn to_json(d: &Dynamic) -> serde_json::Value {
+    use serde_json::Value as J;
+    if d.is_unit() {
+        J::Null
+    } else if let Ok(b) = d.as_bool() {
+        J::Bool(b)
+    } else if let Ok(i) = d.as_int() {
+        J::from(i)
+    } else if let Ok(f) = d.as_float() {
+        J::from(f)
+    } else if let Some(a) = d.clone().try_cast::<Array>() {
+        J::Array(a.iter().map(to_json).collect())
+    } else if let Some(m) = d.clone().try_cast::<Map>() {
+        J::Object(m.iter().map(|(k, v)| (k.to_string(), to_json(v))).collect())
+    } else {
+        J::String(d.to_string())
     }
 }
 
@@ -420,6 +615,22 @@ fn widget(d: Dynamic) -> Option<Widget> {
         "progress" => Widget::Progress(m.get("value").and_then(|v| v.as_float().ok()).unwrap_or(0.0).clamp(0.0, 1.0) as f32),
         "game" => Widget::Game(m.get("app_id").and_then(|v| v.as_int().ok()).unwrap_or(0) as u32),
         "row" => Widget::Row(m.get("items").cloned().map(widgets).unwrap_or_default()),
+        "input" => Widget::Input { id: s("id"), value: s("value"), hint: s("hint") },
+        "toggle" => Widget::Toggle { id: s("id"), text: s("text"), value: m.get("value").and_then(|v| v.as_bool().ok()).unwrap_or(false) },
+        "link" => Widget::Link { text: s("text"), page: s("page"), arg: m.get("arg").filter(|v| !v.is_unit()).map(|v| v.to_string()) },
+        "pill" => Widget::Pill(s("text")),
+        "table" => {
+            let list = |v: Option<&Dynamic>| -> Vec<Dynamic> { v.and_then(|v| v.clone().try_cast::<Array>()).unwrap_or_default() };
+            Widget::Table {
+                columns: list(m.get("columns")).iter().map(|c| c.to_string()).take(12).collect(),
+                rows: list(m.get("rows")).into_iter().take(500).map(|r| r.try_cast::<Array>().unwrap_or_default().iter().map(|c| c.to_string()).take(12).collect()).collect(),
+            }
+        }
+        "image" => Widget::Image {
+            url: s("url"),
+            width: m.get("width").and_then(|v| v.as_int().ok()).unwrap_or(240).clamp(16, 1200) as f32,
+            height: m.get("height").and_then(|v| v.as_int().ok()).unwrap_or(135).clamp(16, 1200) as f32,
+        },
         _ => return None,
     })
 }
@@ -537,6 +748,104 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         Ok(h.storage.get(k).cloned().map(Dynamic::from).unwrap_or(Dynamic::UNIT))
     });
 
+    let h = host.clone();
+    let request = move |method: &str, url: &str, body: &str, headers: Map| -> Result<String, Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::Network)?;
+        host_allowed(url, &h.hosts)?;
+        let now = std::time::Instant::now();
+        while h.request_times.front().is_some_and(|t| now.duration_since(*t).as_secs() >= 60) {
+            h.request_times.pop_front();
+        }
+        if h.request_times.len() >= 30 {
+            return Err("too many requests: at most 30 a minute".into());
+        }
+        h.request_times.push_back(now);
+        h.next_request += 1;
+        let id = h.next_request;
+        let headers = headers.into_iter().take(16).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        h.outbox.push(Request::Http { id, method: method.to_ascii_uppercase(), url: url.to_string(), body: body.chars().take(256 * 1024).collect(), headers });
+        Ok(id.to_string())
+    };
+    let r = request.clone();
+    e.register_fn("http_get", move |url: &str| r("GET", url, "", Map::new()));
+    let r = request.clone();
+    e.register_fn("http_post", move |url: &str, body: &str| r("POST", url, body, Map::new()));
+    let r = request;
+    e.register_fn("http_request", move |method: &str, url: &str, body: &str, headers: Map| -> Result<String, Box<EvalAltResult>> {
+        if !["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.to_ascii_uppercase().as_str()) {
+            return Err(format!("unknown method '{method}'").into());
+        }
+        r(method, url, body, headers)
+    });
+
+    let h = host.clone();
+    e.register_fn("launch", move |app_id: i64| -> Result<(), Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::GamesLaunch)?;
+        let id = app_id as u32;
+        if !h.snapshot.library.iter().any(|g| g.0 == id && g.2) {
+            return Err("that game isn't installed".into());
+        }
+        h.outbox.push(Request::Launch(id));
+        Ok(())
+    });
+
+    let h = host.clone();
+    e.register_fn("downloads", move || -> Result<Array, Box<EvalAltResult>> {
+        let h = h.lock().unwrap();
+        h.need(Permission::DownloadsRead)?;
+        Ok(h.snapshot
+            .downloads
+            .iter()
+            .map(|(id, name, progress, speed, paused, queued)| {
+                map([
+                    ("app_id", (*id as i64).into()),
+                    ("name", name.clone().into()),
+                    ("progress", (*progress as f64).into()),
+                    ("bytes_per_second", (*speed as i64).into()),
+                    ("paused", (*paused).into()),
+                    ("queued", (*queued).into()),
+                ])
+                .into()
+            })
+            .collect())
+    });
+
+    let h = host.clone();
+    e.register_fn("wishlist", move || -> Result<Array, Box<EvalAltResult>> {
+        let h = h.lock().unwrap();
+        h.need(Permission::StoreRead)?;
+        Ok(h.snapshot.wishlist.iter().map(|id| Dynamic::from(*id as i64)).collect())
+    });
+
+    let h = host.clone();
+    e.register_fn("copy", move |text: &str| -> Result<(), Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::Clipboard)?;
+        h.outbox.push(Request::Copy(text.chars().take(64 * 1024).collect()));
+        Ok(())
+    });
+
+    let h = host.clone();
+    e.register_fn("navigate", move |page: &str, arg: Dynamic| -> Result<(), Box<EvalAltResult>> {
+        const PAGES: [&str; 6] = ["store", "library", "community", "profile", "downloads", "settings"];
+        if !PAGES.contains(&page) && !page.starts_with("plugin:") {
+            return Err(format!("unknown page '{page}'").into());
+        }
+        let arg = (!arg.is_unit()).then(|| arg.to_string());
+        h.lock().unwrap().outbox.push(Request::Navigate(page.to_string(), arg));
+        Ok(())
+    });
+
+    let h = host.clone();
+    e.register_fn("language", move || h.lock().unwrap().snapshot.language.clone());
+    e.register_fn("platform", || if cfg!(target_os = "macos") { "macos" } else if cfg!(windows) { "windows" } else { "linux" });
+    e.register_fn("json_parse", |text: &str| -> Result<Dynamic, Box<EvalAltResult>> {
+        serde_json::from_str::<serde_json::Value>(text).map(from_json).map_err(|e| format!("bad JSON: {e}").into())
+    });
+    e.register_fn("json_string", |v: Dynamic| to_json(&v).to_string());
+
     let h = host;
     e.register_fn("storage_set", move |k: &str, v: Dynamic| -> Result<(), Box<EvalAltResult>> {
         let mut h = h.lock().unwrap();
@@ -572,6 +881,7 @@ pub fn discover(dir: &Path) -> Vec<Result<Plugin, (PathBuf, Error)>> {
 pub const EXAMPLES: &[(&str, &str, &str)] = &[
     ("friend-alerts", include_str!("../examples/friend-alerts/plugin.toml"), include_str!("../examples/friend-alerts/main.rhai")),
     ("backlog", include_str!("../examples/backlog/plugin.toml"), include_str!("../examples/backlog/main.rhai")),
+    ("wishlist-sales", include_str!("../examples/wishlist-sales/plugin.toml"), include_str!("../examples/wishlist-sales/main.rhai")),
 ];
 
 /// Copy the bundled examples into `dir` if they aren't there yet.
@@ -632,6 +942,59 @@ mod tests {
         let mut p = plugin("id = \"t3\"\nname = \"T\"\n", "fn on_load() { loop { } }");
         p.start(Default::default());
         assert!(p.error.is_some());
+    }
+
+    #[test]
+    fn network_only_reaches_listed_hosts() {
+        let mut p = plugin(
+            "id = \"n\"\nname = \"N\"\npermissions = [\"network\"]\nhosts = [\"api.example.com\", \"*.steampowered.com\"]\n",
+            "fn on_load() { http_get(\"https://api.example.com/x?y=1\"); http_get(\"https://store.steampowered.com/api\"); }",
+        );
+        p.start(Default::default());
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let reqs = p.drain();
+        assert_eq!(reqs.len(), 2);
+        assert!(matches!(&reqs[0], Request::Http { id: 1, method, url, .. } if method == "GET" && url == "https://api.example.com/x?y=1"));
+
+        for bad in ["http://api.example.com/", "https://evil.com/", "https://api.example.com.evil.com/", "https://evil.com@api.example.com.x/"] {
+            let mut p = plugin(
+                "id = \"n2\"\nname = \"N\"\npermissions = [\"network\"]\nhosts = [\"api.example.com\"]\n",
+                &format!("fn on_load() {{ http_get(\"{bad}\"); }}"),
+            );
+            p.start(Default::default());
+            assert!(p.error.is_some(), "{bad} should be refused");
+            assert!(p.drain().is_empty());
+        }
+    }
+
+    #[test]
+    fn answers_ticks_hooks_and_json() {
+        let mut p = plugin(
+            "id = \"h\"\nname = \"H\"\npermissions = [\"storage\"]\ntick = 30\n",
+            r#"
+            fn on_http(id, status, body) { storage_set("got", id + " " + status + " " + json_parse(body).name); }
+            fn on_tick() { storage_set("ticks", "1"); }
+            fn game_actions(app_id) { [#{id: "a", text: "Look up " + app_id}] }
+            fn on_game_action(id, app_id) { storage_set("action", id + app_id); }
+            fn friend_menu(steam_id) { [#{id: "f", text: "Hi"}] }
+            fn page() { [#{type: "input", id: "q", value: "x", hint: "Search"}, #{type: "table", columns: ["A"], rows: [[1], [2]]}, #{type: "toggle", id: "t", text: "On", value: true}] }
+            fn json_round() { json_string(#{a: [1, true, ()]}) }
+            "#,
+        );
+        p.start(Default::default());
+        assert!(p.error.is_none(), "{:?}", p.error);
+        p.http_done(7, 200, r#"{"name":"Ferris"}"#.into());
+        assert_eq!(p.tick(1000), Some(1030));
+        assert_eq!(p.tick(1031), Some(1061));
+        assert_eq!(p.game_actions(440), vec![MenuItem { id: "a".into(), text: "Look up 440".into() }]);
+        p.game_action("a", 440);
+        assert_eq!(p.friend_menu(76561198000000000).len(), 1);
+        let s = p.take_storage().unwrap();
+        assert_eq!(s.get("got").map(String::as_str), Some("7 200 Ferris"));
+        assert_eq!(s.get("ticks").map(String::as_str), Some("1"));
+        assert_eq!(s.get("action").map(String::as_str), Some("a440"));
+        assert!(matches!(&p.page()[..], [Widget::Input { .. }, Widget::Table { rows, .. }, Widget::Toggle { value: true, .. }] if rows.len() == 2));
+        assert_eq!(p.call("json_round", ()).unwrap().to_string(), r#"{"a":[1,true,null]}"#);
     }
 
     #[test]

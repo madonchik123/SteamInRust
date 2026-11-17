@@ -155,6 +155,9 @@ pub trait Extension: 'static {
     }
     fn load(&mut self, _data: &str) {}
 
+    /// Once per frame (after events), for work on a timer. Keep it cheap.
+    fn tick(&mut self, _ctx: &mut Ctx) {}
+
     /// The extension itself, for app code that knows its concrete type
     /// (Big Picture reuses the Library's and Store's own logic this way).
     fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -352,6 +355,17 @@ impl Registry {
         if let Some(i) = self.owner_of(page) {
             if let Some(x) = self.entries[i].ext.as_mut() {
                 x.on_navigate(page, arg);
+            }
+        }
+    }
+
+    /// Every enabled extension's `tick`, once per frame.
+    pub fn tick(&mut self, env: Env<'_>) {
+        let Env { state, local, theme, zoom, client, actions } = env;
+        for i in 0..self.entries.len() {
+            if self.entries[i].enabled {
+                let env = Env { state, local, theme, zoom, client, actions: &mut *actions };
+                self.with(i, env, |ext, ctx| ext.tick(ctx));
             }
         }
     }

@@ -29,7 +29,7 @@ pub fn registry(rt: tokio::runtime::Handle, ctx: egui::Context, flags: settings:
     r.register(hub::Hub::default());
     r.register(inventory::Inventory::default());
     r.register(support::Support::default());
-    r.register(plugins::Plugins::new());
+    r.register(plugins::Plugins::new(rt.clone(), ctx.clone()));
     r.register(settings::Settings::new(flags));
     r
 }

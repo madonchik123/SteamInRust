@@ -17,11 +17,28 @@ fn on_event(name, data) {
         return;
     };
 
-    if watching_everyone() {
+    if watching_everyone() || watched()[data.steam_id] == true {
         notify(text);
     }
     recent.insert(0, text);
     if recent.len() > 20 { recent.truncate(20); }
+}
+
+// Friends picked one by one from their right-click menu.
+fn watched() {
+    let w = storage_get("watch");
+    if w == () { #{} } else { json_parse(w) }
+}
+
+fn friend_menu(steam_id) {
+    let on = watched()[steam_id] == true;
+    [#{ id: "watch", text: if on { "Stop alerts for this friend" } else { "Alert me about this friend" } }]
+}
+
+fn on_friend_menu(id, steam_id) {
+    let w = watched();
+    if w[steam_id] == true { w.remove(steam_id); } else { w[steam_id] = true; }
+    storage_set("watch", json_string(w));
 }
 
 fn page() {

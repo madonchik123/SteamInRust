@@ -201,7 +201,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | English, Russian, Simplified Chinese, Spanish, Brazilian Portuguese, German and French, picked from the system language | Done. Japanese, Korean, Traditional Chinese, Polish, Turkish and others aren't translated yet |
 | Installer, uninstaller, background updates checked with SHA-256 | Done. One download at a time; it continues after a restart or a dropped connection, and old installers are deleted. On a Mac: a disk image, and the app replaces itself on update |
 | Copy, cut and paste in every text field, with a right-click menu | Done |
-| Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done. Network access for plugins is planned |
+| Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done: pages with inputs, switches, tables and images; buttons on game pages; items in friends' menus; timers; web requests to the hosts a plugin lists (https, with your approval); launching games; downloads and wishlist; clipboard |
 | macOS | Done (macOS 11 or later). Builds aren't signed with an Apple developer ID, so macOS asks for the Keychain password and Input Monitoring again after each update |
 | Linux | Not yet |
 

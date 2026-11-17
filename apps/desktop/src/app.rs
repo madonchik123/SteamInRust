@@ -378,6 +378,16 @@ impl SteamApp {
             };
             self.registry.broadcast(&e, env);
         }
+        // Timers (plugins' on_tick, their web replies).
+        let env = Env {
+            state: &self.state,
+            local: &self.local,
+            theme: &self.prefs.theme,
+            zoom: self.prefs.zoom,
+            client: &self.client,
+            actions: &mut *actions,
+        };
+        self.registry.tick(env);
     }
 
     pub fn navigate(&mut self, page: String, arg: Option<String>) {
