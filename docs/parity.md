@@ -1,7 +1,7 @@
 # Steam parity
 
 How much of the official Steam desktop client SteamInRust covers, area by
-area. Last checked against the code on 17 November 2026 (v0.7.0 and the changes after it).
+area. Last checked against the code on 18 November 2026 (v0.7.0 and the changes after it).
 
 Scores: **0** not started · **0.25** started · **0.5** usable, big parts
 missing · **0.75** mostly there · **1** complete. Anything marked "opens
@@ -16,7 +16,7 @@ Steam's website" still works; it just isn't native yet.
 | Store | 1 | Checkout happens on Steam's website (Steam requires it) |
 | Friends and chat | 0.75 | No group chats or voice chat |
 | Community | 0.75 | Reading only for discussions; a group's own page opens Steam's website |
-| Inventory and Market | 0.75 | Trade offers open Steam's website |
+| Inventory and Market | 1 | Your Market history opens Steam's website |
 | Steam Cloud | 1 | |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers; inventory item definitions |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser or screenshots |
@@ -93,8 +93,11 @@ All native, no web view.
 
 | | |
 | --- | --- |
-| Front page, search, tags and genres with filters, wishlist | Done |
-| Game pages: screenshots, trailers, description, requirements, languages, review score, tags, DLC | Done |
+| Front page, search, tags and genres with filters, wishlist (the heart fills at once and shows what's already on it) | Done |
+| Game pages: screenshots, trailers, description, requirements (tabs per system), languages (interface, full audio, subtitles), review score, tags, DLC | Done |
+| Reviews on game pages: friends' reviews first, most helpful and recently posted, hours on record and at review time, helpful/funny votes, positive share for the past month and all time | Done |
+| Demos: a "Demo available" tag in lists and Steam's "Download demo" box on the game page; unreleased games show their expected release date | Done |
+| Mature content warning with "View page" and "Don't ask again" (switch back in store settings) | Done |
 | Trailers | Native player (`crates/video`): HLS streaming, full screen, quality and volume. Decoded with Media Foundation on Windows and VideoToolbox/AudioToolbox on a Mac |
 | Prices in your wallet's currency, "In library" marks | Done |
 | Cart (the same cart as the website), Steam's "Added to your cart" popup, discount price tags, product keys, wallet balance | Done |
@@ -134,9 +137,10 @@ All native, no web view.
 | | |
 | --- | --- |
 | Every game's inventory with the game's own filters and rarity colors | Done |
-| Market price, order book, price chart, estimated value, in your currency | Done |
+| Market price, order book, price chart, estimated value, in your currency | Done. Prices come from Steam's market search up to 100 at a time, only for items on screen |
 | Sell, quick sell, sell to the highest buy order, your listings and buy orders | Done. Steam's fees per currency; you confirm in the Steam Mobile app |
-| Trade offers | Open Steam's website |
+| Trade offers: incoming and sent, with both sides' items and market value; accept, decline, cancel, counter | Done, in the app. Giving items away needs your confirmation in the Steam Mobile app, like on Steam |
+| New trade offers: to a friend or by trade link, items from both inventories with a game picker, search, tag filters, sorting and prices | Done, in the app |
 | Market search: by name and game, most popular first, with each item's price history and order book | Done, in the app. Your Market history opens Steam's website |
 
 ## Steam Cloud
@@ -201,7 +205,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | English, Russian, Simplified Chinese, Spanish, Brazilian Portuguese, German and French, picked from the system language | Done. Japanese, Korean, Traditional Chinese, Polish, Turkish and others aren't translated yet |
 | Installer, uninstaller, background updates checked with SHA-256 | Done. One download at a time; it continues after a restart or a dropped connection, and old installers are deleted. On a Mac: a disk image, and the app replaces itself on update |
 | Copy, cut and paste in every text field, with a right-click menu | Done |
-| Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done: pages with inputs, switches, tables and images; buttons on game pages; items in friends' menus; timers; web requests to the hosts a plugin lists (https, with your approval); launching games; downloads and wishlist; clipboard |
+| Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done: pages with inputs, switches, tables and images; buttons on game pages; items in friends' menus; timers; web requests to the hosts a plugin lists (https, with your approval); launching games; downloads and wishlist; clipboard; trade offers, inventories and market prices (plugins can decline or cancel offers, and open a trade or an offer's review, but only you can accept or send) |
 | macOS | Done (macOS 11 or later). Builds aren't signed with an Apple developer ID, so macOS asks for the Keychain password and Input Monitoring again after each update |
 | Linux | Not yet |
 

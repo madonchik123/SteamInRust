@@ -61,8 +61,10 @@ Everything below is in the current release. Area-by-area status:
   the game starts, like in Steam.
 - **Account.** Account details, purchase history, licenses and your Steam
   Family, as native pages.
-- **Inventory and Market.** Every game's inventory, market prices, order book and
+- **Inventory, Market and trading.** Every game's inventory, market prices, order book and
   price chart. Selling uses Steam's real fees; you confirm in the Steam Mobile app.
+  Trade offers in the app: see what each side is worth, accept, decline, counter,
+  or build a new offer from both inventories with filters, sorting and prices.
 - **Steam Cloud.** Sync before you play and after you quit, conflicts with
   local backups, and saves made offline upload once you're back online.
 - **Games.** Games without anti-cheat get achievements, stats, cloud saves,
@@ -201,11 +203,13 @@ Scripts can't reach files or other programs, only the API they were granted.
 The network is opt-in per plugin: `network` plus a `hosts` list in the manifest
 (https only), which you see before enabling it. Plugins can also run on a
 timer (`tick`), add buttons to game pages and items to friends' menus, launch
-installed games, read downloads and the wishlist, and draw inputs, switches,
+installed games, read downloads and the wishlist, watch trade offers and
+item prices (accepting or sending a trade always asks you), and draw inputs, switches,
 tables and images on their page. The API is in
 [`crates/plugins`](crates/plugins/src/lib.rs), with examples in
 [`crates/plugins/examples`](crates/plugins/examples) (Wishlist Sales checks
-your wishlist's prices every hour and tells you about discounts).
+your wishlist's prices every hour and tells you about discounts; Trade Helper
+tells you what a new trade offer is worth).
 
 ## Build from source
 
@@ -269,11 +273,11 @@ work are in [docs/parity.md](docs/parity.md).
 | Sign-in and accounts | 0.75 |
 | Offline mode and reconnecting | 1 |
 | Library | 0.75 |
-| Downloads and installs | 0.75 |
-| Store | 0.75 |
+| Downloads and installs | 1 |
+| Store | 1 |
 | Friends and chat | 0.75 |
-| Community | 0.5 |
-| Inventory and Market | 0.75 |
+| Community | 0.75 |
+| Inventory and Market | 1 |
 | Steam Cloud | 1 |
 | Steam features inside games | 0.75 |
 | Shift+Tab overlay | 0.75 |
