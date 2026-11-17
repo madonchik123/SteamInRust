@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0](https://github.com/madonchik123/SteamInRust/compare/v0.9.0...v0.10.0) (2026-11-17)
+
+
+### New
+
+* **bigpicture:** trailers and reviews on store pages, an install screen, and a "runs here" library filter ([#75](https://github.com/madonchik123/SteamInRust/issues/75)) ([64f2913](https://github.com/madonchik123/SteamInRust/commit/64f29135e17bbbb4cbc9f01f803a63e494e9e3cb))
+* profile settings and badges in the app, review filters, store bar redesign ([#74](https://github.com/madonchik123/SteamInRust/issues/74)) ([be8d333](https://github.com/madonchik123/SteamInRust/commit/be8d3334cdcfb5c91c25ae876c83c584387ec496))
+
 ## [0.9.0](https://github.com/madonchik123/SteamInRust/compare/v0.8.0...v0.9.0) (2026-11-17)
 
 
