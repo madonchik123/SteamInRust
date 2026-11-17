@@ -1787,3 +1787,6 @@
 "Measuring speed…" = "Medindo a velocidade…"
 "Peak {rate}" = "Pico {rate}"
 "Network" = "Rede"
+"View profile opens it in the normal window." = "“Ver perfil” abre na janela normal."
+"Couldn't download the update: {error}" = "Não foi possível baixar a atualização: {error}"
+"What's downloaded so far is kept; Retry continues from there." = "O que já foi baixado é mantido; Tentar de novo continua de onde parou."

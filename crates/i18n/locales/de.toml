@@ -1787,3 +1787,6 @@
 "Measuring speed…" = "Geschwindigkeit wird gemessen…"
 "Peak {rate}" = "Spitze {rate}"
 "Network" = "Netzwerk"
+"View profile opens it in the normal window." = "„Profil ansehen“ öffnet es im normalen Fenster."
+"Couldn't download the update: {error}" = "Das Update konnte nicht heruntergeladen werden: {error}"
+"What's downloaded so far is kept; Retry continues from there." = "Bereits Heruntergeladenes bleibt erhalten; Erneut versuchen macht dort weiter."

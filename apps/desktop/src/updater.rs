@@ -35,7 +35,11 @@ pub enum Status {
     Available(Release),
     Downloading(Release, f32),
     Ready(Release, PathBuf),
+    /// The check failed.
     Failed(String),
+    /// The check worked but the download didn't (it continues where it
+    /// stopped next time).
+    DownloadFailed(Release, String),
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -128,7 +132,12 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 /// opens (Steam does the same). Returns true when the app should quit.
 pub fn apply_pending_on_start() -> bool {
     let mut s = load();
-    let Some((version, setup)) = s.pending.take() else { return false };
+    let Some((version, setup)) = s.pending.take() else {
+        // Installers for this version or older aren't needed any more; a
+        // newer one (finished or half-downloaded) is kept to use or continue.
+        clean_old_updates();
+        return false;
+    };
     save(&s);
     if !is_installed() || !setup.exists() || !is_newer(&version, env!("CARGO_PKG_VERSION")) {
         return false;
@@ -182,9 +191,9 @@ pub fn tick(app: &mut SteamApp, ctx: &egui::Context) {
     let mut g = state.lock().unwrap();
     // Dev builds only check when asked (Settings > Check for updates).
     let due = !is_dev_build() && g.last_check.is_none_or(|t| t.elapsed() > EVERY);
-    if due && !matches!(g.status, Status::Checking | Status::Downloading(..)) {
+    if due {
+        // `check` itself skips it while a check or download is under way.
         g.last_check = Some(Instant::now());
-        g.status = Status::Checking;
         drop(g);
         check(ctx.clone(), false);
         g = state.lock().unwrap();
@@ -207,6 +216,16 @@ pub fn tick(app: &mut SteamApp, ctx: &egui::Context) {
 pub fn check(ctx: egui::Context, manual: bool) {
     let state = STATE.clone();
     if let Ok(mut g) = state.lock() {
+        // Already checking, downloading or downloaded: never start a second
+        // one (two downloads made the progress bar jump between them). Asked
+        // from a menu, just show where it is.
+        if matches!(g.status, Status::Checking | Status::Downloading(..) | Status::Ready(..)) {
+            if manual {
+                g.open = true;
+                ctx.request_repaint();
+            }
+            return;
+        }
         g.status = Status::Checking;
     }
     std::thread::spawn(move || {
@@ -249,6 +268,9 @@ pub fn check(ctx: egui::Context, manual: bool) {
 fn download(ctx: egui::Context, r: Release) {
     let state = STATE.clone();
     if let Ok(mut g) = state.lock() {
+        if matches!(g.status, Status::Downloading(..)) {
+            return;
+        }
         g.status = Status::Downloading(r.clone(), 0.0);
     }
     std::thread::spawn(move || {
@@ -267,7 +289,10 @@ fn download(ctx: egui::Context, r: Release) {
                 save(&g.settings);
                 Status::Ready(r, path)
             }
-            Err(e) => Status::Failed(e),
+            Err(e) => {
+                tracing::warn!("update download: {e}");
+                Status::DownloadFailed(r, e)
+            }
         };
         ctx.request_repaint();
     });
@@ -279,6 +304,73 @@ fn block_on<T>(f: impl std::future::Future<Output = T>) -> T {
 
 fn http() -> reqwest::Client {
     reqwest::Client::builder().user_agent(concat!("SteamInRust/", env!("CARGO_PKG_VERSION"), " (updater)")).timeout(Duration::from_secs(60)).build().unwrap_or_default()
+}
+
+/// For the installer itself: no limit on the whole download (it used to cut
+/// off after 60 s, which slow connections hit as "error decoding response
+/// body"), only on waiting for the next bytes.
+fn http_download() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(concat!("SteamInRust/", env!("CARGO_PKG_VERSION"), " (updater)"))
+        .connect_timeout(Duration::from_secs(20))
+        .read_timeout(Duration::from_secs(30))
+        .build()
+        .unwrap_or_default()
+}
+
+/// Where downloaded updates are kept until they're installed.
+fn update_dir() -> PathBuf {
+    std::env::temp_dir().join("SteamInRust-update")
+}
+
+/// Delete everything in the update folder except files for `keep` (the
+/// installer's name, finished or half-downloaded), so old installers never
+/// pile up.
+fn clean_update_dir(keep: Option<&str>) {
+    let Ok(entries) = std::fs::read_dir(update_dir()) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if keep.is_some_and(|k| name == k || name == format!("{k}.part")) {
+            continue;
+        }
+        let path = e.path();
+        let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+    }
+}
+
+/// Delete installers in the update folder for this version or older.
+fn clean_old_updates() {
+    let Ok(entries) = std::fs::read_dir(update_dir()) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if version_in(&name).is_none_or(|v| !is_newer(&v, env!("CARGO_PKG_VERSION"))) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// The version in an installer's name: "SteamInRust-Setup-0.7.1.exe.part" -> "0.7.1".
+fn version_in(name: &str) -> Option<String> {
+    name.split(['-', '_'])
+        .map(|part| part.trim_end_matches(".part").trim_end_matches(".exe").trim_end_matches(".dmg").trim_end_matches(".zip"))
+        .find(|part| part.split('.').count() == 3 && part.split('.').all(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())))
+        .map(String::from)
+}
+
+fn sha256_file(path: &std::path::Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 #[derive(Deserialize)]
@@ -324,9 +416,11 @@ async fn latest() -> Result<Option<Release>, String> {
     }))
 }
 
-/// Download the setup into the cache and check it against SHA256SUMS.txt.
+/// Download the setup and check it against SHA256SUMS.txt. It's written to
+/// `<name>.part` as it arrives, so closing the app (or a dropped connection)
+/// doesn't lose it: the next try continues from there. A finished, checked
+/// file isn't downloaded again. Older installers are deleted.
 async fn fetch_setup(r: &Release, progress: impl Fn(f32)) -> Result<PathBuf, String> {
-    use sha2::{Digest, Sha256};
     let client = http();
     let sums_url = r.sums_url.as_ref().ok_or_else(|| t!("The release has no checksums; not installing it.").to_string())?;
     let sums = client.get(sums_url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
@@ -337,22 +431,70 @@ async fn fetch_setup(r: &Release, progress: impl Fn(f32)) -> Result<PathBuf, Str
             (name.trim().trim_start_matches('*') == r.setup_name).then(|| hash.to_lowercase())
         })
         .ok_or_else(|| t!("The release has no checksums; not installing it.").to_string())?;
-    let mut resp = client.get(&r.setup_url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
-    let total = resp.content_length().unwrap_or(0).max(1);
-    let mut data = Vec::with_capacity(total as usize);
-    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
-        data.extend_from_slice(&chunk);
-        progress(data.len() as f32 / total as f32);
+    let dir = update_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    clean_update_dir(Some(&r.setup_name));
+    let path = dir.join(&r.setup_name);
+    if path.exists() {
+        if sha256_file(&path).as_deref() == Some(want.as_str()) {
+            tracing::info!("update download: already downloaded and checked");
+            progress(1.0);
+            return Ok(path);
+        }
+        let _ = std::fs::remove_file(&path);
     }
-    let got: String = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
-    if got != want {
+    let part = dir.join(format!("{}.part", r.setup_name));
+    let download = http_download();
+    // A dropped connection resumes from what's on disk, a few times; after
+    // that the error is shown and the .part file stays for the next try.
+    let mut tries = 0;
+    loop {
+        match fetch_part(&download, &r.setup_url, &part, &progress).await {
+            Ok(()) => break,
+            Err(e) => {
+                tries += 1;
+                tracing::warn!("update download interrupted ({tries}): {e}");
+                if tries >= 4 {
+                    return Err(e);
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+    if sha256_file(&part).as_deref() != Some(want.as_str()) {
+        let _ = std::fs::remove_file(&part);
         return Err(t!("The download was damaged (checksum mismatch). Try again later.").to_string());
     }
-    let dir = std::env::temp_dir().join("SteamInRust-update");
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(&r.setup_name);
-    std::fs::write(&path, &data).map_err(|e| e.to_string())?;
+    std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// Download `url` into `part`, continuing after what's already there.
+async fn fetch_part(client: &reqwest::Client, url: &str, part: &std::path::Path, progress: &impl Fn(f32)) -> Result<(), String> {
+    use std::io::Write;
+    let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
+    let mut req = client.get(url);
+    if have > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
+    }
+    let mut resp = req.send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+    // 206: the rest of the file; 200: the server sent all of it again.
+    let resumed = resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let start = if resumed { have } else { 0 };
+    tracing::info!("update download: {} at {} KB", if resumed { "continuing" } else { "starting" }, start / 1024);
+    let total = start + resp.content_length().unwrap_or(0);
+    let mut file = std::fs::OpenOptions::new().create(true).write(true).append(resumed).truncate(!resumed).open(part).map_err(|e| e.to_string())?;
+    let mut done = start;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+        done += chunk.len() as u64;
+        progress(done as f32 / total.max(1) as f32);
+    }
+    file.flush().map_err(|e| e.to_string())?;
+    if total > start && done < total {
+        return Err("the download ended early".into());
+    }
+    Ok(())
 }
 
 /// Close the app and let the setup replace it, then it starts again.
@@ -372,7 +514,7 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
     let t = app.prefs.theme.clone();
     let status = STATE.lock().unwrap().status.clone();
     let (release, ready) = match &status {
-        Status::Available(r) | Status::Downloading(r, _) => (r.clone(), None),
+        Status::Available(r) | Status::Downloading(r, _) | Status::DownloadFailed(r, _) => (r.clone(), None),
         Status::Ready(r, p) => (r.clone(), Some(p.clone())),
         Status::Checking | Status::UpToDate | Status::Failed(_) => {
             // The answer to "Check for updates…".
@@ -427,6 +569,11 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
             w::progress(ui, &t, *f, ui.available_width());
             ui.add_space(8.0);
         }
+        if let Status::DownloadFailed(_, e) = &status {
+            ui.add(egui::Label::new(w::text(t!("Couldn't download the update: {error}", error = e), 12.5, t.danger)).wrap());
+            ui.label(w::text(t!("What's downloaded so far is kept; Retry continues from there."), 12.0, t.text_faint));
+            ui.add_space(8.0);
+        }
         // Small links on their own row, so long labels (Russian) never overlap.
         ui.horizontal_wrapped(|ui| {
             if ui.link(w::text(t!("Release page"), 12.5, t.accent)).clicked() {
@@ -453,6 +600,17 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
                             close = true;
                         }
                         if w::button(ui, &t, None, t!("On next start"), w::Kind::Ghost, w::Size::Md).on_hover_text(t!("It installs the next time you open SteamInRust")).clicked() {
+                            close = true;
+                        }
+                    }
+                    (None, Status::DownloadFailed(r, _)) => {
+                        if w::button(ui, &t, Some(icons::REFRESH), t!("Retry"), w::Kind::Primary, w::Size::Md).clicked() {
+                            if let Ok(mut g) = STATE.lock() {
+                                g.status = Status::Available(r.clone());
+                            }
+                            download(ctx.clone(), r.clone());
+                        }
+                        if w::button(ui, &t, None, t!("Later"), w::Kind::Ghost, w::Size::Md).clicked() {
                             close = true;
                         }
                     }
@@ -558,6 +716,7 @@ pub fn settings_ui(ui: &mut Ui, t: &Theme) {
             Status::Downloading(r, f) => t!("Downloading {v}… {pct}%", v = r.version, pct = (f * 100.0) as u32),
             Status::Ready(r, _) => t!("Version {v} is ready to install", v = r.version),
             Status::Failed(e) => t!("Couldn't check for updates: {error}", error = e),
+            Status::DownloadFailed(_, e) => t!("Couldn't download the update: {error}", error = e),
         };
         ui.label(w::text(line, 13.0, t.text_dim));
         if !is_installed() {
@@ -569,7 +728,7 @@ pub fn settings_ui(ui: &mut Ui, t: &Theme) {
             if ui.add_enabled_ui(!busy, |ui| w::button(ui, t, Some(icons::REFRESH), t!("Check for updates"), w::Kind::Secondary, w::Size::Sm)).inner.clicked() {
                 check(ui.ctx().clone(), true);
             }
-            if matches!(status, Status::Available(_) | Status::Ready(..)) && w::button(ui, t, None, t!("Show"), w::Kind::Ghost, w::Size::Sm).clicked() {
+            if matches!(status, Status::Available(_) | Status::Ready(..) | Status::DownloadFailed(..)) && w::button(ui, t, None, t!("Show"), w::Kind::Ghost, w::Size::Sm).clicked() {
                 state.lock().unwrap().open = true;
             }
         });
@@ -584,7 +743,7 @@ pub fn settings_ui(ui: &mut Ui, t: &Theme) {
 
 #[cfg(test)]
 mod tests {
-    use super::plain;
+    use super::{plain, version_in};
 
     #[test]
     fn release_notes_become_plain_text() {
@@ -592,6 +751,14 @@ mod tests {
         assert_eq!(plain(line), "compact Workshop filters (#17)");
         assert_eq!(plain("**bold** and `code`"), "bold and code");
         assert_eq!(plain("no links here"), "no links here");
+    }
+
+    #[test]
+    fn finds_versions_in_installer_names() {
+        assert_eq!(version_in("SteamInRust-Setup-0.7.1.exe").as_deref(), Some("0.7.1"));
+        assert_eq!(version_in("SteamInRust-Setup-0.7.1.exe.part").as_deref(), Some("0.7.1"));
+        assert_eq!(version_in("SteamInRust-0.10.2-macos.dmg").as_deref(), Some("0.10.2"));
+        assert_eq!(version_in("notes.txt"), None);
     }
 
     #[test]

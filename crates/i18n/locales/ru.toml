@@ -1787,3 +1787,6 @@
 "Measuring speed…" = "Измеряем скорость…"
 "Peak {rate}" = "Пик {rate}"
 "Network" = "Сеть"
+"View profile opens it in the normal window." = "«Открыть профиль» открывает его в обычном окне."
+"Couldn't download the update: {error}" = "Не удалось скачать обновление: {error}"
+"What's downloaded so far is kept; Retry continues from there." = "Уже скачанное сохраняется; «Повторить» продолжит с того же места."

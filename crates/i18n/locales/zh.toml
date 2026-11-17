@@ -1787,3 +1787,6 @@
 "Measuring speed…" = "正在测量速度…"
 "Peak {rate}" = "峰值 {rate}"
 "Network" = "网络"
+"View profile opens it in the normal window." = "“查看个人资料”会在普通窗口中打开。"
+"Couldn't download the update: {error}" = "无法下载更新：{error}"
+"What's downloaded so far is kept; Retry continues from there." = "已下载的部分会保留；“重试”会从中断处继续。"
