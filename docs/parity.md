@@ -1,7 +1,7 @@
 # Steam parity
 
 How much of the official Steam desktop client SteamInRust covers, area by
-area. Last checked against the code on 16 November 2026 (v0.6.0).
+area. Last checked against the code on 17 November 2026 (v0.7.0 and the changes after it).
 
 Scores: **0** not started · **0.25** started · **0.5** usable, big parts
 missing · **0.75** mostly there · **1** complete. Anything marked "opens
@@ -11,18 +11,18 @@ Steam's website" still works; it just isn't native yet.
 | --- | ---: | --- |
 | Sign-in and accounts | 0.75 | Changing email, password or phone opens Steam's website |
 | Offline mode and reconnecting | 1 | Whether Steam counts playtime recorded offline is unconfirmed |
-| Library | 0.75 | Dynamic collections (built from filters) are skipped |
-| Downloads and installs | 0.75 | No drag to reorder the queue; no taskbar progress |
-| Store | 0.75 | Checkout happens on Steam's website (Steam requires it); no discovery queue; can't write reviews |
+| Library | 0.75 | Dynamic collections show and stay up to date, but their filters can only be changed in Steam |
+| Downloads and installs | 1 | |
+| Store | 0.75 | Checkout happens on Steam's website (Steam requires it); can't write reviews |
 | Friends and chat | 0.75 | No group chats or voice chat |
 | Community | 0.5 | Reading only for discussions; badge pages, groups and someone's reviews open Steam's website |
 | Inventory and Market | 0.75 | Trade offers open Steam's website; no Market search page |
-| Steam Cloud | 1 | Can't delete files from the cloud |
+| Steam Cloud | 1 | |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers; inventory item definitions |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser or screenshots |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | Seven languages (Steam has about 30); no Linux version; Mac builds aren't signed with an Apple developer ID |
-| Big Picture | 0.75 | No chat; friends are view-only; buying and most settings move to the normal window |
+| Big Picture | 0.75 | Buying and most settings move to the normal window |
 | Remote Play | 0 | Not planned for now. Steam Input for games is under "Steam features inside games" |
 
 ---
@@ -63,6 +63,7 @@ Steam's website" still works; it just isn't native yet.
 | Search, filters (genre, features, Steam Deck status, installed, played), sort by name, recent, hours, size | Done |
 | Home with recent games and shelves, game page with art, play bar, news and achievements | Done |
 | Collections, including your Steam Favorites and Hidden | Done, in step with Steam both ways. Edits made before Steam answers (or offline) are kept and sent once it does |
+| Dynamic collections (made in Steam from filters) | Shown with their games worked out from Steam's filters, so they stay up to date. Their filters are changed in Steam. Filters on friends who own a game, languages and subscriptions aren't checked, so such a collection can show a few extra games |
 | Non-Steam games | Done |
 | Install states everywhere: list row with progress, game page, right-click menu, Properties | Done |
 | Properties: general, launch options, language, updates, installed files, versions and betas (with private beta codes), DLC, Steam Cloud, Workshop, controller, privacy | Done |
@@ -80,7 +81,8 @@ Steam's website" still works; it just isn't native yet.
 | Every Steam download region and partner CDNs, sorted by measured speed | Done |
 | Bandwidth limit, update schedule, downloads while playing, automatic updates | Done |
 | Ask before quitting during a download | Done |
-| Reorder the queue by dragging, taskbar progress | Not yet |
+| Reorder the queue (up, down, download now) | Done. "Download now" sets the running download aside; it goes back in the queue and continues from what it had |
+| Progress on the taskbar button (Windows) or the Dock icon (Mac) | Done |
 | Workshop items | Downloaded when you subscribe (installed games) and before each launch, like Steam; legacy single-file items too |
 
 ## Store
@@ -97,7 +99,8 @@ All native, no web view.
 | Gifts, including games you already own, with a check that Steam will deliver to the friend's region | Done |
 | Price history | Through IsThereAnyDeal, with your own free key |
 | Checkout | Opens Steam's website. Steam only takes payment there |
-| Discovery queue, writing reviews, microtrailers on hover | Not yet |
+| Discovery queue: each game's store page with Not interested, Wishlist and Next | Done (Steam's own queue, so it matches the website and the official client) |
+| Writing reviews, microtrailers on hover | Not yet |
 
 ## Friends and chat
 
@@ -140,7 +143,6 @@ All native, no web view.
 | Per-game toggle, sync before launch and after quit, usage | Done |
 | Conflicts, with a local backup before anything is replaced | Done |
 | Saves changed offline upload by themselves once online | Done |
-| Deleting cloud files | Not yet |
 
 ## Steam features inside games
 
@@ -194,7 +196,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Settings: account, friends, security, notifications, interface, appearance, store, library, downloads, storage, cloud, in game, accessibility, plugins | Done |
 | Themes, accent color, UI scale | Done |
 | English, Russian, Simplified Chinese, Spanish, Brazilian Portuguese, German and French, picked from the system language | Done. Japanese, Korean, Traditional Chinese, Polish, Turkish and others aren't translated yet |
-| Installer, uninstaller, background updates checked with SHA-256 | Done. On a Mac: a disk image, and the app replaces itself on update |
+| Installer, uninstaller, background updates checked with SHA-256 | Done. One download at a time; it continues after a restart or a dropped connection, and old installers are deleted. On a Mac: a disk image, and the app replaces itself on update |
 | Copy, cut and paste in every text field, with a right-click menu | Done |
 | Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done. Network access for plugins is planned |
 | macOS | Done (macOS 11 or later). Builds aren't signed with an Apple developer ID, so macOS asks for the Keychain password and Input Monitoring again after each update |
@@ -210,5 +212,5 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Game page: Play, Install, Update, Pause and Resume, play time, size, achievements | Done |
 | Store: front page, sections, search with an on-screen keyboard (English and Russian), store pages with screenshots, wishlist | Done. Buying moves to the normal window, because Steam only takes payment on its website |
 | Downloads: progress, pause, resume, cancel, queue | Done |
-| Friends | View only: status and the game they're in. No chat yet |
+| Friends | Done: a page per friend (join their game, invite to yours, profile) and chat with the on-screen keyboard or a real one |
 | Settings | Interface size, start in Big Picture, language. Everything else moves to the normal window |

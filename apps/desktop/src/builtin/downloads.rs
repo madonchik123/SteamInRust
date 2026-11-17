@@ -252,17 +252,33 @@ impl Downloads {
             });
             ui.add_space(8.0);
         }
-        // Queued games; the one downloading is never listed twice.
-        for id in ctx.state.download_queue.clone().into_iter().filter(|id| !running.iter().any(|d| d.app_id == *id)) {
+        // Queued games, in the order they'll download; the one downloading
+        // is never listed twice. Like Steam: start one now, or move it.
+        let queued: Vec<model::AppId> = ctx.state.download_queue.iter().copied().filter(|id| !running.iter().any(|d| d.app_id == *id)).collect();
+        for (i, &id) in queued.iter().enumerate() {
             let name = ctx.state.app_name(id).unwrap_or_default().to_string();
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(92.0, 43.0), Sense::hover());
                 w::image_or_skeleton(ui, t, r, &art::header(id), t.corner_small());
                 ui.label(w::text_medium(name, 14.0, t.text));
-                ui.label(w::text(t!("Queued"), 12.5, t.text_faint));
+                // Set aside part-way: how far it got.
+                let status = match ctx.state.set_aside.get(&id).filter(|f| **f > 0.0) {
+                    Some(f) => t!("Queued · {pct}% done", pct = (f * 100.0) as u32).to_string(),
+                    None => t!("Queued").to_string(),
+                };
+                ui.label(w::text(status, 12.5, t.text_faint));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if w::icon_button(ui, t, ui::icons::X, t!("Remove from queue"), false, 0).clicked() {
                         ctx.send(client::Command::CancelDownload { app_id: id });
+                    }
+                    if i + 1 < queued.len() && w::icon_button(ui, t, ui::icons::CARET_DOWN, t!("Move down"), false, 0).clicked() {
+                        ctx.send(client::Command::MoveDownload { app_id: id, to: i + 1 });
+                    }
+                    if i > 0 && w::icon_button(ui, t, ui::icons::CARET_UP, t!("Move up"), false, 0).clicked() {
+                        ctx.send(client::Command::MoveDownload { app_id: id, to: i - 1 });
+                    }
+                    if w::icon_button(ui, t, ui::icons::DOWNLOAD, t!("Download now"), false, 0).clicked() {
+                        ctx.send(client::Command::DownloadNow { app_id: id });
                     }
                 });
             });

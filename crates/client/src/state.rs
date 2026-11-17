@@ -65,6 +65,12 @@ pub struct State {
     pub achievement_list: HashMap<AppId, Result<Vec<model::Achievement>, String>>,
     pub downloads: HashMap<AppId, model::DownloadStatus>,
     pub download_queue: Vec<AppId>,
+    /// Queued games that were set aside part-way, with how far they got.
+    pub set_aside: HashMap<AppId, f32>,
+    /// The store's discovery queue, once loaded.
+    pub discovery: Option<Result<Vec<AppId>, String>>,
+    /// Games marked "Not interested" this session.
+    pub ignored: std::collections::HashSet<AppId>,
     pub wishlist: Option<Vec<(AppId, u64)>>,
     pub cart: Option<Vec<model::CartLine>>,
     pub license_count: usize,
@@ -307,6 +313,7 @@ impl State {
             Event::KeyActivated(_) | Event::WorkshopUnsubscribed { .. } | Event::StoreError(_) => {}
             Event::WorkshopResults { .. } | Event::WorkshopSubscribed { .. } | Event::WorkshopSync { .. } | Event::FreeLicense { .. } => {}
             Event::Download(d) => {
+                self.set_aside.remove(&d.app_id);
                 self.downloads.insert(d.app_id, d.clone());
             }
             Event::DownloadQueue(q) => self.download_queue = q.clone(),
@@ -326,7 +333,24 @@ impl State {
                     }
                 }
             }
+            Event::DownloadStopped { app_id } => {
+                // Back in the queue like any other queued game; only how far
+                // it got is kept, for the queue's "45% done".
+                if let Some(d) = self.downloads.remove(app_id) {
+                    self.set_aside.insert(*app_id, d.fraction());
+                }
+            }
             Event::Wishlist(w) => self.wishlist = Some(w.clone()),
+            Event::DiscoveryQueue(q) => self.discovery = Some(q.clone()),
+            Event::AppIgnored { app_id, ignore, result } => {
+                if result.is_ok() {
+                    if *ignore {
+                        self.ignored.insert(*app_id);
+                    } else {
+                        self.ignored.remove(app_id);
+                    }
+                }
+            }
             Event::Cart(c) => self.cart = Some(c.clone()),
             Event::Unhandled { .. } => {}
             Event::LaunchMode { app_id, mode } => {

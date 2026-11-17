@@ -236,6 +236,7 @@ pub fn collections<'a>(entries: impl Iterator<Item = (&'a str, bool, &'a str)>) 
                 name: v.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
                 games: added.into_iter().filter(|a| !removed.contains(a)).collect(),
                 dynamic: v.get("filterSpec").is_some(),
+                filter: v.get("filterSpec").map(|f| f.to_string()),
                 id,
             })
         })

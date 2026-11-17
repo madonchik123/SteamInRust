@@ -115,6 +115,9 @@ pub struct OwnedApp {
     /// Steam genre ids (1 Action, 2 Strategy, 3 RPG, 23 Indie…).
     #[serde(default)]
     pub genres: Vec<u32>,
+    /// Steam's store tags (user tags: 19 Action, 492 Indie, 1664 Puzzle…).
+    #[serde(default)]
+    pub tags: Vec<u32>,
     /// Steam Deck: 0 unknown, 1 unsupported, 2 playable, 3 verified.
     #[serde(default)]
     pub deck: u8,
@@ -763,6 +766,9 @@ pub struct SteamCollection {
     pub games: Vec<AppId>,
     /// Built from filters in Steam (its games aren't listed).
     pub dynamic: bool,
+    /// A dynamic collection's filters, as Steam stores them (`filterSpec`).
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 /// A Steam download region with the connection time measured from this PC.

@@ -5126,6 +5126,7 @@ dependencies = [
  "open",
  "plugins",
  "qrcode",
+ "raw-window-handle",
  "reqwest",
  "rfd",
  "serde",

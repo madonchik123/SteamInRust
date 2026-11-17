@@ -45,6 +45,9 @@ pub struct Progress {
     pub files_done: AtomicUsize,
     pub paused: AtomicBool,
     pub cancel: AtomicBool,
+    /// Stop without cleaning up (another download goes first; this one
+    /// continues from what's on disk later).
+    pub stop: AtomicBool,
     /// The download ended (done, failed or cancelled): progress updates stop.
     pub ended: AtomicBool,
     /// Bytes actually written to disk (not files found already complete),
@@ -267,6 +270,9 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
             loop {
                 if progress.cancel.load(Ordering::Relaxed) {
                     return Err(Error::Cancelled);
+                }
+                if progress.stop.load(Ordering::Relaxed) {
+                    return Err(Error::Stopped);
                 }
                 if !progress.paused.load(Ordering::Relaxed) {
                     break;

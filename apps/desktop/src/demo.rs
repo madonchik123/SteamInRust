@@ -14,6 +14,17 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
             apps.push(app(id, name));
         }
     }
+    // Steam's feature categories (1 multi-player, 2 single-player, 9 co-op,
+    // 22 achievements, 28 full controller support), for filters and the
+    // "Multiplayer" dynamic collection below.
+    for a in apps.iter_mut() {
+        a.categories = match a.app_id {
+            440 | 570 | 730 | 1203220 => vec![1, 22],
+            620 => vec![2, 9, 22, 28],
+            1938090 => vec![1, 2, 22],
+            _ => vec![2, 22],
+        };
+    }
 
     let friends = [
         ("Ferris", PersonaState::Online, Some(620)),
@@ -191,6 +202,27 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
             install_dir: Some(std::path::PathBuf::from(r"C:\Games\SteamLibrary\steamapps\common\Hades")),
             ..Default::default()
         }),
+        // Two more waiting, one set aside part-way.
+        Event::Download(model::DownloadStatus {
+            app_id: 413150,
+            phase: model::DownloadPhase::Downloading,
+            downloaded: 150_000_000,
+            download_total: 500_000_000,
+            disk_done: 150_000_000,
+            disk_total: 500_000_000,
+            ..Default::default()
+        }),
+        Event::DownloadStopped { app_id: 413150 },
+        Event::DownloadQueue(vec![413150, 440]),
+        // A dynamic collection, like one made in Steam from its filters
+        // (Features: multiplayer).
+        Event::SteamCollections(Ok(vec![model::SteamCollection {
+            id: "uc-demo-multiplayer".into(),
+            name: "Multiplayer".into(),
+            games: vec![],
+            dynamic: true,
+            filter: Some(r#"{"nFormatVersion":2,"strSearchText":"","filterGroups":[{"rgOptions":[],"bAcceptUnion":true},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[8],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false}],"setSuggestions":{}}"#.into()),
+        }])),
         Event::PlayerGames {
             steam_id: me,
             result: Ok(vec![model::PlayerGame { app_id: 1145360, name: "Hades".into(), playtime_minutes: 2_710, playtime_2weeks: 185, last_played: Some(now - 3600), icon: None }]),

@@ -17,6 +17,7 @@ mod mac_permissions;
 mod offline_ui;
 mod overlay;
 mod shell;
+mod taskbar;
 mod tray;
 mod updater;
 

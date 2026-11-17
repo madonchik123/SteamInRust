@@ -123,6 +123,105 @@ pub fn new_id() -> String {
     s
 }
 
+/// A dynamic collection's filters (Steam's `filterSpec`, format 2), so its
+/// games can be worked out here the way Steam's library does.
+///
+/// Steam keeps nine filter groups; a game must pass every group, and a group
+/// passes when it's empty, or when any (union) / all of its options match.
+/// Groups this client can't check (subscriptions, friends who own the game,
+/// languages, app type) are left out, so such a collection may show a few
+/// more games than in Steam.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DynamicFilter {
+    search: String,
+    groups: Vec<(Vec<u64>, bool)>,
+}
+
+/// What the filters look at for one game.
+#[derive(Debug, Clone, Default)]
+pub struct GameFacts<'a> {
+    pub name: &'a str,
+    pub installed: bool,
+    pub played: bool,
+    /// Runs on this computer's system.
+    pub runs_here: bool,
+    /// Steam's store categories (2 single-player, 23 cloud, 28 controller…).
+    pub categories: &'a [u32],
+    /// Steam's store tags (user tags).
+    pub tags: &'a [u32],
+    /// Steam Deck: 0 unknown, 1 unsupported, 2 playable, 3 verified.
+    pub deck: u8,
+}
+
+/// Steam's filter groups (indexes into `filterGroups`).
+const PLAY_STATE: usize = 1;
+const FEATURES: usize = 2;
+const TAGS: usize = 4;
+const CATEGORIES: usize = 8;
+
+impl DynamicFilter {
+    pub fn parse(spec: &str) -> Option<Self> {
+        let v: Value = serde_json::from_str(spec).ok()?;
+        let groups = v
+            .get("filterGroups")?
+            .as_array()?
+            .iter()
+            .map(|g| {
+                let options = g.get("rgOptions").and_then(|o| o.as_array()).map(|o| o.iter().filter_map(|x| x.as_u64()).collect()).unwrap_or_default();
+                (options, g.get("bAcceptUnion").and_then(|u| u.as_bool()).unwrap_or(false))
+            })
+            .collect();
+        Some(Self { search: v.get("strSearchText").and_then(|s| s.as_str()).unwrap_or_default().to_lowercase(), groups })
+    }
+
+    pub fn matches(&self, g: &GameFacts) -> bool {
+        let group = |i: usize, test: &dyn Fn(u64) -> bool| match self.groups.get(i) {
+            None => true,
+            Some((options, _)) if options.is_empty() => true,
+            Some((options, true)) => options.iter().any(|&o| test(o)),
+            Some((options, false)) => options.iter().all(|&o| test(o)),
+        };
+        let cat = |c: u32| g.categories.contains(&c);
+        let ok = group(PLAY_STATE, &|o| match o {
+            1 | 2 => g.installed,
+            3 => g.played,
+            4 => !g.played,
+            5 => g.runs_here,
+            _ => false,
+        }) && group(FEATURES, &|o| match o {
+            1 => cat(28),
+            2 => cat(28) || cat(18),
+            3 => cat(31),
+            4 => cat(29),
+            5 => cat(30),
+            6 => cat(22),
+            7 => cat(2),
+            8 => [1, 36, 37, 27, 20, 24].into_iter().any(cat),
+            9 => [9, 38, 39].into_iter().any(cat),
+            10 => cat(23),
+            11 => cat(44),
+            12 => g.deck >= 3,
+            13 => g.deck >= 2,
+            14 => g.deck != 0,
+            15 => true,
+            16 => cat(55) || cat(56),
+            17 => cat(56),
+            18 => cat(57) || cat(58),
+            19 => cat(58),
+            20 => cat(59),
+            21 => cat(60),
+            22 => cat(61),
+            23 => cat(62),
+            // Not VR-only (that isn't known here: most games aren't).
+            26 => true,
+            27 => [24, 37, 39].into_iter().any(cat),
+            _ => false,
+        }) && group(TAGS, &|o| g.tags.contains(&(o as u32)))
+            && group(CATEGORIES, &|o| cat(o as u32));
+        ok && (self.search.is_empty() || g.name.to_lowercase().contains(&self.search))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +242,28 @@ mod tests {
         let (a, b) = (new_id(), new_id());
         assert!(a.starts_with("uc-") && a.len() == 15);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn dynamic_filters_follow_steam() {
+        use super::{DynamicFilter, GameFacts};
+        let blank = r#"{"nFormatVersion":2,"strSearchText":"","filterGroups":[{"rgOptions":[],"bAcceptUnion":true},{"rgOptions":[1],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false}],"setSuggestions":{}}"#;
+        let installed = DynamicFilter::parse(blank).unwrap();
+        let game = GameFacts { name: "Portal 2", installed: true, categories: &[2, 28], tags: &[1664], deck: 3, ..Default::default() };
+        assert!(installed.matches(&game));
+        assert!(!installed.matches(&GameFacts { installed: false, ..game.clone() }));
+
+        // Features, all of (controller and single-player), and a tag.
+        let spec = blank.replace(r#"{"rgOptions":[1],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false}"#, r#"{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[1,7],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[1664],"bAcceptUnion":true}"#);
+        let f = DynamicFilter::parse(&spec).unwrap();
+        assert!(f.matches(&GameFacts { installed: false, ..game.clone() }));
+        assert!(!f.matches(&GameFacts { categories: &[2], ..game.clone() }));
+        assert!(!f.matches(&GameFacts { tags: &[19], ..game.clone() }));
+
+        // Search text.
+        let named = DynamicFilter::parse(&blank.replace(r#""strSearchText":"""#, r#""strSearchText":"PORTAL""#)).unwrap();
+        assert!(named.matches(&game));
+        assert!(!named.matches(&GameFacts { name: "Dota 2", ..game.clone() }));
+        assert!(DynamicFilter::parse("not json").is_none());
     }
 }

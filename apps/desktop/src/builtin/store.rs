@@ -16,6 +16,8 @@ use ui::{Theme, icons, widgets as w};
 
 #[path = "store_more.rs"]
 mod more;
+#[path = "store_discovery.rs"]
+mod discovery;
 
 enum Load<T> {
     Loading,
@@ -41,6 +43,8 @@ enum View {
     Browse,
     Wishlist,
     Cart,
+    /// The discovery queue, at this game (one past the end: done).
+    Discovery(usize),
 }
 
 pub struct Store {
@@ -99,6 +103,8 @@ pub struct Store {
     lists_requested: bool,
     /// Big Picture's search, kept apart from the store page's own.
     tv_search: Option<(String, Shared<Vec<Item>>)>,
+    /// A discovery queue was asked for and hasn't arrived yet.
+    discovery_wait: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -144,6 +150,7 @@ impl Store {
             price_log_dirty: false,
             lists_requested: false,
             tv_search: None,
+            discovery_wait: false,
             search: None,
             view: View::Home,
             hero: 0,
@@ -308,7 +315,7 @@ impl Store {
 
     fn open(&mut self, view: View) {
         self.trailer = None;
-        if let View::App(_) = view {
+        if let View::App(_) | View::Discovery(_) = view {
             self.shot = 0;
             self.shot_centered = None;
         }
@@ -405,6 +412,9 @@ impl Extension for Store {
     }
 
     fn on_event(&mut self, event: &client::Event, ctx: &mut Ctx) {
+        if let client::Event::DiscoveryQueue(_) = event {
+            self.discovery_wait = false;
+        }
         if let client::Event::FreeLicense { app_id, result } = event {
             if self.free_pending == Some(*app_id) {
                 self.free_pending = None;
@@ -441,6 +451,7 @@ impl Extension for Store {
             Some("browse") => self.open(View::Browse),
             Some("wishlist") => self.open(View::Wishlist),
             Some("cart") => self.open(View::Cart),
+            Some(a) if a.starts_with("discovery") => self.open(View::Discovery(a.trim_start_matches("discovery").trim_start_matches(':').parse().unwrap_or(0))),
             Some(a) => {
                 if let Ok(id) = a.trim_start_matches("app:").parse() {
                     self.open(View::App(id));
@@ -481,6 +492,7 @@ impl Extension for Store {
             match self.view.clone() {
                 View::App(id) if !self.allowed.contains(&id) && self.details_mature(id) => self.mature_gate(ui, &t, id),
                 View::App(id) => self.app_page(ui, &t, ctx, id),
+                View::Discovery(pos) => self.discovery_page(ui, &t, ctx, pos),
                 view => {
                     ui.add_space(20.0);
                     w::centered(ui, 1200.0, 28.0, |ui| {
@@ -497,7 +509,7 @@ impl Extension for Store {
                             View::Browse => self.browse_page(ui, &t, ctx),
                             View::Wishlist => self.wishlist_page(ui, &t, ctx),
                             View::Cart => self.cart_page(ui, &t, ctx),
-                            View::App(_) => {}
+                            View::App(_) | View::Discovery(_) => {}
                         }
                         ui.add_space(40.0);
                     });
@@ -569,6 +581,7 @@ fn view_key(v: &View) -> String {
         View::Browse => "browse".into(),
         View::Wishlist => "wishlist".into(),
         View::Cart => "cart".into(),
+        View::Discovery(i) => format!("d:{i}"),
     }
 }
 
@@ -594,6 +607,9 @@ impl Store {
             }
             if w::chip(ui, t, &format!("{}  {}", icons::SLIDERS, t!("Browse")), self.view == View::Browse).clicked() {
                 self.open(View::Browse);
+            }
+            if ctx.state.steam_id != 0 && w::chip(ui, t, &format!("{}  {}", icons::STACK, t!("Discovery queue")), false).clicked() {
+                self.open(View::Discovery(0));
             }
             if let Some(Ok((_, sections))) = self.front_data() {
                 for s in &sections {
@@ -930,8 +946,9 @@ impl Store {
         };
 
         // Background art fading into the page.
+        // From where the page starts (the discovery queue's bar sits above).
         let full = ui.max_rect();
-        let bg = Rect::from_min_size(full.min, vec2(full.width(), 560.0));
+        let bg = Rect::from_min_size(pos2(full.min.x, ui.cursor().min.y), vec2(full.width(), 560.0));
         if w::paint_cover(ui, bg, &d.background, CornerRadius::ZERO) {
             ui.painter().rect_filled(bg, CornerRadius::ZERO, t.bg.gamma_multiply(0.55));
         }
@@ -1570,5 +1587,6 @@ fn view_arg(view: &View) -> Option<String> {
         View::Browse => Some("browse".into()),
         View::Wishlist => Some("wishlist".into()),
         View::Cart => Some("cart".into()),
+        View::Discovery(i) => Some(format!("discovery:{i}")),
     }
 }

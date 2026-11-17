@@ -330,6 +330,9 @@ struct Online {
     active: Option<(AppId, std::sync::Arc<depot::Progress>)>,
     /// The running download's request, kept so it can be saved and resumed.
     active_req: Option<crate::download::InstallRequest>,
+    /// The running download is being set aside for a queued one ("download
+    /// now"); when it stops it goes back in the queue, second.
+    set_aside: Option<crate::download::InstallRequest>,
     /// Unfinished downloads from the last run were put back in the queue.
     downloads_restored: bool,
     /// The library came from Steam this session (not just the saved copy
@@ -458,6 +461,7 @@ async fn online(
         launched_dirs: HashMap::new(),
         queue: Default::default(),
         active_req: None,
+        set_aside: None,
         downloads_restored: false,
         apps_fresh: false,
         verifying: HashMap::new(),
@@ -922,6 +926,32 @@ async fn online(
                     st.save_downloads();
                     sink(Event::DownloadQueue(st.queue.iter().map(|q| q.app_id).collect()));
                 }
+                Some(Command::MoveDownload { app_id, to }) => {
+                    if let Some(i) = st.queue.iter().position(|q| q.app_id == app_id) {
+                        let req = st.queue.remove(i).expect("found above");
+                        let to = to.min(st.queue.len());
+                        st.queue.insert(to, req);
+                        st.save_downloads();
+                    }
+                    sink(Event::DownloadQueue(st.queue.iter().map(|q| q.app_id).collect()));
+                }
+                Some(Command::DownloadNow { app_id }) => {
+                    if let Some(i) = st.queue.iter().position(|q| q.app_id == app_id) {
+                        let req = st.queue.remove(i).expect("found above");
+                        st.queue.push_front(req);
+                        match (&st.active, &st.active_req) {
+                            // Something else is running: set it aside; it
+                            // goes back in the queue when it has stopped.
+                            (Some((_, p)), Some(running)) if st.set_aside.is_none() => {
+                                st.set_aside = Some(running.clone());
+                                p.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            _ => st.pump(sink, &dl_tx),
+                        }
+                        st.save_downloads();
+                    }
+                    sink(Event::DownloadQueue(st.queue.iter().map(|q| q.app_id).collect()));
+                }
                 Some(Command::DownloadLimits { limit_kbps, concurrency }) => {
                     st.limit_kbps = limit_kbps;
                     st.concurrency = concurrency.clamp(1, 64);
@@ -943,6 +973,25 @@ async fn online(
                 }
                 Some(Command::LoadWishlist) => st.load_wishlist(sink),
                 Some(Command::WishlistAdd { app_id }) => st.wishlist_change(app_id, true, sink),
+                Some(Command::LoadDiscoveryQueue { rebuild }) => {
+                    let (conn, sink, country) = (st.conn.clone(), sink.clone(), st.country.clone());
+                    tokio::spawn(async move { sink(Event::DiscoveryQueue(crate::discovery::queue(&conn, &country, rebuild).await)) });
+                }
+                Some(Command::DiscoverySeen { app_id }) => {
+                    let conn = st.conn.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = crate::discovery::skip(&conn, app_id).await {
+                            tracing::warn!("discovery queue: {e}");
+                        }
+                    });
+                }
+                Some(Command::IgnoreApp { app_id, ignore }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::discovery::ignore(&w, app_id, ignore).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::AppIgnored { app_id, ignore, result });
+                }),
                 Some(Command::WishlistRemove { app_id }) => st.wishlist_change(app_id, false, sink),
                 Some(Command::LoadCart) => st.load_cart(sink),
                 Some(Command::CartAdd { package_id, gift, gift_to }) => st.cart_add(package_id, gift, gift_to, sink),
@@ -1009,7 +1058,16 @@ async fn online(
                 st.active = None;
                 st.active_req = None;
                 st.auto_paused = false;
-                sink(Event::DownloadFinished { app_id, result });
+                match st.set_aside.take() {
+                    // Set aside for another game: back in the queue behind
+                    // it (it may have finished before it noticed).
+                    Some(req) if req.app_id == app_id && result.as_ref().is_err_and(|e| e == &depot::Error::Stopped.to_string()) => {
+                        let at = 1.min(st.queue.len());
+                        st.queue.insert(at, req);
+                        sink(Event::DownloadStopped { app_id });
+                    }
+                    _ => sink(Event::DownloadFinished { app_id, result }),
+                }
                 st.pump(sink, &dl_tx);
                 st.save_downloads();
             }

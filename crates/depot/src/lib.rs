@@ -35,6 +35,9 @@ pub enum Error {
     NoServers,
     #[error("cancelled")]
     Cancelled,
+    /// Set aside for another download; what's on disk is kept.
+    #[error("stopped")]
+    Stopped,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -141,6 +141,8 @@ pub struct SteamApp {
     /// When the first frame ran, and when we last asked to leave fullscreen.
     started_at: Option<f64>,
     unfullscreen_asked: f64,
+    /// Download progress on the taskbar button / Dock icon.
+    taskbar: crate::taskbar::Taskbar,
 }
 
 impl SteamApp {
@@ -262,6 +264,7 @@ impl SteamApp {
             bigpicture_was_on: false,
             started_at: None,
             unfullscreen_asked: f64::MIN,
+            taskbar: Default::default(),
         };
         // `--page=inventory --arg=listings`: open a page at startup (handy with --demo).
         let flag = |name: &str| std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from));
@@ -626,8 +629,11 @@ impl eframe::App for SteamApp {
         [0.0, 0.0, 0.0, 0.0]
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // The running download (not a file check) on the taskbar / Dock.
+        let shown = self.state.downloads.values().find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed) && !d.verifying()).map(|d| (d.fraction(), d.paused));
+        self.taskbar.show(frame, shown);
         crate::image_cache::trim_decoded(&ctx);
         if self.applied_theme.as_ref() != Some(&self.prefs.theme) {
             self.prefs.theme.apply(&ctx);

@@ -21,6 +21,7 @@ pub mod social;
 pub mod cloud;
 pub mod collections;
 pub mod friends_add;
+pub mod discovery;
 pub mod regions;
 pub mod a2s;
 pub mod game_ugc;
@@ -168,6 +169,11 @@ pub enum Command {
     PauseDownload { app_id: AppId },
     ResumeDownload { app_id: AppId },
     CancelDownload { app_id: AppId },
+    /// Move a queued download to place `to` in the queue (0 = next).
+    MoveDownload { app_id: AppId, to: usize },
+    /// Download this queued game now: the running download is set aside
+    /// (kept on disk) and goes back in the queue right after it.
+    DownloadNow { app_id: AppId },
     /// Measure every download region from this PC.
     ProbeRegions,
     /// Download from this Steam region (`None` = automatic), or prefer one
@@ -195,6 +201,12 @@ pub enum Command {
     LoadWorkshopTags { app_id: AppId, language: String },
     LoadWishlist,
     WishlistAdd { app_id: AppId },
+    /// Your store discovery queue; `rebuild` asks Steam for a fresh one.
+    LoadDiscoveryQueue { rebuild: bool },
+    /// A game in the discovery queue was seen ("Next in queue").
+    DiscoverySeen { app_id: AppId },
+    /// "Not interested" in a game (`ignore: false` undoes it).
+    IgnoreApp { app_id: AppId, ignore: bool },
     WishlistRemove { app_id: AppId },
     LoadCart,
     /// Add a package to the cart, optionally as a gift for a friend.
@@ -324,6 +336,9 @@ pub enum Event {
     Regions(Vec<model::DownloadRegion>),
     DownloadQueue(Vec<AppId>),
     DownloadFinished { app_id: AppId, result: Result<String, String> },
+    /// The running download was set aside for another ("download now") and
+    /// is back in the queue; it continues from what's on disk.
+    DownloadStopped { app_id: AppId },
     WorkshopUnsubscribed { file_id: u64, result: Result<(), String> },
     WorkshopResults { request_id: u64, total: u64, items: Vec<model::WorkshopEntry> },
     WorkshopSubscribed { file_id: u64, result: Result<(), String> },
@@ -336,6 +351,10 @@ pub enum Event {
     WorkshopTags { app_id: AppId, result: Result<Vec<model::WorkshopTagCategory>, String> },
     /// (app id, date added)
     Wishlist(Vec<(AppId, u64)>),
+    /// The discovery queue's games, in order.
+    DiscoveryQueue(Result<Vec<AppId>, String>),
+    /// "Not interested" was set (or undone) for a game.
+    AppIgnored { app_id: AppId, ignore: bool, result: Result<(), String> },
     Cart(Vec<model::CartLine>),
     /// A store action failed (cart, wishlist).
     StoreError(String),

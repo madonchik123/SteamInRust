@@ -230,6 +230,7 @@ fn parse_app(id: AppId, text: &str) -> Option<OwnedApp> {
         art: art_paths(common),
         categories: common.obj("category").map(|c| c.iter().filter_map(|(k, _)| k.strip_prefix("category_")?.parse().ok()).collect()).unwrap_or_default(),
         genres: common.obj("genres").map(|g| g.iter().filter_map(|(_, v)| v.as_str()?.parse().ok()).collect()).unwrap_or_default(),
+        tags: common.obj("store_tags").map(|g| g.iter().filter_map(|(_, v)| v.as_str()?.parse().ok()).collect()).unwrap_or_default(),
         deck: common.obj("steam_deck_compatibility").and_then(|d| d.u64("category")).unwrap_or(0) as u8,
         os_list: common.str("oslist").unwrap_or_default().to_string(),
     })

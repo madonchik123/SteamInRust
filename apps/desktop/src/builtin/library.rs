@@ -165,6 +165,8 @@ enum Filter {
     Playing,
     Favorites,
     Collection(usize),
+    /// A collection built from filters in Steam.
+    Dynamic(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -253,6 +255,9 @@ pub struct Library {
     steam_base: Collections,
     /// Steam's collections have loaded this session; edits go to Steam.
     steam_loaded: bool,
+    /// Steam's dynamic collections (name, filters): their games are worked
+    /// out from the filters, like Steam does.
+    dynamic: Vec<(String, client::collections::DynamicFilter)>,
     adv: AdvFilters,
     /// Naming a new collection (with a game to put in it), or renaming one.
     naming: Option<(Option<usize>, String, Option<AppId>)>,
@@ -478,6 +483,12 @@ impl Library {
     /// from the official client or another computer show up, removals too.
     /// The very first time, both sides are merged so nothing is lost.
     fn merge_steam_collections(&mut self, list: &[model::SteamCollection]) {
+        self.dynamic = list.iter().filter(|c| c.dynamic).filter_map(|c| Some((c.name.clone(), client::collections::DynamicFilter::parse(c.filter.as_deref()?)?))).collect();
+        if let Filter::Dynamic(i) = self.filter
+            && i >= self.dynamic.len()
+        {
+            self.filter = Filter::All;
+        }
         let steam: Collections = list.iter().filter(|c| !c.dynamic).map(|c| (c.id.clone(), (c.name.clone(), c.games.iter().copied().collect()))).collect();
         let ours = self.collections_now();
         let first = self.steam_base.is_empty();
@@ -893,6 +904,7 @@ impl Library {
                     Filter::Playing => e.installed.and_then(|g| g.last_played).is_some(),
                     Filter::Favorites => self.favorites.contains(&e.app_id),
                     Filter::Collection(i) => self.collections.get(i).is_some_and(|c| c.games.contains(&e.app_id)),
+                    Filter::Dynamic(i) => self.dynamic.get(i).is_some_and(|(_, f)| f.matches(&facts(e))),
                 }
                 && (self.show_hidden || !self.hidden.contains(&e.app_id))
                 && self.adv_match(ctx, e)
@@ -1083,6 +1095,16 @@ impl Library {
                     }
                 });
             }
+            // Built from filters in Steam: read-only here, kept up to date.
+            let all = if self.dynamic.is_empty() { Vec::new() } else { entries(ctx.state, ctx.local) };
+            for (i, (name, f)) in self.dynamic.iter().enumerate() {
+                let n = all.iter().filter(|e| f.matches(&facts(e))).count();
+                let r = w::chip(ui, t, &format!("{}  {name}  {n}", icons::FUNNEL), self.filter == Filter::Dynamic(i))
+                    .on_hover_text(t!("A dynamic collection: Steam fills it from its filters. Change them in Steam."));
+                if r.clicked() {
+                    self.filter = if self.filter == Filter::Dynamic(i) { Filter::All } else { Filter::Dynamic(i) };
+                }
+            }
             if w::chip(ui, t, &format!("{}  {}", icons::PLUS, t!("Collection")), false).on_hover_text(t!("Make a new collection")).clicked() {
                 self.naming = Some((None, String::new(), None));
             }
@@ -1099,13 +1121,16 @@ impl Library {
         if let Filter::Collection(i) = self.filter {
             let name = self.collections.get(i).map(|c| c.name.clone()).unwrap_or_default();
             groups.push((format!("{name} — {}", items.len()), items.iter().collect()));
+        } else if let Filter::Dynamic(i) = self.filter {
+            let name = self.dynamic.get(i).map(|(n, _)| n.clone()).unwrap_or_default();
+            groups.push((format!("{name} — {}", items.len()), items.iter().collect()));
         } else if !favs.is_empty() {
             groups.push((t!("Favorites — {n}", n = favs.len()), favs));
         }
-        if !matches!(self.filter, Filter::Collection(_)) {
+        if !matches!(self.filter, Filter::Collection(_) | Filter::Dynamic(_)) {
             groups.push((t!("Installed — {n}", n = installed.len()), installed));
         }
-        if !rest.is_empty() && !matches!(self.filter, Filter::Collection(_)) {
+        if !rest.is_empty() && !matches!(self.filter, Filter::Collection(_) | Filter::Dynamic(_)) {
             groups.push((t!("Not installed — {n}", n = rest.len()), rest));
         }
         if ctx.state.apps.is_none() {
@@ -2219,12 +2244,25 @@ impl InstallDialog {
 }
 
 
+/// What a dynamic collection's filters look at for one game.
+fn facts<'a>(e: &'a Entry) -> client::collections::GameFacts<'a> {
+    client::collections::GameFacts {
+        name: e.name,
+        installed: e.installed.is_some(),
+        played: e.installed.and_then(|g| g.last_played).is_some_and(|t| t > 0),
+        runs_here: e.owned.is_none_or(|o| o.runs_on_this_os()),
+        categories: e.owned.map(|o| o.categories.as_slice()).unwrap_or_default(),
+        tags: e.owned.map(|o| o.tags.as_slice()).unwrap_or_default(),
+        deck: e.owned.map(|o| o.deck).unwrap_or(0),
+    }
+}
+
 #[cfg(test)]
 mod collection_sync_tests {
     use super::*;
 
     fn steam(list: &[(&str, &str, &[AppId])]) -> Vec<model::SteamCollection> {
-        list.iter().map(|(id, name, games)| model::SteamCollection { id: id.to_string(), name: name.to_string(), games: games.to_vec(), dynamic: false }).collect()
+        list.iter().map(|(id, name, games)| model::SteamCollection { id: id.to_string(), name: name.to_string(), games: games.to_vec(), dynamic: false, filter: None }).collect()
     }
 
     #[test]
