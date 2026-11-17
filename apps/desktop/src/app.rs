@@ -763,7 +763,9 @@ impl eframe::App for SteamApp {
             WindowMode::SignIn
         };
         // Big Picture owns the window (fullscreen); size it again when it ends.
-        let big_picture = signed_in && self.bigpicture.active;
+        // In a window (`--bigpicture=window`) it gets the normal window's size
+        // like any page, instead of keeping the loading screen's.
+        let big_picture = signed_in && self.bigpicture.active && !self.bigpicture.is_windowed();
         if big_picture {
             self.window_mode = Some(mode);
         } else if self.bigpicture_was_on {

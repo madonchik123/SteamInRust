@@ -188,6 +188,11 @@ impl BigPicture {
         }
     }
 
+    /// Running in a window (`--bigpicture=window`), not full screen.
+    pub fn is_windowed(&self) -> bool {
+        self.windowed
+    }
+
     /// Whether the normal window was maximized before Big Picture opened (asked
     /// once, after leaving, when the window gets its normal size back).
     pub fn take_was_maximized(&mut self) -> bool {
