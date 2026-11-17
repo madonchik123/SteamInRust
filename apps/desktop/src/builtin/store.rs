@@ -371,7 +371,7 @@ impl Store {
     }
 
     /// Browse everything with one tag (clicked on a game page).
-    fn open_tag(&mut self, tag: u32) {
+    pub(super) fn open_tag(&mut self, tag: u32) {
         self.filters = store::query::Filters { tags: vec![tag], ..Default::default() };
         self.browse_page = 0;
         self.open(View::Browse);
@@ -1105,6 +1105,32 @@ impl Store {
 
             // Purchase box.
             let owned = ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(&id)) || ctx.local.games.iter().any(|g| g.app_id == id);
+            // Like Steam: "Download <game> Demo" above buying it.
+            if let Some(demo) = d.demo.filter(|_| !owned) {
+                let have = ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(&demo));
+                w::card(t).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(w::text_bold(t!("Download {name} Demo", name = d.name), 18.0, t.text));
+                            ui.label(w::text(t!("Try it for free before you buy."), 12.5, t.text_dim));
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if have {
+                                if w::button(ui, t, Some(icons::BOOKS), t!("In your library"), w::Kind::Play, w::Size::Md).clicked() {
+                                    ctx.navigate("library", Some(demo.to_string()));
+                                }
+                            } else if self.free_pending == Some(demo) {
+                                ui.add(egui::Spinner::new().color(t.accent));
+                            } else if w::button(ui, t, Some(icons::DOWNLOAD), t!("Download demo"), w::Kind::Play, w::Size::Md).clicked() {
+                                self.free_pending = Some(demo);
+                                ctx.send(client::Command::RequestFreeLicense { app_id: demo });
+                            }
+                        });
+                    });
+                });
+                ui.add_space(12.0);
+            }
             w::card(t).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -1570,14 +1596,6 @@ pub(crate) fn rating_bar(ui: &mut Ui, t: &Theme, positive: u32, count: u64) {
         ui.add_space(8.0);
         ui.label(w::text(t!("{count} reviews", count = thousands(count)), 12.5, t.accent));
     });
-}
-
-fn review_color(t: &Theme, score: u32) -> Color32 {
-    match score {
-        7..=9 => Color32::from_rgb(0x66, 0xC0, 0xF4),
-        5..=6 => Color32::from_rgb(0xB9, 0xA0, 0x74),
-        _ => t.danger,
-    }
 }
 
 /// Icon for a store "feature" category (Co-op, Trading Cards, ...).

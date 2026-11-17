@@ -103,7 +103,21 @@ pub struct QueryItem {
     pub review_label: Option<String>,
     pub review_percent: u32,
     pub review_score: u32,
+    /// How many reviews.
+    pub review_count: u64,
     pub platforms: (bool, bool, bool),
+    /// Release date (unix seconds), 0 if unknown.
+    pub released: u64,
+    /// Steam's top user tags (ids), most applied first.
+    pub tags: Vec<u32>,
+    /// Not out yet.
+    pub coming_soon: bool,
+    /// When an unreleased game is due, as Steam shows it ("Q1 2027",
+    /// "Dec 2026", "To be announced"); empty if released.
+    pub release_text: String,
+    pub is_free: bool,
+    /// Its demo, if it has one.
+    pub demo: Option<AppId>,
 }
 
 impl StoreClient {
@@ -147,7 +161,7 @@ impl StoreClient {
             "query_name": "SteamInRust",
             "query": { "start": start, "count": count, "sort": f.sort.id(), "filters": filters },
             "context": { "language": self.language, "country_code": self.country.to_uppercase() },
-            "data_request": { "include_basic_info": true, "include_assets": true, "include_reviews": true, "include_platforms": true }
+            "data_request": { "include_basic_info": true, "include_assets": true, "include_reviews": true, "include_platforms": true, "include_release": true, "include_tag_count": 12 }
         });
         let resp: Envelope = self
             .http
@@ -171,7 +185,7 @@ impl StoreClient {
             let input = serde_json::json!({
                 "ids": chunk.iter().map(|id| serde_json::json!({ "appid": id })).collect::<Vec<_>>(),
                 "context": { "language": self.language, "country_code": self.country.to_uppercase() },
-                "data_request": { "include_basic_info": true, "include_assets": true, "include_reviews": true, "include_platforms": true }
+                "data_request": { "include_basic_info": true, "include_assets": true, "include_reviews": true, "include_platforms": true, "include_release": true, "include_tag_count": 12 }
             });
             let resp: GetItems = self
                 .http
@@ -279,7 +293,14 @@ impl From<RawItem> for QueryItem {
             review_label: reviews.as_ref().map(|r| r.review_score_label.clone()).filter(|l| !l.is_empty()),
             review_percent: reviews.as_ref().map(|r| r.percent_positive).unwrap_or(0),
             review_score: reviews.as_ref().map(|r| r.review_score).unwrap_or(0),
+            review_count: reviews.as_ref().map(|r| r.review_count).unwrap_or(0),
             platforms: i.platforms.map(|p| (p.windows, p.mac, p.steamos_linux)).unwrap_or((true, false, false)),
+            released: i.release.as_ref().and_then(|r| r.steam_release_date.or(r.original_release_date)).unwrap_or(0),
+            tags: i.tagids,
+            coming_soon: i.release.as_ref().and_then(|r| r.is_coming_soon).unwrap_or(false),
+            release_text: i.release.as_ref().filter(|r| r.is_coming_soon == Some(true)).map(release_text).unwrap_or_default(),
+            is_free: i.is_free.unwrap_or(false),
+            demo: i.related_items.and_then(|r| r.demo_appid.first().copied()),
         }
     }
 }
@@ -312,6 +333,78 @@ struct RawItem {
     best_purchase_option: Option<RawPurchase>,
     reviews: Option<RawReviews>,
     platforms: Option<RawPlatforms>,
+    release: Option<RawRelease>,
+    #[serde(default)]
+    tagids: Vec<u32>,
+    is_free: Option<bool>,
+    related_items: Option<RawRelated>,
+}
+
+#[derive(Deserialize)]
+struct RawRelease {
+    steam_release_date: Option<u64>,
+    original_release_date: Option<u64>,
+    is_coming_soon: Option<bool>,
+    custom_release_date_message: Option<String>,
+    coming_soon_display: Option<String>,
+}
+
+/// An unreleased game's due date the way Steam words it.
+fn release_text(r: &RawRelease) -> String {
+    if let Some(m) = r.custom_release_date_message.as_deref().filter(|m| !m.trim().is_empty()) {
+        return m.trim().to_string();
+    }
+    let Some(t) = r.steam_release_date.filter(|t| *t > 0) else { return "Coming soon".into() };
+    let (y, m, d) = ymd(t);
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let month = MONTHS[(m as usize).saturating_sub(1).min(11)];
+    match r.coming_soon_display.as_deref().unwrap_or("date_full") {
+        "date_year" => y.to_string(),
+        "date_quarter" => format!("Q{} {y}", (m - 1) / 3 + 1),
+        "date_month" => format!("{month} {y}"),
+        "text_comingsoon" => "Coming soon".into(),
+        "text_tba" => "To be announced".into(),
+        _ => format!("{d} {month} {y}"),
+    }
+}
+
+/// Unix seconds to (year, month, day) in UTC.
+fn ymd(t: u64) -> (i64, u32, u32) {
+    // Howard Hinnant's days-to-civil.
+    let z = (t / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::{RawRelease, release_text, ymd};
+    fn r(t: u64, display: &str, msg: Option<&str>) -> RawRelease {
+        RawRelease { steam_release_date: Some(t), original_release_date: None, is_coming_soon: Some(true), custom_release_date_message: msg.map(String::from), coming_soon_display: Some(display.into()) }
+    }
+    #[test]
+    fn words_due_dates_like_steam() {
+        assert_eq!(ymd(1_700_000_000), (2023, 11, 14));
+        assert_eq!(release_text(&r(1_700_000_000, "date_full", None)), "14 Nov 2023");
+        assert_eq!(release_text(&r(1_700_000_000, "date_month", None)), "Nov 2023");
+        assert_eq!(release_text(&r(1_700_000_000, "date_quarter", None)), "Q4 2023");
+        assert_eq!(release_text(&r(1_700_000_000, "date_year", None)), "2023");
+        assert_eq!(release_text(&r(1_700_000_000, "date_full", Some("Early 2027"))), "Early 2027");
+        assert_eq!(release_text(&r(0, "date_full", None)), "Coming soon");
+    }
+}
+
+#[derive(Deserialize)]
+struct RawRelated {
+    #[serde(default)]
+    demo_appid: Vec<AppId>,
 }
 
 #[derive(Deserialize)]
@@ -345,6 +438,8 @@ struct RawSummary {
     review_score: u32,
     #[serde(default)]
     review_score_label: String,
+    #[serde(default)]
+    review_count: u64,
 }
 
 #[derive(Deserialize)]

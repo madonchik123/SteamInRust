@@ -109,6 +109,8 @@ pub struct Details {
     pub package_id: Option<u32>,
     /// DLC app ids.
     pub dlc: Vec<AppId>,
+    /// Its demo, if it has one.
+    pub demo: Option<AppId>,
 }
 
 #[derive(Debug, Clone)]
@@ -323,6 +325,7 @@ impl StoreClient {
                 .map(|s| s.packageid)
                 .or(d.packages.first().copied()),
             dlc: d.dlc,
+            demo: d.demos.first().map(|x| x.appid),
         })
     }
 }
@@ -337,6 +340,11 @@ fn requirements(src: &str) -> Vec<html::Block> {
         }
     }
     blocks
+}
+
+#[derive(Deserialize)]
+struct RawDemo {
+    appid: AppId,
 }
 
 fn dedup(items: &mut Vec<Item>) {
@@ -493,6 +501,8 @@ struct RawDetails {
     packages: Vec<u32>,
     #[serde(default)]
     package_groups: Vec<RawPackageGroup>,
+    #[serde(default)]
+    demos: Vec<RawDemo>,
     #[serde(default)]
     dlc: Vec<AppId>,
 }

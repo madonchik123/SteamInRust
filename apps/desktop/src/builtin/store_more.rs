@@ -190,40 +190,103 @@ impl Store {
     }
 
     /// A wide result row; returns true when clicked.
-    fn result_row(&mut self, ui: &mut Ui, t: &Theme, ctx: &Ctx, it: &QueryItem) -> bool {
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 74.0), Sense::click());
+    /// One game in a list (browse, wishlist), like the community redesign:
+    /// art, name, top tags, systems and release date, the review bar, then
+    /// price, Add to Cart and a wishlist heart. Returns whether it was opened.
+    fn result_row(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, it: &QueryItem) -> bool {
+        let h = 132.0;
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
         if !ui.is_rect_visible(rect) {
             return false;
         }
         let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
         ui.painter().rect_filled(rect, t.corner_small(), w::mix(t.surface, t.surface_hover, hover));
-        let img = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(124.0, 58.0));
+        let img = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(116.0 * 460.0 / 215.0, 116.0));
         w::image_or_skeleton(ui, t, img, &it.header, t.corner_small());
-        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(pos2(img.right() + 14.0, rect.top()), rect.max - vec2(14.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
-        c.vertical(|ui| {
-            ui.add_space(10.0);
-            ui.add(egui::Label::new(w::text_semibold(&it.name, 15.0, t.text)).truncate());
-            ui.horizontal(|ui| {
-                let (win, mac, lin) = it.platforms;
-                let p: String = [(win, icons::WINDOWS), (mac, icons::APPLE), (lin, icons::LINUX)].iter().filter(|x| x.0).map(|x| x.1).collect::<Vec<_>>().join(" ");
-                ui.label(w::text(p, 12.5, t.text_faint));
-                if let Some(l) = &it.review_label {
-                    ui.label(w::text(format!("{}  {}%", i18n::tr_dyn(l), it.review_percent), 12.5, super::review_color(t, it.review_score)));
-                }
-                if ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(&it.app_id)) {
-                    w::pill(ui, t!("In library"), t.play, t.play.gamma_multiply(0.15));
-                }
-            });
-        });
-        c.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            match &it.formatted_price {
-                Some(p) => w::price_tag(ui, t, p, it.formatted_original.as_deref(), it.price.discount),
-                None => {
-                    ui.label(w::text_semibold(t!("Free"), 14.0, t.text));
+        let owned = ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(&it.app_id));
+        let wished = ctx.state.wishlist.as_ref().is_some_and(|l| l.iter().any(|(a, _)| *a == it.app_id));
+        let right_w = 320.0;
+        let mid = Rect::from_min_max(pos2(img.right() + 16.0, rect.top() + 8.0), pos2(rect.right() - right_w, rect.bottom() - 8.0));
+        let opened = resp.clicked();
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(mid).layout(Layout::top_down(Align::Min)));
+        c.spacing_mut().item_spacing.y = 4.0;
+        c.add(egui::Label::new(w::text_semibold(&it.name, 16.0, t.text)).truncate());
+        // Top tags, like Steam's: "+N" opens the rest in a popup (the row
+        // keeps its size), and a tag opens the store filtered by it.
+        let mut open_tag = None;
+        let names: Vec<(u32, String)> = it.tags.iter().filter_map(|tag| Some((*tag, self.tag_name(*tag)?))).collect();
+        c.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+            for (tag, name) in names.iter().take(4) {
+                if small_tag(ui, t, name).on_hover_text(t!("Browse games with this tag")).clicked() {
+                    open_tag = Some(*tag);
                 }
             }
+            if names.len() > 4 {
+                let more = small_tag(ui, t, &format!("+{}", names.len() - 4)).on_hover_text(t!("More tags"));
+                egui::Popup::from_toggle_button_response(&more).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(320.0).show(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                        for (tag, name) in names.iter().skip(4) {
+                            if small_tag(ui, t, name).on_hover_text(t!("Browse games with this tag")).clicked() {
+                                open_tag = Some(*tag);
+                            }
+                        }
+                    });
+                });
+            }
+            // Like Steam: a demo to try, on the game's page.
+            if it.demo.is_some() {
+                w::pill(ui, t!("Demo available"), t.accent, t.accent.gamma_multiply(0.15));
+            }
         });
-        resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+        if let Some(tag) = open_tag {
+            self.open_tag(tag);
+        }
+        c.horizontal(|ui| {
+            let (win, mac, lin) = it.platforms;
+            let systems: String = [(win, icons::WINDOWS), (mac, icons::APPLE), (lin, icons::LINUX)].iter().filter(|x| x.0).map(|x| x.1).collect::<Vec<_>>().join("  ");
+            ui.label(w::text(systems, 14.0, t.text_faint));
+            if it.coming_soon {
+                ui.label(w::text(format!("{}  {}", icons::CALENDAR, i18n::tr_dyn(&it.release_text)), 12.5, t.accent));
+            } else if it.released > 0 {
+                ui.label(w::text(ui::date(it.released), 12.5, t.text_faint));
+            }
+            if owned {
+                w::pill(ui, t!("In library"), t.play, t.play.gamma_multiply(0.15));
+            }
+        });
+        if it.review_count > 0 {
+            super::rating_bar(&mut c, t, it.review_percent, it.review_count);
+        }
+        // Right: heart on top, price and Add to Cart below.
+        let side = Rect::from_min_max(pos2(rect.right() - right_w, rect.top() + 8.0), rect.max - vec2(10.0, 8.0));
+        let mut r = ui.new_child(egui::UiBuilder::new().max_rect(side).layout(Layout::right_to_left(Align::Min)));
+        let heart = if wished { t!("Remove from wishlist") } else { t!("Add to wishlist") };
+        if w::heart_button(&mut r, t, wished, heart).clicked() {
+            ctx.send(if wished { Command::WishlistRemove { app_id: it.app_id } } else { Command::WishlistAdd { app_id: it.app_id } });
+        }
+        let mut b = ui.new_child(egui::UiBuilder::new().max_rect(side).layout(Layout::right_to_left(Align::Max)));
+        if !owned && !it.coming_soon {
+            if let Some(pkg) = it.package_id {
+                if w::button(&mut b, t, None, t!("Add to cart"), w::Kind::Primary, w::Size::Sm).clicked() {
+                    self.add_to_cart(ctx, it.app_id, pkg, &it.name, None, owned);
+                }
+            }
+        }
+        match &it.formatted_price {
+            _ if it.coming_soon => {
+                b.label(w::text_semibold(t!("Coming soon"), 14.0, t.text_dim));
+            }
+            Some(p) => w::price_tag(&mut b, t, p, it.formatted_original.as_deref(), it.price.discount),
+            None if it.is_free => {
+                b.label(w::text_semibold(t!("Free"), 14.0, t.text));
+            }
+            None => {}
+        }
+
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        opened
     }
 
     // ---------- wishlist ----------
@@ -254,29 +317,10 @@ impl Store {
         let mut sorted = items.clone();
         sorted.sort_by_key(|i| std::cmp::Reverse(i.price.discount));
         for it in &sorted {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() - 150.0);
-                    if self.result_row(ui, t, ctx, it) {
-                        self.open(View::App(it.app_id));
-                    }
-                });
-                ui.vertical(|ui| {
-                    ui.add_space(20.0);
-                    ui.horizontal(|ui| {
-                        if let Some(pkg) = it.package_id {
-                            if w::icon_button(ui, t, icons::CART, t!("Add to cart"), false, 0).clicked() {
-                                let owned = self.owned.contains(&it.app_id);
-                                self.add_to_cart(ctx, it.app_id, pkg, &it.name, None, owned);
-                            }
-                        }
-                        if w::icon_button(ui, t, icons::TRASH, t!("Remove from wishlist"), false, 0).clicked() {
-                            ctx.send(Command::WishlistRemove { app_id: it.app_id });
-                        }
-                    });
-                });
-            });
-            ui.add_space(4.0);
+            if self.result_row(ui, t, ctx, it) {
+                self.open(View::App(it.app_id));
+            }
+            ui.add_space(6.0);
         }
     }
 
@@ -727,4 +771,15 @@ fn cart_row(ui: &mut Ui, t: &Theme, ctx: &Ctx, l: &model::CartLine, same: &[mode
         });
     });
     act
+}
+
+/// A small clickable tag (the size of a pill), for list rows.
+fn small_tag(ui: &mut Ui, t: &Theme, text: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(text.to_string(), w::font_semibold(11.0), t.text_dim);
+    let (r, resp) = ui.allocate_exact_size(galley.size() + vec2(14.0, 6.0), Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    ui.painter().rect_filled(r, egui::CornerRadius::same(4), w::mix(t.raised, t.accent.gamma_multiply(0.35), hover));
+    let color = w::mix(t.text_dim, t.text, hover);
+    ui.painter().galley(r.center() - galley.size() / 2.0, galley, color);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

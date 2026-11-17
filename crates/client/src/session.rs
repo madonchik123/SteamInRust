@@ -1819,17 +1819,33 @@ impl Online {
         });
     }
 
+    /// Add to or remove from the wishlist the way the store page does (Steam
+    /// can refuse the wishlist service from a client), with the service as a
+    /// fallback. Steam's list is sent again afterwards either way.
     fn wishlist_change(&self, app_id: AppId, add: bool, sink: &Sink) {
-        let (conn, sink, me) = (self.conn.clone(), sink.clone(), self.me);
-        tokio::spawn(async move {
+        let (conn, me) = (self.conn.clone(), self.me);
+        self.with_web(sink, move |web, sink| async move {
             use proto::webui::*;
-            let r = if add {
-                conn.call::<_, CWishlistAddToWishlistResponse>("Wishlist.AddToWishlist#1", &CWishlistAddToWishlistRequest { appid: Some(app_id), navdata: None }).await.map(|_| ())
-            } else {
-                conn.call::<_, CWishlistRemoveFromWishlistResponse>("Wishlist.RemoveFromWishlist#1", &CWishlistRemoveFromWishlistRequest { appid: Some(app_id) }).await.map(|_| ())
+            let via_web = match &web {
+                Ok(w) => {
+                    let url = format!("https://store.steampowered.com/api/{}", if add { "addtowishlist" } else { "removefromwishlist" });
+                    match w.http.post(url).form(&[("sessionid", w.session_id.clone()), ("appid", app_id.to_string())]).send().await {
+                        Ok(r) => r.json::<serde_json::Value>().await.ok().and_then(|v| v.get("success").and_then(|s| s.as_bool().or_else(|| s.as_i64().map(|n| n == 1)))).unwrap_or(false),
+                        Err(_) => false,
+                    }
+                }
+                Err(_) => false,
             };
-            if let Err(e) = r {
-                sink(Event::StoreError(e.to_string()));
+            if !via_web {
+                let r = if add {
+                    conn.call::<_, CWishlistAddToWishlistResponse>("Wishlist.AddToWishlist#1", &CWishlistAddToWishlistRequest { appid: Some(app_id), navdata: None }).await.map(|_| ())
+                } else {
+                    conn.call::<_, CWishlistRemoveFromWishlistResponse>("Wishlist.RemoveFromWishlist#1", &CWishlistRemoveFromWishlistRequest { appid: Some(app_id) }).await.map(|_| ())
+                };
+                if let Err(e) = r {
+                    tracing::warn!("wishlist {}: {e}", if add { "add" } else { "remove" });
+                    sink(Event::StoreError(if add { "Couldn't add it to your wishlist. Try again in a moment.".into() } else { "Couldn't remove it from your wishlist. Try again in a moment.".into() }));
+                }
             }
             if let Ok(r) = conn.call::<_, CWishlistGetWishlistResponse>("Wishlist.GetWishlist#1", &CWishlistGetWishlistRequest { steamid: Some(me) }).await {
                 sink(Event::Wishlist(r.items.iter().map(|i| (i.appid(), i.date_added() as u64)).collect()));
