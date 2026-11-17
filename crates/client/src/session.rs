@@ -993,6 +993,33 @@ async fn online(
                         }
                     });
                 }
+                Some(Command::LoadMyReview { app_id }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move { sink(Event::MyReview { app_id, result: crate::reviews::mine(&conn, me, app_id).await }) });
+                }
+                Some(Command::SaveReview { app_id, review }) => {
+                    let (conn, me) = (st.conn.clone(), st.me);
+                    st.with_web(sink, move |web, sink| async move {
+                        let result = match web {
+                            Ok(w) => crate::reviews::save(&conn, &w, app_id, &review).await,
+                            Err(e) => Err(e),
+                        };
+                        sink(Event::ReviewSaved { app_id, deleted: false, result: result.clone() });
+                        if result.is_ok() {
+                            sink(Event::MyReview { app_id, result: crate::reviews::mine(&conn, me, app_id).await });
+                        }
+                    })
+                }
+                Some(Command::DeleteReview { app_id }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::reviews::delete(&w, app_id).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::ReviewSaved { app_id, deleted: true, result: result.clone() });
+                    if result.is_ok() {
+                        sink(Event::MyReview { app_id, result: Ok(None) });
+                    }
+                }),
                 Some(Command::IgnoreApp { app_id, ignore }) => st.with_web(sink, move |web, sink| async move {
                     let result = match web {
                         Ok(w) => crate::discovery::ignore(&w, app_id, ignore).await,

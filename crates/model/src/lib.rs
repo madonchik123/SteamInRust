@@ -760,6 +760,27 @@ pub struct CollectionEdit {
     pub deleted: bool,
 }
 
+/// Your review of a game (`id` 0: not written yet).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MyReview {
+    pub id: u64,
+    pub text: String,
+    /// Recommended (thumbs up) or not.
+    pub voted_up: bool,
+    /// Public, or friends only.
+    pub public: bool,
+    pub comments_disabled: bool,
+    /// "I received this game for free".
+    pub received_compensation: bool,
+    /// Steam's language name ("english", "russian"…).
+    pub language: String,
+    /// Unix seconds.
+    pub updated: u64,
+    pub votes_up: u32,
+    pub votes_funny: u32,
+    pub comments: u32,
+}
+
 /// A library collection from the official Steam client (synced by Steam).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SteamCollection {

@@ -18,6 +18,10 @@ use ui::{Theme, icons, widgets as w};
 mod more;
 #[path = "store_discovery.rs"]
 mod discovery;
+#[path = "store_review.rs"]
+mod review;
+#[path = "store_micro.rs"]
+mod micro;
 
 enum Load<T> {
     Loading,
@@ -105,6 +109,10 @@ pub struct Store {
     tv_search: Option<(String, Shared<Vec<Item>>)>,
     /// A discovery queue was asked for and hasn't arrived yet.
     discovery_wait: bool,
+    /// Writing your review of a game you own.
+    review: review::ReviewBox,
+    /// The clip playing on the card under the pointer.
+    micro: micro::Micro,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -151,6 +159,8 @@ impl Store {
             lists_requested: false,
             tv_search: None,
             discovery_wait: false,
+            review: Default::default(),
+            micro: Default::default(),
             search: None,
             view: View::Home,
             hero: 0,
@@ -415,6 +425,7 @@ impl Extension for Store {
         if let client::Event::DiscoveryQueue(_) = event {
             self.discovery_wait = false;
         }
+        self.review.on_event(event, ctx);
         if let client::Event::FreeLicense { app_id, result } = event {
             if self.free_pending == Some(*app_id) {
                 self.free_pending = None;
@@ -517,6 +528,7 @@ impl Extension for Store {
             }
         });
         self.flush_ratings();
+        self.micro_end_frame();
         self.gift_dialog(ui, &t, ctx);
         self.cart_popup_ui(ui, &t, ctx);
     }
@@ -834,7 +846,9 @@ impl Store {
                     w::skeleton(ui, t, r, t.corner());
                     continue;
                 }
-                if card(ui, t, item, actual_w, self.owned.contains(&item.app_id)).clicked() {
+                let (r, img) = card(ui, t, item, actual_w, self.owned.contains(&item.app_id));
+                self.micro(ui, item.app_id, img, CornerRadius { nw: t.radius, ne: t.radius, sw: 0, se: 0 }, r.hovered());
+                if r.clicked() {
                     self.open(View::App(item.app_id));
                 }
             }
@@ -863,7 +877,9 @@ impl Store {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 for item in row {
-                    if card(ui, t, item, cw, self.owned.contains(&item.app_id)).clicked() {
+                    let (r, img) = card(ui, t, item, cw, self.owned.contains(&item.app_id));
+                    self.micro(ui, item.app_id, img, CornerRadius { nw: t.radius, ne: t.radius, sw: 0, se: 0 }, r.hovered());
+                    if r.clicked() {
                         self.open(View::App(item.app_id));
                     }
                 }
@@ -1132,6 +1148,10 @@ impl Store {
                     if !d.is_free {
                         self.price_history(ui, t, id);
                     }
+                    // Like Steam: games you own get a box to review them.
+                    if self.owned.contains(&id) && ctx.state.steam_id != 0 {
+                        self.review_box(ui, t, ctx, id, &d.name);
+                    }
                     w::section(ui, t, t!("About this game"), None);
                     blocks(ui, t, &d.about, left_w);
                     ui.add_space(24.0);
@@ -1346,12 +1366,13 @@ pub(crate) fn thousands(n: u64) -> String {
     out
 }
 
-/// One store card: header art, name, price.
-fn card(ui: &mut Ui, t: &Theme, item: &Item, width: f32, owned: bool) -> egui::Response {
+/// One store card: header art, name, price. Also returns where the art is
+/// (for the clip played over it on hover).
+fn card(ui: &mut Ui, t: &Theme, item: &Item, width: f32, owned: bool) -> (egui::Response, Rect) {
     let h = width * 215.0 / 460.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(width, h + 64.0), Sense::click());
     if !ui.is_rect_visible(rect) {
-        return resp;
+        return (resp, Rect::from_min_size(rect.min, vec2(width, h)));
     }
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.15);
     let lift = rect.translate(vec2(0.0, -3.0 * hover));
@@ -1382,7 +1403,7 @@ fn card(ui: &mut Ui, t: &Theme, item: &Item, width: f32, owned: bool) -> egui::R
             }
         });
     });
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    (resp.on_hover_cursor(egui::CursorIcon::PointingHand), img)
 }
 
 /// "In library" ribbon on a store picture's top-left corner, like Steam's.

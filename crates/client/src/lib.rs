@@ -23,6 +23,7 @@ pub mod collections;
 pub mod friends_add;
 pub mod discovery;
 pub mod installscript;
+pub mod reviews;
 pub mod regions;
 pub mod a2s;
 pub mod game_ugc;
@@ -206,6 +207,11 @@ pub enum Command {
     LoadDiscoveryQueue { rebuild: bool },
     /// A game in the discovery queue was seen ("Next in queue").
     DiscoverySeen { app_id: AppId },
+    /// Your review of a game (answered with `Event::MyReview`).
+    LoadMyReview { app_id: AppId },
+    /// Post or change your review (`review.id` 0: a new one).
+    SaveReview { app_id: AppId, review: model::MyReview },
+    DeleteReview { app_id: AppId },
     /// "Not interested" in a game (`ignore: false` undoes it).
     IgnoreApp { app_id: AppId, ignore: bool },
     WishlistRemove { app_id: AppId },
@@ -355,6 +361,10 @@ pub enum Event {
     WorkshopTags { app_id: AppId, result: Result<Vec<model::WorkshopTagCategory>, String> },
     /// (app id, date added)
     Wishlist(Vec<(AppId, u64)>),
+    /// Your review of a game (`None`: not written).
+    MyReview { app_id: AppId, result: Result<Option<model::MyReview>, String> },
+    /// A review was posted, changed or deleted.
+    ReviewSaved { app_id: AppId, deleted: bool, result: Result<(), String> },
     /// The discovery queue's games, in order.
     DiscoveryQueue(Result<Vec<AppId>, String>),
     /// "Not interested" was set (or undone) for a game.

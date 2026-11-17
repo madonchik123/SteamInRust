@@ -13,7 +13,7 @@ Steam's website" still works; it just isn't native yet.
 | Offline mode and reconnecting | 1 | Whether Steam counts playtime recorded offline is unconfirmed |
 | Library | 0.75 | Dynamic collections show and stay up to date, but their filters can only be changed in Steam |
 | Downloads and installs | 1 | |
-| Store | 0.75 | Checkout happens on Steam's website (Steam requires it); can't write reviews |
+| Store | 1 | Checkout happens on Steam's website (Steam requires it) |
 | Friends and chat | 0.75 | No group chats or voice chat |
 | Community | 0.5 | Reading only for discussions; badge pages, groups and someone's reviews open Steam's website |
 | Inventory and Market | 0.75 | Trade offers open Steam's website; no Market search page |
@@ -102,7 +102,8 @@ All native, no web view.
 | Price history | Through IsThereAnyDeal, with your own free key |
 | Checkout | Opens Steam's website. Steam only takes payment there |
 | Discovery queue: each game's store page with Not interested, Wishlist and Next | Done (Steam's own queue, so it matches the website and the official client) |
-| Writing reviews, microtrailers on hover | Not yet |
+| Your review of a game you own: write, change (recommended or not, public or friends only, comments, received for free) and delete | Done, on the game's store page |
+| Microtrailers: a card's art plays the game's short clip while the pointer rests on it | Done |
 
 ## Friends and chat
 
