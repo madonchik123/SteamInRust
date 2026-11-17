@@ -763,8 +763,40 @@ async fn online(
                 Some(Command::LoadInventory { steam_id, app_id, context_id, language }) => st.load_inventory(steam_id, app_id, context_id, language, sink),
                 Some(Command::LoadInventoryApps { steam_id }) => st.load_inventory_apps(steam_id, sink),
                 Some(Command::MarketPrice { app_id, hash_name, currency, country, full }) => st.market_price(app_id, hash_name, currency, country, full, sink),
+                Some(Command::MarketPrices { app_id, names, currency }) => st.with_web(sink, move |web, sink| async move {
+                    let r = crate::market::price_pages(web.as_deref().ok(), app_id, &names, currency, |page| {
+                        for (hash_name, p) in page {
+                            sink(Event::MarketPrice { app_id, hash_name, result: Ok(p) });
+                        }
+                    })
+                    .await;
+                    if let Err(e) = r {
+                        tracing::info!("market prices for {app_id}: {e}");
+                    }
+                    sink(Event::MarketPricesDone { app_id });
+                }),
                 Some(Command::SellItem { app_id, context_id, asset_id, amount, receive }) => st.sell_item(app_id, context_id, asset_id, amount, receive, sink),
                 Some(Command::LoadMyListings) => st.my_listings(sink),
+                Some(Command::LoadTradeOffers { language }) => st.trade_offers(language, sink),
+                Some(Command::LoadPersonas { ids }) => {
+                    for chunk in ids.chunks(100) {
+                        let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: chunk.to_vec() });
+                    }
+                }
+                Some(Command::RespondTradeOffer { id, partner, action }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::trade::respond(&w, id, partner, action).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::TradeOfferAnswered { id, action, result });
+                }),
+                Some(Command::SendTradeOffer { partner, give, get, message, counter, token }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::trade::send(&w, partner, &give, &get, &message, counter, token.as_deref()).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::TradeOfferSent { partner, result });
+                }),
                 Some(Command::LoadSteamCollections) => {
                     let (conn, sink, store) = (conn.clone(), sink.clone(), st.collections.clone());
                     tokio::spawn(async move {
@@ -2090,6 +2122,26 @@ impl Online {
                 Err(e) => Err(e),
             };
             sink(Event::ItemListed { asset_id, result });
+        });
+    }
+
+    fn trade_offers(&self, language: String, sink: &Sink) {
+        let conn = self.conn.clone();
+        self.with_web(sink, move |web, sink| async move {
+            let result = match web {
+                Ok(w) => crate::trade::offers(&w, &language).await,
+                Err(e) => Err(e),
+            };
+            // Names and avatars for partners who aren't your friends.
+            if let Ok(o) = &result {
+                let mut ids: Vec<SteamId> = o.received.iter().chain(o.sent.iter()).map(|x| x.partner).collect();
+                ids.sort_unstable();
+                ids.dedup();
+                if !ids.is_empty() {
+                    let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: ids });
+                }
+            }
+            sink(Event::TradeOffers(result));
         });
     }
 

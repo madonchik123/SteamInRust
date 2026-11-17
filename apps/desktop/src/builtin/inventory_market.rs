@@ -92,7 +92,7 @@ impl Inventory {
             if mine && item.tradable {
                 ui.add_space(12.0);
                 w::caption(ui, t, t!("Trade or gift"));
-                ui.add(egui::Label::new(w::text(t!("Send it to a friend as a gift or part of a trade. Trade offers open on Steam's website for now."), 12.5, t.text_dim)).wrap());
+                ui.add(egui::Label::new(w::text(t!("Send it to a friend as a gift or part of a trade."), 12.5, t.text_dim)).wrap());
                 ui.add_space(4.0);
                 if w::button(ui, t, Some(icons::GIFT), t!("Gift to a friend…"), w::Kind::Secondary, w::Size::Sm).clicked() {
                     self.gift = Some(item.asset_id);
@@ -336,7 +336,7 @@ impl Inventory {
         egui::Modal::new(egui::Id::unique("gift-item")).show(ui.ctx(), |ui| {
             ui.set_width(380.0);
             ui.label(w::text_bold(t!("Gift to a friend"), 18.0, t.text));
-            ui.add(egui::Label::new(w::text(t!("Pick a friend. A trade offer to them opens on Steam's website; add this item and send it."), 12.5, t.text_dim)).wrap());
+            ui.add(egui::Label::new(w::text(t!("Pick a friend. You'll see a trade offer with this item in it before anything is sent."), 12.5, t.text_dim)).wrap());
             ui.add_space(8.0);
             egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                 if friends.is_empty() {
@@ -351,8 +351,10 @@ impl Inventory {
                     w::image_or_skeleton(ui, t, av, &art::avatar(f.avatar_hash.as_deref()), CornerRadius::same(4));
                     ui.painter().text(pos2(av.right() + 10.0, r.center().y), Align2::LEFT_CENTER, &f.name, w::font_medium(13.5), t.text);
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        let account = f.steam_id & 0xFFFF_FFFF;
-                        let _ = open::that_detached(format!("https://steamcommunity.com/tradeoffer/new/?partner={account}"));
+                        // A trade offer to them with just this item in it.
+                        let (app, cx) = self.app.unwrap_or((753, 6));
+                        self.trades.pending = Some(super::trades::Prefill { partner: f.steam_id, give: self.gift.map(|asset| (app, cx, asset)).into_iter().collect(), ..Default::default() });
+                        self.view = super::View::Trades;
                         close = true;
                     }
                 }

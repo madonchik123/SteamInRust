@@ -17,12 +17,14 @@ pub struct Web {
     pub http: reqwest::Client,
     pub me: SteamId,
     pub session_id: String,
+    /// The web sign-in's access token, for Steam's web API.
+    pub access_token: String,
 }
 
 impl Web {
     /// A signed-out session, for public pages.
     pub fn anonymous() -> Web {
-        Web { http: reqwest::Client::new(), me: 0, session_id: String::new() }
+        Web { http: reqwest::Client::new(), me: 0, session_id: String::new(), access_token: String::new() }
     }
 }
 
@@ -57,7 +59,7 @@ pub async fn web(conn: &Connection, me: SteamId, refresh: &str, cache: &WebCache
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
-    let w = Arc::new(Web { http, me, session_id });
+    let w = Arc::new(Web { http, me, session_id, access_token: r.access_token().to_string() });
     *slot = Some((w.clone(), Instant::now()));
     Ok(w)
 }
@@ -481,6 +483,85 @@ pub async fn search(web: Option<&Web>, query: &str, app: Option<model::AppId>, s
     }
     let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     parse_search(&v).ok_or_else(|| "The Market is busy. Try again in a minute.".into())
+}
+
+/// Many prices at once, the way browser extensions get them: the market
+/// search lists up to 100 items per request with their cheapest price. Steam
+/// items (trading cards, backgrounds, emoticons) are searched per game, and
+/// other games by their most-listed items. `found` gets each page's prices;
+/// names it never sees are left for the one-at-a-time lookup.
+pub async fn price_pages(web: Option<&Web>, app: AppId, names: &[String], currency: i32, mut found: impl FnMut(Vec<(String, model::MarketPrice)>)) -> Result<(), String> {
+    use std::collections::{BTreeMap, HashSet};
+    let mut left: HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
+    // (extra query parameters, pages at most)
+    let mut queries: Vec<(Vec<(String, String)>, u32)> = Vec::new();
+    if app == 753 {
+        let mut games: BTreeMap<&str, ()> = BTreeMap::new();
+        for n in names {
+            if let Some((g, _)) = n.split_once('-').filter(|(g, _)| !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit())) {
+                games.insert(g, ());
+            }
+        }
+        for g in games.keys() {
+            queries.push((vec![("category_753_Game[]".into(), format!("tag_app_{g}")), ("sort_column".into(), "name".into()), ("sort_dir".into(), "asc".into())], 4));
+        }
+    } else {
+        queries.push((vec![("sort_column".into(), "quantity".into()), ("sort_dir".into(), "desc".into())], 10));
+    }
+    let client = web.map(|w| w.http.clone()).unwrap_or_default();
+    let mut first = true;
+    for (extra, pages) in queries {
+        let mut start = 0u32;
+        for _ in 0..pages {
+            if left.is_empty() {
+                return Ok(());
+            }
+            if !first {
+                tokio::time::sleep(Duration::from_millis(1300)).await;
+            }
+            first = false;
+            let mut url = reqwest::Url::parse(&format!("{COMMUNITY}/market/search/render/")).map_err(|e| e.to_string())?;
+            url.query_pairs_mut()
+                .append_pair("norender", "1")
+                .append_pair("appid", &app.to_string())
+                .append_pair("count", "100")
+                .append_pair("start", &start.to_string())
+                .append_pair("search_descriptions", "0");
+            for (k, v) in &extra {
+                url.query_pairs_mut().append_pair(k, v);
+            }
+            let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err("The Market is busy. Try again in a minute.".into());
+            }
+            let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+            let list = v.get("results").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+            let total = v.get("total_count").and_then(|n| n.as_u64()).unwrap_or(0) as u32;
+            let page: Vec<(String, model::MarketPrice)> = list.iter().filter_map(|r| search_price(r, currency)).collect();
+            for (n, _) in &page {
+                left.remove(n.as_str());
+            }
+            if !page.is_empty() {
+                found(page);
+            }
+            start += list.len() as u32;
+            if list.is_empty() || start >= total {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One market search result as a price.
+fn search_price(r: &Value, currency: i32) -> Option<(String, model::MarketPrice)> {
+    let name = r.get("hash_name")?.as_str()?.to_string();
+    let text = r.get("sell_price_text").and_then(|s| s.as_str()).unwrap_or_default().to_string();
+    let listings = r.get("sell_listings").and_then(|n| n.as_u64()).unwrap_or(0);
+    if listings == 0 || text.is_empty() {
+        return None;
+    }
+    Some((name, model::MarketPrice { lowest_sell: model::parse_money(&text), lowest: Some(text), sell_count: Some(listings), currency, ..Default::default() }))
 }
 
 pub fn parse_search(v: &serde_json::Value) -> Option<(Vec<model::MarketResult>, u32)> {

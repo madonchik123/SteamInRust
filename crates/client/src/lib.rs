@@ -17,6 +17,7 @@ pub mod ipc;
 mod ipctool;
 mod launch;
 pub mod market;
+pub mod trade;
 pub mod social;
 pub mod cloud;
 pub mod collections;
@@ -119,10 +120,24 @@ pub enum Command {
     /// Community Market price of an item in your wallet currency. `full` also
     /// reads the order book (highest buy order, cheapest listing in cents).
     MarketPrice { app_id: AppId, hash_name: String, currency: i32, country: String, full: bool },
+    /// Many of one game's prices at once from the market search (fast);
+    /// answers with [`Event::MarketPrice`] for each, then
+    /// [`Event::MarketPricesDone`].
+    MarketPrices { app_id: AppId, names: Vec<String>, currency: i32 },
     /// List an item on the Community Market. `receive` is what you get, in cents.
     /// Steam then asks for confirmation in the Steam Mobile app.
     SellItem { app_id: AppId, context_id: u64, asset_id: u64, amount: u64, receive: u64 },
     LoadMyListings,
+    /// Fetch names and avatars of people who aren't your friends.
+    LoadPersonas { ids: Vec<SteamId> },
+    /// Your trade offers (active ones and recent changes); item names in
+    /// `language` (Steam's name for it).
+    LoadTradeOffers { language: String },
+    /// Accept, decline or cancel a trade offer.
+    RespondTradeOffer { id: u64, partner: SteamId, action: model::TradeAction },
+    /// Send a trade offer. `counter` replaces an offer you got; `token` is the
+    /// partner's trade link token (needed when they aren't your friend).
+    SendTradeOffer { partner: SteamId, give: Vec<model::TradeAsset>, get: Vec<model::TradeAsset>, message: String, counter: Option<u64>, token: Option<String> },
     /// Your library collections from Steam (Favorites, Hidden, your own).
     LoadSteamCollections,
     /// Write changed or deleted collections to Steam, so they show in the
@@ -311,9 +326,18 @@ pub enum Event {
     Email { address: String, validated: bool },
     Inventory(model::Inventory),
     MarketPrice { app_id: AppId, hash_name: String, result: Result<model::MarketPrice, String> },
+    /// A [`Command::MarketPrices`] finished; names it didn't price weren't found.
+    MarketPricesDone { app_id: AppId },
     /// Result of [`Command::SellItem`]: `Ok(true)` = needs confirming on your phone.
     ItemListed { asset_id: u64, result: Result<bool, String> },
     MyListings(Result<model::MyListings, String>),
+    TradeOffers(Result<model::TradeOffers, String>),
+    /// Result of [`Command::RespondTradeOffer`]: `Ok(true)` = confirm it in
+    /// the Steam Mobile app.
+    TradeOfferAnswered { id: u64, action: model::TradeAction, result: Result<bool, String> },
+    /// Result of [`Command::SendTradeOffer`]: the new offer's id and whether
+    /// to confirm it in the Steam Mobile app.
+    TradeOfferSent { partner: SteamId, result: Result<(u64, bool), String> },
     SteamCollections(Result<Vec<model::SteamCollection>, String>),
     /// Result of [`Command::SaveSteamCollections`].
     SteamCollectionsSaved(Result<(), String>),

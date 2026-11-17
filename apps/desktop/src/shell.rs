@@ -316,7 +316,7 @@ fn open_notification(state: &client::State, n: &model::Notification, actions: &m
         6 => actions.push(nav("store", None)),
         7 | 12 | 22 | 24 => actions.push(nav("library", app.map(|a| a.to_string()))),
         8 | 27 | 28 => actions.push(nav("store", app.map(|a| format!("app:{a}")))),
-        9 | 29 => web(format!("https://steamcommunity.com/profiles/{me}/tradeoffers/")),
+        9 | 29 => actions.push(nav("inventory", Some("trades".into()))),
         11 => actions.push(nav("support", n.ticket.as_ref().map(|t| format!("ticket:{t}")))),
         15..=21 => web("https://store.steampowered.com/account/familymanagement".into()),
         _ => {}

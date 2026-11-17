@@ -32,13 +32,27 @@
 //! | `wishlist()`: app ids on your wishlist | `store.read` |
 //! | `copy(text)`: to the clipboard | `clipboard` |
 //! | `navigate(page, arg)`: open a page of the app (`"store"`, `"library"`, `"community"`, `"profile"`, `"downloads"`, `"settings"`, or this plugin's page) | none |
+//! | `trade_offers()`: your offers (active and recently changed) as maps: `id`, `partner`, `partner_name`, `message`, `state` (`"active"`, `"accepted"`, `"declined"`, `"needs_confirmation"`...), `ours`, `created`, `expires`, `held_until`, and the `give` / `get` items | `trades.read` |
+//! | `refresh_trades()`: ask Steam for them again (also done every 2 minutes) | `trades.read` |
+//! | `decline_trade(id)`, `cancel_trade(id)` | `trades.write` |
+//! | `review_trade(id)`: opens the app's "Accept this trade?" question; only you can accept | `trades.write` |
+//! | `propose_trade(partner, give, get, message)`: opens a new offer with these items (`[#{app_id, context_id, asset_id}]`) for you to check and send | `trades.write` |
+//! | `inventory(app_id, context_id)`: your items there (753/6 is Steam's: cards, backgrounds), or `()` while it loads | `inventory.read` |
+//! | `market_price(app_id, market_hash_name)`: cheapest listing in cents, or `()` while it's looked up | `inventory.read` |
+//! | `currency()`: your wallet's currency code | none |
 //! | `language()`, `platform()`, `json_parse(text)`, `json_string(value)` | none |
+//!
+//! Items are maps: `app_id`, `context_id`, `asset_id`, `amount`, `name`, `type`,
+//! `market_hash_name`, `tradable`, `marketable`, `color`, `icon` (a picture URL),
+//! `tags` (`[#{category, name}]`) and `price` (cents, or `()` if not known yet).
 //!
 //! ## Hooks (define any of these functions)
 //! - `on_load()`
 //! - `on_event(name, data)`: `"friend_online"`, `"friend_offline"`, `"friend_game"`
 //!   (need `friends.read`), `"message"` (needs `chat.read`), `"game_started"`,
-//!   `"game_stopped"`, `"logged_in"`, `"download_finished"` (needs `downloads.read`).
+//!   `"game_stopped"`, `"logged_in"`, `"download_finished"` (needs `downloads.read`),
+//!   `"trade_offer"` (someone sent you one: `id`, `partner`, `name`) and
+//!   `"trade_changed"` (`id`, `state`) (need `trades.read`).
 //! - `on_tick()`: every `tick` seconds (manifest, at least 10).
 //! - `on_http(id, status, body)`: the answer to a request (`status` 0: it failed, `body` says why).
 //! - `page()`: returns an array of widgets for the plugin's page (needs `[page]` in the manifest).
@@ -78,10 +92,13 @@ pub enum Permission {
     DownloadsRead,
     StoreRead,
     Clipboard,
+    InventoryRead,
+    TradesRead,
+    TradesWrite,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 13] = [
+    pub const ALL: [Permission; 16] = [
         Self::AccountRead,
         Self::FriendsRead,
         Self::LibraryRead,
@@ -95,6 +112,9 @@ impl Permission {
         Self::DownloadsRead,
         Self::StoreRead,
         Self::Clipboard,
+        Self::InventoryRead,
+        Self::TradesRead,
+        Self::TradesWrite,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -111,6 +131,9 @@ impl Permission {
             Self::DownloadsRead => "downloads.read",
             Self::StoreRead => "store.read",
             Self::Clipboard => "clipboard",
+            Self::InventoryRead => "inventory.read",
+            Self::TradesRead => "trades.read",
+            Self::TradesWrite => "trades.write",
         }
     }
     pub fn describe(self) -> &'static str {
@@ -128,11 +151,14 @@ impl Permission {
             Self::DownloadsRead => "See your downloads",
             Self::StoreRead => "See your wishlist",
             Self::Clipboard => "Copy text to your clipboard",
+            Self::InventoryRead => "See your inventory and items' market prices",
+            Self::TradesRead => "See your trade offers",
+            Self::TradesWrite => "Decline or cancel trade offers, and suggest trades for you to review",
         }
     }
     /// Permissions that act on your behalf or send data out get a warning in the UI.
     pub fn sensitive(self) -> bool {
-        matches!(self, Self::ChatRead | Self::ChatWrite | Self::StatusWrite | Self::Network)
+        matches!(self, Self::ChatRead | Self::ChatWrite | Self::StatusWrite | Self::Network | Self::TradesWrite)
     }
     fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.key() == s)
@@ -204,6 +230,14 @@ pub struct Snapshot {
     pub wishlist: Vec<u32>,
     /// The app's language code ("en", "ru"...).
     pub language: String,
+    /// Your trade offers, with the partner's name.
+    pub trades: Arc<Vec<(model::TradeOffer, String)>>,
+    /// Your loaded inventories by (app, context).
+    pub inventory: Arc<std::collections::HashMap<(u32, u64), Vec<model::InventoryItem>>>,
+    /// Market prices in cents of your wallet currency, by (app, market hash name).
+    pub prices: Arc<std::collections::HashMap<(u32, String), u64>>,
+    /// Your wallet's currency, as Steam formats it ("USD", "KZT"...).
+    pub currency: String,
 }
 
 /// Things a plugin asked the host to do.
@@ -217,6 +251,18 @@ pub enum Request {
     Launch(u32),
     Navigate(String, Option<String>),
     Copy(String),
+    /// Fetch your trade offers again.
+    LoadTrades,
+    /// Decline or cancel an offer (accepting always goes through the app's review).
+    RespondTrade(u64, model::TradeAction),
+    /// Show the app's "Accept this trade?" review for an offer.
+    ReviewTrade(u64),
+    /// Open a new offer with these items for you to review and send.
+    ProposeTrade { partner: u64, give: Vec<model::TradeAsset>, get: Vec<model::TradeAsset>, message: String },
+    /// Load one of your inventories (app, context).
+    LoadInventory(u32, u64),
+    /// Look up market prices (app, market hash names).
+    Prices(u32, Vec<String>),
 }
 
 /// Events delivered to `on_event`.
@@ -230,6 +276,10 @@ pub enum HostEvent {
     GameStarted { app_id: u32 },
     GameStopped { app_id: u32 },
     DownloadFinished { app_id: u32, ok: bool },
+    /// Someone sent you a trade offer.
+    TradeOffer { id: u64, partner: u64, name: String },
+    /// One of your offers changed (accepted, declined...).
+    TradeChanged { id: u64, state: model::TradeState },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -438,6 +488,12 @@ impl Plugin {
             HostEvent::DownloadFinished { app_id, ok } if granted.contains(&Permission::DownloadsRead) => {
                 ("download_finished", map([("app_id", (*app_id as i64).into()), ("ok", (*ok).into())]))
             }
+            HostEvent::TradeOffer { id, partner, name } if granted.contains(&Permission::TradesRead) => {
+                ("trade_offer", map([("id", id.to_string().into()), ("partner", partner.to_string().into()), ("name", name.clone().into())]))
+            }
+            HostEvent::TradeChanged { id, state } if granted.contains(&Permission::TradesRead) => {
+                ("trade_changed", map([("id", id.to_string().into()), ("state", trade_state(*state).into())]))
+            }
             HostEvent::Message { steam_id, name, text } if granted.contains(&Permission::ChatRead) => (
                 "message",
                 map([("steam_id", steam_id.to_string().into()), ("name", name.clone().into()), ("text", text.clone().into())]),
@@ -591,6 +647,64 @@ fn to_json(d: &Dynamic) -> serde_json::Value {
     } else {
         J::String(d.to_string())
     }
+}
+
+/// A trade offer state as plugins see it.
+pub fn trade_state(s: model::TradeState) -> &'static str {
+    use model::TradeState as S;
+    match s {
+        S::Active => "active",
+        S::Accepted => "accepted",
+        S::Countered => "countered",
+        S::Expired => "expired",
+        S::Cancelled => "cancelled",
+        S::Declined => "declined",
+        S::InvalidItems => "invalid_items",
+        S::NeedsConfirmation => "needs_confirmation",
+        S::InEscrow => "on_hold",
+        S::Other => "other",
+    }
+}
+
+fn item_map(app_id: u32, i: &model::InventoryItem, price: Option<u64>) -> Dynamic {
+    let tags: Array = i.tags.iter().map(|(c, v, _)| Dynamic::from_map(map([("category", c.clone().into()), ("name", v.clone().into())]))).collect();
+    let mut m = map([
+        ("app_id", (app_id as i64).into()),
+        ("context_id", i.context_id.to_string().into()),
+        ("asset_id", i.asset_id.to_string().into()),
+        ("amount", (i.amount as i64).into()),
+        ("name", i.name.clone().into()),
+        ("type", i.kind.clone().into()),
+        ("market_hash_name", i.market_hash_name.clone().into()),
+        ("tradable", i.tradable.into()),
+        ("marketable", i.marketable.into()),
+        ("color", i.name_color.clone().unwrap_or_default().into()),
+        ("icon", if i.icon.is_empty() { String::new() } else { model::art::econ(&i.icon, 192) }.into()),
+        ("tags", Dynamic::from_array(tags)),
+    ]);
+    m.insert("price".into(), price.map(|p| Dynamic::from(p as i64)).unwrap_or(Dynamic::UNIT));
+    Dynamic::from_map(m)
+}
+
+/// `[#{app_id, context_id, asset_id, amount?}, ...]` from a plugin.
+fn assets(list: Array) -> Result<Vec<model::TradeAsset>, Box<EvalAltResult>> {
+    let num = |m: &Map, k: &str| -> Option<u64> {
+        let v = m.get(k)?;
+        v.as_int().ok().map(|i| i as u64).or_else(|| v.clone().into_string().ok().and_then(|s| s.parse().ok()))
+    };
+    list.into_iter()
+        .take(256)
+        .map(|d| {
+            let m = d.try_cast::<Map>().ok_or("each item must be a map like #{app_id, context_id, asset_id}")?;
+            Ok(model::TradeAsset {
+                app_id: num(&m, "app_id").ok_or("item is missing app_id")? as u32,
+                context_id: num(&m, "context_id").ok_or("item is missing context_id")?,
+                asset_id: num(&m, "asset_id").ok_or("item is missing asset_id")?,
+                amount: num(&m, "amount").unwrap_or(1).max(1),
+            })
+        })
+        .collect::<Result<_, &str>>()
+        .map_err(|e: &str| e.into())
 }
 
 fn map<const N: usize>(pairs: [(&str, Dynamic); N]) -> Map {
@@ -819,6 +933,111 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         Ok(h.snapshot.wishlist.iter().map(|id| Dynamic::from(*id as i64)).collect())
     });
 
+    // Trades and inventory.
+    let h = host.clone();
+    e.register_fn("trade_offers", move || -> Result<Array, Box<EvalAltResult>> {
+        let h = h.lock().unwrap();
+        h.need(Permission::TradesRead)?;
+        let price = |a: u32, i: &model::InventoryItem| h.snapshot.prices.get(&(a, i.market_hash_name.clone())).copied();
+        Ok(h.snapshot
+            .trades
+            .iter()
+            .map(|(o, name)| {
+                let items = |l: &[model::TradeItem]| Dynamic::from_array(l.iter().map(|x| item_map(x.app_id, &x.item, price(x.app_id, &x.item))).collect());
+                map([
+                    ("id", o.id.to_string().into()),
+                    ("partner", o.partner.to_string().into()),
+                    ("partner_name", name.clone().into()),
+                    ("message", o.message.clone().into()),
+                    ("state", trade_state(o.state).into()),
+                    ("ours", o.ours.into()),
+                    ("created", (o.created as i64).into()),
+                    ("expires", (o.expires as i64).into()),
+                    ("held_until", (o.escrow_end as i64).into()),
+                    ("give", items(&o.give)),
+                    ("get", items(&o.get)),
+                ])
+                .into()
+            })
+            .collect())
+    });
+
+    let h = host.clone();
+    e.register_fn("refresh_trades", move || -> Result<(), Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::TradesRead)?;
+        h.outbox.push(Request::LoadTrades);
+        Ok(())
+    });
+
+    let h = host.clone();
+    let respond = move |id: &str, action: model::TradeAction| -> Result<(), Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::TradesWrite)?;
+        let id: u64 = id.parse().map_err(|_| "id must be a trade offer id")?;
+        if !h.snapshot.trades.iter().any(|(o, _)| o.id == id) {
+            return Err("no such trade offer".into());
+        }
+        h.outbox.push(Request::RespondTrade(id, action));
+        Ok(())
+    };
+    let r = respond.clone();
+    e.register_fn("decline_trade", move |id: &str| r(id, model::TradeAction::Decline));
+    let r = respond;
+    e.register_fn("cancel_trade", move |id: &str| r(id, model::TradeAction::Cancel));
+
+    let h = host.clone();
+    e.register_fn("review_trade", move |id: &str| -> Result<(), Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::TradesWrite)?;
+        let id: u64 = id.parse().map_err(|_| "id must be a trade offer id")?;
+        h.outbox.push(Request::ReviewTrade(id));
+        Ok(())
+    });
+
+    let h = host.clone();
+    e.register_fn("propose_trade", move |partner: &str, give: Array, get: Array, message: &str| -> Result<(), Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::TradesWrite)?;
+        let partner: u64 = partner.parse().map_err(|_| "partner must be a numeric steam_id")?;
+        let (give, get) = (assets(give)?, assets(get)?);
+        h.outbox.push(Request::ProposeTrade { partner, give, get, message: message.chars().take(128).collect() });
+        Ok(())
+    });
+
+    let h = host.clone();
+    e.register_fn("inventory", move |app_id: i64, context_id: i64| -> Result<Dynamic, Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::InventoryRead)?;
+        let key = (app_id as u32, context_id as u64);
+        match h.snapshot.inventory.get(&key) {
+            Some(items) => {
+                let list: Array = items.iter().map(|i| item_map(key.0, i, h.snapshot.prices.get(&(key.0, i.market_hash_name.clone())).copied())).collect();
+                Ok(Dynamic::from_array(list))
+            }
+            None => {
+                h.outbox.push(Request::LoadInventory(key.0, key.1));
+                Ok(Dynamic::UNIT)
+            }
+        }
+    });
+
+    let h = host.clone();
+    e.register_fn("market_price", move |app_id: i64, hash_name: &str| -> Result<Dynamic, Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::InventoryRead)?;
+        match h.snapshot.prices.get(&(app_id as u32, hash_name.to_string())) {
+            Some(p) => Ok(Dynamic::from(*p as i64)),
+            None => {
+                h.outbox.push(Request::Prices(app_id as u32, vec![hash_name.to_string()]));
+                Ok(Dynamic::UNIT)
+            }
+        }
+    });
+
+    let h = host.clone();
+    e.register_fn("currency", move || h.lock().unwrap().snapshot.currency.clone());
+
     let h = host.clone();
     e.register_fn("copy", move |text: &str| -> Result<(), Box<EvalAltResult>> {
         let mut h = h.lock().unwrap();
@@ -882,6 +1101,7 @@ pub const EXAMPLES: &[(&str, &str, &str)] = &[
     ("friend-alerts", include_str!("../examples/friend-alerts/plugin.toml"), include_str!("../examples/friend-alerts/main.rhai")),
     ("backlog", include_str!("../examples/backlog/plugin.toml"), include_str!("../examples/backlog/main.rhai")),
     ("wishlist-sales", include_str!("../examples/wishlist-sales/plugin.toml"), include_str!("../examples/wishlist-sales/main.rhai")),
+    ("trade-helper", include_str!("../examples/trade-helper/plugin.toml"), include_str!("../examples/trade-helper/main.rhai")),
 ];
 
 /// Copy the bundled examples into `dir` if they aren't there yet.
@@ -995,6 +1215,47 @@ mod tests {
         assert_eq!(s.get("action").map(String::as_str), Some("a440"));
         assert!(matches!(&p.page()[..], [Widget::Input { .. }, Widget::Table { rows, .. }, Widget::Toggle { value: true, .. }] if rows.len() == 2));
         assert_eq!(p.call("json_round", ()).unwrap().to_string(), r#"{"a":[1,true,null]}"#);
+    }
+
+    #[test]
+    fn trades_need_permission_and_accepting_goes_through_the_app() {
+        let offer = model::TradeOffer {
+            id: 77,
+            partner: 76561197960265770,
+            state: model::TradeState::Active,
+            get: vec![model::TradeItem { app_id: 753, item: model::InventoryItem { name: "Card".into(), market_hash_name: "570-Card".into(), marketable: true, amount: 1, ..Default::default() }, missing: false }],
+            ..Default::default()
+        };
+        let snap = || Snapshot { trades: Arc::new(vec![(offer.clone(), "Pal".into())]), prices: Arc::new([((753, "570-Card".to_string()), 12)].into_iter().collect()), ..Default::default() };
+        let script = r#"
+            fn on_load() {
+                let o = trade_offers()[0];
+                storage_set("seen", o.partner_name + " " + o.state + " " + o.get[0].price);
+                review_trade(o.id);
+                decline_trade(o.id);
+                propose_trade(o.partner, [#{app_id: 753, context_id: "6", asset_id: "5"}], [], "hi");
+            }
+        "#;
+        let mut p = plugin("id = \"tr\"
+name = \"T\"
+permissions = [\"trades.read\", \"trades.write\", \"storage\"]
+", script);
+        p.set_snapshot(snap());
+        p.start(Default::default());
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let reqs = p.drain();
+        assert_eq!(p.take_storage().unwrap().get("seen").map(String::as_str), Some("Pal active 12"));
+        assert!(reqs.iter().any(|r| matches!(r, Request::ReviewTrade(77))));
+        assert!(reqs.iter().any(|r| matches!(r, Request::RespondTrade(77, model::TradeAction::Decline))));
+        assert!(reqs.iter().any(|r| matches!(r, Request::ProposeTrade { give, .. } if give[0].asset_id == 5 && give[0].context_id == 6)));
+
+        // Without the permission, nothing.
+        let mut q = plugin("id = \"tr2\"
+name = \"T\"
+", "fn on_load() { trade_offers(); }");
+        q.set_snapshot(snap());
+        q.start(Default::default());
+        assert!(q.error.as_deref().is_some_and(|e| e.contains("trades.read")), "{:?}", q.error);
     }
 
     #[test]

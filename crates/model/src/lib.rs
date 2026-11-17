@@ -1132,6 +1132,105 @@ pub fn parse_money(s: &str) -> Option<u64> {
     Some(if has_cents { v } else { v * 100 })
 }
 
+/// Where a trade offer stands, as Steam reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TradeState {
+    /// Waiting for the other person to answer.
+    #[default]
+    Active,
+    Accepted,
+    /// Replaced by a counter offer.
+    Countered,
+    Expired,
+    Cancelled,
+    Declined,
+    /// Some items aren't available any more.
+    InvalidItems,
+    /// Made, but waiting for confirmation in the Steam Mobile app.
+    NeedsConfirmation,
+    /// Accepted, with the items held by Steam for a while.
+    InEscrow,
+    Other,
+}
+
+impl TradeState {
+    pub fn from_steam(n: u64) -> TradeState {
+        match n {
+            2 => TradeState::Active,
+            3 => TradeState::Accepted,
+            4 => TradeState::Countered,
+            5 => TradeState::Expired,
+            6 | 10 => TradeState::Cancelled,
+            7 => TradeState::Declined,
+            8 => TradeState::InvalidItems,
+            9 => TradeState::NeedsConfirmation,
+            11 => TradeState::InEscrow,
+            _ => TradeState::Other,
+        }
+    }
+
+    /// Still waiting on someone (you, them, or a phone confirmation).
+    pub fn open(self) -> bool {
+        matches!(self, TradeState::Active | TradeState::NeedsConfirmation)
+    }
+}
+
+/// One item in a trade offer.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TradeItem {
+    pub app_id: AppId,
+    /// Name, picture, context and asset id like an inventory item.
+    pub item: InventoryItem,
+    /// No longer in the owner's inventory.
+    pub missing: bool,
+}
+
+/// A trade offer you sent or got.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TradeOffer {
+    pub id: u64,
+    pub partner: SteamId,
+    pub message: String,
+    /// Unix seconds.
+    pub created: u64,
+    pub updated: u64,
+    pub expires: u64,
+    /// When held items arrive, if Steam holds them (0 = no hold).
+    pub escrow_end: u64,
+    pub state: TradeState,
+    /// You made it.
+    pub ours: bool,
+    /// Items you give.
+    pub give: Vec<TradeItem>,
+    /// Items you get.
+    pub get: Vec<TradeItem>,
+}
+
+/// Your trade offers: active ones and those that changed recently.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TradeOffers {
+    pub received: Vec<TradeOffer>,
+    pub sent: Vec<TradeOffer>,
+}
+
+/// An answer to a trade offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TradeAction {
+    Accept,
+    Decline,
+    /// Take back one you sent.
+    Cancel,
+}
+
+/// An item to put in a new trade offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TradeAsset {
+    pub app_id: AppId,
+    pub context_id: u64,
+    pub asset_id: u64,
+    pub amount: u64,
+}
+
 /// A game that has an inventory on someone's account, as Steam lists it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InventoryApp {

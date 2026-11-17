@@ -1,0 +1,10 @@
+id = "trade-helper"
+name = "Trade Helper"
+version = "1.0.0"
+author = "SteamInRust"
+description = "Tells you when a trade offer arrives and how much each side is worth on the Community Market, with a page of your incoming offers."
+permissions = ["trades.read", "trades.write", "inventory.read", "notifications", "storage"]
+
+[page]
+title = "Trade Helper"
+icon = "swap"

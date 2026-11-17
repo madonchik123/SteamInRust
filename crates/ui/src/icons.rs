@@ -122,6 +122,10 @@ pub fn by_name(name: &str) -> &'static str {
         "controller" => CONTROLLER,
         "lightning" => LIGHTNING,
         "gear" => GEAR,
+        "swap" => SWAP,
+        "backpack" => BACKPACK,
+        "coins" => COINS,
+        "tag" => TAG,
         _ => PUZZLE,
     }
 }

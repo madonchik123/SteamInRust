@@ -45,6 +45,13 @@ pub struct Plugins {
     snapshot: Option<(std::time::Instant, Snapshot)>,
     /// Text fields on plugin pages: (plugin, field) -> what's typed.
     inputs: HashMap<(String, String), String>,
+    /// Trade offers seen so far and their state (`None` until the first list),
+    /// to tell plugins about new and changed ones.
+    trades_seen: Option<HashMap<u64, model::TradeState>>,
+    /// When trade offers were last asked for on plugins' behalf.
+    trades_polled: Option<std::time::Instant>,
+    /// Prices plugins asked for: already asked, and games searched in bulk.
+    prices: Mutex<(std::collections::HashSet<(AppId, String)>, std::collections::HashSet<AppId>)>,
 }
 
 /// Something done on a plugin's page.
@@ -80,6 +87,9 @@ impl Plugins {
             next_tick: HashMap::new(),
             snapshot: None,
             inputs: HashMap::new(),
+            trades_seen: None,
+            trades_polled: None,
+            prices: Default::default(),
         }
     }
 
@@ -144,6 +154,34 @@ impl Plugins {
                 Request::Navigate(page, arg) => ctx.navigate(&page, arg),
                 Request::Copy(text) => self.egui.copy_text(text),
                 Request::Http { id, method, url, body, headers } => self.fetch(p.manifest.id.clone(), id, method, url, body, headers),
+                Request::LoadTrades => ctx.send(Command::LoadTradeOffers { language: i18n::language().steam_name().to_string() }),
+                Request::RespondTrade(id, action) => {
+                    let partner = match &ctx.state.trade_offers {
+                        Some(Ok(o)) => o.received.iter().chain(o.sent.iter()).find(|x| x.id == id).map(|x| x.partner),
+                        _ => None,
+                    };
+                    if let Some(partner) = partner {
+                        ctx.send(Command::RespondTradeOffer { id, partner, action });
+                    }
+                }
+                Request::ReviewTrade(id) => ctx.navigate("inventory", Some(format!("trade-review:{id}"))),
+                Request::ProposeTrade { partner, give, get, message } => {
+                    ctx.navigate("inventory", Some(super::inventory::trade_link(partner, &give, &get, &message)));
+                }
+                Request::LoadInventory(app_id, context_id) => {
+                    let steam_id = ctx.state.steam_id;
+                    if !ctx.state.inventories.contains_key(&(steam_id, app_id, context_id)) {
+                        ctx.send(Command::LoadInventory { steam_id, app_id, context_id, language: i18n::language().steam_name().to_string() });
+                    }
+                }
+                Request::Prices(app_id, names) => {
+                    // Each price once; a game's first ones as a bulk search.
+                    let mut asked = self.prices.lock().unwrap();
+                    let names: Vec<String> = names.into_iter().filter(|n| asked.0.insert((app_id, n.clone()))).collect();
+                    if !names.is_empty() && (app_id == 753 || asked.1.insert(app_id)) {
+                        ctx.send(Command::MarketPrices { app_id, names, currency: super::inventory::wallet_currency(ctx) });
+                    }
+                }
             }
         }
         self.persist(p);
@@ -189,13 +227,14 @@ impl Plugins {
                 return s.clone();
             }
         }
-        let s = snapshot(ctx);
+        let wants = |perm| self.list.iter().any(|p| p.is_running() && p.manifest.permissions.contains(&perm));
+        let s = snapshot(ctx, wants(plugins::Permission::TradesRead), wants(plugins::Permission::InventoryRead));
         self.snapshot = Some((std::time::Instant::now(), s.clone()));
         s
     }
 }
 
-fn snapshot(ctx: &Ctx) -> Snapshot {
+fn snapshot(ctx: &Ctx, trades: bool, inventory: bool) -> Snapshot {
     let me = ctx.state.me().map(|p| (p.steam_id, ctx.state.persona_name.clone(), p.state.label().to_string()));
     let friends = ctx
         .state
@@ -221,7 +260,42 @@ fn snapshot(ctx: &Ctx) -> Snapshot {
         .collect();
     downloads.extend(ctx.state.download_queue.iter().map(|&id| (id, name(id), ctx.state.set_aside.get(&id).copied().unwrap_or(0.0), 0, false, true)));
     let wishlist = ctx.state.wishlist.as_ref().map(|w| w.iter().map(|(id, _)| *id).collect()).unwrap_or_default();
-    Snapshot { me, friends, library, downloads, wishlist, language: i18n::language().code().to_string() }
+    // Trades, inventories and prices only when a running plugin may see them
+    // (they can be large).
+    let trades = match (&ctx.state.trade_offers, trades) {
+        (Some(Ok(o)), true) => o.received.iter().chain(o.sent.iter()).map(|x| (x.clone(), ctx.state.persona(x.partner).name)).collect(),
+        _ => Vec::new(),
+    };
+    let me_id = ctx.state.steam_id;
+    let (inv, prices) = if inventory || trades.iter().len() > 0 {
+        let inv = if inventory {
+            ctx.state.inventories.iter().filter(|((o, _, _), _)| *o == me_id).map(|((_, a, c), i)| ((*a, *c), i.items.clone())).collect()
+        } else {
+            HashMap::new()
+        };
+        let prices = ctx
+            .state
+            .market_prices
+            .iter()
+            .filter_map(|(k, v)| v.as_ref().ok().and_then(|p| p.lowest_sell.or_else(|| p.lowest.as_deref().and_then(model::parse_money))).map(|c| (k.clone(), c)))
+            .collect();
+        (inv, prices)
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
+    let currency = model::currency(super::inventory::wallet_currency(ctx)).0.to_string();
+    Snapshot {
+        me,
+        friends,
+        library,
+        downloads,
+        wishlist,
+        language: i18n::language().code().to_string(),
+        trades: Arc::new(trades),
+        inventory: Arc::new(inv),
+        prices: Arc::new(prices),
+        currency,
+    }
 }
 
 impl Extension for Plugins {
@@ -257,6 +331,23 @@ impl Extension for Plugins {
             Event::DownloadFinished { app_id, result } => host_events.push(HostEvent::DownloadFinished { app_id: *app_id, ok: result.is_ok() }),
             Event::Message(m) if m.from != ctx.state.steam_id => {
                 host_events.push(HostEvent::Message { steam_id: m.from, name: ctx.state.persona(m.from).name, text: m.text.clone() });
+            }
+            Event::TradeOffers(Ok(o)) => {
+                let first = self.trades_seen.is_none();
+                let seen = self.trades_seen.get_or_insert_with(HashMap::new);
+                for x in o.received.iter().chain(o.sent.iter()) {
+                    let before = seen.insert(x.id, x.state);
+                    if first {
+                        continue;
+                    }
+                    match before {
+                        None if !x.ours && x.state == model::TradeState::Active => {
+                            host_events.push(HostEvent::TradeOffer { id: x.id, partner: x.partner, name: ctx.state.persona(x.partner).name });
+                        }
+                        Some(s) if s != x.state => host_events.push(HostEvent::TradeChanged { id: x.id, state: x.state }),
+                        _ => {}
+                    }
+                }
             }
             Event::Personas(list) => {
                 for p in list.iter().filter(|p| p.steam_id != ctx.state.steam_id) {
@@ -294,6 +385,13 @@ impl Extension for Plugins {
     fn tick(&mut self, ctx: &mut Ctx) {
         if !self.loaded {
             return;
+        }
+        // Keep trade offers fresh for plugins that watch them (every 2 minutes).
+        if self.list.iter().any(|p| p.is_running() && p.manifest.permissions.contains(&plugins::Permission::TradesRead))
+            && self.trades_polled.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(120))
+        {
+            self.trades_polled = Some(std::time::Instant::now());
+            ctx.send(Command::LoadTradeOffers { language: i18n::language().steam_name().to_string() });
         }
         // Answers to web requests.
         let replies = std::mem::take(&mut *self.replies.lock().unwrap());

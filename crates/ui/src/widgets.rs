@@ -555,7 +555,9 @@ pub fn search(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width: f32
     ui.painter().text(rect.left_center() + vec2(15.0, 0.0), Align2::CENTER_CENTER, crate::icons::SEARCH, font(14.0), t.text_faint);
     let clear_w = if value.is_empty() { 0.0 } else { 26.0 };
     let field = Rect::from_min_max(pos2(rect.left() + 30.0, rect.top()), pos2(rect.right() - 12.0 - clear_w, rect.bottom()));
-    let resp = ui.put(
+    // `place`, not `put`: `put` would end the row at the text field,
+    // so the next widget overlapped the box's right end.
+    let resp = ui.place(
         field,
         egui::TextEdit::singleline(value)
             .hint_text(text(hint, 13.5, t.text_faint))

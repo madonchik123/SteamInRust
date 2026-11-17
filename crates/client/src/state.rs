@@ -33,6 +33,7 @@ pub struct State {
     /// Market prices by (app, market hash name).
     pub market_prices: HashMap<(AppId, String), Result<model::MarketPrice, String>>,
     pub my_listings: Option<Result<model::MyListings, String>>,
+    pub trade_offers: Option<Result<model::TradeOffers, String>>,
     /// Names of games not in your library.
     pub app_names: HashMap<AppId, String>,
     pub email: Option<(String, bool)>,
@@ -170,6 +171,8 @@ impl State {
                     new.highest_buy = new.highest_buy.or(old.highest_buy);
                     new.sell_count = new.sell_count.or(old.sell_count);
                     new.buy_count = new.buy_count.or(old.buy_count);
+                    new.median = new.median.take().or_else(|| old.median.clone());
+                    new.volume = new.volume.or(old.volume);
                 }
                 if let Ok(Some(r)) = result.as_ref().map(|p| p.fee_rules) {
                     self.fee_rules = r;
@@ -177,6 +180,21 @@ impl State {
                 self.market_prices.insert((*app_id, hash_name.clone()), result);
             }
             Event::MyListings(r) => self.my_listings = Some(r.clone()),
+            Event::TradeOffers(r) => self.trade_offers = Some(r.clone()),
+            // Shown right away; the list is loaded again afterwards.
+            Event::TradeOfferAnswered { id, action, result: Ok(confirm) } => {
+                if let Some(Ok(o)) = &mut self.trade_offers {
+                    for x in o.received.iter_mut().chain(o.sent.iter_mut()).filter(|x| x.id == *id) {
+                        x.state = match action {
+                            _ if *confirm => model::TradeState::NeedsConfirmation,
+                            model::TradeAction::Accept => model::TradeState::Accepted,
+                            model::TradeAction::Decline => model::TradeState::Declined,
+                            model::TradeAction::Cancel => model::TradeState::Cancelled,
+                        };
+                    }
+                }
+            }
+            Event::TradeOfferAnswered { .. } | Event::TradeOfferSent { .. } | Event::MarketPricesDone { .. } => {}
             Event::Comments { steam_id, result } => {
                 self.comments.insert(*steam_id, result.clone());
             }

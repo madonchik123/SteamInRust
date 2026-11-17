@@ -15,6 +15,8 @@ use ui::{Theme, icons, widgets as w};
 mod market;
 #[path = "inventory_search.rs"]
 mod search;
+#[path = "inventory_trades.rs"]
+mod trades;
 
 /// Games with community inventories: (app, context, name). 753/6 is Steam's
 /// own inventory (trading cards, backgrounds, emoticons, boosters).
@@ -48,6 +50,8 @@ enum View {
     Listings,
     /// The Community Market search.
     Market,
+    /// Your trade offers, and making new ones.
+    Trades,
 }
 
 #[derive(Default)]
@@ -74,10 +78,16 @@ pub struct Inventory {
     price_asked: HashSet<(AppId, String)>,
     full_asked: HashSet<(AppId, String)>,
     next_price_at: f64,
+    /// Games whose fast price search was sent, and finished.
+    price_batch_sent: HashSet<AppId>,
+    price_batch_done: HashSet<AppId>,
+    /// Prices waiting on a game's fast search, then looked up one by one.
+    price_waiting: std::collections::HashMap<AppId, Vec<String>>,
     sell: Option<market::SellDialog>,
     gift: Option<u64>,
     listings_requested: bool,
     market: search::MarketSearch,
+    trades: trades::Trades,
 }
 
 impl Extension for Inventory {
@@ -97,6 +107,27 @@ impl Extension for Inventory {
         }
         if arg == Some("market") {
             self.view = View::Market;
+            return;
+        }
+        // "trades", or "trade:<partner>" / "trade:<partner>:<app>:<context>:<asset>"
+        // to start an offer (giving that item).
+        if arg == Some("trades") {
+            self.view = View::Trades;
+            self.trades.builder = None;
+            self.trades.loaded = false;
+            return;
+        }
+        if let Some(id) = arg.and_then(|a| a.strip_prefix("trade-review:")).and_then(|x| x.parse().ok()) {
+            self.view = View::Trades;
+            self.trades.builder = None;
+            self.trades.review = Some(id);
+            return;
+        }
+        if let Some(rest) = arg.and_then(|a| a.strip_prefix("trade:")) {
+            if let Some(p) = trades::Prefill::parse(rest) {
+                self.trades.pending = Some(p);
+                self.view = View::Trades;
+            }
             return;
         }
         let mut parts = arg.unwrap_or_default().split('/');
@@ -121,6 +152,9 @@ impl Extension for Inventory {
         let t = ctx.theme.clone();
         if self.view == View::Market {
             return self.market_page(ui, &t, ctx);
+        }
+        if self.view == View::Trades {
+            return self.trades_page(ui, &t, ctx);
         }
         let owner = self.owner.filter(|o| *o != 0).unwrap_or(ctx.state.steam_id);
         let mine = owner == ctx.state.steam_id;
@@ -345,24 +379,20 @@ impl Extension for Inventory {
                 self.selected = items.first().map(|(i, _)| i.asset_id);
             }
 
-            // Price lookups, throttled: Steam blocks fast repeated requests.
+            // Prices: a fast search for many at once, then the rest one by one.
             if self.show_prices {
-                for (i, _) in &items {
-                    let key = (app, i.market_hash_name.clone());
-                    if i.marketable && !i.market_hash_name.is_empty() && !prices.contains_key(&key) && self.price_asked.insert(key.clone()) {
-                        self.price_queue.push_back(key);
+                // Only the items on screen (below), unless sorting by price needs them all.
+                if self.sort == Sort::Price {
+                    let wants: Vec<(AppId, String)> = items.iter().filter(|(i, _)| i.marketable && !i.market_hash_name.is_empty()).map(|(i, _)| (app, i.market_hash_name.clone())).collect();
+                    self.want_prices(ui, ctx, wants);
+                }
+                let prices = &ctx.state.market_prices;
+                let price_of = |i: &InventoryItem| -> Option<u64> {
+                    match prices.get(&(app, i.market_hash_name.clone())) {
+                        Some(Ok(p)) => p.lowest_sell.or_else(|| p.lowest.as_deref().and_then(model::parse_money)),
+                        _ => None,
                     }
-                }
-                let now = ui.input(|i| i.time);
-                if now >= self.next_price_at {
-                    if let Some((a, h)) = self.price_queue.pop_front() {
-                        ctx.send(Command::MarketPrice { app_id: a, hash_name: h, currency: wallet_currency(ctx), country: ctx.state.country.clone(), full: false });
-                        self.next_price_at = now + 3.2;
-                    }
-                }
-                if !self.price_queue.is_empty() {
-                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-                }
+                };
                 let (mut total, mut priced, mut marketable) = (0u64, 0usize, 0usize);
                 for (i, n) in &items {
                     if i.marketable {
@@ -385,6 +415,8 @@ impl Extension for Inventory {
             let grid_w = (ui.available_width() - side - 18.0).max(0.0);
             let height = ui.available_height();
             let currency = wallet_currency(ctx);
+            // Items drawn this frame, to price just those.
+            let mut seen: Vec<(AppId, String)> = Vec::new();
             ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(vec2(grid_w, height), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(grid_w);
@@ -397,10 +429,23 @@ impl Extension for Inventory {
                     let cols = (((grid_w + gap) / (tile + gap)).floor() as usize).max(1);
                     let rows = items.len().div_ceil(cols);
                     egui::ScrollArea::vertical().id_salt(("inv", owner, app)).auto_shrink([false, false]).show_rows(ui, tile + gap, rows, |ui, range| {
+                        // Price a row more on each side, so they're there as you scroll.
+                        if self.show_prices {
+                            for row in [range.start.checked_sub(1), Some(range.end).filter(|r| *r < rows)].into_iter().flatten() {
+                                for (item, _) in items.iter().skip(row * cols).take(cols) {
+                                    if item.marketable && !item.market_hash_name.is_empty() {
+                                        seen.push((app, item.market_hash_name.clone()));
+                                    }
+                                }
+                            }
+                        }
                         for row in range {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = gap;
                                 for (item, count) in items.iter().skip(row * cols).take(cols) {
+                                    if self.show_prices && item.marketable && !item.market_hash_name.is_empty() {
+                                        seen.push((app, item.market_hash_name.clone()));
+                                    }
                                     let price = if self.show_prices { price_of(item).map(|p| model::format_money(p as i64, currency)) } else { None };
                                     if item_tile(ui, &t, item, *count, price, tile, self.selected == Some(item.asset_id)).clicked() {
                                         self.selected = Some(item.asset_id);
@@ -420,12 +465,19 @@ impl Extension for Inventory {
                     }
                 });
             });
+            if self.show_prices {
+                self.want_prices(ui, ctx, seen);
+            }
             self.sell_dialog(ui, &t, ctx);
             self.gift_picker(ui, &t, ctx);
         });
     }
 
     fn on_event(&mut self, event: &Event, ctx: &mut Ctx) {
+        self.trade_event(event, ctx);
+        if let Event::MarketPricesDone { app_id } = event {
+            self.prices_searched(*app_id, ctx);
+        }
         match event {
             Event::ItemListed { result, .. } => {
                 match result {
@@ -448,66 +500,73 @@ impl Extension for Inventory {
     }
 }
 
+impl Inventory {
+    /// Get market prices for these items: first Steam's market search,
+    /// which prices up to 100 items per request, then whatever it missed
+    /// one at a time (Steam blocks fast repeated single lookups).
+    pub(super) fn want_prices(&mut self, ui: &Ui, ctx: &mut Ctx, wants: Vec<(AppId, String)>) {
+        let mut batch: BTreeMap<AppId, Vec<String>> = BTreeMap::new();
+        for key in wants {
+            if ctx.state.market_prices.contains_key(&key) || !self.price_asked.insert(key.clone()) {
+                continue;
+            }
+            let (app, name) = key;
+            if self.price_batch_done.contains(&app) {
+                self.price_queue.push_back((app, name));
+            } else {
+                // Steam items are searched per game, so new ones get a search
+                // of their own; other games are searched once.
+                if app == 753 || !self.price_batch_sent.contains(&app) {
+                    batch.entry(app).or_default().push(name.clone());
+                }
+                self.price_waiting.entry(app).or_default().push(name);
+            }
+        }
+        for (app, names) in batch {
+            self.price_batch_sent.insert(app);
+            ctx.send(Command::MarketPrices { app_id: app, names, currency: wallet_currency(ctx) });
+        }
+        let now = ui.input(|i| i.time);
+        if now >= self.next_price_at {
+            while let Some((a, h)) = self.price_queue.pop_front() {
+                if ctx.state.market_prices.contains_key(&(a, h.clone())) {
+                    continue;
+                }
+                ctx.send(Command::MarketPrice { app_id: a, hash_name: h, currency: wallet_currency(ctx), country: ctx.state.country.clone(), full: false });
+                self.next_price_at = now + 3.2;
+                break;
+            }
+        }
+        if !self.price_queue.is_empty() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+
+    /// The fast search finished: look up what it missed one by one.
+    fn prices_searched(&mut self, app: AppId, ctx: &Ctx) {
+        if app != 753 {
+            self.price_batch_done.insert(app);
+        }
+        for name in self.price_waiting.remove(&app).unwrap_or_default() {
+            if !ctx.state.market_prices.contains_key(&(app, name.clone())) {
+                self.price_queue.push_back((app, name));
+            }
+        }
+    }
+}
+
+/// The inventory link that opens a new offer with these items in it.
+pub(crate) fn trade_link(partner: SteamId, give: &[model::TradeAsset], get: &[model::TradeAsset], message: &str) -> String {
+    trades::Prefill { partner, give: give.iter().map(|a| (a.app_id, a.context_id, a.asset_id)).collect(), get: get.iter().map(|a| (a.app_id, a.context_id, a.asset_id)).collect(), message: message.to_string() }.link()
+}
+
 pub(crate) fn wallet_currency(ctx: &Ctx) -> i32 {
     ctx.state.wallet.map(|w| w.1).filter(|c| *c > 0).unwrap_or(1)
 }
 
 impl Inventory {
-    /// Filters built from the tags this game puts on its items (hero, rarity,
-    /// exterior, card set, ...), so every game gets its own.
     fn tag_filters(&mut self, ui: &mut Ui, t: &Theme, items: &[InventoryItem]) {
-        let mut cats: BTreeMap<&str, BTreeMap<&str, (usize, Option<&str>)>> = BTreeMap::new();
-        for i in items {
-            for (c, v, color) in &i.tags {
-                if c.is_empty() || v.is_empty() {
-                    continue;
-                }
-                let e = cats.entry(c.as_str()).or_default().entry(v.as_str()).or_insert((0, color.as_deref()));
-                e.0 += 1;
-            }
-        }
-        egui::Frame::new().inner_margin(Margin::same(6)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(w::text_bold(t!("Filters for this game"), 14.0, t.text));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if !self.tags.is_empty() && ui.link(w::text(t!("Clear all"), 12.5, t.accent)).clicked() {
-                        self.tags.clear();
-                    }
-                });
-            });
-            if cats.is_empty() {
-                ui.label(w::text(t!("This game doesn't tag its items."), 13.0, t.text_faint));
-                return;
-            }
-            // Categories with a single value don't filter anything.
-            for (cat, values) in cats.iter().filter(|(_, v)| v.len() > 1) {
-                let chosen = self.tags.get(*cat).map(|s| s.len()).unwrap_or(0);
-                let title = if chosen > 0 { format!("{cat} ({chosen})") } else { cat.to_string() };
-                egui::CollapsingHeader::new(w::text_semibold(title, 13.0, t.text_dim)).id_salt(("tagcat", *cat)).default_open(values.len() <= 12).show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                        let mut list: Vec<_> = values.iter().collect();
-                        list.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
-                        for (value, (n, color)) in list {
-                            let on = self.tags.get(*cat).is_some_and(|s| s.contains(*value));
-                            // Steam colors some tags (rarity, quality, card border); keep them.
-                            if w::tinted_chip(ui, t, &format!("{value}  {n}"), hex(*color), on).clicked() {
-                                let set = self.tags.entry(cat.to_string()).or_default();
-                                if on {
-                                    set.remove(*value);
-                                } else {
-                                    set.insert(value.to_string());
-                                }
-                                if set.is_empty() {
-                                    self.tags.remove(*cat);
-                                }
-                            }
-                        }
-                    });
-                });
-            }
-        });
+        tag_filters(ui, t, &mut self.tags, items);
     }
 
     fn header(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, owner: SteamId, mine: bool, tabs: &[(AppId, u64, String, Option<u32>)]) {
@@ -535,14 +594,21 @@ impl Inventory {
                     self.view = View::Market;
                 }
                 if mine {
-                    if w::button(ui, &t, Some(icons::SWAP), t!("Trade offers"), w::Kind::Secondary, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked() {
-                        let _ = open::that_detached(format!("https://steamcommunity.com/profiles/{owner}/tradeoffers/"));
+                    let waiting = match &ctx.state.trade_offers {
+                        Some(Ok(o)) => o.received.iter().filter(|o| o.state == model::TradeState::Active).count(),
+                        _ => 0,
+                    };
+                    let label = if waiting > 0 { format!("{} ({waiting})", t!("Trade offers")) } else { t!("Trade offers").to_string() };
+                    if w::button(ui, &t, Some(icons::SWAP), &label, w::Kind::Secondary, w::Size::Sm).clicked() {
+                        self.view = View::Trades;
+                        self.trades.builder = None;
+                        ctx.send(Command::LoadTradeOffers { language: i18n::language().steam_name().to_string() });
                     }
                 } else if ctx.state.friends.get(&owner) == Some(&Relationship::Friend)
-                    && w::button(ui, &t, Some(icons::SWAP), t!("Offer a trade"), w::Kind::Secondary, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked()
+                    && w::button(ui, &t, Some(icons::SWAP), t!("Offer a trade"), w::Kind::Secondary, w::Size::Sm).clicked()
                 {
-                    let account = owner & 0xFFFF_FFFF;
-                    let _ = open::that_detached(format!("https://steamcommunity.com/tradeoffer/new/?partner={account}"));
+                    self.trades.pending = Some(trades::Prefill { partner: owner, ..Default::default() });
+                    self.view = View::Trades;
                 }
                 if !mine && w::button(ui, &t, Some(icons::USER_CIRCLE), t!("Profile"), w::Kind::Ghost, w::Size::Sm).clicked() {
                     ctx.navigate("profile", Some(owner.to_string()));
@@ -551,6 +617,63 @@ impl Inventory {
         });
         ui.add_space(14.0);
     }
+}
+
+/// Filters built from the tags this game puts on its items (hero, rarity,
+/// exterior, card set, ...), so every game gets its own.
+pub(crate) fn tag_filters(ui: &mut Ui, t: &Theme, tags: &mut BTreeMap<String, HashSet<String>>, items: &[InventoryItem]) {
+    let mut cats: BTreeMap<&str, BTreeMap<&str, (usize, Option<&str>)>> = BTreeMap::new();
+    for i in items {
+        for (c, v, color) in &i.tags {
+            if c.is_empty() || v.is_empty() {
+                continue;
+            }
+            let e = cats.entry(c.as_str()).or_default().entry(v.as_str()).or_insert((0, color.as_deref()));
+            e.0 += 1;
+        }
+    }
+    egui::Frame::new().inner_margin(Margin::same(6)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(w::text_bold(t!("Filters for this game"), 14.0, t.text));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if !tags.is_empty() && ui.link(w::text(t!("Clear all"), 12.5, t.accent)).clicked() {
+                    tags.clear();
+                }
+            });
+        });
+        if cats.is_empty() {
+            ui.label(w::text(t!("This game doesn't tag its items."), 13.0, t.text_faint));
+            return;
+        }
+        // Categories with a single value don't filter anything.
+        for (cat, values) in cats.iter().filter(|(_, v)| v.len() > 1) {
+            let chosen = tags.get(*cat).map(|s| s.len()).unwrap_or(0);
+            let title = if chosen > 0 { format!("{cat} ({chosen})") } else { cat.to_string() };
+            egui::CollapsingHeader::new(w::text_semibold(title, 13.0, t.text_dim)).id_salt(("tagcat", *cat)).default_open(values.len() <= 12).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    let mut list: Vec<_> = values.iter().collect();
+                    list.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(b.0)));
+                    for (value, (n, color)) in list {
+                        let on = tags.get(*cat).is_some_and(|s| s.contains(*value));
+                        // Steam colors some tags (rarity, quality, card border); keep them.
+                        if w::tinted_chip(ui, t, &format!("{value}  {n}"), hex(*color), on).clicked() {
+                            let set = tags.entry(cat.to_string()).or_default();
+                            if on {
+                                set.remove(*value);
+                            } else {
+                                set.insert(value.to_string());
+                            }
+                            if set.is_empty() {
+                                tags.remove(*cat);
+                            }
+                        }
+                    }
+                });
+            });
+        }
+    });
 }
 
 /// The item's rarity color, like Steam's colored tile edges: the most vivid
@@ -575,6 +698,11 @@ pub(crate) fn hex(c: Option<&str>) -> Option<Color32> {
 }
 
 fn item_tile(ui: &mut Ui, t: &Theme, item: &InventoryItem, count: u64, price: Option<String>, size: f32, selected: bool) -> egui::Response {
+    item_tile_plain(ui, t, item, count, price, size, selected).on_hover_text(&item.name)
+}
+
+/// [`item_tile`] without its name tooltip, for places that show their own.
+fn item_tile_plain(ui: &mut Ui, t: &Theme, item: &InventoryItem, count: u64, price: Option<String>, size: f32, selected: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
     let p = ui.painter();
@@ -610,7 +738,7 @@ fn item_tile(ui: &mut Ui, t: &Theme, item: &InventoryItem, count: u64, price: Op
     }
     let stroke = if selected { Stroke::new(2.0, t.accent) } else { Stroke::new(1.0, w::mix(t.border, t.text_faint, hover)) };
     p.rect_stroke(rect, t.corner_small(), stroke, egui::StrokeKind::Inside);
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&item.name)
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn skeleton_grid(ui: &mut Ui, t: &Theme) {
