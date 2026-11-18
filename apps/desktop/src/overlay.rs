@@ -1165,7 +1165,7 @@ fn chat_window(app: &mut SteamApp, ctx: &egui::Context, t: &Theme, actions: &mut
         ui.add_space(6.0);
         // Exactly the space the window has, so it never grows by itself.
         let h = ui.available_height();
-        actions.extend(crate::builtin::community::chat_body(ui, t, &app.state, &app.client, id, &mut app.overlay.input, h));
+        actions.extend(crate::builtin::friends::chat_body(ui, t, &app.state, &app.client, id, &mut app.overlay.input, h));
     });
     if !app.overlay.win(Win::Chat).open {
         app.overlay.chat_with = None;

@@ -59,6 +59,7 @@ top_bar_height = 60
 page_bar = false
 search = "top_bar"
 status_bar = true
+friends_width = 300
 
 [components.button_primary]
 height = 38
@@ -245,3 +246,24 @@ normal = { fill = "raised", text = "text", border = "border" }
 
 [components.progress]
 normal = { fill = "raised" }
+
+[components.friends_panel]
+padding = [14, 12]
+normal = { fill = "chrome" }
+
+[components.friends_box]
+padding = [0, 4]
+radius = "none"
+normal = { fill = "transparent" }
+
+[components.friend_row]
+height = 50
+padding = [6, 6]
+text = { size = 14, weight = "medium" }
+normal = { fill = "transparent" }
+hover = { fill = "surface_hover" }
+selected = { fill = "accent@0.18" }
+
+[components.friend_avatar]
+radius = "full"
+border = 0

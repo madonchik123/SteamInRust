@@ -346,7 +346,7 @@ impl Profile {
             _ => ctx.state.inventories.iter().filter(|(k, _)| k.0 == id).map(|(_, v)| v.total as u64).sum(),
         };
         let sub = |name: &str| Link::Page("profile", Some(format!("{id}/{name}")));
-        let friends_link = if mine { Link::Page("community", None) } else { sub("friends") };
+        let friends_link = if mine { Link::Page("friends", None) } else { sub("friends") };
         let friends_count = if mine { ctx.state.friend_list().len().to_string() } else { String::new() };
         let links: Vec<(&str, &str, String, Link)> = vec![
             (icons::BOOKS, t!("Games"), games, Link::Games),
@@ -408,7 +408,7 @@ impl Profile {
                         }
                     }
                     if friends.len() > 8 && ui.link(w::text(t!("See all {n} friends", n = friends.len()), 12.5, t.accent)).clicked() {
-                        ctx.navigate("community", None);
+                        ctx.navigate("friends", None);
                     }
                 });
             }

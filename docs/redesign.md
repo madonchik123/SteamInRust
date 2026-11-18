@@ -209,9 +209,9 @@ column or the friends list to the left. This is the default theme's layout:
 │ ‹ ›  [logo]  STORE  COMMUNITY  <YOU>  LIBRARY  DOWNLOADS ◔ 46%   [👥4][🔔1][avatar name $5.25 ▾] Help View ▾  – ▢ ✕ │
 ├ page bar, 57 px, tertiary ────────────────────────────────────────────────────┤
 │ [Home] Collections  News …    [Search…        🔍] [⧩][◷][▷]     View [≡][▦][▢]  Activate a Product … │
-├───────────────────────────────────────────────────────────┬ friends drawer, 290 px ┤
-│ the page (the area's background behind it)               │                         │
-└───────────────────────────────────────────────────────────┴─────────────────────────┘
+├───────────────────────────────────────────────────────────────────────────────┤
+│ the page (the area's background behind it)                                    │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Top bar (Figma `333:2433` "client", top 59 px; `header.png`):
@@ -230,8 +230,8 @@ Top bar (Figma `333:2433` "client", top 59 px; `header.png`):
   the details on hover (this replaces the old status bar at the bottom, which
   the design doesn't have).
 - On the right: the offline badge (when offline), the search (when the
-  theme puts it in the top bar), Friends (opens the friends
-  drawer; rest the pointer on it for the quick list), Notifications, the
+  theme puts it in the top bar), Friends (opens the Friends & Chat
+  window, see below), Notifications, the
   account button (avatar, name and wallet; its menu has your status, profile,
   settings, the wallet with its actions, and sign-out), Help (Support,
   updates), View (Big Picture, the main places, Friends & Chat, Settings),
@@ -268,8 +268,25 @@ puts the search there.
 A page that takes the bar over should have its own search there. The sample
 in `builtin/gallery.rs` matches the library's bar.
 
-The friends drawer, toasts, dialogs and the notifications menu are unchanged
-apart from taking the new tokens and controls.
+Toasts, dialogs and the notifications menu are unchanged apart from taking
+the new tokens and controls.
+
+Friends and chat are one window, Friends & Chat (`friends_window.rs`, Figma
+"friends" `447:3850`), like Steam's: there's no friends panel in the main
+window and no friends page. The friends list is docked on the theme's
+`friends_side` (the right), `friends_width` wide: you, your status and "Add a
+friend"; Friends and Activity tabs; friends by Favorites, In game, Online and
+Offline, then group chats. Opening a conversation widens the window toward
+the other side (the list stays where it was), with the open conversations as
+tabs. Chats, group chats and the Add a friend / Invites / Blocked pages are
+drawn by the `friends` extension (`builtin/friends.rs`,
+`builtin/friends_groups.rs`). The top bar's Friends button, View → Friends &
+Chat, the tray and the status bar open it. Links open it too:
+`Action::OpenChat(id)`, or navigating to the page `friends` with an argument
+(a SteamID, `group:<id>`, `groups`, `activity`, `add`, `invites`,
+`blocked`); `community` with one of those arguments still works. For
+previews, `--friends` opens it and `--friends=chat`, `=group`, `=add`,
+`=chat,activity`… open it on something.
 
 Big Picture (`apps/desktop/src/bigpicture`) keeps its own look; it only picks
 up the theme's colors.
@@ -313,7 +330,7 @@ The game's Properties window (`library_props.rs`) has no frame in the design.
 
 | Frame | Node | Today |
 | --- | --- | --- |
-| community home | `487:5076` | nothing matching yet: `builtin/community.rs` is the friends and chat page |
+| community home | `487:5076` | nothing matching yet (the old friends page is now the Friends & Chat window) |
 | game community hub | `495:6863`, `801:10167` | `builtin/hub/mod.rs`, `hub/files.rs` |
 | game community hub discussions | `505:8934` | `builtin/hub/forum.rs` |
 | game community hub workshop, workshop 2 | `512:11944`, `517:14057` | `builtin/hub/files.rs` (Workshop items) |
@@ -337,7 +354,7 @@ inventory (`inventory.rs`, `inventory_trades.rs`) have no frame of their own.
 | settings | `475:6189` | `builtin/settings.rs`, `settings_account.rs` (its own `settings::toggle` can become `w::toggle`) |
 | privacy settings | `477:7327` | `builtin/profile_edit.rs` (privacy) |
 | profile settings | `476:6952` | `builtin/profile_edit.rs` |
-| friends (popup) | `447:3850` | `shell.rs` (`friends_hover`, `friends_drawer`, `friend_list`), `friends_window.rs` |
+| friends (popup) | `447:3850` | `friends_window.rs`, `builtin/friends.rs` (done: the Friends & Chat window) |
 | notifications (popup) | `766:10159` | `shell.rs` (`notifications_button`) |
 | account (menu) | `18:1282` | `shell.rs` (`account_menu`; the button is done, the menu's rows can follow the frame) |
 

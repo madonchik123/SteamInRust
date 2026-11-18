@@ -443,7 +443,10 @@ pub struct Layout {
     /// Width of the left navigation column (`nav = "left"`).
     pub nav_width: f32,
     pub search: SearchPlace,
+    /// Which side of the Friends & Chat window the friends list docks on (an
+    /// open chat grows the window toward the other side).
     pub friends_side: Side,
+    /// The friends list's width in that window.
     pub friends_width: f32,
     /// The bottom bar with downloads and Friends & Chat.
     pub status_bar: bool,
@@ -463,7 +466,7 @@ impl Default for Layout {
             nav_width: 220.0,
             search: SearchPlace::PageBar,
             friends_side: Side::Right,
-            friends_width: 290.0,
+            friends_width: 338.0,
             status_bar: false,
             status_bar_height: 34.0,
             game_card: CardStyle::Cover,
@@ -712,7 +715,7 @@ pub struct Components {
     pub top_bar: Component,
     pub page_bar: Component,
     pub status_bar: Component,
-    /// The left navigation column and the friends list beside the page.
+    /// The left navigation column.
     pub sidebar: Component,
     /// Rows in the left navigation column.
     pub sidebar_item: Component,
@@ -724,6 +727,17 @@ pub struct Components {
     pub progress: Component,
     /// Toast messages.
     pub toast: Component,
+    /// The Friends & Chat window's list column (`normal` fill, `padding`).
+    pub friends_panel: Component,
+    /// The box holding the friends list, under its Friends / Activity tabs.
+    pub friends_box: Component,
+    /// A row in the friends list: `height` (with the gap to the next row),
+    /// `padding` around the row's content, `text` the name; `hover` and
+    /// `selected` (the open conversation) fills.
+    pub friend_row: Component,
+    /// Avatars in the friends list and chat: `radius`, and `border` drawn in
+    /// the friend's status color (0: a round status dot instead).
+    pub friend_avatar: Component,
 }
 
 // ---------- assets ----------
@@ -1153,6 +1167,10 @@ impl Components {
             ("wishlist", &self.wishlist),
             ("progress", &self.progress),
             ("toast", &self.toast),
+            ("friends_panel", &self.friends_panel),
+            ("friends_box", &self.friends_box),
+            ("friend_row", &self.friend_row),
+            ("friend_avatar", &self.friend_avatar),
         ]
     }
 }

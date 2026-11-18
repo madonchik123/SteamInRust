@@ -2120,3 +2120,13 @@
 "Help|menu" = "帮助"
 "View|menu" = "视图"
 "Sort by" = "排序方式"
+
+# --- Redesign: Friends & Chat window ---
+"Pick a friend to chat with" = "选择一位好友开始聊天"
+"Change your status" = "更改你的状态"
+"sent a game invite" = "发送了游戏邀请"
+"is now online" = "现在在线"
+"went offline" = "已离线"
+"started playing {game}" = "开始玩 {game}"
+"Messages and what your friends are up to show here." = "消息和好友的动态会显示在这里。"
+"Unblock" = "解除屏蔽"

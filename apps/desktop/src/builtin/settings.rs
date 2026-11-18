@@ -257,7 +257,7 @@ fn account(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pages: &mut super::settings_ac
     }
     let code = (ctx.state.steam_id & 0xFFFF_FFFF).to_string();
     if info_row(ui, t, t!("Your friend code"), &code, Some(t!("Add friends"))) {
-        ctx.navigate("community", None);
+        ctx.navigate("friends", Some("add".into()));
     }
     let email = ctx.state.email.as_ref().map(|(e, ok)| if *ok { e.clone() } else { format!("{e} ({})", t!("not verified")) }).unwrap_or_else(|| "—".into());
     if info_row(ui, t, t!("Email address"), &email, Some(t!("Change email address"))) {
@@ -290,7 +290,7 @@ fn friends_chat(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
         ctx.toast(t!("Friend code copied"));
     }
     if info_row(ui, t, t!("Friends"), &ctx.state.friend_list().len().to_string(), Some(t!("Open friends list"))) {
-        ctx.navigate("community", None);
+        ctx.navigate("friends", None);
     }
     if info_row(ui, t, t!("Who can see your status and send invites"), "", Some(t!("Privacy settings"))) {
         ctx.navigate("profile", Some("edit/privacy".into()));

@@ -2120,3 +2120,13 @@
 "Help|menu" = "Ajuda"
 "View|menu" = "Exibir"
 "Sort by" = "Ordenar por"
+
+# --- Redesign: Friends & Chat window ---
+"Pick a friend to chat with" = "Escolha um amigo para conversar"
+"Change your status" = "Mudar seu status"
+"sent a game invite" = "enviou um convite para jogar"
+"is now online" = "agora está online"
+"went offline" = "ficou offline"
+"started playing {game}" = "começou a jogar {game}"
+"Messages and what your friends are up to show here." = "Mensagens e o que seus amigos estão fazendo aparecem aqui."
+"Unblock" = "Desbloquear"

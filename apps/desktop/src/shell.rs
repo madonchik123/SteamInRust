@@ -1,4 +1,5 @@
-//! Main window chrome: top navigation, friends drawer, status bar, toasts.
+//! Main window chrome: top navigation, status bar, toasts. Friends and chat
+//! live in their own window (`friends_window.rs`).
 
 use ui::widgets::EditMenu;
 use i18n::t;
@@ -7,13 +8,13 @@ use client::Command;
 use egui::{Align, Align2, Layout, Margin, Rect, Sense, Stroke, Ui, vec2};
 use extensions::{Action, Env, Placement};
 use model::{Persona, PersonaState, art};
-use ui::theme::{NavPosition, SearchPlace, Side};
+use ui::theme::{NavPosition, SearchPlace};
 use ui::{Theme, icons, widgets as w};
 
 /// The main window, laid out by the theme ([`ui::theme::Layout`]): the top
 /// bar (sections, friends, notifications, account, window buttons), the
-/// page's own bar, an optional left navigation column and status bar, the
-/// friends list on either side, and the page. `docs/themes.md` lists the
+/// page's own bar, an optional left navigation column and status bar, and
+/// the page. `docs/themes.md` lists the
 /// options; `docs/redesign.md` describes the default layout.
 pub fn show(app: &mut SteamApp, ui: &mut Ui, actions: &mut Vec<Action>) {
     let t = app.prefs.theme.clone();
@@ -58,15 +59,6 @@ pub fn show(app: &mut SteamApp, ui: &mut Ui, actions: &mut Vec<Action>) {
                 bar_background(ui, &t, c, false);
                 page_bar(app, ui, &t, actions)
             });
-    }
-
-    if app.prefs.friends_open && app.prefs.page != "community" {
-        let frame = w::component_frame(&t, &t.components.sidebar).corner_radius(egui::CornerRadius::ZERO).inner_margin(Margin { left: 14, right: 10, top: 16, bottom: 8 });
-        let panel = match lay.friends_side {
-            Side::Left => egui::Panel::left("friends"),
-            Side::Right => egui::Panel::right("friends"),
-        };
-        panel.exact_size(lay.friends_width).resizable(false).frame(frame).show(ui, |ui| friends_drawer(app, ui, &t, actions));
     }
 
     egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg)).show(ui, |ui| {
@@ -229,17 +221,10 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
         account_menu(app, ui, t, actions, wide);
         notifications_button(app, ui, t, actions);
         let unread = app.state.total_unread();
-        let fr = w::bar_button(ui, t, icons::USERS, t!("Friends"), app.prefs.friends_open, unread);
-        if fr.clicked() {
-            if app.prefs.page == "community" {
-                // The side panel doesn't show here: go to the friends page
-                // (out of an open chat).
-                actions.push(Action::Navigate { page: "community".into(), arg: None });
-            } else {
-                app.prefs.friends_open = !app.prefs.friends_open;
-            }
+        // Friends & Chat is its own window, like Steam's.
+        if w::bar_button(ui, t, icons::USERS, t!("Friends & Chat"), app.friends_window.open, unread).clicked() {
+            app.friends_window.raise();
         }
-        friends_hover(app, ui, t, &fr, actions);
         crate::offline_ui::badge(app, ui, t);
         if t.layout.search == SearchPlace::TopBar {
             ui.add_space(t.spacing.sm);
@@ -366,8 +351,8 @@ fn section_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, section: &str, tab: 
             (icons::CART, t!("Cart").into(), "store", Some("cart")),
         ],
         "community" => vec![
-            (icons::USERS, t!("Friends").into(), "community", None),
-            (icons::CHATS, t!("Group chats").into(), "community", Some("groups")),
+            (icons::USERS, t!("Friends").into(), "friends", None),
+            (icons::CHATS, t!("Group chats").into(), "friends", Some("groups")),
             (icons::CUBE, t!("Workshop").into(), "workshop", None),
             (icons::STOREFRONT, t!("My market listings").into(), "inventory", Some("listings")),
         ],
@@ -564,7 +549,7 @@ fn view_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Actio
             }
         }
         if item(ui, icons::CHATS, t!("Friends & Chat")) {
-            app.friends_window.open = true;
+            app.friends_window.raise();
         }
         ui.separator();
         if item(ui, icons::GEAR, t!("Settings")) {
@@ -585,99 +570,6 @@ fn help_menu(_app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Acti
             crate::updater::check(ui.ctx().clone(), true);
         }
     });
-}
-
-/// Hovering the friends button shows a quick friends list, like Steam's,
-/// with a way into the undocked Friends & Chat window.
-fn friends_hover(app: &mut SteamApp, ui: &mut Ui, t: &Theme, button: &egui::Response, actions: &mut Vec<Action>) {
-    let id = egui::Id::unique("friends-hover");
-    let now = ui.input(|i| i.time);
-    let mut since: Option<f64> = ui.data(|d| d.get_temp(id));
-    let popup_rect: Option<Rect> = ui.data(|d| d.get_temp(id.with("rect")));
-    let pointer = ui.input(|i| i.pointer.hover_pos());
-    let over_popup = pointer.zip(popup_rect).is_some_and(|(p, r)| r.expand(6.0).contains(p));
-    if button.hovered() || over_popup {
-        since.get_or_insert(now);
-        ui.data_mut(|d| d.insert_temp(id.with("left"), now));
-    } else {
-        let left: f64 = ui.data(|d| d.get_temp(id.with("left"))).unwrap_or(0.0);
-        if now - left > 0.25 {
-            since = None;
-        }
-    }
-    ui.data_mut(|d| {
-        match since {
-            Some(s) => {
-                d.insert_temp(id, s);
-            }
-            None => d.remove::<f64>(id),
-        }
-    });
-    // Short delay so passing over the button doesn't open it.
-    let Some(start) = since else {
-        ui.data_mut(|d| d.remove::<Rect>(id.with("rect")));
-        return;
-    };
-    if now - start < 0.35 {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
-        return;
-    }
-    let pos = egui::pos2(button.rect.right() - 300.0, button.rect.bottom() + 6.0);
-    let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
-        w::component_frame(t, &t.components.menu)
-            .show(ui, |ui| {
-                ui.set_width(300.0);
-                let friends = app.state.friend_list();
-                let online: Vec<_> = friends.iter().filter(|p| p.state != PersonaState::Offline).cloned().collect();
-                ui.horizontal(|ui| {
-                    ui.label(w::text_bold(t!("Friends"), sz(&t, 15.0), t.text));
-                    ui.label(w::text(t!("{n} online", n = online.len()), 12.5, t.online));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if w::icon_button(ui, t, icons::EXTERNAL, t!("Open Friends & Chat"), false, 0).clicked() {
-                            app.friends_window.open = true;
-                        }
-                    });
-                });
-                ui.add_space(4.0);
-                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                    if online.is_empty() {
-                        ui.label(w::text(t!("No friends online"), sz(&t, 13.0), t.text_faint));
-                    }
-                    for p in &online {
-                        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::click());
-                        if resp.hovered() {
-                            ui.painter().rect_filled(r, t.corner_small(), t.surface_hover);
-                        }
-                        let av = Rect::from_min_size(r.min + vec2(4.0, 5.0), vec2(32.0, 32.0));
-                        if !w::paint_cover(ui, av, &art::avatar(p.avatar_hash.as_deref()), egui::CornerRadius::same(4)) {
-                            w::skeleton(ui, t, av, egui::CornerRadius::same(4));
-                        }
-                        let color = status_color(t, p);
-                        ui.painter().circle_filled(av.right_bottom() - vec2(1.0, 1.0), 4.5, color);
-                        ui.painter().text(egui::pos2(av.right() + 10.0, r.top() + 14.0), Align2::LEFT_CENTER, &p.name, w::font_semibold(sz(&t, 13.0)), if p.in_game() { t.in_game } else { t.text });
-                        ui.painter().text(egui::pos2(av.right() + 10.0, r.top() + 30.0), Align2::LEFT_CENTER, status_text(&app.state, p), w::font(sz(&t, 11.5)), color);
-                        let unread = app.state.unread.get(&p.steam_id).copied().unwrap_or(0);
-                        if unread > 0 {
-                            let c = egui::pos2(r.right() - 12.0, r.center().y);
-                            ui.painter().circle_filled(c, 8.0, t.accent);
-                            ui.painter().text(c, Align2::CENTER_CENTER, unread.to_string(), w::font_bold(sz(&t, 10.0)), egui::Color32::WHITE);
-                        }
-                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Send a message")).clicked() {
-                            // Chat in the undocked window, like Steam.
-                            app.friends_window.open = true;
-                            app.friends_window.chat = Some(p.steam_id);
-                            actions.push(Action::MarkRead(p.steam_id));
-                        }
-                    }
-                });
-                ui.separator();
-                if ui.add(egui::Button::new(w::text_medium(format!("{}   {}", icons::USERS, t!("All friends")), 13.0, t.accent)).frame(false)).clicked() {
-                    actions.push(Action::Navigate { page: "community".into(), arg: None });
-                }
-            });
-    });
-    ui.data_mut(|d| d.insert_temp(id.with("rect"), area.response.rect));
-    ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
 }
 
 /// Icon and plain-language text for a notification. Covers every type
@@ -748,7 +640,7 @@ fn open_notification(state: &client::State, n: &model::Notification, actions: &m
         4 => actions.push(nav("inventory", Some(format!("{me}/{}", n.app_id.unwrap_or(753))))),
         5 => actions.push(match n.from {
             Some(id) => nav("profile", Some(id.to_string())),
-            None => nav("community", None),
+            None => nav("friends", Some("invites".into())),
         }),
         13 => {
             if let Some(id) = n.from {
@@ -1275,218 +1167,6 @@ pub fn status_text(state: &client::State, p: &Persona) -> String {
         (PersonaState::Offline, Some(t)) if t > 0 => t!("Last online {when}", when = ui::ago(t)),
         (s, _) => i18n::tr_dyn(s.label()),
     }
-}
-
-fn friends_drawer(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>) {
-    let list = app.state.friend_list();
-    let online = list.iter().filter(|p| p.state != PersonaState::Offline).count();
-    ui.horizontal(|ui| {
-        ui.label(w::text_bold(t!("Friends"), sz(&t, 17.0), t.text));
-        ui.label(w::text(t!("{n} online", n = online), sz(&t, 13.0), t.text_dim));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if w::icon_button(ui, t, icons::X, t!("Close"), false, 0).clicked() {
-                app.prefs.friends_open = false;
-            }
-        });
-    });
-    ui.add_space(6.0);
-    let width = ui.available_width() - 4.0;
-    w::search(ui, t, &mut app.friend_filter, t!("Search friends"), width);
-    ui.add_space(10.0);
-    crate::offline_ui::friends_notice(app, ui, t);
-    friend_list(app, ui, t, actions, &list, None);
-}
-
-/// Grouped friend list, shared by the drawer and the Community page.
-/// Returns the friend that was clicked.
-pub fn friend_list(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>, list: &[Persona], selected: Option<u64>) -> Option<u64> {
-    let filter = app.friend_filter.to_lowercase();
-    let ok = |p: &&Persona| filter.is_empty() || p.name.to_lowercase().contains(&filter) || p.nickname.as_ref().is_some_and(|n| n.to_lowercase().contains(&filter));
-    let favs = app.prefs.favorite_friends.clone();
-    let fav = |p: &&Persona| favs.contains(&p.steam_id);
-    let favorites: Vec<&Persona> = list.iter().filter(ok).filter(fav).collect();
-    let in_game: Vec<&Persona> = list.iter().filter(ok).filter(|p| !fav(p) && p.in_game()).collect();
-    let online: Vec<&Persona> = list.iter().filter(ok).filter(|p| !fav(p) && !p.in_game() && p.state != PersonaState::Offline).collect();
-    let offline: Vec<&Persona> = list.iter().filter(ok).filter(|p| !fav(p) && p.state == PersonaState::Offline).collect();
-    let mut clicked = None;
-
-    egui::ScrollArea::vertical().id_salt("friend-list").auto_shrink([false, false]).show(ui, |ui| {
-        if list.is_empty() {
-            ui.label(w::text(t!("Loading friends…"), sz(&t, 13.0), t.text_faint));
-        }
-        for (title, group) in [(t!("Favorites"), &favorites), (t!("In game"), &in_game), (t!("Online"), &online), (t!("Offline"), &offline)] {
-            if group.is_empty() {
-                continue;
-            }
-            ui.add_space(4.0);
-            w::caption(ui, t, &format!("{title} — {}", group.len()));
-            ui.add_space(2.0);
-            for p in group.iter() {
-                if friend_row(app, ui, t, p, actions, selected == Some(p.steam_id)) {
-                    clicked = Some(p.steam_id);
-                }
-            }
-            ui.add_space(8.0);
-        }
-    });
-    if let Some(id) = clicked {
-        if selected.is_none() {
-            actions.push(Action::OpenChat(id));
-        }
-    }
-    clicked
-}
-
-fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: &mut Vec<Action>, selected: bool) -> bool {
-    let offline = p.state == PersonaState::Offline;
-    let color = status_color(t, p);
-    let name = p.display_name();
-    let status = if app.state.is_typing(p.steam_id) { t!("typing…").to_string() } else { status_text(&app.state, p) };
-    let unread = app.state.unread.get(&p.steam_id).copied().unwrap_or(0);
-
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::click());
-    // The whole row lights up wherever the pointer is in it (also over the
-    // game link inside it), and clearly enough to see on the dark list.
-    let pointer_in = ui.rect_contains_pointer(rect) || resp.context_menu_opened();
-    let hover = ui.ctx().animate_bool_with_time(resp.id, pointer_in, 0.1);
-    if selected {
-        ui.painter().rect_filled(rect, t.corner_small(), t.accent.gamma_multiply(0.18));
-    } else if hover > 0.0 {
-        ui.painter().rect_filled(rect, t.corner_small(), w::mix(egui::Color32::TRANSPARENT, t.surface_hover, hover));
-    }
-    // Leave room on the right for the unread badge, so text never runs under it.
-    let inner = rect.shrink2(vec2(6.0, 6.0));
-    let inner = if unread > 0 { Rect::from_min_max(inner.min, egui::pos2(inner.right() - 26.0, inner.bottom())) } else { inner };
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::left_to_right(Align::Center)));
-    w::avatar(&mut child, t, &art::avatar(p.avatar_hash.as_deref()), 36.0, Some(color));
-    child.add_space(4.0);
-    child.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 1.0;
-        ui.add_space(1.0);
-        let nc = if offline { t.text_faint } else if p.in_game() { t.in_game } else { t.text };
-        ui.add(egui::Label::new(w::text_medium(&name, 14.0, nc)).truncate());
-        // The game is a link to its page.
-        let r = ui.add(egui::Label::new(w::text(&status, 12.0, if offline { t.text_faint } else if p.in_game() { t.in_game } else { t.text_dim })).truncate().sense(Sense::click()));
-        if let Some(target) = p.game_app_id.filter(|_| p.in_game()) {
-            // The game is a link of its own: underlined while the pointer is
-            // on it, so it's clear a click opens the game, not the chat.
-            if r.hovered() {
-                ui.painter().hline(r.rect.x_range(), r.rect.bottom() - 1.0, Stroke::new(1.0, t.in_game));
-            }
-            let r = r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Open the game's page"));
-            if r.clicked() {
-                actions.push(game_page(&app.state, target));
-            }
-        }
-    });
-    if unread > 0 {
-        let c = rect.right_center() - vec2(16.0, 0.0);
-        ui.painter().circle_filled(c, 9.0, t.accent);
-        ui.painter().text(c, Align2::CENTER_CENTER, unread.min(99).to_string(), w::font_bold(sz(&t, 10.0)), t.on_accent);
-    }
-
-    let persona = p.clone();
-    let vp = ui.ctx().viewport_id();
-    resp.context_menu(|ui| {
-        ui.label(w::text_semibold(&name, sz(&t, 14.0), t.text));
-        if persona.nickname.is_some() && !persona.name.is_empty() {
-            ui.label(w::text(&persona.name, sz(&t, 12.0), t.text_dim));
-        }
-        ui.separator();
-        if ui.button(format!("{}  {}", icons::CHAT, t!("Send a message"))).clicked() {
-            actions.push(Action::OpenChat(persona.steam_id));
-            ui.close();
-        }
-        // In a game: join them, see their server, watch their broadcast, like Steam.
-        if let Some(game) = persona.game_app_id.filter(|_| persona.in_game()) {
-            let game_name = app.state.app_name(game).map(String::from).unwrap_or_else(|| t!("the game").to_string());
-            ui.separator();
-            if let Some(args) = persona.join_args() {
-                if ui.button(format!("{}  {}", icons::PLAY, t!("Join game"))).on_hover_text(&args).clicked() {
-                    match app.local.games.iter().find(|g| g.app_id == game) {
-                        Some(g) => {
-                            app.client.send(Command::Launch { app_id: game, install_dir: g.install_dir.clone(), args: client::LaunchArgs::connect(args) });
-                            actions.push(Action::Toast(t!("Joining {name} in {game}…", name = persona.display_name(), game = game_name)));
-                        }
-                        None => actions.push(Action::Toast(t!("Install {game} to join {name}.", game = game_name, name = persona.display_name()))),
-                    }
-                    ui.close();
-                }
-            }
-            if let Some(addr) = persona.server.clone() {
-                if ui.button(format!("{}  {}", icons::INFO, t!("View server info"))).clicked() {
-                    app.client.send(Command::QueryServer { addr: addr.clone() });
-                    app.friend_dialog = Some((vp, FriendDialog::Server { name: persona.display_name(), game, addr }));
-                    ui.close();
-                }
-            }
-            if persona.broadcasting && ui.button(format!("{}  {}", icons::EYE, t!("Watch game"))).on_hover_text(t!("Opens their Steam broadcast")).clicked() {
-                crate::links::open_http(&format!("https://steamcommunity.com/broadcast/watch/{}", persona.steam_id));
-                ui.close();
-            }
-            if ui.button(format!("{}  {}", icons::CONTROLLER, t!("View game info"))).clicked() {
-                actions.push(game_page(&app.state, game));
-                ui.close();
-            }
-        }
-        // While you're in a game: invite them to it, its lobby or its match.
-        for (invite, label) in invite_options(&app.state) {
-            if ui.button(format!("{}  {}", icons::USER_PLUS, label)).clicked() {
-                send_invite(app, &persona, invite, actions);
-                ui.close();
-            }
-        }
-        ui.separator();
-        if ui.button(format!("{}  {}", icons::USER_CIRCLE, t!("View profile"))).clicked() {
-            actions.push(Action::Navigate { page: "profile".into(), arg: Some(persona.steam_id.to_string()) });
-            ui.close();
-        }
-        if ui.button(format!("{}  {}", icons::BACKPACK, t!("Inventory"))).clicked() {
-            actions.push(Action::Navigate { page: "inventory".into(), arg: Some(persona.steam_id.to_string()) });
-            ui.close();
-        }
-        ui.menu_button(format!("{}  {}", icons::GEAR, t!("Manage")), |ui| {
-            if ui.button(t!("Add nickname…")).clicked() {
-                app.friend_dialog = Some((vp, FriendDialog::Nickname { id: persona.steam_id, text: persona.nickname.clone().unwrap_or_default() }));
-                ui.close();
-            }
-            if persona.nickname.is_some() && ui.button(t!("Remove nickname")).clicked() {
-                app.client.send(Command::SetNickname { steam_id: persona.steam_id, nickname: None });
-                ui.close();
-            }
-            let is_fav = app.prefs.favorite_friends.contains(&persona.steam_id);
-            if ui.button(if is_fav { t!("Remove from Favorites") } else { t!("Add to Favorites") }).clicked() {
-                if is_fav {
-                    app.prefs.favorite_friends.retain(|f| *f != persona.steam_id);
-                } else {
-                    app.prefs.favorite_friends.push(persona.steam_id);
-                }
-                ui.close();
-            }
-            ui.menu_button(t!("Copy SteamID"), |ui| {
-                crate::builtin::steam_id_menu(ui, &t, persona.steam_id);
-            });
-            ui.separator();
-            if ui.button(w::text(t!("Remove friend…"), sz(&t, 13.5), t.danger)).clicked() {
-                app.friend_dialog = Some((vp, FriendDialog::Remove { id: persona.steam_id, name: persona.display_name() }));
-                ui.close();
-            }
-            if ui.button(w::text(t!("Block all communication…"), sz(&t, 13.5), t.danger)).clicked() {
-                app.friend_dialog = Some((vp, FriendDialog::Block { id: persona.steam_id, name: persona.display_name() }));
-                ui.close();
-            }
-        });
-        let env = Env {
-            state: &app.state,
-            local: &app.local,
-            theme: &app.prefs.theme,
-            zoom: app.prefs.zoom,
-            client: &app.client,
-            actions: &mut *actions,
-        };
-        app.registry.friend_menu(&persona, ui, env);
-    });
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
 pub fn toasts(app: &mut SteamApp, ctx: &egui::Context) {
