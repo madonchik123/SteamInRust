@@ -108,11 +108,27 @@ pub async fn family(conn: &Connection, me: SteamId, language: &str) -> Result<Fa
 
 /// A signed-in store page (`query` already has its `?`).
 async fn store_page(web: &Web, path: &str, query: &str) -> Result<String, String> {
-    let body = crate::market::page(web, &format!("{STORE}{path}{query}")).await?;
+    let url = store_page_url(path, query)?;
+    let body = crate::market::page(web, &url).await?;
     if body.contains("g_steamID = false;") {
         return Err("Steam didn't accept the web sign-in".into());
     }
     Ok(body)
+}
+
+fn store_page_url(path: &str, query: &str) -> Result<String, String> {
+    if !path.starts_with('/') || path.contains('?') || path.contains('#') {
+        return Err("invalid Steam store path".into());
+    }
+    if !query.is_empty() && (!query.starts_with('?') || query.contains('#')) {
+        return Err("invalid Steam store query".into());
+    }
+    let parsed = crate::market::validate_steam_url(&format!("{STORE}{path}{query}"), "store.steampowered.com")?;
+    Ok(parsed.into())
+}
+
+fn history_more_url(language: &str) -> String {
+    format!("{STORE}/account/AjaxLoadMoreHistory/?l={}", crate::market::encode(language))
 }
 
 /// The inside of the first `<td>` whose class starts with `class`.
@@ -204,7 +220,8 @@ fn history_cursor(body: &str) -> Option<String> {
 /// (what Steam's "Load more transactions" button asks for).
 pub async fn purchases(web: &Web, language: &str, cursor: Option<String>) -> Result<PurchasePage, String> {
     let Some(cursor) = cursor else {
-        let body = store_page(web, "/account/history/", &format!("?l={language}")).await?;
+        let query = format!("?l={}", crate::market::encode(language));
+        let body = store_page(web, "/account/history/", &query).await?;
         return Ok(PurchasePage { rows: parse_purchases(&body), more: history_cursor(&body) });
     };
     let fields: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&cursor).map_err(|e| e.to_string())?;
@@ -215,7 +232,7 @@ pub async fn purchases(web: &Web, language: &str, cursor: Option<String>) -> Res
     form.push(("sessionid".into(), web.session_id.clone()));
     let r: serde_json::Value = web
         .http
-        .post(format!("{STORE}/account/AjaxLoadMoreHistory/?l={language}"))
+        .post(history_more_url(language))
         .form(&form)
         .send()
         .await
@@ -251,7 +268,7 @@ pub fn parse_licenses(body: &str) -> (Vec<License>, Option<String>) {
         .split("class=\"license_paginator_next\" href=\"")
         .nth(1)
         .and_then(|s| s.split('"').next())
-        .filter(|h| h.starts_with('?'))
+        .filter(|h| h.starts_with('?') && !h.contains('#'))
         .map(|h| h.replace("&amp;", "&"));
     (rows, next)
 }
@@ -259,13 +276,14 @@ pub fn parse_licenses(body: &str) -> (Vec<License>, Option<String>) {
 /// Every license on your account (Steam shows them 100 at a time).
 pub async fn licenses(web: &Web, language: &str) -> Result<Vec<License>, String> {
     let mut all = Vec::new();
-    let mut query = format!("?l={language}");
+    let lang = crate::market::encode(language);
+    let mut query = format!("?l={lang}");
     for _ in 0..50 {
         let body = store_page(web, "/account/licenses/", &query).await?;
         let (rows, next) = parse_licenses(&body);
         all.extend(rows);
         match next {
-            Some(next) => query = format!("{next}&l={language}"),
+            Some(next) => query = format!("{next}&l={lang}"),
             None => break,
         }
     }
@@ -324,5 +342,13 @@ mod tests {
         assert_eq!((rows[0].name.as_str(), rows[0].method.as_str(), rows[0].package_id), ("PlateUp!", "Steam Store", None));
         assert_eq!((rows[1].name.as_str(), rows[1].package_id), ("My Auto Clicker", Some(1335331)));
         assert_eq!(next.as_deref(), Some("?continuationToken=17:37&offset=100"));
+    }
+
+    #[test]
+    fn store_urls_reject_traversal_and_encode_language() {
+        assert!(store_page_url("/account/%2e%2e/admin/", "?l=english").is_err());
+        assert!(store_page_url(".evil.tld/account/", "?l=english").is_err());
+        let hist = history_more_url("english&evil=1");
+        assert!(!hist.contains("&evil=1"), "language must be percent-encoded: {hist}");
     }
 }

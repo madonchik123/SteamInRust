@@ -285,6 +285,14 @@ fn steam_id_from_jwt(token: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// Cryptographically random lowercase hex string (`bytes * 2` chars).
+pub fn random_hex(bytes: usize) -> String {
+    use rand::RngCore;
+    let mut buf = vec![0u8; bytes];
+    rand::rngs::OsRng.fill_bytes(&mut buf);
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
