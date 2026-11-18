@@ -1326,7 +1326,7 @@ fn friend_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: mo
             let name = game_name.clone().unwrap_or_default();
             match f.app.local.games.iter().find(|x| x.app_id == g) {
                 Some(installed) => {
-                    f.app.client.send(Command::Launch { app_id: g, install_dir: installed.install_dir.clone(), args });
+                    f.app.client.send(Command::Launch { app_id: g, install_dir: installed.install_dir.clone(), args: client::LaunchArgs::connect(args) });
                     f.actions.push(Action::Toast(t!("Joining {name} in {game}…", name = fr.display_name(), game = name)));
                 }
                 None => f.actions.push(Action::Toast(t!("Install {game} to join {name}.", game = name, name = fr.display_name()))),

@@ -148,7 +148,7 @@ impl Plugins {
                 Request::SendMessage(to, text) => ctx.send(Command::SendMessage { to, text }),
                 Request::Launch(app_id) => {
                     if let Some(g) = ctx.local.games.iter().find(|g| g.app_id == app_id) {
-                        ctx.send(Command::Launch { app_id, install_dir: g.install_dir.clone(), args: String::new() });
+                        ctx.send(Command::Launch { app_id, install_dir: g.install_dir.clone(), args: client::LaunchArgs::default() });
                     }
                 }
                 Request::Navigate(page, arg) => ctx.navigate(&page, arg),

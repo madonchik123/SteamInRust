@@ -102,7 +102,7 @@ struct Collection {
 /// A launch held back because saves changed both here and in Steam Cloud.
 struct CloudHold {
     app: AppId,
-    args: String,
+    args: client::LaunchArgs,
     report: model::CloudReport,
 }
 
@@ -1975,7 +1975,7 @@ impl Library {
 
     /// Start an installed game with its saved launch options.
     fn launch_game(&mut self, ctx: &mut Ctx, id: AppId, install_dir: std::path::PathBuf) {
-        let args = self.games.get(&id).map(|s| s.args.clone()).unwrap_or_default();
+        let args = client::LaunchArgs::user(self.games.get(&id).map(|s| s.args.clone()).unwrap_or_default());
         ctx.send(Command::Launch { app_id: id, install_dir, args });
     }
 

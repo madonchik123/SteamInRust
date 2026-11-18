@@ -982,7 +982,7 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
                 if ui.button(format!("{}  {}", icons::PLAY, t!("Join game"))).on_hover_text(&args).clicked() {
                     match app.local.games.iter().find(|g| g.app_id == game) {
                         Some(g) => {
-                            app.client.send(Command::Launch { app_id: game, install_dir: g.install_dir.clone(), args });
+                            app.client.send(Command::Launch { app_id: game, install_dir: g.install_dir.clone(), args: client::LaunchArgs::connect(args) });
                             actions.push(Action::Toast(t!("Joining {name} in {game}…", name = persona.display_name(), game = game_name)));
                         }
                         None => actions.push(Action::Toast(t!("Install {game} to join {name}.", game = game_name, name = persona.display_name()))),
@@ -1183,7 +1183,7 @@ pub fn friend_dialogs(app: &mut SteamApp, ctx: &egui::Context) {
                 ui.horizontal(|ui| {
                     if let Some(g) = app.local.games.iter().find(|g| g.app_id == *game) {
                         if w::button(ui, &t, Some(icons::PLAY), t!("Join"), w::Kind::Primary, w::Size::Sm).clicked() {
-                            app.client.send(Command::Launch { app_id: *game, install_dir: g.install_dir.clone(), args: format!("+connect {addr}") });
+                            app.client.send(Command::Launch { app_id: *game, install_dir: g.install_dir.clone(), args: client::LaunchArgs::connect(format!("+connect {addr}")) });
                             close = true;
                         }
                     }

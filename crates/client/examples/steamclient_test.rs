@@ -41,7 +41,7 @@ fn main() {
                     }
                     None => panic!("app {app_id} isn't in this account's library"),
                 }
-                c.send(Command::Launch { app_id, install_dir: dir.clone(), args: game_args.clone() });
+                c.send(Command::Launch { app_id, install_dir: dir.clone(), args: client::LaunchArgs::user(game_args.clone()) });
             }
             Event::LaunchMode { mode, .. } => println!("launch mode: {mode:?}"),
             Event::Personas(ps) => {

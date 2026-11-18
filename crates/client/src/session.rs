@@ -334,7 +334,7 @@ struct Online {
     /// tried and failed: it's tried again next time the app starts).
     setup_checked: std::collections::HashSet<AppId>,
     /// Where a launch goes to continue after its first-time setup.
-    launch_tx: Option<mpsc::UnboundedSender<(AppId, std::path::PathBuf, String)>>,
+    launch_tx: Option<mpsc::UnboundedSender<(AppId, std::path::PathBuf, crate::LaunchArgs)>>,
     /// The running download is being set aside for a queued one ("download
     /// now"); when it stops it goes back in the queue, second.
     set_aside: Option<crate::download::InstallRequest>,
@@ -501,10 +501,10 @@ async fn online(
     let (apps_tx, mut apps_rx) = mpsc::unbounded_channel::<Vec<OwnedApp>>();
     let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<AppId>();
     // Launches that waited for a Steam Cloud download.
-    let (launch_tx, mut launch_rx) = mpsc::unbounded_channel::<(AppId, std::path::PathBuf, String)>();
+    let (launch_tx, mut launch_rx) = mpsc::unbounded_channel::<(AppId, std::path::PathBuf, crate::LaunchArgs)>();
     st.launch_tx = Some(launch_tx.clone());
     // Launches that waited for Workshop downloads (Steam Cloud comes next).
-    let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<(AppId, std::path::PathBuf, String)>();
+    let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<(AppId, std::path::PathBuf, crate::LaunchArgs)>();
     // Verifications that ended.
     let (vf_tx, mut vf_rx) = mpsc::unbounded_channel::<(AppId, local::manage::VerifyReport)>();
     // Reconnect attempts, and checks of a connection that went quiet.
@@ -551,7 +551,10 @@ async fn online(
     // saves (games the official client runs get its own cloud sync).
     macro_rules! launch_cloud {
         ($app_id:expr, $install_dir:expr, $args:expr) => {{
-            let (app_id, install_dir, args): (AppId, std::path::PathBuf, String) = ($app_id, $install_dir, $args);
+            let (app_id, install_dir, args): (AppId, std::path::PathBuf, crate::LaunchArgs) = ($app_id, $install_dir, $args);
+            if let Err(e) = launch::safe_connect_args(&args.connect) {
+                sink(Event::Error(e));
+            } else {
                 // Like Steam: bring down newer cloud saves first (games the
                 // official client runs get its own cloud sync instead).
                 let official = st.apps.get(&app_id).is_some_and(|a| matches!(launch::mode(a, &install_dir), crate::LaunchMode::OfficialSteam { .. }));
@@ -577,6 +580,7 @@ async fn online(
                         let _ = st.launch(app_id, &install_dir, &args, sink, &exit_tx);
                     }
                 }
+            }
         }};
     }
 
@@ -680,6 +684,10 @@ async fn online(
                     }
                 }
                 Some(Command::Launch { app_id, install_dir, args }) => {
+                    if let Err(e) = launch::safe_connect_args(&args.connect) {
+                        sink(Event::Error(e));
+                        continue;
+                    }
                     // Like Steam: subscribed Workshop items are downloaded
                     // (or updated) before the game starts, then cloud saves.
                     let official = st.apps.get(&app_id).is_some_and(|a| matches!(launch::mode(a, &install_dir), crate::LaunchMode::OfficialSteam { .. }));
@@ -2437,10 +2445,14 @@ impl Online {
         &mut self,
         app_id: AppId,
         dir: &std::path::Path,
-        args: &str,
+        args: &crate::LaunchArgs,
         sink: &Sink,
         exit_tx: &mpsc::UnboundedSender<AppId>,
     ) -> Result<(), Error> {
+        if let Err(e) = launch::safe_connect_args(&args.connect) {
+            sink(Event::Error(e));
+            return Ok(());
+        }
         let Some(app) = self.apps.get(&app_id) else {
             sink(Event::Error("Library is still loading, try again in a moment".into()));
             return Ok(());
@@ -2457,7 +2469,7 @@ impl Online {
             let steps = library.as_deref().map(|l| crate::installscript::pending(l, app_id, self.steam_root.clone())).unwrap_or_default();
             if let (false, Some(tx)) = (steps.is_empty(), self.launch_tx.clone()) {
                 tracing::info!("{}: first-time setup, {} step(s)", app.name, steps.len());
-                let (sink, dir, args, total) = (sink.clone(), dir.to_path_buf(), args.to_string(), steps.len());
+                let (sink, dir, args, total) = (sink.clone(), dir.to_path_buf(), args.clone(), steps.len());
                 sink(Event::FirstTimeSetup { app_id, done: 0, total, step: steps[0].label.clone() });
                 tokio::task::spawn_blocking(move || {
                     let progress = |i: usize, label: &str| sink(Event::FirstTimeSetup { app_id, done: i, total, step: label.to_string() });
@@ -2479,7 +2491,7 @@ impl Online {
                 // GamesPlayed from us (Steam sends its own) and no cloud sync.
                 self.running.insert(app_id, 0);
                 self.official.insert(app_id, dir.to_path_buf());
-                let (tx, sink, args, me, offline) = (exit_tx.clone(), sink.clone(), args.to_string(), self.me, self.link != Link::Online);
+                let (tx, sink, args, me, offline) = (exit_tx.clone(), sink.clone(), args.clone(), self.me, self.link != Link::Online);
                 tokio::task::spawn_blocking(move || {
                     let started = || sink(Event::GameStarted { app_id });
                     if let Err(e) = launch::run_through_steam(app_id, &args, me, offline, started) {
