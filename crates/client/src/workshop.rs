@@ -75,20 +75,33 @@ pub async fn sync_with_progress(conn: &Connection, me: SteamId, app: AppId, libr
     let ws = library.join("steamapps").join("workshop");
     let mut record = Record::load(&ws, app);
     let mut cdn: Option<Arc<depot::Cdn>> = None;
-    let dir_of = |id: u64| ws.join("content").join(app.to_string()).join(id.to_string());
-    let current = |d: &PublishedFileDetails| record.installed.get(&d.publishedfileid()).is_some_and(|i| i.manifest == d.hcontent_file() && i.updated >= d.time_updated()) && dir_of(d.publishedfileid()).is_dir();
+    let dir_of = |id: u64| depot::install::resolve_inside(&ws, &format!("content/{app}/{id}"));
+    let current = |d: &PublishedFileDetails| {
+        record.installed.get(&d.publishedfileid()).is_some_and(|i| i.manifest == d.hcontent_file() && i.updated >= d.time_updated())
+            && dir_of(d.publishedfileid()).is_ok_and(|p| p.is_dir())
+    };
     let todo: Vec<&PublishedFileDetails> = details.publishedfiledetails.iter().filter(|d| d.result() == 1 && !current(d)).collect();
     let total = todo.len() as u32;
     for (n, d) in todo.into_iter().enumerate() {
         let id = d.publishedfileid();
         let title = d.title().to_string();
         let manifest = d.hcontent_file();
-        let dir = dir_of(id);
+        let dir = match dir_of(id) {
+            Ok(p) => p,
+            Err(e) => {
+                report.failed.push((id, title, e.to_string()));
+                continue;
+            }
+        };
         progress(n as u32, total, &title);
         let result = if manifest != 0 {
             if cdn.is_none() {
                 let servers = crate::download::content_servers(conn, cell_id).await?;
                 let c = Arc::new(depot::Cdn::new(servers));
+                if c.server_count() == 0 {
+                    report.failed.push((id, title, "Steam returned no HTTPS content servers".into()));
+                    continue;
+                }
                 c.rank().await;
                 cdn = Some(c);
             }
@@ -123,6 +136,7 @@ async fn depot_item(conn: &Connection, cdn: Arc<depot::Cdn>, app: AppId, gid: u6
     let mut manifest = depot::Manifest::from_cdn(&raw).map_err(|e| e.to_string())?;
     manifest.decrypt_names(&key).map_err(|e| e.to_string())?;
     let size = manifest.original_size;
+    depot::install::ensure_real_dir(dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let job = depot::DepotJob { depot: app, manifest, key, old: None };
     depot::install(cdn, dir, vec![job], Arc::new(depot::Progress::default())).await.map_err(|e| e.to_string())?;
@@ -228,5 +242,19 @@ mod tests {
         let i = &back.installed[&42];
         assert_eq!((i.size, i.updated, i.manifest, i.subscribed_by), (10, 5, 7, 9));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_workshop_content_dir() {
+        let root = std::env::temp_dir().join(format!("sir-ws-sym-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ws = root.join("workshop");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, ws.join("content")).unwrap();
+        assert!(depot::install::resolve_inside(&ws, "content/477160/99").is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
