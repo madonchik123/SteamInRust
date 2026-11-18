@@ -2428,3 +2428,11 @@
 "started playing {game}" = "开始玩 {game}"
 "Messages and what your friends are up to show here." = "消息和好友的动态会显示在这里。"
 "Unblock" = "解除屏蔽"
+
+# --- Redesign: the new look, offered once ---
+"A new look for SteamInRust" = "SteamInRust 的全新外观"
+"SteamInRust has a fresh design. Want to try it? You can switch back any time in Settings → Appearance." = "SteamInRust 换上了全新设计。想试试吗？你随时可以在“设置 → 外观”中换回来。"
+"New|look" = "新"
+"Current|look" = "当前"
+"Try the new look" = "试试新外观"
+"Keep my current look" = "保留当前外观"

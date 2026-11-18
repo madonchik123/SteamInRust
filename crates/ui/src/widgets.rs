@@ -265,10 +265,14 @@ pub fn paint_background(ui: &Ui, t: &Theme, rect: Rect, area: &str) {
 // ---------- painting ----------
 
 /// Linear blend between two colors.
+/// Works on see-through colors too (fading from `TRANSPARENT` to a color
+/// gives that color at growing opacity, not a darker one).
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
+    // Color32 keeps its channels premultiplied by alpha; blending them as
+    // they are is the right blend.
     let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    Color32::from_rgba_unmultiplied(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), l(a.a(), b.a()))
+    Color32::from_rgba_premultiplied(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), l(a.a(), b.a()))
 }
 
 // ---------- painting ----------
@@ -1914,7 +1918,7 @@ pub fn page_numbers(ui: &mut Ui, t: &Theme, page: u32, pages: u32) -> Option<u32
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = t.spacing.xs;
         ui.add_enabled_ui(page > 1, |ui| {
-            if sort_chip(ui, t, &i18n::t!("Prev"), false).clicked() {
+            if sort_chip(ui, t, i18n::t!("Prev"), false).clicked() {
                 to = Some(page - 1);
             }
         });
@@ -1931,7 +1935,7 @@ pub fn page_numbers(ui: &mut Ui, t: &Theme, page: u32, pages: u32) -> Option<u32
         }
         ui.add_space(t.spacing.md);
         ui.add_enabled_ui(page < pages, |ui| {
-            if sort_chip(ui, t, &i18n::t!("Next"), false).clicked() {
+            if sort_chip(ui, t, i18n::t!("Next"), false).clicked() {
                 to = Some(page + 1);
             }
         });

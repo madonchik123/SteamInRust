@@ -53,6 +53,9 @@ pub struct Prefs {
     pub bigpicture_start: bool,
     /// Which version of the logo the tray icon shows.
     pub tray_icon: ui::brand::Logo,
+    /// The one-time "try the new look" question has been answered (or
+    /// wasn't needed: a new install starts on the new look).
+    pub new_look_offered: bool,
 }
 
 /// `--offscreen`: keep the window far off the screen (previews and
@@ -74,12 +77,28 @@ fn window_size_flag() -> Option<[f32; 2]> {
 impl Prefs {
     /// Pick the theme: the saved choice; or, for settings from before theme
     /// packages, the package matching the saved theme; or the default.
+    /// A new install starts on the default theme. Someone who used the app
+    /// before themes keeps the look they had, and is asked once whether to
+    /// try the new one ([`Prefs::wants_new_look_offer`]).
     pub fn settle_theme(&mut self) {
         let old = std::mem::take(&mut self.legacy_theme);
         if self.skin.id.is_empty() {
-            self.skin = if old.is_set() { old.to_choice() } else { ui::ThemeChoice { id: ui::themes::DEFAULT_ID.into(), ..Default::default() } };
+            if old.is_set() {
+                self.skin = old.to_choice();
+            } else {
+                self.skin = ui::ThemeChoice { id: ui::themes::DEFAULT_ID.into(), ..Default::default() };
+                self.new_look_offered = true;
+            }
+        }
+        if self.skin.id == ui::themes::DEFAULT_ID {
+            self.new_look_offered = true;
         }
         self.theme = ui::themes::resolve(&self.skin);
+    }
+
+    /// Whether to ask "try the new look?": not asked yet, and on an older theme.
+    pub fn wants_new_look_offer(&self) -> bool {
+        !self.new_look_offered && self.skin.id != ui::themes::DEFAULT_ID
     }
 }
 
@@ -113,6 +132,7 @@ impl Default for Prefs {
             bigpicture_scale: 1.0,
             bigpicture_start: false,
             tray_icon: ui::brand::Logo::default(),
+            new_look_offered: false,
         }
     }
 }
@@ -176,6 +196,11 @@ pub struct SteamApp {
     /// Main window is hidden in the tray.
     hidden: bool,
     applied_theme: Option<Theme>,
+    /// The look as last written to disk, and a change waiting to settle.
+    saved_look: Option<String>,
+    look_pending: Option<(String, f64)>,
+    /// `--new-look-prompt`: show the "try the new look" question (previews).
+    pub force_new_look_prompt: bool,
     applied_zoom: f32,
     /// Sharp window icons for the display's scaling (Windows).
     window_icon: crate::window_icon::WindowIcon,
@@ -313,6 +338,9 @@ impl SteamApp {
             pending_links: link.into_iter().collect(),
             hidden: false,
             applied_theme: None,
+            saved_look: None,
+            look_pending: None,
+            force_new_look_prompt: std::env::args().any(|a| a == "--new-look-prompt"),
             applied_zoom: 0.0,
             window_icon: Default::default(),
             bigpicture,
@@ -819,6 +847,7 @@ impl eframe::App for SteamApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.save_look_now(&ui.ctx().clone(), frame);
         let ctx = ui.ctx().clone();
         // The running download (not a file check) on the taskbar / Dock.
         let shown = self.state.downloads.values().find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed) && !d.verifying()).map(|d| (d.fraction(), d.paused));
@@ -951,6 +980,7 @@ impl eframe::App for SteamApp {
             crate::shell::show(self, ui, &mut actions);
             crate::shell::activate_dialog(self, &ctx);
             crate::shell::friend_dialogs(self, &ctx);
+            crate::shell::new_look_prompt(self, &ctx, &mut actions);
             crate::friends_window::show(self, &ctx, &mut actions);
             crate::overlay::show(self, &ctx, &mut actions);
             crate::launch_popup::show(self, &ctx);
@@ -975,6 +1005,7 @@ impl eframe::App for SteamApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.saved_look = Some(self.look_key());
         if self.demo {
             return;
         }
@@ -991,6 +1022,47 @@ impl eframe::App for SteamApp {
     }
 }
 
+impl SteamApp {
+    /// What the user picked about the app's look: the theme, their accent
+    /// colors and roundness, and the interface size.
+    fn look_key(&self) -> String {
+        format!("{:?}|{}|{}", self.prefs.skin, self.prefs.zoom, self.prefs.new_look_offered)
+    }
+
+    /// Save the settings right away once a change to the look settles
+    /// (half a second without further change, so dragging a color picker
+    /// doesn't write every frame). eframe's own save comes only every 30
+    /// seconds and on a normal exit, and a theme switch was lost when the
+    /// app was closed before that.
+    fn save_look_now(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let key = self.look_key();
+        let now = ctx.input(|i| i.time);
+        let Some(saved) = &self.saved_look else {
+            self.saved_look = Some(key);
+            return;
+        };
+        if *saved == key {
+            self.look_pending = None;
+            return;
+        }
+        match &self.look_pending {
+            Some((k, _)) if *k == key => {}
+            _ => self.look_pending = Some((key.clone(), now)),
+        }
+        let since = self.look_pending.as_ref().map(|p| p.1).unwrap_or(now);
+        if now - since < 0.5 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(550));
+            return;
+        }
+        if let Some(storage) = frame.storage_mut() {
+            eframe::App::save(self, storage);
+            storage.flush();
+        }
+        self.saved_look = Some(key);
+        self.look_pending = None;
+    }
+}
+
 /// Window size and style for each stage, like Steam's separate windows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WindowMode {
@@ -1003,6 +1075,12 @@ enum WindowMode {
 #[cfg(test)]
 mod prefs_tests {
     use super::Prefs;
+
+    impl Prefs {
+        fn clone_for_test(&self) -> Prefs {
+            ron::from_str(&ron::ser::to_string(self).unwrap()).unwrap()
+        }
+    }
     use egui::Color32;
 
     /// Settings saved before theme packages kept the whole theme; they load
@@ -1039,14 +1117,23 @@ mod prefs_tests {
         let choice = old.to_choice();
         assert_eq!(choice.id, "aurora");
         assert_eq!(choice.accent, Some(Color32::from_rgb(200, 10, 10)));
-        // At startup: the matching package, not the new default.
+        // At startup: the look they had, and the new one is offered once.
         prefs.settle_theme();
         assert_eq!(prefs.theme.id, "aurora");
         assert_eq!(prefs.theme.accent, Color32::from_rgb(200, 10, 10));
-        // New users get the default theme.
+        assert!(prefs.wants_new_look_offer());
+        // New users get the default theme, and aren't asked.
         let mut fresh = Prefs::default();
         fresh.settle_theme();
         assert_eq!(fresh.theme.id, ui::themes::DEFAULT_ID);
+        assert!(!fresh.wants_new_look_offer());
+        // Settings saved after the question was answered don't ask again.
+        let mut answered = prefs.clone_for_test();
+        answered.new_look_offered = true;
+        let mut answered: Prefs = ron::from_str(&ron::ser::to_string(&answered).unwrap()).unwrap();
+        answered.settle_theme();
+        assert!(!answered.wants_new_look_offer());
+        assert_eq!(answered.theme.id, "aurora");
         // A saved choice comes back as it was.
         let back: Prefs = ron::from_str(&ron::ser::to_string(&prefs).unwrap()).unwrap();
         assert_eq!(back.skin, prefs.skin);

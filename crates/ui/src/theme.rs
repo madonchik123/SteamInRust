@@ -923,11 +923,14 @@ impl Theme {
             border: top.border.clone().or_else(|| base.border.clone()),
             icon: top.icon.clone().or_else(|| base.icon.clone()),
         };
+        // Selected wins over hover for what it sets (a selected tab keeps
+        // its fill under the pointer); hover still changes the rest.
         let mut base = c.normal.clone();
+        let mut hovered = layer(&c.normal, &c.hover);
         if s.selected {
             base = layer(&base, &c.selected);
+            hovered = layer(&hovered, &c.selected);
         }
-        let hovered = layer(&base, &c.hover);
         let resolve = |st: &StateStyle| {
             let text = st.text.as_ref().map(|x| self.color(x)).unwrap_or(self.text);
             Look {
@@ -937,7 +940,7 @@ impl Theme {
                 icon: st.icon.as_ref().map(|x| self.color(x)).unwrap_or(text),
             }
         };
-        let mut look = if s.hover > 0.0 {
+        let mut look = if s.hover > 0.0 && hovered != base {
             let (a, b) = (resolve(&base), resolve(&hovered));
             let k = s.hover;
             Look {
@@ -954,7 +957,7 @@ impl Theme {
             resolve(&base)
         };
         if s.pressed {
-            look = resolve(&layer(&layer(&base, &c.hover), &c.pressed));
+            look = resolve(&layer(&hovered, &c.pressed));
         }
         if s.disabled {
             look = resolve(&layer(&base, &c.disabled));

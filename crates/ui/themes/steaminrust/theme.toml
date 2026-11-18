@@ -185,6 +185,7 @@ normal = { fill = "transparent", text = "text_dim" }
 hover = { fill = "surface_hover", text = "text" }
 selected = { fill = "surface_hover", text = "text" }
 disabled = { text = "text_dim@0.45" }
+pressed = { fill = "raised", text = "text" }
 
 [components.bar_button]
 height = 37
@@ -192,12 +193,14 @@ padding = [16, 0]
 normal = { fill = "raised", text = "text_dim" }
 hover = { fill = "surface_hover", text = "text" }
 selected = { fill = "surface_hover", text = "text" }
+pressed = { fill = "darken(surface_hover, 0.15)", text = "text" }
 
 [components.icon_box]
 height = 40
 normal = { fill = "text_dim@0.05", text = "text_dim" }
 hover = { fill = "text_dim@0.12", text = "text" }
 selected = { fill = "text_dim@0.16", text = "text" }
+pressed = { fill = "text_dim@0.2", text = "text" }
 
 [components.badge]
 height = 16
@@ -212,8 +215,9 @@ normal = { fill = "accent", text = "text_on(accent)" }
 text = "section"
 uppercase = true
 normal = { fill = "transparent", text = "mix(text, text_dim, 0.12)" }
-hover = { text = "text" }
+hover = { text = "mix(text, accent, 0.55)" }
 selected = { text = "accent" }
+pressed = { text = "accent" }
 
 [components.page_tab]
 height = 45
@@ -222,6 +226,7 @@ text = "tab"
 normal = { fill = "transparent", text = "text" }
 hover = { fill = "white@0.1" }
 selected = { fill = "accent_2", text = "text_on(accent_2)" }
+pressed = { fill = "white@0.05" }
 
 [components.nav_tab]
 padding = [12, 0]
@@ -256,6 +261,7 @@ text = "body_l"
 normal = { fill = "chrome", text = "text_dim" }
 hover = { fill = "raised" }
 selected = { fill = "surface_hover", text = "text" }
+pressed = { fill = "surface_hover" }
 
 [components.segmented]
 padding = [3, 3]
@@ -301,6 +307,7 @@ normal = { fill = "transparent", text = "text", icon = "text_dim" }
 hover = { fill = "surface_hover", icon = "text" }
 
 # ---- the shell ----
+pressed = { fill = "darken(surface_hover, 0.15)" }
 
 [components.top_bar]
 normal = { fill = "chrome" }
