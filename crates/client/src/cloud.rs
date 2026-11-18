@@ -175,18 +175,57 @@ fn walk(dir: &Path, recursive: bool) -> Vec<PathBuf> {
 
 /// `*` and `?` wildcards, case-insensitive (Windows file names).
 pub fn glob(pattern: &str, name: &str) -> bool {
-    fn go(p: &[char], n: &[char]) -> bool {
-        match (p.first(), n.first()) {
-            (None, None) => true,
-            (Some('*'), _) => go(&p[1..], n) || (!n.is_empty() && go(p, &n[1..])),
-            (Some('?'), Some(_)) => go(&p[1..], &n[1..]),
-            (Some(a), Some(b)) => a.eq_ignore_ascii_case(b) && go(&p[1..], &n[1..]),
-            _ => false,
-        }
-    }
     let p: Vec<char> = pattern.chars().collect();
     let n: Vec<char> = name.chars().collect();
-    go(&p, &n)
+    let (mut pi, mut ni) = (0usize, 0usize);
+    let (mut star, mut match_ni) = (None, 0usize);
+
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi].eq_ignore_ascii_case(&n[ni])) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            match_ni = ni;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            match_ni += 1;
+            ni = match_ni;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+#[cfg(test)]
+mod glob_tests {
+    #[test]
+    fn glob_pathological_wildcards_finish_linearly() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let pat = format!("{}*b", "*a".repeat(30));
+            let no_match = super::glob(&pat, &"a".repeat(40));
+            let yes_match = super::glob(&pat, &format!("{}b", "a".repeat(40)));
+            let _ = tx.send((no_match, yes_match));
+        });
+        let (no_match, yes_match) = rx
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .expect("glob exhibited exponential backtracking");
+        assert!(!no_match);
+        assert!(yes_match);
+
+        assert!(super::glob("***", ""));
+        assert!(!super::glob("*?", ""));
+        assert!(super::glob("a*b?c", "AxxBzc"));
+        assert!(!super::glob("a*b?c", "AxxBc"));
+        assert!(super::glob("save*.dat", "SAVE_01.DAT"));
+    }
 }
 
 fn hex(b: &[u8]) -> String {

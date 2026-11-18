@@ -17,6 +17,25 @@ use std::time::{Duration, Instant};
 
 /// Decoded pictures nobody picked up for this long are dropped.
 const UNCLAIMED_FOR: Duration = Duration::from_secs(10);
+const MAX_IMAGE_DIM: u32 = 8192;
+const MAX_IMAGE_ALLOC: u64 = 64 << 20;
+
+fn image_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIM);
+    limits.max_image_height = Some(MAX_IMAGE_DIM);
+    limits.max_alloc = Some(MAX_IMAGE_ALLOC);
+    limits
+}
+
+/// Cap inline rich-text/store image URLs through [`ui::widgets::sized_url`] (up to `1600×1200`)
+/// so `SizedLoader` decodes and downscales them under [`image_limits`].
+pub fn inline_url(url: &str, max_w: f32, max_h: f32, ppp: f32) -> String {
+    let scale = if ppp.is_finite() && ppp > 0.0 { ppp } else { 1.0 };
+    let w = if max_w.is_finite() { (max_w * scale).clamp(64.0, 1600.0) } else { 1600.0 };
+    let h = if max_h.is_finite() { (max_h * scale).clamp(64.0, 1200.0) } else { 1200.0 };
+    ui::widgets::sized_url(url, egui::vec2(w, h), false)
+}
 
 enum Entry {
     Pending,
@@ -84,7 +103,11 @@ fn worker(rx: &Mutex<Receiver<Job>>, entries: &Mutex<HashMap<String, Entry>>) {
 
 /// Decode, then shrink so the picture still covers (or fits in) `w`×`h`.
 fn decode(bytes: &[u8], cover: bool, w: u32, h: u32) -> Result<ColorImage, String> {
-    let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    reader.limits(image_limits());
+    let img = reader.decode().map_err(|e| e.to_string())?;
     let (iw, ih) = (img.width().max(1), img.height().max(1));
     let (sx, sy) = (w as f32 / iw as f32, h as f32 / ih as f32);
     let scale = if cover { sx.max(sy) } else { sx.min(sy) };
@@ -180,5 +203,43 @@ mod tests {
         // Animations and huge draws stay plain.
         assert_eq!(ui::widgets::sized_url("https://x/a.gif", egui::vec2(10.0, 10.0), true), "https://x/a.gif");
         assert_eq!(ui::widgets::sized_url(url, egui::vec2(4000.0, 100.0), true), url);
+    }
+
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbImage::new(w, h);
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn decode_rejects_oversized_dimensions_and_alloc() {
+        let ok = png(100, 100);
+        assert_eq!(decode(&ok, false, 1600, 1200).unwrap().size, [100, 100]);
+
+        let wide = png(8193, 1);
+        assert!(decode(&wide, false, 1600, 1200).is_err(), "expected width > 8192 to be rejected");
+
+        let tall = png(1, 8193);
+        assert!(decode(&tall, false, 1600, 1200).is_err(), "expected height > 8192 to be rejected");
+
+        let bomb = png(5000, 5000);
+        assert!(decode(&bomb, false, 1600, 1200).is_err(), "expected > 64 MiB allocation to be rejected");
+    }
+
+    #[test]
+    fn inline_url_wraps_and_caps_through_sized_url() {
+        let url = "https://cdn.example/post/banner.png?v=1";
+        let wrapped = inline_url(url, 900.0, 700.0, 1.0);
+        assert_eq!(ui::widgets::parse_sized(&wrapped), Some((url, false, 1024, 768)));
+
+        let hidpi = inline_url(url, 900.0, 1200.0, 3.0);
+        assert_eq!(ui::widgets::parse_sized(&hidpi), Some((url, false, 2048, 1536)));
+
+        let zero = inline_url("https://cdn.example/shot.jpg", 0.0, 700.0, 1.0);
+        assert_eq!(ui::widgets::parse_sized(&zero), Some(("https://cdn.example/shot.jpg", false, 64, 768)));
+
+        assert_eq!(inline_url("https://cdn.example/anim.gif", 900.0, 700.0, 1.0), "https://cdn.example/anim.gif");
+        assert_eq!(inline_url("file:///tmp/x.png", 900.0, 700.0, 1.0), "file:///tmp/x.png");
     }
 }

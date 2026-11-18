@@ -823,6 +823,30 @@ pub fn parse_guide(body: &str) -> Result<Guide, String> {
     })
 }
 
+#[cfg(test)]
+mod parse_topics_loop_tests {
+    #[test]
+    fn parse_topics_truncated_open_tag_does_not_hang() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let html = concat!(
+                r#"<div class="forum_topics">"#,
+                r#"<div class="forum_topic " data-gidforumtopic="42">"#,
+                r#"<a class="forum_topic_overlay" href="https://steamcommunity.com/app/10/discussions/0/42/"></a>"#,
+                r#"<div class="forum_topic_name">Valid topic</div></div>"#,
+                r#"<div class="forum_topic "#,
+            );
+            let _ = tx.send(super::parse_topics(html, 10));
+        });
+        let page = rx
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .expect("parse_topics hung on truncated forum_topic tag")
+            .unwrap();
+        assert_eq!(page.topics.len(), 1);
+        assert_eq!(page.topics[0].title, "Valid topic");
+    }
+}
+
 /// The number in Steam's "Showing 1-15 of 247" paging line.
 fn paging_total(s: &str) -> Option<u64> {
     let span = between(s, "_pagetotal\">", "<")?;
@@ -856,7 +880,7 @@ pub fn parse_topics(body: &str, app_id: AppId) -> Result<TopicPage, String> {
     let mut rest = body;
     while let Some(at) = rest.find("class=\"forum_topic ") {
         let start = rest[..at].rfind("<div").unwrap_or(at);
-        let open_end = rest[at..].find('>').map(|e| e + at).unwrap_or(at);
+        let Some(open_end) = rest[at..].find('>').map(|e| e + at) else { break };
         let open = &rest[start..open_end];
         let block = inner(rest, start).unwrap_or_default();
         rest = &rest[open_end..];
