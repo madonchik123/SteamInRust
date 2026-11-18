@@ -20,6 +20,7 @@ type HttpResult = (String, u64, u16, String);
 
 /// Largest answer a plugin gets (the rest is cut off).
 const MAX_BODY: usize = 1024 * 1024;
+const MAX_ROW_DEPTH: usize = 8;
 
 /// Hosts any plugin may show images from (Steam's own image servers).
 const STEAM_IMAGES: [&str; 5] = ["steamstatic.com", "steampowered.com", "steamusercontent.com", "steamcommunity.com", "akamaihd.net"];
@@ -30,7 +31,7 @@ pub struct Plugins {
     loaded: bool,
     list: Vec<Plugin>,
     broken: Vec<(PathBuf, String)>,
-    enabled: BTreeSet<String>,
+    enabled: BTreeMap<String, BTreeSet<Permission>>,
     /// Plugin waiting for the user to approve its permissions.
     consent: Option<String>,
     show_logs: Option<String>,
@@ -52,6 +53,20 @@ pub struct Plugins {
     trades_polled: Option<std::time::Instant>,
     /// Prices plugins asked for: already asked, and games searched in bulk.
     prices: Mutex<(std::collections::HashSet<(AppId, String)>, std::collections::HashSet<AppId>)>,
+}
+
+fn parse_enabled(data: &str) -> BTreeMap<String, BTreeSet<Permission>> {
+    if let Ok(map) = serde_json::from_str::<BTreeMap<String, BTreeSet<Permission>>>(data) {
+        return map;
+    }
+    if let Ok(legacy) = serde_json::from_str::<BTreeSet<String>>(data) {
+        return legacy.into_iter().map(|id| (id, BTreeSet::new())).collect();
+    }
+    BTreeMap::new()
+}
+
+fn permissions_approved(manifest: &[Permission], approved: &BTreeSet<Permission>) -> bool {
+    manifest.iter().all(|p| approved.contains(p))
 }
 
 /// Something done on a plugin's page.
@@ -76,7 +91,7 @@ impl Plugins {
             loaded: false,
             list: Vec::new(),
             broken: Vec::new(),
-            enabled: BTreeSet::new(),
+            enabled: BTreeMap::new(),
             consent: None,
             show_logs: None,
             seen: HashMap::new(),
@@ -108,7 +123,7 @@ impl Plugins {
                 Err((path, e)) => self.broken.push((path, e.to_string())),
             }
         }
-        let ids: Vec<String> = self.enabled.iter().cloned().collect();
+        let ids: Vec<String> = self.enabled.keys().cloned().collect();
         for id in ids {
             self.start(&id);
         }
@@ -122,9 +137,18 @@ impl Plugins {
     }
 
     fn start(&mut self, id: &str) {
+        let Some(approved) = self.enabled.get(id).cloned() else { return };
         let storage = self.storage(id);
         if let Some(p) = self.list.iter_mut().find(|p| p.manifest.id == id) {
-            p.start(storage);
+            if permissions_approved(&p.manifest.permissions, &approved) {
+                p.start(&approved, storage);
+            } else {
+                p.stop();
+                self.enabled.remove(id);
+                if self.consent.is_none() {
+                    self.consent = Some(id.to_string());
+                }
+            }
         }
         self.next_tick.remove(id);
     }
@@ -227,7 +251,13 @@ impl Plugins {
                 return s.clone();
             }
         }
-        let wants = |perm| self.list.iter().any(|p| p.is_running() && p.manifest.permissions.contains(&perm));
+        let wants = |perm| {
+            self.list.iter().any(|p| {
+                p.is_running()
+                    && self.enabled.get(&p.manifest.id).is_some_and(|a| a.contains(&perm))
+                    && p.manifest.permissions.contains(&perm)
+            })
+        };
         let s = snapshot(ctx, wants(plugins::Permission::TradesRead), wants(plugins::Permission::InventoryRead));
         self.snapshot = Some((std::time::Instant::now(), s.clone()));
         s
@@ -387,8 +417,11 @@ impl Extension for Plugins {
             return;
         }
         // Keep trade offers fresh for plugins that watch them (every 2 minutes).
-        if self.list.iter().any(|p| p.is_running() && p.manifest.permissions.contains(&plugins::Permission::TradesRead))
-            && self.trades_polled.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(120))
+        if self.list.iter().any(|p| {
+            p.is_running()
+                && self.enabled.get(&p.manifest.id).is_some_and(|a| a.contains(&plugins::Permission::TradesRead))
+                && p.manifest.permissions.contains(&plugins::Permission::TradesRead)
+        }) && self.trades_polled.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(120))
         {
             self.trades_polled = Some(std::time::Instant::now());
             ctx.send(Command::LoadTradeOffers { language: i18n::language().steam_name().to_string() });
@@ -490,7 +523,7 @@ impl Extension for Plugins {
                 }
                 ui.add_space(10.0);
                 let mut r = Render { plugin: &id, hosts: &hosts, inputs: &mut inputs, events: &mut events };
-                render(ui, &t, ctx, &widgets, &mut r);
+                render(ui, &t, ctx, &widgets, &mut r, 0);
             });
         });
         self.inputs = inputs;
@@ -523,7 +556,7 @@ impl Extension for Plugins {
         let mut toggle_req: Option<(String, bool)> = None;
         for p in &self.list {
             let m = &p.manifest;
-            let on = self.enabled.contains(&m.id);
+            let on = self.enabled.contains_key(&m.id);
             w::card(&t).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -610,7 +643,7 @@ impl Extension for Plugins {
     }
 
     fn load(&mut self, data: &str) {
-        self.enabled = serde_json::from_str(data).unwrap_or_default();
+        self.enabled = parse_enabled(data);
     }
 }
 
@@ -660,7 +693,7 @@ impl Plugins {
         });
         match decision {
             Some(true) => {
-                self.enabled.insert(id.clone());
+                self.enabled.insert(id.clone(), perms.into_iter().collect());
                 self.start(&id);
                 self.consent = None;
             }
@@ -692,7 +725,7 @@ fn image_allowed(url: &str, hosts: &[String]) -> bool {
     })
 }
 
-fn render(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, widgets: &[Widget], r: &mut Render) {
+fn render(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, widgets: &[Widget], r: &mut Render, depth: usize) {
     for wd in widgets {
         match wd {
             Widget::Heading(s) => {
@@ -723,7 +756,9 @@ fn render(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, widgets: &[Widget], r: &mut Ren
                 w::progress(ui, t, *v, width);
             }
             Widget::Row(items) => {
-                ui.horizontal_wrapped(|ui| render(ui, t, ctx, items, r));
+                if depth < MAX_ROW_DEPTH {
+                    ui.horizontal_wrapped(|ui| render(ui, t, ctx, items, r, depth + 1));
+                }
             }
             Widget::Game(id) => {
                 let name = ctx.state.app_name(*id).map(String::from).or_else(|| ctx.local.games.iter().find(|g| g.app_id == *id).map(|g| g.name.clone())).unwrap_or_else(|| t!("App {id}", id = id));
@@ -812,7 +847,7 @@ mod tests {
         let mut p = plugins::Plugin::load(&dir).unwrap();
         // A wishlist of three well-known games.
         p.set_snapshot(plugins::Snapshot { wishlist: vec![440, 620, 1145360], ..Default::default() });
-        p.start(Default::default());
+        p.start(&std::collections::BTreeSet::from([plugins::Permission::Network]), Default::default());
         assert!(p.error.is_none(), "{:?}", p.error);
         let reqs = p.drain();
         let Some(plugins::Request::Http { id, method, url, body, headers }) = reqs.into_iter().find(|r| matches!(r, plugins::Request::Http { .. })) else { panic!("no request") };
@@ -842,5 +877,72 @@ mod tests {
         assert!(!super::image_allowed("https://steamstatic.com.evil.com/x.jpg", &hosts));
         assert!(!super::image_allowed("https://evil.com/x.jpg", &hosts));
         assert!(!super::image_allowed("https://user@evil.com/x.jpg", &hosts));
+    }
+
+    fn temp_host(rt: &tokio::runtime::Runtime) -> super::Plugins {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("sir-desktop-plugins-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mut host = super::Plugins::new(rt.handle().clone(), egui::Context::default());
+        host.dir = base.join("plugins");
+        host.data_dir = base.join("plugin-data");
+        host
+    }
+
+    #[test]
+    fn legacy_json_only_auto_enables_zero_permission_plugins() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut host = temp_host(&rt);
+        let zdir = host.dir.join("zero");
+        let pdir = host.dir.join("priv");
+        std::fs::create_dir_all(&zdir).unwrap();
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(zdir.join("plugin.toml"), "id = \"zero\"\nname = \"Zero\"\n").unwrap();
+        std::fs::write(zdir.join("main.rhai"), "fn on_load() { log(\"ok\"); }").unwrap();
+        std::fs::write(pdir.join("plugin.toml"), "id = \"priv\"\nname = \"Priv\"\npermissions = [\"chat.write\"]\n").unwrap();
+        std::fs::write(pdir.join("main.rhai"), "fn on_load() { log(\"should-not-run\"); }").unwrap();
+
+        use extensions::Extension;
+        host.load("[\"zero\", \"priv\"]");
+        host.ensure_loaded();
+
+        let zero = host.list.iter().find(|p| p.manifest.id == "zero").unwrap();
+        assert!(zero.is_running(), "0-permission plugin may keep legacy enablement");
+        let priv_p = host.list.iter().find(|p| p.manifest.id == "priv").unwrap();
+        assert!(!priv_p.is_running(), "privileged plugin must not start from legacy BTreeSet JSON");
+        assert!(!host.enabled.contains_key("priv"));
+        assert_eq!(host.consent.as_deref(), Some("priv"));
+        let _ = std::fs::remove_dir_all(host.dir.parent().unwrap());
+    }
+
+    #[test]
+    fn permission_escalation_on_reload_requires_fresh_consent() {
+        use extensions::Extension;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut host = temp_host(&rt);
+        let pdir = host.dir.join("escalate");
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(pdir.join("plugin.toml"), "id = \"escalate\"\nname = \"Esc\"\npermissions = [\"notifications\"]\n").unwrap();
+        std::fs::write(pdir.join("main.rhai"), "fn on_load() { notify(\"hi\"); }").unwrap();
+
+        host.load("{\"escalate\":[\"notifications\"]}");
+        host.ensure_loaded();
+        assert!(host.list.iter().find(|p| p.manifest.id == "escalate").unwrap().is_running());
+
+        std::fs::write(
+            pdir.join("plugin.toml"),
+            "id = \"escalate\"\nname = \"Esc\"\npermissions = [\"notifications\", \"chat.write\"]\n",
+        )
+        .unwrap();
+        host.loaded = false;
+        host.consent = None;
+        host.ensure_loaded();
+
+        let p = host.list.iter().find(|p| p.manifest.id == "escalate").unwrap();
+        assert!(!p.is_running(), "escalated plugin must stop and require fresh consent");
+        assert!(!host.enabled.contains_key("escalate"));
+        assert_eq!(host.consent.as_deref(), Some("escalate"));
+        let _ = std::fs::remove_dir_all(host.dir.parent().unwrap());
     }
 }

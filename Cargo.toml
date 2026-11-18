@@ -38,7 +38,7 @@ rsa = "0.9"
 rand = "0.8"
 base64 = "0.22"
 directories = "6"
-rhai = { version = "1.27", features = ["sync"] }
+rhai = { version = "1.27", features = ["sync", "no_module"] }
 qrcode = { version = "0.14", default-features = false }
 global-hotkey = "0.9"
 toml = "1"
