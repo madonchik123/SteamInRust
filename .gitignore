@@ -3,3 +3,8 @@
 .DS_Store
 *.log
 /media/
+
+# Local design material, never pushed
+/Steam_Redesign_Full_AI_Export/
+/SteamInRust logos/
+*.zip
