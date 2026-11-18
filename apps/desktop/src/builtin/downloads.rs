@@ -269,48 +269,65 @@ impl Downloads {
     /// rows ticked (Figma "Frame 100" `379:8603`).
     fn header(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, rows: &[Row]) {
         let total: u64 = ctx.local.games.iter().map(|g| g.size_on_disk).sum();
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = t.spacing.sm + 2.0;
-            ui.label(w::heading_m(t, t!("Download Manager"), t.text));
-            if w::icon_box(ui, t, icons::GEAR, t!("Download settings"), false).clicked() {
-                self.show_settings = true;
+        let h = t.height_of(&t.components.button_install, 40.0);
+        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+        // The buttons at the right; as icons when the window is too narrow
+        // for their words and the title.
+        let font = t.font_of(&t.components.button_install);
+        let words = [t!("Download Selected"), t!("Pause Selected"), t!("Clear Completed")];
+        let buttons_w: f32 = words.iter().map(|l| ui.painter().layout_no_wrap(l.to_string(), font.clone(), t.text).size().x + font.size * 2.0 + t.padding_of(&t.components.button_install).x * 2.0 + t.spacing.md).sum::<f32>() + 50.0;
+        let title_w = ui.painter().layout_no_wrap(t!("Download Manager").to_string(), t.typography.heading_m.font(), t.text).size().x + 60.0;
+        let compact = row.width() < title_w + buttons_w + 120.0;
+        let mut right = ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::right_to_left(Align::Center)));
+        {
+            let ui = &mut right;
+            ui.spacing_mut().item_spacing.x = t.spacing.md - 1.0;
+            ui.add_space(t.spacing.sm + 2.0);
+            let all = !rows.is_empty() && rows.iter().all(|r| self.selected.contains(&r.id));
+            let mut on = all;
+            if w::checkbox(ui, t, &mut on, 30.0).on_hover_text(if all { t!("Untick all") } else { t!("Tick all") }).changed() {
+                self.selected = if on { rows.iter().map(|r| r.id).collect() } else { BTreeSet::new() };
             }
-            ui.add_space(t.spacing.sm);
-            let n = ctx.local.games.len();
-            if n > 0 {
-                ui.label(w::body_m(t, t!("{n} games · {size} installed · {libraries} libraries", n = n, size = ui::bytes(total), libraries = ctx.local.libraries.len()), t.text_dim));
+            let button = |ui: &mut Ui, enabled: bool, icon: &str, label: &str, kind: w::Kind| {
+                ui.add_enabled_ui(enabled, |ui| if compact { w::icon_box(ui, t, icon, label, false) } else { w::button(ui, t, Some(icon), label, kind, w::Size::Md) }).inner.clicked()
+            };
+            let any_done = rows.iter().any(|r| matches!(r.kind, Kind::Done(_)));
+            if button(ui, any_done, icons::TRASH, words[2], w::Kind::Pause) {
+                self.cleared.extend(rows.iter().filter(|r| matches!(r.kind, Kind::Done(_))).map(|r| r.id));
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = t.spacing.md - 1.0;
-                ui.add_space(t.spacing.sm + 2.0);
-                let all = !rows.is_empty() && rows.iter().all(|r| self.selected.contains(&r.id));
-                let mut on = all;
-                if w::checkbox(ui, t, &mut on, 30.0).on_hover_text(if all { t!("Untick all") } else { t!("Tick all") }).changed() {
-                    self.selected = if on { rows.iter().map(|r| r.id).collect() } else { BTreeSet::new() };
+            let pausable: Vec<AppId> = rows.iter().filter(|r| self.selected.contains(&r.id) && matches!(&r.kind, Kind::Active(d) if !d.paused && !d.verifying())).map(|r| r.id).collect();
+            if button(ui, !pausable.is_empty(), icons::PAUSE, words[1], w::Kind::Pause) {
+                for id in pausable {
+                    ctx.send(client::Command::PauseDownload { app_id: id });
                 }
-                let any_done = rows.iter().any(|r| matches!(r.kind, Kind::Done(_)));
-                if ui.add_enabled_ui(any_done, |ui| w::button(ui, t, Some(icons::TRASH), t!("Clear Completed"), w::Kind::Pause, w::Size::Md)).inner.clicked() {
-                    self.cleared.extend(rows.iter().filter(|r| matches!(r.kind, Kind::Done(_))).map(|r| r.id));
-                }
-                let pausable: Vec<AppId> = rows.iter().filter(|r| self.selected.contains(&r.id) && matches!(&r.kind, Kind::Active(d) if !d.paused && !d.verifying())).map(|r| r.id).collect();
-                if ui.add_enabled_ui(!pausable.is_empty(), |ui| w::button(ui, t, Some(icons::PAUSE), t!("Pause Selected"), w::Kind::Pause, w::Size::Md)).inner.clicked() {
-                    for id in pausable {
-                        ctx.send(client::Command::PauseDownload { app_id: id });
+            }
+            let startable: Vec<&Row> = rows.iter().filter(|r| self.selected.contains(&r.id) && matches!(&r.kind, Kind::Active(d) if d.paused) || self.selected.contains(&r.id) && matches!(r.kind, Kind::Queued { .. })).collect();
+            if button(ui, !startable.is_empty(), icons::DOWNLOAD, words[0], w::Kind::Install) {
+                // Paused ones carry on; queued ones move to the front, in
+                // their order (the last one sent ends up first).
+                for r in startable.iter().rev() {
+                    match r.kind {
+                        Kind::Active(_) => ctx.send(client::Command::ResumeDownload { app_id: r.id }),
+                        _ => ctx.send(client::Command::DownloadNow { app_id: r.id }),
                     }
                 }
-                let startable: Vec<&Row> = rows.iter().filter(|r| self.selected.contains(&r.id) && matches!(&r.kind, Kind::Active(d) if d.paused) || self.selected.contains(&r.id) && matches!(r.kind, Kind::Queued { .. })).collect();
-                if ui.add_enabled_ui(!startable.is_empty(), |ui| w::button(ui, t, Some(icons::DOWNLOAD), t!("Download Selected"), w::Kind::Install, w::Size::Md)).inner.clicked() {
-                    // Paused ones carry on; queued ones move to the front, in
-                    // their order (the last one sent ends up first).
-                    for r in startable.iter().rev() {
-                        match r.kind {
-                            Kind::Active(_) => ctx.send(client::Command::ResumeDownload { app_id: r.id }),
-                            _ => ctx.send(client::Command::DownloadNow { app_id: r.id }),
-                        }
-                    }
-                }
-            });
-        });
+            }
+        }
+        // The title and summary in what's left; the summary is cut short.
+        let left = Rect::from_min_max(row.min, pos2((right.min_rect().left() - t.spacing.xl).max(row.left() + 40.0), row.bottom()));
+        let mut l = ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)));
+        l.set_clip_rect(l.clip_rect().intersect(left));
+        l.spacing_mut().item_spacing.x = t.spacing.sm + 2.0;
+        l.add(egui::Label::new(w::heading_m(t, t!("Download Manager"), t.text)).truncate());
+        if w::icon_box(&mut l, t, icons::GEAR, t!("Download settings"), false).clicked() {
+            self.show_settings = true;
+        }
+        let n = ctx.local.games.len();
+        if n > 0 {
+            l.add_space(t.spacing.sm);
+            let text = t!("{n} games · {size} installed · {libraries} libraries", n = n, size = ui::bytes(total), libraries = ctx.local.libraries.len());
+            l.add(egui::Label::new(w::body_m(t, &text, t.text_dim)).truncate()).on_hover_text(text);
+        }
     }
 
     /// One game (Figma "Frame 421" `757:9589`): its place in the queue (drag

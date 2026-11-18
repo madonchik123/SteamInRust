@@ -284,6 +284,7 @@ hover = { fill = "surface_hover" }
 
 [components.download_row]
 normal = { fill = "surface" }
+hover = { fill = "surface_hover" }
 
 # ---- community ----
 
