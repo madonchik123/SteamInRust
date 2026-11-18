@@ -993,54 +993,49 @@ pub(super) fn kind_title(kind: FileKind) -> String {
     .to_string()
 }
 
-/// What one person shared, newest first, like the links on their profile.
+/// What one person shared (Figma "screenshots" `457:12553`), for links
+/// that open it from elsewhere: the same list their profile shows, inside
+/// their profile's frame. In the overlay, without the frame.
 pub(super) fn user_files(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, user: model::SteamId, kind: FileKind) {
-    let p = io.state.persona(user);
-    ui.add_space(16.0);
-    ui.horizontal(|ui| {
-        if w::avatar(ui, t, &model::art::avatar(p.avatar_hash.as_deref()), 48.0, None).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-            io.go(View::Page("profile".into(), Some(user.to_string())));
-        }
-        ui.vertical(|ui| {
-            ui.label(w::text_bold(&p.name, 22.0, t.text));
-            ui.label(w::text(kind_title(kind), 13.5, t.text_dim));
+    use crate::builtin::profile::{FrameData, Go, frame, here_of, section};
+    if io.overlay {
+        let p = io.state.persona(user);
+        ui.add_space(t.spacing.lg);
+        ui.label(w::heading_m(t, &p.name, t.text));
+        return user_files_list(hv, ui, t, io, user, kind);
+    }
+    let data = FrameData::gather(io.state, io.local, user);
+    for c in &data.wants {
+        io.send(c.clone());
+    }
+    let go = frame(ui, t, &data, here_of(kind), true, |ui| {
+        section(ui, t, "", "", |ui| user_files_list(hv, ui, t, io, user, kind));
+    });
+    for g in go {
+        io.actions.push(match g {
+            Go::Nav(page, arg) => extensions::Action::Navigate { page: page.into(), arg },
+            Go::Act(a) => a,
+            Go::Game(app) => crate::shell::game_page(io.state, app),
         });
-    });
-    ui.add_space(8.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
-        for k in [FileKind::Screenshots, FileKind::Art, FileKind::Videos, FileKind::Items, FileKind::Guides] {
-            if w::nav_tab(ui, t, &kind_title(k), k == kind, 32.0).clicked() && k != kind {
-                io.go(View::UserFiles { user, kind: k });
-            }
-        }
-    });
-    ui.add_space(10.0);
+    }
+}
+
+fn user_files_list(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, user: model::SteamId, kind: FileKind) {
+    use crate::builtin::profile::files::{FilesClick, files_list};
     let page_key = format!("user{user}/{kind:?}");
     let page = hv.pages.get(&page_key).copied().unwrap_or(1);
-    let key = hub::user_files_key(user, kind, page);
-    let lang = io.lang();
-    let req = || Request::UserFiles { steam_id: user, kind, page, language: lang.clone() };
-    let have = io.state.hub.files.contains_key(&key);
-    hv.ask(io, key.clone(), have, req);
-    let data = match io.state.hub.files.get(&key) {
-        None => return w::loading(ui, t, &t!("Loading…")),
-        Some(Err(e)) if e == "private" => return w::empty(ui, t, icons::LOCK_SIMPLE, t!("This profile is private"), t!("Only their friends can see this.")),
-        Some(Err(e)) => {
-            if error(ui, t, e) {
-                hv.retry(io, req());
-            }
-            return;
-        }
-        Some(Ok(d)) => d.clone(),
-    };
-    if data.items.is_empty() {
-        return w::empty(ui, t, icons::CAMERA, t!("Nothing here yet"), t!("Nothing shared here yet."));
+    let mut want = None;
+    let click = files_list(ui, t, io.state, user, kind, page, &mut want);
+    if let Some(req) = want {
+        hv.ask(io, hub::user_files_key(user, kind, page), false, || req);
     }
-    let mixed: Vec<(FileKind, FileEntry)> = data.items.into_iter().map(|e| (kind, e)).collect();
-    grid(hv, ui, t, io, &mixed, 280.0);
-    let pages = (data.total.div_ceil(hub::USER_PAGE as u64) as u32).max(1);
-    if let Some(p) = pager(ui, t, page, pages) {
-        hv.pages.insert(page_key, p);
+    match click {
+        Some(FilesClick::Item(id)) => io.go(View::Item(id)),
+        Some(FilesClick::Kind(k)) => io.go(View::UserFiles { user, kind: k }),
+        Some(FilesClick::Page(p)) => {
+            hv.pages.insert(page_key, p);
+        }
+        Some(FilesClick::Retry(req)) => hv.retry(io, req),
+        None => {}
     }
 }

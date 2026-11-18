@@ -3,9 +3,9 @@
 //! its trading card set (which cards you have), crafting the next level, and
 //! a way to find the missing cards on the Market.
 
-use super::{Profile, panel, unlocked_text};
+use super::{Profile, loading_rows, section, unlocked_text};
 use client::Command;
-use egui::{Align, Align2, CornerRadius, Layout, Rect, Sense, Ui, pos2, vec2};
+use egui::{Align2, Rect, Sense, Ui, pos2, vec2};
 use extensions::Ctx;
 use i18n::t;
 use model::{Badge, SteamId};
@@ -17,41 +17,12 @@ impl Profile {
         if let Some(url) = self.badge_open.clone() {
             return self.badge_page(ui, t, ctx, id, &url);
         }
-        ui.horizontal(|ui| {
-            if w::button(ui, t, Some(icons::ARROW_LEFT), t!("Back to profile"), w::Kind::Ghost, w::Size::Sm).clicked() {
-                ctx.navigate("profile", Some(id.to_string()));
-            }
-        });
-        ui.add_space(8.0);
+        let _ = name;
         let Some(Ok(b)) = ctx.state.badges.get(&id).cloned() else {
-            panel(ui, t, |ui| {
-                for _ in 0..5 {
-                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::hover());
-                    w::skeleton(ui, t, r.shrink2(vec2(0.0, 5.0)), t.corner_small());
-                }
-            });
+            section(ui, t, t!("Badges"), "", |ui| loading_rows(ui, t, 5, t.dense(72.0)));
             return;
         };
-        panel(ui, t, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(w::text_bold(t!("{name}'s badges", name = name), 20.0, t.text));
-                ui.label(w::text(b.items.len().to_string(), 15.0, t.text_dim));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.vertical(|ui| {
-                        ui.label(w::text_bold(t!("Level {n}", n = b.level), 15.0, t.text));
-                        if !b.xp.is_empty() {
-                            ui.label(w::text(&b.xp, 12.0, t.text_dim));
-                        }
-                    });
-                });
-            });
-            if !b.next.is_empty() {
-                ui.add_space(6.0);
-                let width = ui.available_width();
-                w::progress(ui, t, b.progress, width);
-                ui.label(w::text(super::next_level_text(&b.next), 11.5, t.text_faint));
-            }
-            ui.add_space(10.0);
+        section(ui, t, t!("Badges"), &b.items.len().to_string(), |ui| {
             let mut open = None;
             for badge in &b.items {
                 if badge_row(ui, t, badge) && !badge.url.is_empty() {
@@ -78,42 +49,42 @@ impl Profile {
         ui.add_space(8.0);
         let d = match ctx.state.badge_pages.get(url) {
             None => {
-                panel(ui, t, |ui| {
+                section(ui, t, "", "", |ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 220.0), Sense::hover());
                     w::skeleton(ui, t, r, t.corner_small());
                 });
                 return;
             }
             Some(Err(e)) => {
-                panel(ui, t, |ui| w::empty(ui, t, icons::WARNING, t!("Couldn't load this badge"), &i18n::tr_dyn(e)));
+                section(ui, t, "", "", |ui| w::empty(ui, t, icons::WARNING, t!("Couldn't load this badge"), &i18n::tr_dyn(e)));
                 return;
             }
             Some(Ok(d)) => d.clone(),
         };
-        panel(ui, t, |ui| {
+        section(ui, t, "", "", |ui| {
             ui.horizontal_top(|ui| {
-                let (img, _) = ui.allocate_exact_size(vec2(96.0, 96.0), Sense::hover());
+                let (img, _) = ui.allocate_exact_size(vec2(t.dense(96.0), t.dense(96.0)), Sense::hover());
                 match &d.current.icon {
                     Some(u) if !d.current.title.is_empty() => {
                         if !w::paint_contain(ui, img, u, Align2::CENTER_CENTER) {
-                            w::skeleton(ui, t, img, CornerRadius::same(8));
+                            w::skeleton(ui, t, img, t.corner());
                         }
                     }
-                    _ => w::placeholder(ui, t, img, icons::MEDAL, CornerRadius::same(8)),
+                    _ => w::placeholder(ui, t, img, icons::MEDAL, t.corner()),
                 }
                 ui.add_space(12.0);
                 ui.vertical(|ui| {
-                    ui.label(w::text_bold(&d.title, 20.0, t.text));
+                    ui.label(w::heading_m(t, &d.title, t.text));
                     if d.current.title.is_empty() {
-                        ui.label(w::text(t!("Not earned yet"), 13.5, t.text_dim));
+                        ui.label(w::body_m(t, t!("Not earned yet"), t.text_dim));
                     } else {
-                        ui.label(w::text_semibold(&d.current.title, 15.0, t.text));
-                        ui.label(w::text(&d.current.detail, 13.0, t.accent));
-                        ui.label(w::text(unlocked_text(&d.current), 12.0, t.text_faint));
+                        ui.label(w::body_l(t, &d.current.title, t.text));
+                        ui.label(w::body_m(t, &d.current.detail, t.accent));
+                        ui.label(w::body_s(t, unlocked_text(&d.current), t.text_faint));
                     }
                     let extra = [d.current.playtime.as_str(), d.current.drops.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
                     if !extra.is_empty() {
-                        ui.label(w::text(extra, 12.0, t.text_dim));
+                        ui.label(w::body_s(t, extra, t.text_dim));
                     }
                 });
             });
@@ -123,30 +94,30 @@ impl Profile {
             ui.add_space(14.0);
             let have = d.cards.iter().filter(|c| c.owned > 0).count();
             ui.horizontal(|ui| {
-                ui.label(w::text_bold(t!("Trading cards"), 16.0, t.text));
-                ui.label(w::text(t!("{have} of {all} collected", have = have, all = d.cards.len()), 13.0, t.text_dim));
+                ui.label(w::heading_s(t, t!("Trading cards"), t.text));
+                ui.label(w::body_m(t, t!("{have} of {all} collected", have = have, all = d.cards.len()), t.text_dim));
             });
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
                 for c in &d.cards {
-                    let (r, resp) = ui.allocate_exact_size(vec2(130.0, 196.0), Sense::hover());
-                    let pic = Rect::from_min_size(r.min, vec2(130.0, 152.0));
+                    let (r, resp) = ui.allocate_exact_size(vec2(t.dense(130.0), t.dense(196.0)), Sense::hover());
+                    let pic = Rect::from_min_size(r.min, vec2(t.dense(130.0), t.dense(152.0)));
                     if !w::paint_contain(ui, pic, &c.image, Align2::CENTER_CENTER) {
                         w::skeleton(ui, t, pic, t.corner_small());
                     }
                     let p = ui.painter();
                     if c.owned == 0 {
                         // Missing cards are dimmed, like Steam's.
-                        p.rect_filled(pic, t.corner_small(), egui::Color32::from_black_alpha(150));
+                        p.rect_filled(pic, t.corner_small(), t.overlay_dark(2));
                     } else if c.owned > 1 {
                         let b = Rect::from_min_size(pic.right_top() + vec2(-34.0, 4.0), vec2(30.0, 20.0));
-                        p.rect_filled(b, CornerRadius::same(4), t.accent);
-                        p.text(b.center(), Align2::CENTER_CENTER, format!("×{}", c.owned), w::font_bold(11.5), egui::Color32::WHITE);
+                        p.rect_filled(b, t.corner_small(), t.accent);
+                        p.text(b.center(), Align2::CENTER_CENTER, format!("×{}", c.owned), t.typography.body_s.font(), t.on_accent);
                     }
                     let color = if c.owned > 0 { t.text } else { t.text_faint };
-                    p.text(pos2(r.left(), pic.bottom() + 12.0), Align2::LEFT_CENTER, &c.name, w::font_semibold(12.5), color);
-                    p.text(pos2(r.left(), pic.bottom() + 30.0), Align2::LEFT_CENTER, &c.position, w::font(11.0), t.text_faint);
+                    p.text(pos2(r.left(), pic.bottom() + 12.0), Align2::LEFT_CENTER, &c.name, t.typography.body_s.font(), color);
+                    p.text(pos2(r.left(), pic.bottom() + 30.0), Align2::LEFT_CENTER, &c.position, t.typography.body_s.font(), t.text_faint);
                     resp.on_hover_text(&c.name);
                 }
             });
@@ -184,9 +155,9 @@ impl Profile {
         let mut close = false;
         egui::Modal::new(egui::Id::unique("craft-badge")).show(ui.ctx(), |ui| {
             ui.set_width(380.0);
-            ui.label(w::text_bold(t!("Craft this badge?"), 18.0, t.text));
+            ui.label(w::heading_s(t, t!("Craft this badge?"), t.text));
             ui.add_space(4.0);
-            ui.add(egui::Label::new(w::text(t!("One of each card in the set is used up. You get the next badge level, XP, and a random emoticon, background and coupon."), 13.0, t.text_dim)).wrap());
+            ui.add(egui::Label::new(w::body_m(t, t!("One of each card in the set is used up. You get the next badge level, XP, and a random emoticon, background and coupon."), t.text_dim)).wrap());
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 if w::button(ui, t, Some(icons::SPARKLE), t!("Craft badge"), w::Kind::Primary, w::Size::Md).clicked() {
@@ -221,31 +192,38 @@ impl Profile {
     }
 }
 
-/// A badge in the list; true when clicked.
+/// A badge in the list (`profile_row`); true when clicked.
 fn badge_row(ui: &mut Ui, t: &Theme, badge: &Badge) -> bool {
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 76.0), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(r, t.corner_small(), t.surface_hover);
+    let c = &t.components.profile_row;
+    let pad = t.padding_of(c);
+    let pic = t.dense(60.0);
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), pic + pad.y * 2.0), Sense::click());
+    if !ui.is_rect_visible(r) {
+        return resp.clicked();
     }
-    let img = Rect::from_min_size(r.min + vec2(6.0, 8.0), vec2(60.0, 60.0));
+    let look = t.look(c, w::interact(ui, &resp, false));
+    w::paint_box(ui, t, r, c, &look, 0.0);
+    let img = Rect::from_min_size(r.min + pad, vec2(pic, pic));
     match &badge.icon {
         Some(u) => {
             if !w::paint_contain(ui, img, u, Align2::CENTER_CENTER) {
-                w::skeleton(ui, t, img, CornerRadius::same(6));
+                w::skeleton(ui, t, img, t.corner_small());
             }
         }
-        None => w::placeholder(ui, t, img, "", CornerRadius::same(6)),
+        None => w::placeholder(ui, t, img, "", t.corner_small()),
     }
-    let x = img.right() + 14.0;
+    let x = img.right() + t.spacing.md + 2.0;
     let p = ui.painter();
-    p.text(pos2(x, r.top() + 20.0), Align2::LEFT_CENTER, &badge.title, w::font_semibold(14.0), t.text);
-    p.text(pos2(x, r.top() + 39.0), Align2::LEFT_CENTER, &badge.detail, w::font(12.5), t.accent);
-    p.text(pos2(x, r.top() + 57.0), Align2::LEFT_CENTER, unlocked_text(badge), w::font(11.5), t.text_faint);
+    let line = pic / 3.0;
+    p.text(pos2(x, img.top() + line * 0.5), Align2::LEFT_CENTER, &badge.title, t.font_of(c), look.text);
+    p.text(pos2(x, img.top() + line * 1.5), Align2::LEFT_CENTER, &badge.detail, t.typography.body_s.font(), t.accent);
+    p.text(pos2(x, img.top() + line * 2.5), Align2::LEFT_CENTER, unlocked_text(badge), t.typography.body_s.font(), look.icon);
     // Game badges: playtime and card drops on the right, like Steam's.
     let right = [badge.playtime.as_str(), badge.drops.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>();
+    let caret = t.typography.body_m.size + pad.x;
     for (i, s) in right.iter().enumerate() {
-        p.text(pos2(r.right() - 34.0, r.top() + 28.0 + i as f32 * 20.0), Align2::RIGHT_CENTER, *s, w::font(12.0), if i == 1 { t.online } else { t.text_dim });
+        p.text(pos2(r.right() - pad.x - caret, img.top() + line * (1.0 + i as f32)), Align2::RIGHT_CENTER, *s, t.typography.body_s.font(), if i == 1 { t.online } else { look.icon });
     }
-    p.text(pos2(r.right() - 12.0, r.center().y), Align2::CENTER_CENTER, icons::CARET_RIGHT, w::font(14.0), t.text_faint);
+    p.text(pos2(r.right() - pad.x, r.center().y), Align2::RIGHT_CENTER, icons::CARET_RIGHT, t.typography.body_m.font(), look.icon);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }

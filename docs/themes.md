@@ -32,8 +32,14 @@ that run only; nothing is saved. Problems are listed in the app's log
 stops over a theme: a file it can't read means the default theme, with the
 reason in the log.
 
-There's no theme picker for your own themes yet; for now themes are tried
-with `--theme-dir`.
+## Installing a theme
+
+Copy the theme's folder into the `themes` folder inside SteamInRust's data
+folder (Settings → Appearance has a button that opens it; Settings → About
+shows where the data folder is). Settings → Appearance lists it next to the
+built-in themes, with its `preview.png` if it has one; pick it there and
+it's remembered. After changing a theme's files, press "Reload" there to
+see them. A theme whose `id` is a built-in theme's is skipped.
 
 ## The package
 
@@ -386,6 +392,14 @@ then `pressed` while clicked and `disabled` when it can't be used.
 | `filter_bar` | the bar holding a feed's filters and sort; side columns of filters |
 | `stat_chip` | the small boxes with a count under a post: `icon` the icon, `text` the label, `selected` `text` the count |
 | `search_large` | the big search box of a landing page (the Community home) |
+| `profile_panel` | the block behind a profile's header and columns |
+| `profile_box` | titled boxes on a profile (`text` is the title's style and color) |
+| `profile_inset` | the darker block inside a profile box, and the profile's side column |
+| `profile_row` | rows on a profile: its links with counts, friends, games (`selected` is the page showing) |
+| `settings_nav` | the column of sections in Settings and Profile Settings |
+| `settings_nav_item` | a section in that column (`selected` is the open one) |
+| `settings_group` | a group of settings (`text` is the group title's style and color) |
+| `notification` | one notification in the notifications popup (`selected` is unread; its `icon` is the unread dot) |
 
 ## What a theme can't change
 

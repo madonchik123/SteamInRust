@@ -424,3 +424,52 @@ border = 1
 text = "body_l"
 normal = { fill = "chrome", border = "surface_hover", text = "text", icon = "text_dim" }
 selected = { border = "accent@0.6" }
+
+# ---- profile and settings ----
+
+[components.profile_panel]
+padding = [40, 40]
+radius = "none"
+normal = { fill = "surface_hover@0.35" }
+
+[components.profile_box]
+padding = [10, 10]
+text = "body_l"
+normal = { fill = "chrome@0.2", text = "text_dim" }
+
+[components.profile_inset]
+padding = [15, 15]
+radius = "large"
+normal = { fill = "chrome@0.5" }
+
+[components.profile_row]
+height = 39
+padding = [10, 10]
+text = "body_l"
+normal = { fill = "chrome", text = "text", icon = "text_dim" }
+hover = { fill = "surface_hover" }
+selected = { fill = "surface_hover" }
+
+[components.settings_nav]
+padding = [15, 15]
+radius = "large"
+normal = { fill = "chrome@0.6" }
+
+[components.settings_nav_item]
+height = 44
+padding = [13, 8]
+text = "body_l"
+normal = { fill = "transparent", text = "text", icon = "text_dim" }
+hover = { fill = "raised" }
+selected = { fill = "surface_hover" }
+
+[components.settings_group]
+padding = [20, 20]
+text = "heading_m"
+normal = { fill = "chrome", text = "text_dim" }
+
+[components.notification]
+padding = [10, 10]
+normal = { fill = "chrome@0.5", text = "text", icon = "text_dim" }
+hover = { fill = "surface_hover" }
+selected = { icon = "accent" }

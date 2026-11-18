@@ -812,78 +812,122 @@ fn notification_picture(ui: &Ui, t: &Theme, state: &client::State, n: &model::No
     p.text(c, Align2::CENTER_CENTER, icon, w::font(sz(&t, 10.5)), if n.read { t.text_dim } else { t.on_accent });
 }
 
-/// The bell: Steam notifications with an unread badge.
+/// The kind of a notification in a word, above it (Figma "notifications"
+/// `766:10159`: "Community", …).
+fn notification_category(kind: i32) -> &'static str {
+    match kind {
+        2 => t!("Gifts"),
+        3 | 13 => t!("Community"),
+        4 | 24 => t!("Items"),
+        5 => t!("Friends"),
+        6 | 8 | 17 | 19 => t!("Store"),
+        7 | 22 | 12 | 27 | 28 => t!("Games"),
+        9 | 29 => t!("Trades"),
+        15 | 16 | 18 | 20 | 21 => t!("Family"),
+        11 | 14 | 23 | 25 | 26 | 30 => t!("Account"),
+        _ => t!("Other"),
+    }
+}
+
+/// The bell: Steam notifications with an unread badge (Figma
+/// "notifications" `766:10159`).
 fn notifications_button(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>) {
     let Some(mut data) = app.state.notifications.clone() else { return };
     data.items.sort_by_key(|n| std::cmp::Reverse(n.time));
     let waiting = data.pending_gifts + data.pending_friends + data.confirmations;
     let badge = (data.unread + waiting) as usize;
     let r = w::bar_button(ui, t, icons::BELL, t!("Notifications"), false, badge);
-    egui::Popup::from_toggle_button_response(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(380.0).show(|ui| {
+    egui::Popup::from_toggle_button_response(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(t.dense(338.0)).show(|ui| {
         ui.with_layout(Layout::top_down(Align::Min), |ui| {
-            ui.horizontal(|ui| {
-                ui.label(w::text_bold(t!("Notifications"), sz(&t, 16.0), t.text));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if data.unread > 0 && ui.link(w::text(t!("Mark all as read"), sz(&t, 12.5), t.accent)).clicked() {
-                        app.client.send(Command::MarkNotificationsRead { ids: vec![] });
-                    }
-                });
-            });
-            // Things waiting for you, like the summary rows in Steam's bell.
-            let mut summary = Vec::new();
-            if data.pending_gifts > 0 {
-                summary.push((icons::GIFT, t!("{n} gifts waiting for you", n = data.pending_gifts), 2));
-            }
-            if data.pending_friends > 0 {
-                summary.push((icons::USER_PLUS, t!("{n} friend requests", n = data.pending_friends), 5));
-            }
-            if data.confirmations > 0 {
-                summary.push((icons::SHIELD, t!("{n} confirmations waiting in the Steam Mobile app", n = data.confirmations), 26));
-            }
-            for (icon, text, kind) in summary {
-                if ui.add(egui::Button::new(w::text_semibold(format!("{icon}  {text}"), sz(&t, 13.0), t.accent)).frame(false)).clicked() {
-                    let row = model::Notification { kind, ..Default::default() };
-                    open_notification(&app.state, &row, actions);
-                }
-            }
-            ui.separator();
-            if data.items.is_empty() {
-                ui.label(w::text(t!("You're all caught up."), sz(&t, 13.0), t.text_faint));
-                return;
-            }
-            egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
-                for n in data.items.iter().take(40) {
-                    let (icon, text) = notification_text(&app.state, n);
-                    // Up to two lines of text, then the time.
-                    let mut job = egui::text::LayoutJob::simple(text.clone(), w::font_medium(sz(&t, 13.0)), if n.read { t.text_dim } else { t.text }, ui.available_width() - 86.0);
-                    job.wrap.max_rows = 2;
-                    job.wrap.overflow_character = Some('…');
-                    let galley = ui.painter().layout_job(job);
-                    let h = (galley.size().y + 34.0).max(58.0);
-                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(rect, t.corner_small(), t.surface_hover);
-                    }
-                    let color = if n.read { t.text_dim } else { t.text };
-                    notification_picture(ui, t, &app.state, n, icon, Rect::from_min_size(rect.min + vec2(6.0, 7.0), vec2(44.0, 44.0)));
-                    let p = ui.painter();
-                    let text_h = galley.size().y;
-                    p.galley(egui::pos2(rect.left() + 60.0, rect.top() + 9.0), galley, color);
-                    p.text(egui::pos2(rect.left() + 60.0, rect.top() + 14.0 + text_h), Align2::LEFT_TOP, ui::ago(n.time), w::font(sz(&t, 11.5)), t.text_faint);
-                    if !n.read {
-                        p.circle_filled(egui::pos2(rect.right() - 12.0, rect.center().y), 4.0, t.accent);
-                    }
-                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&text).clicked() {
-                        if !n.read {
-                            app.client.send(Command::MarkNotificationsRead { ids: vec![n.id] });
+            let pad = t.spacing.md + t.spacing.sm;
+            egui::Frame::new().inner_margin(egui::Margin::same((pad - t.padding_of(&t.components.menu).x).max(0.0) as i8)).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = pad;
+                ui.horizontal(|ui| {
+                    ui.label(w::heading_s(t, t!("Notifications"), t.text));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = t.spacing.sm;
+                        if w::icon_box(ui, t, icons::GEAR, t!("Notification settings"), false).clicked() {
+                            actions.push(Action::Navigate { page: "settings".into(), arg: Some("notifications".into()) });
+                            egui::Popup::close_all(ui.ctx());
                         }
-                        open_notification(&app.state, n, actions);
+                        ui.add_enabled_ui(data.unread > 0, |ui| {
+                            if w::icon_box(ui, t, icons::CHECK, t!("Mark all as read"), false).clicked() {
+                                app.client.send(Command::MarkNotificationsRead { ids: vec![] });
+                            }
+                        });
+                    });
+                });
+                // Things waiting for you, like the summary rows in Steam's bell.
+                let mut summary = Vec::new();
+                if data.pending_gifts > 0 {
+                    summary.push((icons::GIFT, t!("{n} gifts waiting for you", n = data.pending_gifts), 2));
+                }
+                if data.pending_friends > 0 {
+                    summary.push((icons::USER_PLUS, t!("{n} friend requests", n = data.pending_friends), 5));
+                }
+                if data.confirmations > 0 {
+                    summary.push((icons::SHIELD, t!("{n} confirmations waiting in the Steam Mobile app", n = data.confirmations), 26));
+                }
+                for (icon, text, kind) in summary {
+                    if w::menu_item_tinted(ui, t, icon, &text, Some(t.accent)).clicked() {
+                        let row = model::Notification { kind, ..Default::default() };
+                        open_notification(&app.state, &row, actions);
                         egui::Popup::close_all(ui.ctx());
                     }
                 }
+                if data.items.is_empty() {
+                    ui.label(w::body_m(t, t!("You're all caught up."), t.text_faint));
+                    return;
+                }
+                egui::ScrollArea::vertical().max_height(t.dense(440.0)).min_scrolled_height(t.dense(320.0)).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = t.spacing.sm;
+                    for n in data.items.iter().take(40) {
+                        if notification_row(ui, t, &app.state, n) {
+                            if !n.read {
+                                app.client.send(Command::MarkNotificationsRead { ids: vec![n.id] });
+                            }
+                            open_notification(&app.state, n, actions);
+                            egui::Popup::close_all(ui.ctx());
+                        }
+                    }
+                });
             });
         });
     });
+}
+
+/// One notification (`notification`): its kind in a word with the unread
+/// dot, then what happened (two lines at most) and when. True when clicked.
+fn notification_row(ui: &mut Ui, t: &Theme, state: &client::State, n: &model::Notification) -> bool {
+    let c = &t.components.notification;
+    let pad = t.padding_of(c);
+    let (icon, text) = notification_text(state, n);
+    let width = ui.available_width();
+    let pic = t.dense(32.0);
+    let body_w = (width - pad.x * 2.0 - pic - t.spacing.sm).max(40.0);
+    let mut job = egui::text::LayoutJob::simple(text.clone(), t.typography.body_m.font(), t.text, body_w);
+    job.wrap.max_rows = 2;
+    job.wrap.overflow_character = Some('…');
+    let galley = ui.painter().layout_job(job);
+    let head = t.typography.body_m.size + t.spacing.xs * 2.0;
+    let foot = t.typography.body_s.size + t.spacing.xs;
+    let h = pad.y * 2.0 + head + galley.size().y + foot;
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let look = t.look(c, w::interact(ui, &resp, !n.read));
+        w::paint_box(ui, t, rect, c, &look, 0.0);
+        let text_color = if n.read { t.text_dim } else { look.text };
+        notification_picture(ui, t, state, n, icon, Rect::from_min_size(rect.min + pad, vec2(pic, pic)));
+        let x = rect.left() + pad.x + pic + t.spacing.sm;
+        let p = ui.painter();
+        p.text(egui::pos2(x, rect.top() + pad.y + head / 2.0), Align2::LEFT_CENTER, notification_category(n.kind), t.typography.body_m.font(), look.text);
+        if !n.read {
+            p.circle_filled(egui::pos2(rect.right() - pad.x - t.spacing.xs, rect.top() + pad.y + head / 2.0), t.dense(5.5), look.icon);
+        }
+        p.galley(egui::pos2(x, rect.top() + pad.y + head), galley, text_color);
+        p.text(egui::pos2(x, rect.bottom() - pad.y), Align2::LEFT_BOTTOM, ui::ago(n.time), t.typography.body_s.font(), t.text_faint);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(text).clicked()
 }
 
 /// The wallet part of the account menu: balance, money on its way, and
@@ -894,11 +938,11 @@ fn wallet_section(ui: &mut Ui, t: &Theme, balance: i64, currency: i32, pending: 
         ui.add_space(2.0);
         ui.label(w::caption_text(t, t!("Steam Wallet")));
         ui.horizontal(|ui| {
-            ui.label(w::text_bold(model::format_money(balance, currency), sz(&t, 20.0), t.text)).on_hover_text(t!("Available to spend"));
+            ui.label(w::heading_m(t, model::format_money(balance, currency), t.text)).on_hover_text(t!("Available to spend"));
             if pending > 0 {
                 // What "pending" means, on hover: the menu stays short.
                 let note = t!("Money from recent Market sales or refunds that Steam hasn't released yet. It's added to your balance automatically.");
-                ui.label(w::text_semibold(format!("{}  {}", icons::CLOCK, t!("Pending: {amount}", amount = model::format_money(pending, currency))), 13.0, t.away)).on_hover_text(note);
+                ui.label(w::body_m(t, format!("{}  {}", icons::CLOCK, t!("Pending: {amount}", amount = model::format_money(pending, currency))), t.away)).on_hover_text(note);
             }
         });
         ui.add_space(4.0);
@@ -1092,42 +1136,50 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
     }
     p.text(rect.right_center() - vec2(13.0, 0.0), Align2::CENTER_CENTER, icons::CARET_DOWN, w::font(sz(&t, 13.0)), look.icon);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-    egui::Popup::menu(&resp).width(280.0).show(|ui| {
-        crate::offline_ui::account_items(app, ui, t);
+    egui::Popup::menu(&resp).width(t.dense(250.0)).show(|ui| {
+        // Your status, each with its mark.
         ui.label(w::caption_text(t, t!("Status")));
+        let pad = t.padding_of(&t.components.menu_item).x;
         for s in PersonaState::SELECTABLE {
-            // A colored dot per status, like Steam's.
             let on = me.state == s;
-            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
-            if on || resp.hovered() {
-                ui.painter().rect_filled(r, t.corner_small(), t.surface_hover);
-            }
+            let r = w::menu_item_tinted(ui, t, "", &i18n::tr_dyn(s.label()), on.then_some(t.accent));
             let probe = model::Persona { state: s, ..Default::default() };
-            let dot = egui::pos2(r.left() + 20.0, r.center().y);
-            status_mark(ui.painter(), dot, 5.0, s, status_color(t, &probe));
-            ui.painter().text(egui::pos2(r.left() + 40.0, r.center().y), Align2::LEFT_CENTER, i18n::tr_dyn(s.label()), w::font(sz(&t, 14.5)), t.text);
+            status_mark(ui.painter(), egui::pos2(r.rect.left() + pad, r.rect.center().y), t.dense(5.0), s, status_color(t, &probe));
             if on {
-                ui.painter().text(egui::pos2(r.right() - 12.0, r.center().y), Align2::RIGHT_CENTER, icons::CHECK, w::font(sz(&t, 13.0)), t.accent);
+                ui.painter().text(egui::pos2(r.rect.right() - pad, r.rect.center().y), Align2::RIGHT_CENTER, icons::CHECK, t.font_of(&t.components.menu_item), t.accent);
             }
-            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            if r.clicked() {
                 app.client.send(Command::SetPersonaState(s));
             }
         }
         ui.separator();
-        for (icon, label, page) in [(icons::USER_CIRCLE, t!("View profile"), "profile"), (icons::GEAR, t!("Settings"), "settings")] {
-            if w::menu_item(ui, t, icon, &label).clicked() {
-                actions.push(Action::Navigate { page: page.into(), arg: None });
-            }
+        // The design's rows (Figma "account" `18:1282`), with your profile first.
+        let nav = |page: &str, arg: Option<&str>| Action::Navigate { page: page.into(), arg: arg.map(String::from) };
+        if w::menu_item(ui, t, icons::USER_CIRCLE, t!("View profile")).clicked() {
+            actions.push(nav("profile", None));
+        }
+        if w::menu_item(ui, t, icons::NOTE, t!("Account Details")).clicked() {
+            actions.push(nav("settings", None));
         }
         if let Some((balance, currency)) = app.state.wallet {
             ui.separator();
             wallet_section(ui, t, balance, currency, app.state.wallet_pending, actions);
+            ui.separator();
         }
-        ui.separator();
-        if w::menu_item(ui, t, icons::SIGN_OUT, t!("Sign out of account")).clicked() {
+        if w::menu_item(ui, t, icons::GEAR, t!("Settings")).clicked() {
+            actions.push(nav("settings", Some("appearance")));
+        }
+        if w::menu_item(ui, t, icons::REFRESH, t!("Client Updates")).clicked() {
+            actions.push(nav("settings", Some("about")));
+        }
+        crate::offline_ui::account_items(app, ui, t);
+        if w::menu_item(ui, t, icons::USER_SWITCH, t!("Change Account")).clicked() {
             app.client.send(Command::LogOut);
         }
-        if w::menu_item_tinted(ui, t, icons::POWER, t!("Exit SteamInRust"), Some(t.danger)).clicked() {
+        if w::menu_item(ui, t, icons::SIGN_OUT, t!("Sign Out")).clicked() {
+            app.client.send(Command::LogOut);
+        }
+        if w::menu_item_tinted(ui, t, icons::POWER, t!("Exit"), Some(t.danger)).clicked() {
             app.request_exit(ui.ctx());
         }
     });
