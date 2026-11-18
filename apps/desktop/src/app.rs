@@ -225,6 +225,11 @@ impl SteamApp {
     pub fn new(cc: &eframe::CreationContext<'_>, link: Option<String>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         ui::install_fonts(&cc.egui_ctx);
+        // `--embed-windows` (with `--offscreen`): other windows (a game's
+        // Properties…) draw inside the main one, so a preview can capture them.
+        if offscreen() && std::env::args().any(|a| a == "--embed-windows") {
+            cc.egui_ctx.set_embed_viewports(true);
+        }
         let mut prefs: Prefs = cc.storage.and_then(|s| eframe::get_value(s, "prefs")).unwrap_or_default();
         // The user's own themes (Settings → Appearance lists them).
         ui::themes::set_user_dir(client::store::config_dir().join("themes"));

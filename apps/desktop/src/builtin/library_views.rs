@@ -1191,28 +1191,35 @@ fn small_box(ui: &mut Ui, t: &Theme, icon: &str, tip: &str, selected: bool) -> e
 
 /// A fact with its icon (Figma `340:1113`): a faint icon, the label in
 /// capitals over the value, and a bar after the value when `bar` is set.
+///
+/// Drawn at a fixed size with nothing wrapped, so stats side by side line up
+/// and a long label ("ВРЕМЯ В ИГРЕ") or a big value never pushes the value
+/// out of its row.
 pub(super) fn icon_stat(ui: &mut Ui, t: &Theme, icon: &str, label: &str, value: &str, bar: Option<f32>) -> egui::Response {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = t.spacing.md;
-        let s = (t.typography.body_l.size * 1.9).round();
-        let (r, _) = ui.allocate_exact_size(Vec2::splat(s), Sense::hover());
-        w::icon_centered(ui.painter(), r.center(), icon, (s * 0.8).round(), t.text_dim.gamma_multiply(0.4));
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = t.spacing.xs;
-            ui.label(w::body_m(t, label.to_uppercase(), t.text_dim));
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = t.spacing.md;
-                ui.label(w::body_l(t, value, t.text));
-                if let Some(f) = bar {
-                    ui.vertical(|ui| {
-                        ui.add_space(t.spacing.sm);
-                        w::progress(ui, t, f, 65.0);
-                    });
-                }
-            });
-        });
-    })
-    .response
+    let p = ui.painter().clone();
+    let label = p.layout_no_wrap(label.to_uppercase(), t.typography.body_m.font(), t.text_dim);
+    let value = p.layout_no_wrap(value.to_string(), t.typography.body_l.font(), t.text);
+    let s = (t.typography.body_l.size * 1.9).round();
+    let bar_w = if bar.is_some() { 65.0 + t.spacing.md } else { 0.0 };
+    let width = s + t.spacing.md + label.size().x.max(value.size().x + bar_w) + 1.0;
+    let height = (label.size().y + t.spacing.xs + value.size().y).max(s);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        w::icon_centered(&p, pos2(rect.left() + s / 2.0, rect.center().y), icon, (s * 0.8).round(), t.text_dim.gamma_multiply(0.4));
+        let x = rect.left() + s + t.spacing.md;
+        let top = rect.center().y - (label.size().y + t.spacing.xs + value.size().y) / 2.0;
+        let value_y = top + label.size().y + t.spacing.xs;
+        let value_end = x + value.size().x;
+        let value_mid = value_y + value.size().y / 2.0;
+        p.galley(pos2(x, top), label, t.text_dim);
+        p.galley(pos2(x, value_y), value, t.text);
+        if let Some(f) = bar {
+            let track = Rect::from_min_size(pos2(value_end + t.spacing.md, value_mid - 3.0), vec2(65.0, t.height_of(&t.components.progress, 6.0)));
+            let mut bu = ui.new_child(UiBuilder::new().max_rect(track));
+            w::progress(&mut bu, t, f, 65.0);
+        }
+    }
+    resp
 }
 
 /// A fact in a game's play bar.
@@ -1230,10 +1237,10 @@ impl Fact {
     }
 }
 
-/// How wide [`icon_stat`] draws.
+/// How wide [`icon_stat`] draws (the same sums it allocates).
 fn icon_stat_width(ui: &Ui, t: &Theme, label: &str, value: &str, bar: bool) -> f32 {
     let p = ui.painter();
-    let l = p.layout_no_wrap(label.to_uppercase(), t.typography.body_m.font(), t.text).size().x;
+    let l = p.layout_no_wrap(label.to_uppercase(), t.typography.body_m.font(), t.text_dim).size().x;
     let v = p.layout_no_wrap(value.to_string(), t.typography.body_l.font(), t.text).size().x + if bar { 65.0 + t.spacing.md } else { 0.0 };
     (t.typography.body_l.size * 1.9).round() + t.spacing.md + l.max(v) + 1.0
 }
