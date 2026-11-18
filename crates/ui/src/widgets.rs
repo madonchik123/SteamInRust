@@ -859,6 +859,31 @@ pub fn menu_item_tinted(ui: &mut Ui, t: &Theme, icon: &str, label: &str, tint: O
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A row across the whole width of a list or dropdown, in the `menu_item`
+/// style, that can show as selected (the row the arrow keys are on, as in
+/// the app-wide search's results). A long label ends in "…".
+pub fn menu_row(ui: &mut Ui, t: &Theme, icon: &str, label: &str, selected: bool) -> Response {
+    let c = &t.components.menu_item;
+    let fid = t.font_of(c);
+    let pad = t.padding_of(c).x;
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), t.height_of(c, 38.0)), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let look = t.look(c, interact(ui, &resp, selected));
+        paint_box(ui, t, rect, c, &look, if selected { 1.0 } else { 0.0 });
+        let y = rect.center().y;
+        ui.painter().text(pos2(rect.left() + pad, y), Align2::CENTER_CENTER, icon, font(fid.size + 0.5), look.icon);
+        let x = rect.left() + pad + 20.0;
+        let mut job = egui::text::LayoutJob::simple_singleline(label.to_string(), fid, look.text);
+        job.wrap.max_width = (rect.right() - pad - x).max(10.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        job.wrap.overflow_character = Some('…');
+        let g = ui.painter().layout_job(job);
+        ui.painter().galley(pos2(x, y - g.size().y / 2.0), g, look.text);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// A menu row that opens a submenu (open it with egui's `SubMenu`): the
 /// same look as [`menu_item`], with an arrow on the right.
 pub fn submenu_item(ui: &mut Ui, t: &Theme, icon: &str, label: &str) -> Response {

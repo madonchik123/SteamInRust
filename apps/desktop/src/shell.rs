@@ -170,14 +170,31 @@ fn nav_column(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Acti
 /// The app-wide search box (your games, your friends, the store), in the
 /// page bar or the top bar as the theme says.
 fn global_search(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>, width: f32, tall: bool) {
+    // Up and down move through the results while the field has the focus
+    // (taken before the field sees them).
+    if app.search_open && !app.search.trim().is_empty() {
+        let (down, up) = ui.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown), i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)));
+        if down {
+            app.search_sel = Some(app.search_sel.map_or(0, |i| i + 1));
+        }
+        if up {
+            app.search_sel = app.search_sel.and_then(|i| i.checked_sub(1));
+        }
+    }
+    let before = app.search.clone();
     let r = if tall { w::bar_search(ui, t, &mut app.search, t!("Search"), width) } else { w::search(ui, t, &mut app.search, t!("Search"), width) };
+    if app.search != before {
+        // New text, new results: start from the top again.
+        app.search_sel = None;
+    }
     if r.has_focus() {
         app.search_open = true;
     }
+    // Enter opens the selected row, or searches the store.
     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if enter && !app.search.trim().is_empty() {
-        actions.push(Action::Navigate { page: "store".into(), arg: Some(format!("search:{}", app.search.trim())) });
-        app.search_open = false;
+        app.search_pick = Some(());
+        app.search_open = true;
     }
     if app.search_open && !app.search.trim().is_empty() {
         search_results(app, ui.ctx(), r.rect, t, actions);
@@ -898,56 +915,74 @@ fn app_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action
 /// One search box for everything: your games, your friends, and the store.
 fn search_results(app: &mut SteamApp, ctx: &egui::Context, anchor: Rect, t: &Theme, actions: &mut Vec<Action>) {
     let q = app.search.trim().to_lowercase();
-    let games: Vec<(model::AppId, String)> = crate::builtin::entries(&app.state, &app.local)
-        .into_iter()
-        .filter(|e| e.name.to_lowercase().contains(&q))
-        .take(5)
-        .map(|e| (e.app_id, e.name.to_string()))
-        .collect();
-    let friends: Vec<Persona> = app.state.friend_list().into_iter().filter(|p| p.name.to_lowercase().contains(&q)).take(4).collect();
-    let mut close = false;
+    // The rows, in sections: (section title, icon, label, what a click does).
+    let mut rows: Vec<(&'static str, &'static str, String, Action)> = Vec::new();
+    for e in crate::builtin::entries(&app.state, &app.local).into_iter().filter(|e| e.name.to_lowercase().contains(&q)).take(5) {
+        rows.push((t!("Your games"), icons::CONTROLLER, e.name.to_string(), Action::Navigate { page: "library".into(), arg: Some(e.app_id.to_string()) }));
+    }
+    for p in app.state.friend_list().into_iter().filter(|p| p.name.to_lowercase().contains(&q)).take(4) {
+        rows.push((t!("Friends"), icons::USER, p.name.clone(), Action::OpenChat(p.steam_id)));
+    }
+    let nothing_here = rows.is_empty();
+    rows.push((t!("Store"), icons::STORE, t!("Search the store for “{q}”", q = app.search.trim()).to_string(), Action::Navigate { page: "store".into(), arg: Some(format!("search:{}", app.search.trim())) }));
+    // The arrow keys move a selection through the rows; Enter opens it.
+    if app.search_sel.is_some_and(|i| i >= rows.len()) {
+        app.search_sel = Some(rows.len() - 1);
+    }
+    let mut picked: Option<usize> = app.search_pick.take().and_then(|()| app.search_sel.or(Some(rows.len() - 1)));
+    let pad = t.padding_of(&t.components.menu_item).x;
     let area = egui::Area::new(egui::Id::unique("global-search"))
         .order(egui::Order::Foreground)
         .fixed_pos(anchor.left_bottom() + vec2(0.0, 6.0))
         .show(ctx, |ui| {
-            w::component_frame(t, &t.components.menu)
-                .show(ui, |ui| {
-                    ui.set_width(anchor.width().max(320.0));
-                    let row = |ui: &mut Ui, icon: &str, text: &str| {
-                        ui.add(egui::Button::new(w::text_medium(format!("{icon}   {text}"), sz(&t, 13.5), t.text)).frame(false).min_size(vec2(ui.available_width(), 32.0))).clicked()
-                    };
-                    if !games.is_empty() {
-                        w::caption(ui, t, t!("Your games"));
-                        for (id, name) in &games {
-                            if row(ui, icons::CONTROLLER, name) {
-                                actions.push(Action::Navigate { page: "library".into(), arg: Some(id.to_string()) });
-                                close = true;
-                            }
+            w::component_frame(t, &t.components.menu).show(ui, |ui| {
+                ui.set_width(anchor.width().max(320.0));
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let mut section = "";
+                for (i, (title, icon, label, _)) in rows.iter().enumerate() {
+                    if *title != section {
+                        section = title;
+                        if i > 0 {
+                            ui.add_space(t.spacing.sm);
+                        }
+                        ui.horizontal(|ui| {
+                            ui.add_space(pad - 6.0);
+                            w::caption(ui, t, title);
+                        });
+                        ui.add_space(t.spacing.xs);
+                        if *title == t!("Store") && nothing_here {
+                            ui.horizontal(|ui| {
+                                ui.add_space(pad - 6.0);
+                                ui.label(w::body_s(t, t!("No results"), t.text_faint));
+                            });
+                            ui.add_space(t.spacing.xs);
                         }
                     }
-                    if !friends.is_empty() {
-                        w::caption(ui, t, t!("Friends"));
-                        for p in &friends {
-                            if row(ui, icons::USER, &p.name) {
-                                actions.push(Action::OpenChat(p.steam_id));
-                                close = true;
-                            }
-                        }
+                    let r = w::menu_row(ui, t, icon, label, app.search_sel == Some(i));
+                    // The pointer takes over the selection, so only one row lights up.
+                    if r.hovered() && ui.input(|inp| inp.pointer.delta() != egui::Vec2::ZERO) {
+                        app.search_sel = Some(i);
                     }
-                    w::caption(ui, t, t!("Store"));
-                    if row(ui, icons::STORE, &t!("Search the store for “{q}”", q = app.search.trim())) {
-                        actions.push(Action::Navigate { page: "store".into(), arg: Some(format!("search:{}", app.search.trim())) });
-                        close = true;
+                    if r.clicked() {
+                        picked = Some(i);
                     }
-                });
+                }
+            });
         });
+    if let Some(i) = picked {
+        if let Some((_, _, _, action)) = rows.into_iter().nth(i) {
+            actions.push(action);
+        }
+        app.search_open = false;
+        app.search_sel = None;
+        app.search.clear();
+        return;
+    }
     // Close when clicking anywhere else.
     let clicked_outside = ctx.input(|i| i.pointer.any_click()) && !area.response.hovered() && !ctx.pointer_hover_pos().is_some_and(|p| anchor.contains(p));
-    if close || clicked_outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if clicked_outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.search_open = false;
-        if close {
-            app.search.clear();
-        }
+        app.search_sel = None;
     }
 }
 
