@@ -15,6 +15,8 @@ const FLAG_EXECUTABLE: u32 = 32;
 const FLAG_DIRECTORY: u32 = 64;
 /// Steam's install script (installscript.vdf), run before a game's first launch.
 const FLAG_INSTALL_SCRIPT: u32 = 256;
+const MAX_MANIFEST_SIZE: usize = 256 * 1024 * 1024;
+const MAX_MANIFEST_PREALLOC: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
@@ -57,7 +59,7 @@ impl Manifest {
         let mut pos = 0;
         let mut m = Manifest::default();
         let mut payload = None;
-        let u32_at = |p: usize| data.get(p..p + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+        let u32_at = |p: usize| p.checked_add(4).and_then(|end| data.get(p..end)).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
         while let Some(magic) = u32_at(pos) {
             pos += 4;
             if magic == END {
@@ -65,8 +67,9 @@ impl Manifest {
             }
             let len = u32_at(pos).ok_or_else(|| Error::Format("truncated manifest".into()))? as usize;
             pos += 4;
-            let body = data.get(pos..pos + len).ok_or_else(|| Error::Format("truncated manifest section".into()))?;
-            pos += len;
+            let end = pos.checked_add(len).ok_or_else(|| Error::Format("truncated manifest section".into()))?;
+            let body = data.get(pos..end).ok_or_else(|| Error::Format("truncated manifest section".into()))?;
+            pos = end;
             match magic {
                 PAYLOAD => payload = Some(proto::ContentManifestPayload::decode(body)?),
                 METADATA => {
@@ -116,9 +119,15 @@ impl Manifest {
     /// Parse a manifest downloaded from the CDN (a zip with one entry).
     pub fn from_cdn(zipped: &[u8]) -> Result<Manifest> {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zipped)).map_err(|e| Error::Format(format!("manifest zip: {e}")))?;
-        let mut file = archive.by_index(0).map_err(|e| Error::Format(format!("manifest zip: {e}")))?;
-        let mut raw = Vec::with_capacity(file.size() as usize);
-        file.read_to_end(&mut raw)?;
+        let file = archive.by_index(0).map_err(|e| Error::Format(format!("manifest zip: {e}")))?;
+        if file.size() > MAX_MANIFEST_SIZE as u64 {
+            return Err(Error::Format("manifest exceeds 256 MiB limit".into()));
+        }
+        let mut raw = Vec::with_capacity((file.size() as usize).min(MAX_MANIFEST_PREALLOC));
+        file.take(MAX_MANIFEST_SIZE as u64 + 1).read_to_end(&mut raw)?;
+        if raw.len() > MAX_MANIFEST_SIZE {
+            return Err(Error::Format("manifest exceeds 256 MiB limit".into()));
+        }
         Manifest::parse(&raw)
     }
 
@@ -176,5 +185,27 @@ impl Manifest {
         }
         self.encrypted_names = false;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod manifest_limit_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_oversized_cdn_manifest() {
+        use std::io::Write;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            z.start_file("m", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)).unwrap();
+            let block = vec![0u8; 1024 * 1024];
+            for _ in 0..257 {
+                z.write_all(&block).unwrap();
+            }
+            z.finish().unwrap();
+        }
+        let err = Manifest::from_cdn(buf.get_ref()).unwrap_err().to_string();
+        assert!(err.contains("256 MiB") || err.contains("limit"), "expected size limit error, got {err}");
     }
 }

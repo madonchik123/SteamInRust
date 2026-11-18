@@ -156,14 +156,15 @@ pub struct H264 {
 
 impl H264 {
     pub fn new(width: u32, height: u32) -> Result<Self> {
+        if width == 0 || height == 0 || width > crate::mp4::MAX_DIM || height > crate::mp4::MAX_DIM {
+            return Err(windows::core::Error::new(windows::core::HRESULT(-2147024809i32), "invalid video dimensions"));
+        }
         let m = Mft::new(&CLSID_MSH264DecoderMFT)?;
         unsafe {
             let it = MFCreateMediaType()?;
             it.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             it.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
-            if width > 0 && height > 0 {
-                it.SetUINT64(&MF_MT_FRAME_SIZE, (width as u64) << 32 | height as u64)?;
-            }
+            it.SetUINT64(&MF_MT_FRAME_SIZE, (width as u64) << 32 | height as u64)?;
             it.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
             m.t.SetInputType(0, &it, 0)?;
         }
@@ -186,6 +187,10 @@ impl H264 {
                     self.stride = s as usize;
                 }
             }
+        }
+        let max = (crate::mp4::MAX_DIM as usize) * 2;
+        if self.stride == 0 || self.rows == 0 || self.stride > max || self.rows > max {
+            return Err(windows::core::Error::new(windows::core::HRESULT(-2147024809i32), "invalid output frame size"));
         }
         Ok(())
     }
@@ -227,7 +232,8 @@ impl H264 {
                     let (stride, rows) = (self.stride, self.rows);
                     let data = with_bytes(&s, |b| b.to_vec())?;
                     // A buffer smaller than stride*rows*1.5 means the rows aren't padded.
-                    let rows = if data.len() >= stride * rows * 3 / 2 { rows } else { data.len() * 2 / 3 / stride.max(1) };
+                    let need = stride.checked_mul(rows).and_then(|v| v.checked_mul(3)).map(|v| v / 2);
+                    let rows = if need.is_some_and(|n| data.len() >= n) { rows } else { data.len() * 2 / 3 / stride.max(1) };
                     out.push(Picture { pts, data, stride, rows });
                 }
             }

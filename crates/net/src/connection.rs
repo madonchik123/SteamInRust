@@ -85,13 +85,7 @@ impl Connection {
                     }
                 };
                 let Some(inner) = reader.upgrade() else { break };
-                let packets = match Packet::decode(&data) {
-                    Ok(Some(p)) if p.emsg == emsg::MULTI => p.unpack_multi(),
-                    Ok(Some(p)) => Ok(vec![p]),
-                    Ok(None) => Ok(vec![]),
-                    Err(e) => Err(e),
-                };
-                match packets {
+                match decode_ws_frame(&data) {
                     Ok(packets) => {
                         for p in packets {
                             inner.route(p, &event_tx);
@@ -313,5 +307,30 @@ struct JobGuard {
 impl Drop for JobGuard {
     fn drop(&mut self) {
         self.inner.jobs.lock().unwrap().remove(&self.id);
+    }
+}
+
+fn decode_ws_frame(data: &[u8]) -> Result<Vec<Packet>> {
+    if data.len() > crate::packet::MAX_MULTI_UNZIPPED {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "websocket frame exceeds 64 MiB limit",
+        )));
+    }
+    match Packet::decode(data)? {
+        Some(p) if p.emsg == emsg::MULTI => p.unpack_multi(),
+        Some(p) => Ok(vec![p]),
+        None => Ok(Vec::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_oversized_ws_frame_before_decode() {
+        let huge = vec![0u8; crate::packet::MAX_MULTI_UNZIPPED + 1];
+        assert!(decode_ws_frame(&huge).is_err());
     }
 }

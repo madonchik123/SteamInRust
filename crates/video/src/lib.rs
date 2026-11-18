@@ -572,6 +572,10 @@ fn pick_variant(vs: &[hls::Variant], width: u32) -> usize {
 const PART: u64 = 384 * 1024;
 /// Segments downloaded at the same time.
 const PARALLEL: usize = 3;
+/// Maximum size for a single downloaded segment or playlist/MP4 asset (256 MiB).
+const MAX_MEDIA_BYTES: usize = 256 * 1024 * 1024;
+/// Maximum concurrent byte-range requests across a single `get()`.
+const MAX_RANGE_CONCURRENCY: usize = 6;
 
 /// One request (optionally a byte range), retried. Returns the body and the
 /// full size when the server answered with a range.
@@ -589,15 +593,37 @@ async fn fetch(http: &reqwest::Client, sh: &Shared, url: &str, range: Option<(u6
             req = req.header(reqwest::header::RANGE, format!("bytes={a}-{b}"));
         }
         match req.send().await.and_then(|r| r.error_for_status()) {
-            Ok(r) => {
+            Ok(mut r) => {
+                if r.content_length().is_some_and(|n| n > MAX_MEDIA_BYTES as u64) {
+                    return Err("video response exceeds 256 MiB limit".into());
+                }
                 let total = if r.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-                    r.headers().get(reqwest::header::CONTENT_RANGE).and_then(|v| v.to_str().ok()).and_then(|v| v.rsplit('/').next()).and_then(|t| t.parse().ok())
+                    r.headers()
+                        .get(reqwest::header::CONTENT_RANGE)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.rsplit('/').next())
+                        .and_then(|t| t.parse::<u64>().ok())
                 } else {
                     None
                 };
-                match r.bytes().await {
-                    Ok(b) => return Ok((b.to_vec(), total)),
-                    Err(e) => last = e.to_string(),
+                if total.is_some_and(|t| t > MAX_MEDIA_BYTES as u64) {
+                    return Err("Content-Range total exceeds 256 MiB limit".into());
+                }
+                let mut body = Vec::new();
+                loop {
+                    match r.chunk().await {
+                        Ok(Some(chunk)) => {
+                            if body.len().saturating_add(chunk.len()) > MAX_MEDIA_BYTES {
+                                return Err("video response exceeds 256 MiB limit".into());
+                            }
+                            body.extend_from_slice(&chunk);
+                        }
+                        Ok(None) => return Ok((body, total)),
+                        Err(e) => {
+                            last = e.to_string();
+                            break;
+                        }
+                    }
                 }
             }
             Err(e) => last = e.to_string(),
@@ -611,17 +637,28 @@ async fn get(http: reqwest::Client, sh: Arc<Shared>, url: String) -> Result<Vec<
     let started = Instant::now();
     let (mut body, total) = fetch(&http, &sh, &url, Some((0, PART - 1))).await?;
     if let Some(total) = total.filter(|t| *t > PART) {
+        if total > MAX_MEDIA_BYTES as u64 {
+            return Err("Content-Range total exceeds 256 MiB limit".into());
+        }
+        let sem = Arc::new(tokio::sync::Semaphore::new(MAX_RANGE_CONCURRENCY));
         let mut parts = Vec::new();
         let mut a = PART;
         while a < total {
             let b = (a + PART).min(total) - 1;
-            let (h, s, u) = (http.clone(), sh.clone(), url.clone());
-            parts.push(tokio::spawn(async move { fetch(&h, &s, &u, Some((a, b))).await.map(|r| r.0) }));
+            let (h, s, u, sem) = (http.clone(), sh.clone(), url.clone(), sem.clone());
+            parts.push(tokio::spawn(async move {
+                let _permit = sem.acquire_owned().await.map_err(|e| e.to_string())?;
+                fetch(&h, &s, &u, Some((a, b))).await.map(|r| r.0)
+            }));
             a = b + 1;
         }
-        body.reserve(total as usize - body.len());
+        body.reserve((total as usize).saturating_sub(body.len()).min(MAX_MEDIA_BYTES));
         for p in parts {
-            body.extend(p.await.map_err(|e| e.to_string())??);
+            let chunk = p.await.map_err(|e| e.to_string())??;
+            if body.len().saturating_add(chunk.len()) > MAX_MEDIA_BYTES {
+                return Err("video response exceeds 256 MiB limit".into());
+            }
+            body.extend(chunk);
         }
     }
     tracing::debug!("video: {} bytes in {:?}: {url}", body.len(), started.elapsed());
@@ -802,4 +839,87 @@ async fn load(http: &reqwest::Client, sh: &Arc<Shared>, source: &Source) -> Resu
     drop(st);
     sh.notify();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn test_shared() -> Arc<Shared> {
+        let now = Instant::now();
+        let st = St {
+            epoch: 0,
+            target: 0.0,
+            ready: false,
+            video: None,
+            audio_plan: None,
+            duration: 0.0,
+            variants: Vec::new(),
+            variant: 0,
+            manual: None,
+            width: 1280,
+            cache: HashMap::new(),
+            frames: VecDeque::new(),
+            has_frame: false,
+            video_eos: false,
+            audio: Audio::Pending,
+            audio_eos: false,
+            clock: 0.0,
+            clock_at: now,
+            running: false,
+            paused: true,
+            auto_paused: false,
+            last_poll: now,
+            volume: 0.7,
+            muted: false,
+            looping: false,
+            error: None,
+        };
+        Arc::new(Shared {
+            m: Mutex::new(st),
+            cv: Condvar::new(),
+            stop: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            ctx: egui::Context::default(),
+        })
+    }
+
+    #[tokio::test]
+    async fn content_range_underflow_and_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut sock, _) = listener.accept().unwrap();
+                let mut req = [0u8; 2048];
+                let n = sock.read(&mut req).unwrap_or(0);
+                let req_s = String::from_utf8_lossy(&req[..n]);
+                let first_line = req_s.lines().next().unwrap_or("");
+                if first_line.contains("/huge") {
+                    let hdr = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-3/300000000\r\nContent-Length: 4\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes());
+                    let _ = sock.write_all(b"abcd");
+                } else if req_s.to_ascii_lowercase().contains("range: bytes=0-") {
+                    let hdr = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-499999/450000\r\nContent-Length: 500000\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes());
+                    let _ = sock.write_all(&vec![b'a'; 500_000]);
+                } else {
+                    let hdr = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 393216-449999/450000\r\nContent-Length: 56784\r\nConnection: close\r\n\r\n";
+                    let _ = sock.write_all(hdr.as_bytes());
+                    let _ = sock.write_all(&vec![b'b'; 56_784]);
+                }
+            }
+        });
+
+        let http = reqwest::Client::new();
+        let sh = test_shared();
+        let r1 = get(http.clone(), sh.clone(), format!("http://{addr}/underflow")).await;
+        assert!(r1.is_ok(), "unexpected error on short Content-Range total: {r1:?}");
+
+        let r2 = get(http, sh, format!("http://{addr}/huge")).await;
+        assert!(r2.is_err(), "Content-Range total > 256 MiB must be rejected");
+        srv.join().unwrap();
+    }
 }

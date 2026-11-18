@@ -64,6 +64,8 @@ const CHUNK: usize = 1100;
 /// Steam's limits: 1200 bytes unreliable, 1 MB reliable.
 const MAX_UNRELIABLE: usize = 1200;
 const MAX_RELIABLE: usize = 1024 * 1024;
+const MAX_CHANNELS: usize = 64;
+const MAX_EARLY: usize = 512;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// A SteamInRust player answers our signal through Steam within about a
 /// second, an official client with libjingle candidates once its game
@@ -86,6 +88,7 @@ struct Channel {
     expect: u32,
     early: BTreeMap<u32, (u16, u16, Vec<u8>)>,
     assembling: Vec<u8>,
+    oversized: bool,
 }
 
 struct Peer {
@@ -603,21 +606,45 @@ impl Endpoint {
                     let seq = u32::from_le_bytes(body[4..8].try_into().unwrap());
                     let idx = u16::from_le_bytes(body[8..10].try_into().unwrap());
                     let count = u16::from_le_bytes(body[10..12].try_into().unwrap());
+                    let part = &body[12..];
+                    if count == 0 || idx >= count || part.len() > MAX_RELIABLE {
+                        return;
+                    }
+                    if !p.channels.contains_key(&ch) && p.channels.len() >= MAX_CHANNELS {
+                        return;
+                    }
+                    let c = p.channels.entry(ch).or_default();
+                    let in_window = seq.wrapping_sub(c.expect) < 1 << 30;
+                    if seq != c.expect && (!in_window || c.early.len() >= MAX_EARLY) {
+                        if !in_window {
+                            let mut ack = self.header(ACK, src, their_token);
+                            ack.extend_from_slice(&ch.to_le_bytes());
+                            ack.extend_from_slice(&seq.to_le_bytes());
+                            let _ = self.socket.send_to(&ack, from);
+                        }
+                        return;
+                    }
                     let mut ack = self.header(ACK, src, their_token);
                     ack.extend_from_slice(&ch.to_le_bytes());
                     ack.extend_from_slice(&seq.to_le_bytes());
                     let _ = self.socket.send_to(&ack, from);
-                    let c = p.channels.entry(ch).or_default();
-                    if seq.wrapping_sub(c.expect) < 1 << 30 {
-                        c.early.insert(seq, (idx, count, body[12..].to_vec()));
-                    }
+                    c.early.entry(seq).or_insert_with(|| (idx, count, part.to_vec()));
                     while let Some((idx, count, part)) = c.early.remove(&c.expect) {
                         c.expect = c.expect.wrapping_add(1);
                         if idx == 0 {
                             c.assembling.clear();
+                            c.oversized = false;
+                        }
+                        if c.oversized {
+                            continue;
+                        }
+                        if c.assembling.len().saturating_add(part.len()) > MAX_RELIABLE {
+                            c.assembling.clear();
+                            c.oversized = true;
+                            continue;
                         }
                         c.assembling.extend_from_slice(&part);
-                        if idx + 1 >= count {
+                        if (idx as u32) + 1 >= count as u32 {
                             deliver.push((ch, std::mem::take(&mut c.assembling)));
                         }
                     }
@@ -1125,5 +1152,63 @@ mod tests {
             off.step(us, &ep, &rx);
         }
         assert_eq!(off.got, vec![(us, 0, b"ack".to_vec())]);
+    }
+
+    #[test]
+    fn bounds_channels_early_reliable_size_and_idx_overflow() {
+        struct NoopOutside;
+        impl Outside for NoopOutside {
+            fn signal(&self, _to: u64, _payload: Vec<u8>) {}
+            fn session_request(&self, _from: u64) {}
+            fn connect_failed(&self, _to: u64) {}
+        }
+
+        let me = 76561198000000021u64;
+        let peer_id = 76561198000000022u64;
+        let ep = Endpoint::start(me, Box::new(NoopOutside), false).unwrap();
+        {
+            let mut peers = ep.peers.lock().unwrap();
+            let mut p = Peer::new();
+            p.token = 99;
+            peers.insert(peer_id, p);
+        }
+        let from: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let make_reliable = |ch: i32, seq: u32, idx: u16, count: u16, payload: &[u8]| {
+            let mut d = ep.header(RELIABLE, me, ep.token);
+            d[5..13].copy_from_slice(&peer_id.to_le_bytes());
+            d[13..21].copy_from_slice(&me.to_le_bytes());
+            d.extend_from_slice(&ch.to_le_bytes());
+            d.extend_from_slice(&seq.to_le_bytes());
+            d.extend_from_slice(&idx.to_le_bytes());
+            d.extend_from_slice(&count.to_le_bytes());
+            d.extend_from_slice(payload);
+            d
+        };
+
+        for ch in 0..80 {
+            ep.on_datagram(&make_reliable(ch, 0, 0, 1, b"x"), from);
+        }
+        assert!(ep.peers.lock().unwrap()[&peer_id].channels.len() <= 64, "channels must be capped at 64");
+        assert_eq!(ep.read(1), Some((peer_id, b"x".to_vec())));
+        assert_eq!(ep.read(3), Some((peer_id, b"x".to_vec())));
+
+        for seq in 10..650u32 {
+            ep.on_datagram(&make_reliable(0, seq, 0, 1, b"y"), from);
+        }
+        assert!(ep.peers.lock().unwrap()[&peer_id].channels[&0].early.len() <= 512, "early queue must be capped at 512");
+
+        ep.on_datagram(&make_reliable(1, 1, u16::MAX, u16::MAX, b"z"), from);
+        assert_eq!(ep.read(1), None);
+        ep.on_datagram(&make_reliable(3, 1, 0, 1, b"ok"), from);
+        assert_eq!(ep.read(3), Some((peer_id, b"ok".to_vec())));
+
+        assert_eq!(ep.read(2), Some((peer_id, b"x".to_vec())));
+        let chunk = vec![0xABu8; 1200];
+        let total_frags = (MAX_RELIABLE / chunk.len()) as u16 + 10;
+        for i in 0..total_frags {
+            ep.on_datagram(&make_reliable(2, 1 + i as u32, i, total_frags, &chunk), from);
+        }
+        assert!(ep.peers.lock().unwrap()[&peer_id].channels[&2].assembling.len() <= MAX_RELIABLE);
+        assert_eq!(ep.read(2), None);
     }
 }

@@ -16,7 +16,7 @@ const END_ALT: u8 = 0x0B;
 
 pub fn parse(data: &[u8]) -> Result<Obj, Error> {
     let mut r = Reader { data, pos: 0 };
-    r.object()
+    r.object(0)
 }
 
 struct Reader<'a> {
@@ -25,16 +25,21 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    fn object(&mut self) -> Result<Obj, Error> {
+    fn object(&mut self, depth: usize) -> Result<Obj, Error> {
+        if depth >= crate::MAX_DEPTH {
+            return Err(Error::TooDeep);
+        }
         let mut out = Vec::new();
         loop {
-            let Some(kind) = self.byte() else { return Ok(Obj(out)) };
+            let Some(kind) = self.byte() else {
+                return if depth == 0 { Ok(Obj(out)) } else { Err(Error::Eof) };
+            };
             if kind == END || kind == END_ALT {
                 return Ok(Obj(out));
             }
             let key = self.cstr()?;
             let value = match kind {
-                OBJECT => Value::Obj(self.object()?),
+                OBJECT => Value::Obj(self.object(depth + 1)?),
                 STRING => Value::Str(self.cstr()?),
                 INT32 | POINTER | COLOR => {
                     Value::Str(i32::from_le_bytes(self.take::<4>()?).to_string())
@@ -55,8 +60,9 @@ impl Reader<'_> {
     }
 
     fn take<const N: usize>(&mut self) -> Result<[u8; N], Error> {
-        let s = self.data.get(self.pos..self.pos + N).ok_or(Error::Eof)?;
-        self.pos += N;
+        let end = self.pos.checked_add(N).ok_or(Error::Eof)?;
+        let s = self.data.get(self.pos..end).ok_or(Error::Eof)?;
+        self.pos = end;
         Ok(s.try_into().unwrap())
     }
 
@@ -87,5 +93,21 @@ mod tests {
         let pkg = o.obj("123").unwrap();
         assert_eq!(pkg.u64("packageid"), Some(123));
         assert_eq!(pkg.obj("appids").unwrap().u64("0"), Some(440));
+    }
+
+    #[test]
+    fn rejects_excessive_depth_and_truncated_nested_eof() {
+        let mut deep = Vec::new();
+        for _ in 0..65 {
+            deep.push(0x00);
+            deep.extend_from_slice(b"a\0");
+        }
+        for _ in 0..66 {
+            deep.push(0x08);
+        }
+        assert!(super::parse(&deep).is_err(), "binary VDF deeper than MAX_DEPTH must fail");
+
+        let truncated = [0x00, b'a', 0x00, 0x01, b'k', 0x00, b'v', 0x00];
+        assert!(super::parse(&truncated).is_err(), "truncated nested binary VDF must error on EOF");
     }
 }

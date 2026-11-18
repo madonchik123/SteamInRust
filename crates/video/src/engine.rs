@@ -73,6 +73,9 @@ pub fn video_thread(sh: Arc<Shared>) {
         let Codec::H264 { nal_len, sps, pps } = &t.codec else { return };
         if dec.as_ref().is_none_or(|(_, u)| *u != init_url) {
             drop(dec.take());
+            if t.width == 0 || t.height == 0 || t.width > mp4::MAX_DIM || t.height > mp4::MAX_DIM {
+                return sh.fail("invalid video dimensions");
+            }
             match codec::H264::new(t.width, t.height) {
                 Ok(d) => dec = Some((d, init_url.clone())),
                 Err(e) => return sh.fail(format!("H.264 decoder: {e}")),
@@ -113,7 +116,7 @@ pub fn video_thread(sh: Arc<Shared>) {
             if sh.epoch() != epoch || sh.stopped() {
                 break;
             }
-            let Some(bytes) = data.get(s.offset..s.offset + s.size) else { continue };
+            let Some(bytes) = s.offset.checked_add(s.size).and_then(|end| data.get(s.offset..end)) else { continue };
             mp4::annex_b(bytes, *nal_len, s.key.then_some((sps.as_slice(), pps.as_slice())), &mut au);
             pics.clear();
             let dur = if s.duration > 0 { t.seconds(s.duration as i64) } else { fps_dur };
@@ -138,8 +141,12 @@ fn emit(sh: &Shared, epoch: u64, target: f64, t: &Track, pic: codec::Picture, px
     }
     let (w, h) = (t.width as usize, t.height as usize);
     let (w, h) = (if w == 0 { pic.stride } else { w.min(pic.stride) }, if h == 0 { pic.rows } else { h.min(pic.rows) });
-    let luma = pic.stride * pic.rows;
-    if w == 0 || h == 0 || pic.data.len() < luma + pic.stride * h.div_ceil(2) {
+    if w == 0 || h == 0 || w > mp4::MAX_DIM as usize || h > mp4::MAX_DIM as usize {
+        return;
+    }
+    let Some(luma) = pic.stride.checked_mul(pic.rows) else { return };
+    let Some(need) = pic.stride.checked_mul(h.div_ceil(2)).and_then(|c| luma.checked_add(c)) else { return };
+    if pic.data.len() < need {
         return;
     }
     yuv::nv12_to_rgba(&pic.data[..luma], &pic.data[luma..], pic.stride, w, h, px);
@@ -253,7 +260,7 @@ pub fn audio_thread(sh: Arc<Shared>) {
                 let data = sh.lock().cache.get(url).cloned();
                 if let Some(data) = data {
                     for s in samples(&plan, &track, &data, target) {
-                        let Some(bytes) = data.get(s.offset..s.offset + s.size) else { continue };
+                        let Some(bytes) = s.offset.checked_add(s.size).and_then(|end| data.get(s.offset..end)) else { continue };
                         if let Err(e) = aac.decode(bytes, track.pts(&s), track.seconds(s.duration as i64), &mut chunks) {
                             tracing::debug!("video: aac: {e}");
                         }

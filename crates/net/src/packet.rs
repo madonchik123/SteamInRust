@@ -13,6 +13,10 @@ use proto::CMsgProtoBufHeader;
 use std::io::Read;
 
 const PROTO_MASK: u32 = 0x8000_0000;
+/// Upper bound for a single decompressed `CMsgMulti` payload (64 MiB).
+pub(crate) const MAX_MULTI_UNZIPPED: usize = 64 * 1024 * 1024;
+/// Upper bound for eager `Vec::with_capacity` preallocation from untrusted headers.
+const MAX_MULTI_PREALLOC: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Packet {
@@ -34,7 +38,7 @@ impl Packet {
             return Ok(None);
         }
         let header_len = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
-        let body_start = 8 + header_len;
+        let body_start = 8usize.checked_add(header_len).ok_or(Error::Truncated)?;
         if data.len() < body_start {
             return Err(Error::Truncated);
         }
@@ -77,23 +81,45 @@ impl Packet {
         let unzipped = multi.size_unzipped();
         let mut data = multi.message_body.unwrap_or_default();
         if unzipped > 0 {
-            let mut out = Vec::with_capacity(unzipped as usize);
-            flate2::read::GzDecoder::new(data.as_slice()).read_to_end(&mut out)?;
+            if unzipped as usize > MAX_MULTI_UNZIPPED {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "CMsgMulti unzipped payload exceeds 64 MiB limit",
+                )));
+            }
+            let mut out = Vec::with_capacity((unzipped as usize).min(MAX_MULTI_PREALLOC));
+            flate2::read::GzDecoder::new(data.as_slice())
+                .take(MAX_MULTI_UNZIPPED as u64 + 1)
+                .read_to_end(&mut out)?;
+            if out.len() > MAX_MULTI_UNZIPPED {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "CMsgMulti gzip stream exceeds 64 MiB limit",
+                )));
+            }
             data = out;
+        } else if data.len() > MAX_MULTI_UNZIPPED {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "CMsgMulti payload exceeds 64 MiB limit",
+            )));
         }
         let mut packets = Vec::new();
         let mut rest = data.as_slice();
         while rest.len() >= 4 {
             let len = u32::from_le_bytes(rest[0..4].try_into().unwrap()) as usize;
-            let chunk = rest.get(4..4 + len).ok_or(Error::Truncated)?;
+            let end = 4usize.checked_add(len).ok_or(Error::Truncated)?;
+            let chunk = rest.get(4..end).ok_or(Error::Truncated)?;
             if let Some(p) = Packet::decode(chunk)? {
                 if p.emsg == emsg::MULTI {
-                    packets.extend(p.unpack_multi()?);
-                } else {
-                    packets.push(p);
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "nested CMsgMulti is not allowed",
+                    )));
                 }
+                packets.push(p);
             }
-            rest = &rest[4 + len..];
+            rest = &rest[end..];
         }
         Ok(packets)
     }
@@ -136,5 +162,37 @@ mod tests {
         let packets = Packet::decode(&bytes).unwrap().unwrap().unpack_multi().unwrap();
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].emsg, emsg::CLIENT_HEARTBEAT);
+    }
+
+    #[test]
+    fn rejects_nested_multi_and_gzip_bomb() {
+        use flate2::{Compression, write::GzEncoder};
+        use std::io::Write;
+
+        let inner_multi = Packet::encode(
+            emsg::MULTI,
+            &CMsgProtoBufHeader::default(),
+            &proto::CMsgMulti { size_unzipped: Some(0), message_body: Some(Vec::new()) },
+        );
+        let mut framed = (inner_multi.len() as u32).to_le_bytes().to_vec();
+        framed.extend(&inner_multi);
+        let outer = Packet::encode(
+            emsg::MULTI,
+            &CMsgProtoBufHeader::default(),
+            &proto::CMsgMulti { size_unzipped: Some(0), message_body: Some(framed) },
+        );
+        assert!(Packet::decode(&outer).unwrap().unwrap().unpack_multi().is_err(), "nested MULTI must be rejected");
+
+        let mut gz = GzEncoder::new(Vec::new(), Compression::fast());
+        let block = vec![0u8; 1024 * 1024];
+        for _ in 0..65 {
+            gz.write_all(&block).unwrap();
+        }
+        let bomb = Packet::encode(
+            emsg::MULTI,
+            &CMsgProtoBufHeader::default(),
+            &proto::CMsgMulti { size_unzipped: Some(65 * 1024 * 1024), message_body: Some(gz.finish().unwrap()) },
+        );
+        assert!(Packet::decode(&bomb).unwrap().unwrap().unpack_multi().is_err(), "oversized MULTI gzip must be rejected");
     }
 }
