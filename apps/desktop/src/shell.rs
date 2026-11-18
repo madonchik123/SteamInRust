@@ -773,7 +773,10 @@ fn notifications_button(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mu
                     ui.label(w::body_m(t, t!("You're all caught up."), t.text_faint));
                     return;
                 }
-                egui::ScrollArea::vertical().max_height(t.dense(440.0)).min_scrolled_height(t.dense(320.0)).show(ui, |ui| {
+                // As tall as the window allows, up to the design's height.
+                let room = ui.ctx().content_rect().bottom() - ui.cursor().top() - t.spacing.xl;
+                let tall = t.dense(440.0).min(room).max(t.dense(160.0));
+                egui::ScrollArea::vertical().max_height(tall).min_scrolled_height(tall).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = t.spacing.sm;
                     for n in data.items.iter().take(40) {
                         if notification_row(ui, t, &app.state, n) {
@@ -824,23 +827,19 @@ fn notification_row(ui: &mut Ui, t: &Theme, state: &client::State, n: &model::No
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(text).clicked()
 }
 
-/// The wallet part of the account menu: balance, money on its way, and
-/// wallet actions.
-fn wallet_section(ui: &mut Ui, t: &Theme, balance: i64, currency: i32, pending: i64, actions: &mut Vec<Action>) {
-    // Menus justify their text; the notes read better left-aligned.
-    ui.with_layout(Layout::top_down(Align::Min), |ui| {
-        ui.add_space(2.0);
-        ui.label(w::caption_text(t, t!("Steam Wallet")));
-        ui.horizontal(|ui| {
-            ui.label(w::heading_m(t, model::format_money(balance, currency), t.text)).on_hover_text(t!("Available to spend"));
-            if pending > 0 {
-                // What "pending" means, on hover: the menu stays short.
-                let note = t!("Money from recent Market sales or refunds that Steam hasn't released yet. It's added to your balance automatically.");
-                ui.label(w::body_m(t, format!("{}  {}", icons::CLOCK, t!("Pending: {amount}", amount = model::format_money(pending, currency))), t.away)).on_hover_text(note);
-            }
-        });
-        ui.add_space(4.0);
-    });
+/// The wallet side menu of the account menu: money on its way, and what
+/// you can do with the wallet.
+fn wallet_section(ui: &mut Ui, t: &Theme, pending: i64, currency: i32, actions: &mut Vec<Action>) {
+    let nav = |page: &str, arg: &str| Action::Navigate { page: page.into(), arg: Some(arg.into()) };
+    if pending > 0 {
+        // What "pending" means, on hover: the menu stays short.
+        let note = t!("Money from recent Market sales or refunds that Steam hasn't released yet. It's added to your balance automatically.");
+        let label = t!("Pending: {amount}", amount = model::format_money(pending, currency));
+        if w::menu_item_tinted(ui, t, icons::CLOCK, &label, Some(t.away)).on_hover_text(note).clicked() {
+            actions.push(nav("settings", "wallet"));
+        }
+        ui.separator();
+    }
     let item = |ui: &mut Ui, icon: &str, label: &str| w::menu_item(ui, t, icon, label).clicked();
     if item(ui, icons::PLUS, t!("Add funds…")) {
         crate::links::open_http("https://store.steampowered.com/steamaccount/addfunds");
@@ -849,10 +848,13 @@ fn wallet_section(ui: &mut Ui, t: &Theme, balance: i64, currency: i32, pending: 
         crate::links::open_http("https://store.steampowered.com/account/redeemwalletcode");
     }
     if item(ui, icons::STOREFRONT, t!("My market listings")) {
-        actions.push(Action::Navigate { page: "inventory".into(), arg: Some("listings".into()) });
+        actions.push(nav("inventory", "listings"));
     }
     if item(ui, icons::SCROLL, t!("Purchase history")) {
-        actions.push(Action::Navigate { page: "settings".into(), arg: Some("history".into()) });
+        actions.push(nav("settings", "history"));
+    }
+    if item(ui, icons::COINS, t!("Wallet & Purchases")) {
+        actions.push(nav("settings", "wallet"));
     }
 }
 
@@ -870,6 +872,9 @@ fn app_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action
         let item = |ui: &mut Ui, icon: &str, label: &str| w::menu_item(ui, t, icon, label).clicked();
         if item(ui, icons::GEAR, t!("Settings")) {
             actions.push(Action::Navigate { page: "settings".into(), arg: None });
+        }
+        if item(ui, icons::REFRESH, t!("Client Updates")) {
+            actions.push(Action::Navigate { page: "settings".into(), arg: Some("about".into()) });
         }
         if item(ui, icons::KEY, t!("Activate a product…")) {
             app.activate = Some(Default::default());
@@ -1031,10 +1036,19 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
     }
     p.text(rect.right_center() - vec2(13.0, 0.0), Align2::CENTER_CENTER, icons::CARET_DOWN, w::font(sz(&t, 13.0)), look.icon);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-    egui::Popup::menu(&resp).width(t.dense(250.0)).show(|ui| {
-        // Your status, each with its mark.
-        ui.label(w::caption_text(t, t!("Status")));
-        let pad = t.padding_of(&t.components.menu_item).x;
+    egui::Popup::menu(&resp).width(t.dense(250.0)).show(|ui| account_menu_rows(app, ui, t, actions, &me));
+}
+
+/// The rows of [`account_menu`], kept short: your status and the wallet
+/// open side menus on hover.
+fn account_menu_rows(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>, me: &model::Persona) {
+    let pad = t.padding_of(&t.components.menu_item).x;
+    let sub_width = t.dense(250.0);
+    // Your status, with its mark where the icon goes; the others on hover.
+    let r = w::submenu_item(ui, t, "", &i18n::tr_dyn(me.state.label()));
+    status_mark(ui.painter(), egui::pos2(r.rect.left() + pad, r.rect.center().y), t.dense(5.0), me.state, status_color(t, me));
+    egui::containers::menu::SubMenu::new().show(ui, &r, |ui| {
+        ui.set_min_width(sub_width);
         for s in PersonaState::SELECTABLE {
             let on = me.state == s;
             let r = w::menu_item_tinted(ui, t, "", &i18n::tr_dyn(s.label()), on.then_some(t.accent));
@@ -1045,39 +1059,42 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
             }
             if r.clicked() {
                 app.client.send(Command::SetPersonaState(s));
+                ui.close();
             }
         }
-        ui.separator();
-        // The design's rows (Figma "account" `18:1282`), with your profile first.
-        let nav = |page: &str, arg: Option<&str>| Action::Navigate { page: page.into(), arg: arg.map(String::from) };
-        if w::menu_item(ui, t, icons::USER_CIRCLE, t!("View profile")).clicked() {
-            actions.push(nav("profile", None));
-        }
-        if w::menu_item(ui, t, icons::NOTE, t!("Account Details")).clicked() {
-            actions.push(nav("settings", None));
-        }
-        if let Some((balance, currency)) = app.state.wallet {
-            ui.separator();
-            wallet_section(ui, t, balance, currency, app.state.wallet_pending, actions);
-            ui.separator();
-        }
-        if w::menu_item(ui, t, icons::GEAR, t!("Settings")).clicked() {
-            actions.push(nav("settings", Some("appearance")));
-        }
-        if w::menu_item(ui, t, icons::REFRESH, t!("Client Updates")).clicked() {
-            actions.push(nav("settings", Some("about")));
-        }
-        crate::offline_ui::account_items(app, ui, t);
-        if w::menu_item(ui, t, icons::USER_SWITCH, t!("Change Account")).clicked() {
-            app.client.send(Command::LogOut);
-        }
-        if w::menu_item(ui, t, icons::SIGN_OUT, t!("Sign Out")).clicked() {
-            app.client.send(Command::LogOut);
-        }
-        if w::menu_item_tinted(ui, t, icons::POWER, t!("Exit"), Some(t.danger)).clicked() {
-            app.request_exit(ui.ctx());
-        }
     });
+    ui.separator();
+    // The design's rows (Figma "account" `18:1282`), with your profile first.
+    let nav = |page: &str, arg: Option<&str>| Action::Navigate { page: page.into(), arg: arg.map(String::from) };
+    if w::menu_item(ui, t, icons::USER_CIRCLE, t!("View profile")).clicked() {
+        actions.push(nav("profile", None));
+    }
+    if w::menu_item(ui, t, icons::NOTE, t!("Account Details")).clicked() {
+        actions.push(nav("settings", None));
+    }
+    // The balance, with the wallet's actions on hover.
+    if let Some((balance, currency)) = app.state.wallet {
+        let r = w::submenu_item(ui, t, icons::COINS, &model::format_money(balance, currency));
+        let r = r.on_hover_text(t!("Available to spend"));
+        egui::containers::menu::SubMenu::new().show(ui, &r, |ui| {
+            ui.set_min_width(sub_width);
+            wallet_section(ui, t, app.state.wallet_pending, currency, actions);
+        });
+    }
+    ui.separator();
+    // Your profile's settings here; the app's own are in the logo menu.
+    if w::menu_item(ui, t, icons::SLIDERS, t!("Profile Settings")).clicked() {
+        actions.push(nav("profile", Some("edit")));
+    }
+    crate::offline_ui::account_items(app, ui, t);
+    // Signing out leads to the account picker, which is also where you
+    // change account: one row for both.
+    if w::menu_item(ui, t, icons::SIGN_OUT, t!("Sign Out")).clicked() {
+        app.client.send(Command::LogOut);
+    }
+    if w::menu_item_tinted(ui, t, icons::POWER, t!("Exit"), Some(t.danger)).clicked() {
+        app.request_exit(ui.ctx());
+    }
 }
 
 /// The bottom bar (`layout.status_bar`): what's downloading, what you're
