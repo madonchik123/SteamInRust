@@ -418,28 +418,23 @@ async fn download(conn: &Connection, t: &Target, name: &str, path: &Path, stamp:
     if r.encrypted() {
         return Err("This file is encrypted by Steam and can only be synced by the official client".into());
     }
-    let url = format!("{}://{}{}", if r.use_https() { "https" } else { "http" }, r.url_host(), r.url_path());
+    if r.sha_file().len() != 20 {
+        return Err("Steam Cloud file is missing a 20-byte SHA-1 checksum".into());
+    }
+    let url = cloud_https_url(r.use_https(), r.url_host(), r.url_path())?;
     let mut req = http().get(url);
     for h in &r.request_headers {
         req = req.header(h.name(), h.value());
     }
     let resp = req.send().await.map_err(|e| e.to_string())?;
+    if resp.url().scheme() != "https" {
+        return Err("Refusing non-HTTPS Steam Cloud redirect".into());
+    }
     if !resp.status().is_success() {
         return Err(format!("Steam Cloud answered {}", resp.status()));
     }
-    let mut data = resp.bytes().await.map_err(|e| e.to_string())?.to_vec();
-    // Compressed files come as a one-file ZIP.
-    if r.file_size() != r.raw_file_size() && data.starts_with(b"PK") {
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| e.to_string())?;
-        let mut entry = zip.by_index(0).map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        std::io::Read::read_to_end(&mut entry, &mut out).map_err(|e| e.to_string())?;
-        data = out;
-    }
-    let sha = sha1(&data);
-    if !r.sha_file().is_empty() && r.sha_file() != sha.as_slice() {
-        return Err("The downloaded file didn't match Steam's checksum".into());
-    }
+    let raw = resp.bytes().await.map_err(|e| e.to_string())?.to_vec();
+    let (data, sha) = verify_cloud_download_bytes(&r, raw)?;
     backup(t, name, path, stamp)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -523,10 +518,76 @@ async fn upload(conn: &Connection, t: &Target, files: &[(String, PathBuf, Vec<u8
     }
 }
 
+const MAX_CLOUD_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+
+fn is_valid_cloud_host(host: &str) -> bool {
+    if host.is_empty() || host.len() > 255 {
+        return false;
+    }
+    if !host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b':' | b'-')) {
+        return false;
+    }
+    let name = match host.split_once(':') {
+        Some((h, port)) => {
+            if port.is_empty() || port.len() > 5 || !port.bytes().all(|b| b.is_ascii_digit()) {
+                return false;
+            }
+            if port.parse::<u16>().ok().is_none_or(|p| p == 0) {
+                return false;
+            }
+            h
+        }
+        None => host,
+    };
+    if name.is_empty() || name.starts_with('.') || name.ends_with('.') || name.contains("..") {
+        return false;
+    }
+    name.split('.').all(|label| !label.is_empty() && !label.starts_with('-') && !label.ends_with('-'))
+}
+
+fn cloud_https_url(use_https: bool, host: &str, path: &str) -> Result<reqwest::Url, String> {
+    if !use_https {
+        return Err("Refusing insecure plaintext HTTP Steam Cloud transfer".into());
+    }
+    if !is_valid_cloud_host(host) {
+        return Err("Invalid Steam Cloud host".into());
+    }
+    if !path.starts_with('/') || path.contains('\\') || path.chars().any(|c| c.is_control()) {
+        return Err("Invalid Steam Cloud URL path".into());
+    }
+    let parsed = reqwest::Url::parse(&format!("https://{host}{path}")).map_err(|e| format!("Invalid Steam Cloud URL: {e}"))?;
+    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() || parsed.host_str().is_none_or(|h| h.is_empty()) {
+        return Err("Invalid Steam Cloud HTTPS URL".into());
+    }
+    Ok(parsed)
+}
+
+fn verify_cloud_download_bytes(r: &CCloudClientFileDownloadResponse, mut data: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>), String> {
+    if r.sha_file().len() != 20 {
+        return Err("Steam Cloud file is missing a 20-byte SHA-1 checksum".into());
+    }
+    // Compressed files come as a one-file ZIP.
+    if r.file_size() != r.raw_file_size() && data.starts_with(b"PK") {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| e.to_string())?;
+        let entry = zip.by_index(0).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(entry, MAX_CLOUD_UNCOMPRESSED_BYTES + 1), &mut out).map_err(|e| e.to_string())?;
+        if out.len() as u64 > MAX_CLOUD_UNCOMPRESSED_BYTES {
+            return Err("Decompressed Steam Cloud file exceeds size limit".into());
+        }
+        data = out;
+    }
+    let sha = sha1(&data);
+    if sha.as_slice() != r.sha_file() {
+        return Err("The downloaded file didn't match Steam's checksum".into());
+    }
+    Ok((data, sha))
+}
+
 /// Upload the file body to wherever Steam said, block by block.
 async fn send_blocks(b: &CCloudClientBeginFileUploadResponse, data: &[u8]) -> Result<(), String> {
     for block in &b.block_requests {
-        let url = format!("{}://{}{}", if block.use_https() { "https" } else { "http" }, block.url_host(), block.url_path());
+        let url = cloud_https_url(block.use_https(), block.url_host(), block.url_path())?;
         // Steam's EHTTPMethod: 3 POST, 4 PUT.
         let mut req = match block.http_method() {
             3 => http().post(url),
@@ -539,10 +600,13 @@ async fn send_blocks(b: &CCloudClientBeginFileUploadResponse, data: &[u8]) -> Re
             block.explicit_body_data().to_vec()
         } else {
             let start = block.block_offset() as usize;
-            let end = (start + block.block_length() as usize).min(data.len());
+            let end = start.saturating_add(block.block_length() as usize).min(data.len());
             data.get(start..end).ok_or("bad block range")?.to_vec()
         };
         let resp = req.body(body).send().await.map_err(|e| e.to_string())?;
+        if resp.url().scheme() != "https" {
+            return Err("Refusing non-HTTPS Steam Cloud upload redirect".into());
+        }
         if !resp.status().is_success() {
             return Err(format!("upload answered {}", resp.status()));
         }
@@ -552,7 +616,108 @@ async fn send_blocks(b: &CCloudClientBeginFileUploadResponse, data: &[u8]) -> Re
 
 fn http() -> &'static reqwest::Client {
     static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    HTTP.get_or_init(|| reqwest::Client::builder().timeout(Duration::from_secs(120)).build().unwrap_or_default())
+    HTTP.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 {
+                    attempt.error("too many redirects")
+                } else if attempt.url().scheme() != "https" {
+                    attempt.error("refusing non-HTTPS redirect")
+                } else {
+                    attempt.follow()
+                }
+            }))
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+#[cfg(test)]
+mod https_tests {
+    use super::*;
+
+    #[test]
+    fn send_blocks_refuses_plaintext_http() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let hit_srv = hit.clone();
+            let srv = tokio::spawn(async move {
+                if let Ok((mut sock, _)) = tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept()).await.unwrap_or(Err(std::io::Error::other("timeout"))) {
+                    hit_srv.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = tokio::io::AsyncWriteExt::write_all(&mut sock, b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+                }
+            });
+
+            let resp = CCloudClientBeginFileUploadResponse {
+                block_requests: vec![ClientCloudFileUploadBlockDetails {
+                    url_host: Some(addr.to_string()),
+                    url_path: Some("/upload".into()),
+                    use_https: Some(false),
+                    http_method: Some(4),
+                    explicit_body_data: Some(b"secret-save".to_vec()),
+                    request_headers: vec![client_cloud_file_upload_block_details::HttpHeaders {
+                        name: Some("Authorization".into()),
+                        value: Some("Bearer top-secret".into()),
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let res = send_blocks(&resp, b"secret-save").await;
+            let _ = srv.await;
+
+            assert!(res.is_err(), "send_blocks allowed use_https=false plaintext HTTP upload!");
+            assert!(!hit.load(std::sync::atomic::Ordering::SeqCst), "send_blocks leaked Cloud headers over plaintext HTTP!");
+        });
+    }
+
+    #[test]
+    fn cloud_download_requires_https_and_mandatory_20_byte_sha1() {
+        assert!(cloud_https_url(true, "steamcloud-usw2.storage.googleapis.com", "/upload/1").is_ok());
+        assert!(cloud_https_url(false, "steamcloud-usw2.storage.googleapis.com", "/upload/1").is_err());
+        assert!(cloud_https_url(true, "user@evil.com", "/upload/1").is_err());
+        assert!(cloud_https_url(true, "evil.com/extra", "/upload/1").is_err());
+        assert!(cloud_https_url(true, "steamcloud.local", "relative/path").is_err());
+
+        let body = b"savegame-slot-1".to_vec();
+        let good_sha = sha1(&body);
+
+        let empty_sha_resp = CCloudClientFileDownloadResponse {
+            file_size: Some(body.len() as u32),
+            raw_file_size: Some(body.len() as u32),
+            sha_file: Some(Vec::new()),
+            use_https: Some(true),
+            ..Default::default()
+        };
+        assert!(verify_cloud_download_bytes(&empty_sha_resp, body.clone()).is_err());
+
+        let short_sha_resp = CCloudClientFileDownloadResponse {
+            sha_file: Some(good_sha[..19].to_vec()),
+            ..empty_sha_resp.clone()
+        };
+        assert!(verify_cloud_download_bytes(&short_sha_resp, body.clone()).is_err());
+
+        let mut wrong_sha = good_sha.clone();
+        wrong_sha[0] ^= 0xff;
+        let mismatch_resp = CCloudClientFileDownloadResponse {
+            sha_file: Some(wrong_sha),
+            ..empty_sha_resp.clone()
+        };
+        assert!(verify_cloud_download_bytes(&mismatch_resp, body.clone()).is_err());
+
+        let ok_resp = CCloudClientFileDownloadResponse {
+            sha_file: Some(good_sha.clone()),
+            ..empty_sha_resp
+        };
+        let (out_data, out_sha) = verify_cloud_download_bytes(&ok_resp, body.clone()).unwrap();
+        assert_eq!(out_data, body);
+        assert_eq!(out_sha, good_sha);
+    }
 }
 
 #[cfg(test)]

@@ -7,8 +7,10 @@ use crate::Error;
 use model::{AppId, LaunchOption, OwnedApp};
 use net::{Connection, emsg};
 use proto::*;
+use sha1::{Digest, Sha1};
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
+use std::time::Duration;
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -177,15 +179,92 @@ pub async fn names(conn: &Connection, ids: &[AppId]) -> Result<Vec<(AppId, Strin
     Ok(apps.into_iter().filter(|a| a.name != "Unknown").map(|a| (a.app_id, a.name)).collect())
 }
 
-async fn fetch_http(http: &reqwest::Client, host: &str, id: AppId, sha: &[u8]) -> Option<String> {
-    let sha: String = sha.iter().map(|b| format!("{b:02x}")).collect();
-    let url = format!("https://{host}/appinfo/{id}/sha/{sha}.txt.gz");
-    let bytes = http.get(&url).send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?;
-    let mut text = String::new();
-    if flate2::read::GzDecoder::new(&bytes[..]).read_to_string(&mut text).is_err() {
-        text = String::from_utf8_lossy(&bytes).into_owned();
+const MAX_PICS_COMPRESSED_BYTES: usize = 32 * 1024 * 1024;
+const MAX_PICS_DECOMPRESSED_BYTES: usize = 64 * 1024 * 1024;
+
+fn is_valid_http_host(host: &str) -> bool {
+    if host.is_empty() || host.len() > 255 {
+        return false;
     }
-    Some(text)
+    if !host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b':' | b'-')) {
+        return false;
+    }
+    let name = match host.split_once(':') {
+        Some((h, port)) => {
+            if port.is_empty() || port.len() > 5 || !port.bytes().all(|b| b.is_ascii_digit()) {
+                return false;
+            }
+            if port.parse::<u16>().ok().is_none_or(|p| p == 0) {
+                return false;
+            }
+            h
+        }
+        None => host,
+    };
+    if name.is_empty() || name.starts_with('.') || name.ends_with('.') || name.contains("..") {
+        return false;
+    }
+    name.split('.').all(|label| !label.is_empty() && !label.starts_with('-') && !label.ends_with('-'))
+}
+
+fn decode_and_verify_pics(bytes: &[u8], expected_sha: &[u8]) -> Option<String> {
+    if expected_sha.len() != 20 {
+        return None;
+    }
+    let mut decoded = Vec::new();
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut gz = flate2::read::GzDecoder::new(bytes).take((MAX_PICS_DECOMPRESSED_BYTES + 1) as u64);
+        gz.read_to_end(&mut decoded).ok()?;
+        if decoded.len() > MAX_PICS_DECOMPRESSED_BYTES {
+            return None;
+        }
+    } else {
+        if bytes.len() > MAX_PICS_DECOMPRESSED_BYTES {
+            return None;
+        }
+        decoded.extend_from_slice(bytes);
+    }
+
+    let without_nul = decoded.strip_suffix(b"\0").unwrap_or(&decoded);
+    let matches_sha = Sha1::digest(without_nul).as_slice() == expected_sha
+        || Sha1::digest(&decoded).as_slice() == expected_sha
+        || Sha1::digest(bytes).as_slice() == expected_sha;
+    if !matches_sha {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&decoded).into_owned())
+}
+
+async fn fetch_http(http: &reqwest::Client, host: &str, id: AppId, sha: &[u8]) -> Option<String> {
+    if sha.len() != 20 || !is_valid_http_host(host) {
+        return None;
+    }
+    let sha_hex: String = sha.iter().map(|b| format!("{b:02x}")).collect();
+    let url = format!("https://{host}/appinfo/{id}/sha/{sha_hex}.txt.gz");
+    let parsed = reqwest::Url::parse(&url).ok()?;
+    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
+        return None;
+    }
+    let mut resp = tokio::time::timeout(Duration::from_secs(30), http.get(parsed).send())
+        .await
+        .ok()?
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    if resp.url().scheme() != "https" {
+        return None;
+    }
+    if resp.content_length().is_some_and(|len| len > MAX_PICS_COMPRESSED_BYTES as u64) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(resp.content_length().unwrap_or(0).min(256 * 1024) as usize);
+    while let Some(chunk) = tokio::time::timeout(Duration::from_secs(30), resp.chunk()).await.ok()?.ok()? {
+        if bytes.len().checked_add(chunk.len()).is_none_or(|n| n > MAX_PICS_COMPRESSED_BYTES) {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    decode_and_verify_pics(&bytes, sha)
 }
 
 fn parse_app(id: AppId, text: &str) -> Option<OwnedApp> {
@@ -372,5 +451,65 @@ mod tests {
         assert_eq!(app.name, "Team Fortress 2");
         assert_eq!(app.kind, "game");
         assert_eq!(app.launch[0].executable, "tf_win64.exe");
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn validates_pics_http_host_and_verifies_appinfo_sha1() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+
+        assert!(is_valid_http_host("clientconfig.akamai.steamstatic.com"));
+        assert!(is_valid_http_host("steamcache.local:8443"));
+        assert!(is_valid_http_host("127.0.0.1:443"));
+        assert!(!is_valid_http_host(""));
+        assert!(!is_valid_http_host("evil.com/../../etc"));
+        assert!(!is_valid_http_host("user:pass@evil.com"));
+        assert!(!is_valid_http_host("evil.com?query=1"));
+        assert!(!is_valid_http_host("evil.com#frag"));
+        assert!(!is_valid_http_host("evil..com"));
+        assert!(!is_valid_http_host("evil.com:0"));
+        assert!(!is_valid_http_host("evil.com:99999"));
+        assert!(!is_valid_http_host("evil.com:80:80"));
+
+        let vdf_body = b"\"appinfo\"\n{\n\t\"appid\"\t\"440\"\n}\n";
+        let mut with_nul = vdf_body.to_vec();
+        with_nul.push(0);
+
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&with_nul).unwrap();
+        let gz_bytes = enc.finish().unwrap();
+
+        let pics_sha: [u8; 20] = Sha1::digest(vdf_body).into();
+        let gz_sha: [u8; 20] = Sha1::digest(&gz_bytes).into();
+
+        let decoded = decode_and_verify_pics(&gz_bytes, &pics_sha).expect("valid Valve PICS .txt.gz should verify");
+        assert_eq!(decoded.trim_end_matches('\0').as_bytes(), vdf_body);
+
+        let decoded_gz_sha = decode_and_verify_pics(&gz_bytes, &gz_sha).expect("direct .txt.gz SHA-1 should also verify");
+        assert_eq!(decoded_gz_sha.trim_end_matches('\0').as_bytes(), vdf_body);
+
+        assert!(decode_and_verify_pics(&gz_bytes, &[]).is_none());
+        assert!(decode_and_verify_pics(&gz_bytes, &pics_sha[..19]).is_none());
+        let mut wrong_sha = pics_sha;
+        wrong_sha[0] ^= 0x55;
+        assert!(decode_and_verify_pics(&gz_bytes, &wrong_sha).is_none());
+
+        let mut tampered_enc = GzEncoder::new(Vec::new(), Compression::default());
+        tampered_enc.write_all(b"\"appinfo\"\n{\n\t\"appid\"\t\"666\"\n}\n\0").unwrap();
+        let tampered_gz = tampered_enc.finish().unwrap();
+        assert!(decode_and_verify_pics(&tampered_gz, &pics_sha).is_none());
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let client = reqwest::Client::new();
+            assert!(fetch_http(&client, "evil.com/escape", 440, &pics_sha).await.is_none());
+            assert!(fetch_http(&client, "127.0.0.1:1", 440, &[]).await.is_none());
+        });
     }
 }
