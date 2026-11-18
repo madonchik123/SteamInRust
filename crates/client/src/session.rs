@@ -1812,8 +1812,7 @@ impl Online {
         if list.is_empty() {
             let _ = std::fs::remove_file(&path);
         } else if let Ok(text) = serde_json::to_string_pretty(&list) {
-            let _ = std::fs::create_dir_all(store::config_dir());
-            let _ = std::fs::write(&path, text);
+            let _ = store::write_private(&path, text.as_bytes());
         }
     }
 

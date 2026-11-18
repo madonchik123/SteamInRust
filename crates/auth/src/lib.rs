@@ -64,7 +64,7 @@ impl Guard {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Tokens {
     pub account_name: String,
     pub steam_id: u64,
@@ -72,6 +72,18 @@ pub struct Tokens {
     pub access_token: String,
     /// Lets Steam skip email codes on this machine next time.
     pub guard_data: Option<String>,
+}
+
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens")
+            .field("account_name", &self.account_name)
+            .field("steam_id", &self.steam_id)
+            .field("refresh_token", &"[REDACTED]")
+            .field("access_token", &"[REDACTED]")
+            .field("guard_data", &self.guard_data.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -307,5 +319,22 @@ mod tests {
     fn hex_decodes_odd_length() {
         assert_eq!(super::hex("10001"), Some(vec![0x01, 0x00, 0x01]));
         assert_eq!(super::hex("zz"), None);
+    }
+
+    #[test]
+    fn tokens_debug_redacts_secrets() {
+        let t = super::Tokens {
+            account_name: "alice".into(),
+            steam_id: 76561197960287930,
+            refresh_token: "secret_refresh_jwt".into(),
+            access_token: "secret_access_jwt".into(),
+            guard_data: Some("secret_guard_blob".into()),
+        };
+        let dbg = format!("{t:?}");
+        assert!(dbg.contains("alice"));
+        assert!(dbg.contains("76561197960287930"));
+        assert!(!dbg.contains("secret_refresh_jwt"), "refresh_token leaked in Debug: {dbg}");
+        assert!(!dbg.contains("secret_access_jwt"), "access_token leaked in Debug: {dbg}");
+        assert!(!dbg.contains("secret_guard_blob"), "guard_data leaked in Debug: {dbg}");
     }
 }

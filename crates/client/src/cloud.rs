@@ -527,11 +527,8 @@ fn clean_name(name: &str) -> String {
 
 fn save_snapshot(t: &Target, s: &Snapshot) {
     let p = snapshot_path(t);
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(text) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(p, text);
+        let _ = crate::store::write_private(&p, text.as_bytes());
     }
 }
 
@@ -547,8 +544,7 @@ fn backup(t: &Target, name: &str, path: &Path, stamp: u64) -> Result<(), String>
     }
     let safe: String = name.chars().map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect();
     let dir = crate::store::config_dir().join("cloud-backups").join(t.app_id.to_string()).join(stamp.to_string());
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::copy(path, dir.join(safe)).map(|_| ()).map_err(|e| e.to_string())
+    crate::store::copy_private(path, &dir.join(safe)).map_err(|e| e.to_string())
 }
 
 pub fn backups_dir(app_id: AppId) -> PathBuf {

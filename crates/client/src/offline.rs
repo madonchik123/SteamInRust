@@ -29,17 +29,11 @@ fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-/// Write through a temporary file so a crash never leaves half a file.
-fn write<T: Serialize>(path: &Path, value: &T) {
-    if let Some(d) = path.parent() {
-        let _ = std::fs::create_dir_all(d);
-    }
+/// Write through a private (0600) unique temporary file so a crash never leaves half a file.
+pub(crate) fn write<T: Serialize>(path: &Path, value: &T) {
     let Ok(json) = serde_json::to_string(value) else { return };
-    let tmp = path.with_extension("tmp");
-    if std::fs::write(&tmp, json).is_ok() {
-        if let Err(e) = std::fs::rename(&tmp, path) {
-            tracing::warn!("couldn't save {}: {e}", path.display());
-        }
+    if let Err(e) = crate::store::write_private(path, json.as_bytes()) {
+        tracing::warn!("couldn't save {}: {e}", path.display());
     }
 }
 
