@@ -50,6 +50,17 @@ const SECTIONS: [Option<(Section, &str, &str)>; 19] = [
     None,
 ];
 
+/// Where the in-game FPS counter shows, like Steam's setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FpsCorner {
+    #[default]
+    Off,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
 /// App-level options the Settings page edits (owned by the app, shared here).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AppFlags {
@@ -64,6 +75,7 @@ pub struct AppFlags {
     pub toast_notifications: bool,
     /// Which version of the logo the tray icon shows.
     pub tray_icon: ui::brand::Logo,
+    pub fps_corner: FpsCorner,
 }
 
 pub type SharedFlags = std::sync::Arc<std::sync::Mutex<AppFlags>>;
@@ -168,7 +180,7 @@ impl Extension for Settings {
                             ctx.settings_for("store", ui);
                         });
                     }
-                    Section::Overlay => overlay(ui, &t, ctx),
+                    Section::Overlay => overlay(ui, &t, ctx, &self.flags),
                     Section::Folders => folders(ui, &t, ctx),
                     Section::About => about(ui, &t),
                 });
@@ -563,13 +575,13 @@ fn interface(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags, handler
     });
 }
 
-fn overlay(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+fn overlay(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags) {
     w::page_title(ui, t, t!("In-game overlay"), None);
     w::card(t).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(w::text_semibold(t!("Shift+Tab"), 15.0, t.text));
         ui.add(egui::Label::new(w::text(
-            t!("While a game you started from SteamInRust is running, press Shift+Tab to open the overlay: friends, quick chat and notes. It's a separate always-on-top window that never touches the game's process, so it's safe with anti-cheat. It shows over windowed and borderless games; exclusive fullscreen hides it."),
+            t!("While a game you started from SteamInRust is running, press Shift+Tab to open the overlay: friends, chat, achievements, guides, notes and more. In most Windows games (Direct3D 11) it's drawn inside the game, so it works in exclusive fullscreen too. Other games get it as a window over the game."),
             13.5,
             t.text_dim,
         )).wrap());
@@ -578,6 +590,38 @@ fn overlay(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
             ctx.act(Action::ToggleOverlay);
         }
     });
+    ui.add_space(12.0);
+    w::card(t).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(w::text_semibold(t!("Screenshots"), 15.0, t.text));
+        ui.add(egui::Label::new(w::text(
+            t!("Press F12 in a game to take a screenshot. It's saved in Steam's screenshot folder, where Steam can upload it to your profile."),
+            13.5,
+            t.text_dim,
+        )).wrap());
+    });
+    ui.add_space(12.0);
+    let mut f = *flags.lock().unwrap();
+    w::card(t).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(w::text_semibold(t!("FPS counter"), 15.0, t.text));
+        ui.add(egui::Label::new(w::text(t!("Shows how many frames per second the game draws, in a corner of the screen."), 13.5, t.text_dim)).wrap());
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            for (corner, label) in [
+                (FpsCorner::Off, t!("Off")),
+                (FpsCorner::TopLeft, t!("Top left")),
+                (FpsCorner::TopRight, t!("Top right")),
+                (FpsCorner::BottomLeft, t!("Bottom left")),
+                (FpsCorner::BottomRight, t!("Bottom right")),
+            ] {
+                if w::chip(ui, t, &label, f.fps_corner == corner).clicked() {
+                    f.fps_corner = corner;
+                }
+            }
+        });
+    });
+    *flags.lock().unwrap() = f;
 }
 
 fn folders(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {

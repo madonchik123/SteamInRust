@@ -28,6 +28,10 @@ pub struct Session {
     sent_empty: bool,
     pixels_per_point: f32,
     theme: Option<ui::Theme>,
+    /// Frames per second the game last reported.
+    pub fps: Option<u32>,
+    /// The last F12 screenshot: saved or not, and when.
+    pub shot: Option<(bool, Instant)>,
 }
 
 impl Session {
@@ -63,6 +67,8 @@ impl Session {
             sent_empty: false,
             pixels_per_point: 1.0,
             theme: Some(theme.clone()),
+            fps: None,
+            shot: None,
         }
     }
 
@@ -83,6 +89,14 @@ impl Session {
                 }
                 Ok(FromGame::Input { modifiers, events }) => {
                     self.input(modifiers, events);
+                    self.wake_now();
+                }
+                Ok(FromGame::Fps(n)) => {
+                    self.fps = Some(n);
+                    self.wake_now();
+                }
+                Ok(FromGame::Screenshot(ok)) => {
+                    self.shot = Some((ok, Instant::now()));
                     self.wake_now();
                 }
                 Ok(FromGame::Hello { .. }) => {}

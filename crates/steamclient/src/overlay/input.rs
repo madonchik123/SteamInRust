@@ -253,6 +253,10 @@ unsafe fn ours(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> 
             return Some(LRESULT(0));
         }
     }
+    // F12: a screenshot, like Steam. The game still sees the key.
+    if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wp.0 as u16 == VK_F12.0 && lp.0 & (1 << 30) == 0 {
+        super::screenshot_key();
+    }
     if msg == WM_CHAR && wp.0 == 9 && EAT_TAB_CHAR.swap(false, Ordering::Relaxed) {
         return Some(LRESULT(0));
     }

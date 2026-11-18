@@ -19,7 +19,7 @@ Steam's website" still works; it just isn't native yet.
 | Inventory and Market | 1 | |
 | Steam Cloud | 1 | |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers |
-| Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser or screenshots |
+| Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | Seven languages (Steam has about 30); no Linux version; Mac builds aren't signed with an Apple developer ID |
 | Big Picture | 0.75 | Buying and most settings move to the normal window |
@@ -190,7 +190,8 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Pin windows over the game with adjustable opacity | Done |
 | Games with anti-cheat | They start through the official client, so they get Steam's own overlay |
 | Game invites in chat show as cards with a Join button (Steam's `[gameinvite]` markup). Friend menus offer "Invite to lobby" or "Invite to game" from what the game reports, else "Invite to play", all sent as real Steam invites | Done |
-| In-game web browser, screenshots (F12), FPS counter | Not yet |
+| Screenshots with F12 into Steam's screenshot folder, with a "Screenshot saved" notice; FPS counter in a corner you pick (Settings → In game) | Done for games the overlay is drawn inside (D3D11). The frame is copied before the overlay is drawn on it; games that take their own screenshots get Steam's request instead. Not tested in a real game yet |
+| In-game web browser | Not yet |
 
 ## Notifications and tray
 

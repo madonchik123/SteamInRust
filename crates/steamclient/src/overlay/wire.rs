@@ -51,6 +51,10 @@ pub enum FromGame {
     /// Shift+Tab (or the game) opened or closed the overlay.
     Opened(bool),
     Input { modifiers: u8, events: Vec<Input> },
+    /// Frames the game presented in the last second.
+    Fps(u32),
+    /// An F12 screenshot was saved (true) or failed.
+    Screenshot(bool),
 }
 
 /// One texture change, in egui's terms (`TexturesDelta`).
@@ -104,6 +108,8 @@ const HELLO: u8 = 1;
 const RESIZE: u8 = 2;
 const OPENED: u8 = 3;
 const INPUT: u8 = 4;
+const FPS: u8 = 5;
+const SCREENSHOT: u8 = 6;
 const FRAME: u8 = 10;
 const SET_OPEN: u8 = 11;
 
@@ -236,6 +242,14 @@ impl FromGame {
                     }
                 }
             }
+            FromGame::Fps(n) => {
+                w.u8(FPS);
+                w.u32(*n);
+            }
+            FromGame::Screenshot(ok) => {
+                w.u8(SCREENSHOT);
+                w.u8(*ok as u8);
+            }
         }
         w.0
     }
@@ -264,6 +278,8 @@ impl FromGame {
                 }
                 FromGame::Input { modifiers, events }
             }
+            FPS => FromGame::Fps(r.u32()?),
+            SCREENSHOT => FromGame::Screenshot(r.u8()? != 0),
             _ => return Err(bad()),
         })
     }
@@ -396,6 +412,8 @@ mod tests {
             FromGame::Hello { token: "abc".into(), pid: 7, width: 1920, height: 1080 },
             FromGame::Resize { width: 1, height: 2 },
             FromGame::Opened(true),
+            FromGame::Fps(144),
+            FromGame::Screenshot(true),
             FromGame::Input {
                 modifiers: MOD_SHIFT | MOD_CTRL,
                 events: vec![
