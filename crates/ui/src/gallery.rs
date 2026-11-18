@@ -16,11 +16,12 @@ pub struct Gallery {
     sort: usize,
     seg: usize,
     wish: bool,
+    fields: [String; 4],
 }
 
 impl Default for Gallery {
     fn default() -> Self {
-        Self { tab: 0, search: String::new(), view: 0, on: true, off: false, checked: true, unchecked: false, sort: 0, seg: 0, wish: false }
+        Self { tab: 0, search: String::new(), view: 0, on: true, off: false, checked: true, unchecked: false, sort: 0, seg: 0, wish: false, fields: Default::default() }
     }
 }
 
@@ -172,6 +173,20 @@ impl Gallery {
             w::progress(ui, t, 0.4, 160.0);
             let (r, _) = ui.allocate_exact_size(vec2(60.0, 30.0), egui::Sense::hover());
             w::progress_ring(ui.painter(), t, r.left_center() + vec2(10.0, 0.0), 7.5, 0.25);
+        });
+        row(ui, t, "Text fields", |ui| {
+            // Narrow widths asked for: each grows to fit its placeholder.
+            w::search(ui, t, &mut self.fields[0], i18n::t!("Search your items"), 140.0);
+            w::text_input(ui, t, &mut self.fields[1], i18n::t!("Your real name here…"), 120.0, 1);
+            // Typed text longer than the field: the whole of it on hover.
+            if self.fields[2].is_empty() {
+                self.fields[2] = "The Elder Scrolls V: Skyrim Special Edition, Anniversary Upgrade".into();
+            }
+            w::text_input(ui, t, &mut self.fields[2], "", 220.0, 1);
+            // No room left in the row: shortened, the whole of it on hover.
+            ui.allocate_ui(egui::vec2(150.0, 40.0), |ui| {
+                w::search(ui, t, &mut self.fields[3], i18n::t!("Search the family library"), 150.0);
+            });
         });
         row(ui, t, "Search, icon boxes, top-bar buttons", |ui| {
             w::search(ui, t, &mut self.search, "Search...", 300.0);

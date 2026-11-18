@@ -842,7 +842,9 @@ impl eframe::App for SteamApp {
         };
         let time = raw_input.time.unwrap_or(0.0);
         raw_input.events.retain(|e| !matches!(e, egui::Event::PointerGone | egui::Event::PointerMoved(_)));
-        if let Some(p) = at("pointer") {
+        // Moved there once and then left still, so tooltips (which wait
+        // for the pointer to rest) show too.
+        if let Some(p) = at("pointer").filter(|p| ctx.input(|i| i.pointer.hover_pos()) != Some(*p)) {
             raw_input.events.push(egui::Event::PointerMoved(p));
         }
         if let Some(p) = at("click") {

@@ -1006,10 +1006,49 @@ fn search_sized(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width: f
     search_in(ui, t, &t.components.input, value, hint, width, height)
 }
 
+/// How wide a text field is: the width asked for (`f32::INFINITY` fills
+/// the row), grown to fit its placeholder when the row has the room, so
+/// placeholders are only shortened when there truly isn't space.
+/// `reserved` is the room inside the field that isn't text (padding, icons).
+fn field_width(ui: &Ui, fid: &FontId, hint: &str, width: f32, reserved: f32) -> f32 {
+    let room = ui.available_width().max(0.0);
+    let asked = if width.is_finite() { width } else { room };
+    let hint_w = ui.painter().layout_no_wrap(hint.to_string(), fid.clone(), Color32::PLACEHOLDER).size().x;
+    let needed = (hint_w + reserved + 4.0).ceil();
+    asked.max(needed.min(room)).max(60.0)
+}
+
+/// A field's whole text on hover, when it doesn't fit: the placeholder
+/// while it's empty, the typed text while it's not being edited.
+/// Typed text that runs past the field's end (while it isn't being edited)
+/// fades out there instead of being cut through a letter.
+fn full_text_on_hover(ui: &Ui, resp: Response, fid: &FontId, value: &str, hint: &str, text_w: f32) -> Response {
+    let shown = if value.is_empty() { hint } else { value };
+    if shown.is_empty() || (!value.is_empty() && resp.has_focus()) {
+        return resp;
+    }
+    let w = ui.painter().layout_no_wrap(shown.to_string(), fid.clone(), Color32::PLACEHOLDER).size().x;
+    if w > text_w { resp.on_hover_text(shown.to_string()) } else { resp }
+}
+
+fn fade_overflow(ui: &Ui, t: &Theme, c: &Component, field: Rect, fid: &FontId, value: &str, focused: bool) {
+    if value.is_empty() || focused {
+        return;
+    }
+    let w = ui.painter().layout_no_wrap(value.to_string(), fid.clone(), Color32::PLACEHOLDER).size().x;
+    if w <= field.width() {
+        return;
+    }
+    let fill = solid_fill(t, c);
+    let edge = Rect::from_min_max(pos2(field.right() - 28.0, field.top() + 2.0), pos2(field.right() + 1.0, field.bottom() - 2.0));
+    gradient(ui.painter(), edge, fill.gamma_multiply(0.0), fill, true);
+}
+
 fn search_in(ui: &mut Ui, t: &Theme, c: &Component, value: &mut String, hint: &str, width: f32, height: f32) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(width.max(60.0), height), Sense::hover());
     let fid = t.font_of(c);
     let pad = t.padding_of(c).x;
+    let width = field_width(ui, &fid, hint, width, pad + 38.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let field = Rect::from_min_max(pos2(rect.left() + pad, rect.top()), pos2(rect.right() - 30.0, rect.bottom()));
     // Painted before the field (it draws on top), in the unfocused look;
     // the focus outline goes on after.
@@ -1030,6 +1069,8 @@ fn search_in(ui: &mut Ui, t: &Theme, c: &Component, value: &mut String, hint: &s
                 .desired_width(field.width()),
         )
         .with_edit_menu();
+    let resp = full_text_on_hover(ui, resp, &fid, value, hint, field.width());
+    fade_overflow(ui, t, c, field, &fid, value, resp.has_focus());
     if resp.has_focus() {
         let focus = t.look(c, Interact { selected: true, ..Default::default() });
         if focus.border.a() > 0 {
@@ -2084,7 +2125,8 @@ pub fn text_input(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width:
     let line = ui.fonts_mut(|f| f.row_height(&fid));
     let single = t.height_of(c, 34.0);
     let h = if rows <= 1 { single } else { (line * rows as f32 + (single - line).max(pad.x)).round() };
-    let (rect, _) = ui.allocate_exact_size(vec2(width.max(60.0), h), Sense::hover());
+    let width = field_width(ui, &fid, hint, width, pad.x * 2.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
     let rest = t.look(c, Interact::default());
     paint_box(ui, t, rect, c, &rest, 0.0);
     let inner = if rows <= 1 {
@@ -2097,13 +2139,17 @@ pub fn text_input(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width:
         .place(
             inner,
             edit.hint_text(RichText::new(hint).font(fid.clone()).color(rest.icon))
-                .font(fid)
+                .font(fid.clone())
                 .text_color(rest.text)
                 .frame(Frame::NONE)
                 .margin(vec2(0.0, 0.0))
                 .desired_width(inner.width()),
         )
         .with_edit_menu();
+    let resp = if rows <= 1 { full_text_on_hover(ui, resp, &fid, value, hint, inner.width()) } else { resp };
+    if rows <= 1 {
+        fade_overflow(ui, t, c, inner, &fid, value, resp.has_focus());
+    }
     if resp.has_focus() {
         let focus = t.look(c, Interact { selected: true, ..Default::default() });
         if focus.border.a() > 0 {
@@ -2129,14 +2175,22 @@ pub fn select<T: PartialEq + Clone>(ui: &mut Ui, t: &Theme, value: &mut T, optio
         if s.hover > 0.0 {
             ui.painter().rect_filled(rect, t.radius_of(c), Color32::WHITE.gamma_multiply(0.03 * s.hover));
         }
-        let mut job = egui::text::LayoutJob::simple_singleline(shown, fid.clone(), look.text);
+        let mut job = egui::text::LayoutJob::simple_singleline(shown.clone(), fid.clone(), look.text);
         job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - pad.x * 2.0 - 20.0).max(10.0));
+        if ui.painter().layout_no_wrap(shown.clone(), fid.clone(), Color32::PLACEHOLDER).size().x > rect.width() - pad.x * 2.0 - 20.0 {
+            ui.data_mut(|d| d.insert_temp(resp.id.with("shortened"), shown.clone()));
+        } else {
+            ui.data_mut(|d| d.remove::<String>(resp.id.with("shortened")));
+        }
         let g = ui.painter().layout_job(job);
         ui.painter().galley(pos2(rect.left() + pad.x, rect.center().y - g.size().y / 2.0), g, look.text);
         let caret = if open { crate::icons::CARET_UP } else { crate::icons::CARET_DOWN };
         ui.painter().text(pos2(rect.right() - pad.x, rect.center().y), Align2::RIGHT_CENTER, caret, font(fid.size), look.text);
     }
-    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let mut resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if let Some(full) = ui.data(|d| d.get_temp::<String>(resp.id.with("shortened"))) {
+        resp = resp.on_hover_text(full);
+    }
     let mut changed = false;
     egui::Popup::menu(&resp).width(rect.width()).show(|ui| {
         egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
