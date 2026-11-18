@@ -466,12 +466,22 @@ impl SteamApp {
         self.registry.tick(env);
     }
 
-    pub fn navigate(&mut self, page: String, arg: Option<String>) {
+    pub fn navigate(&mut self, mut page: String, arg: Option<String>) {
         // Friends and chat open in the Friends & Chat window, from any link
         // ("friends", or the old friends page's "community" with a target).
         if page == "friends" || (page == "community" && arg.is_some()) {
             self.friends_window.route(arg.as_deref());
             return;
+        }
+        // Plain "community" (the tray, plugins, older links) was the friends
+        // page: the Community home now when there is one, else the window.
+        if page == "community" && !self.registry.pages().iter().any(|p| p.id == "community") {
+            if self.registry.pages().iter().any(|p| p.id == "community_home") {
+                page = "community_home".into();
+            } else {
+                self.friends_window.route(None);
+                return;
+            }
         }
         if page != self.prefs.page || arg != self.current_arg {
             self.back.push((self.prefs.page.clone(), self.current_arg.clone()));
