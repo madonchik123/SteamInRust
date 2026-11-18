@@ -96,29 +96,65 @@ mod x86 {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn VirtualAlloc(addr: *mut c_void, size: usize, kind: u32, protect: u32) -> *mut c_void;
+        fn VirtualProtect(addr: *mut c_void, size: usize, new_protect: u32, old_protect: *mut u32) -> i32;
+        fn VirtualFree(addr: *mut c_void, size: usize, free_type: u32) -> i32;
+        fn FlushInstructionCache(process: *mut c_void, base: *const c_void, size: usize) -> i32;
+        fn GetCurrentProcess() -> *mut c_void;
+        #[cfg(test)]
+        fn VirtualQuery(addr: *const c_void, buf: *mut MemoryBasicInformation, len: usize) -> usize;
     }
 
+    #[cfg(test)]
+    #[repr(C)]
+    #[derive(Default)]
+    struct MemoryBasicInformation {
+        base_address: usize,
+        allocation_base: usize,
+        allocation_protect: u32,
+        region_size: usize,
+        state: u32,
+        protect: u32,
+        ty: u32,
+    }
+
+    const MEM_COMMIT_RESERVE: u32 = 0x3000;
+    const MEM_RELEASE: u32 = 0x8000;
+    const PAGE_READWRITE: u32 = 0x04;
+    const PAGE_EXECUTE_READ: u32 = 0x20;
     const SIZE: usize = 48;
 
-    /// thiscall -> cdecl(this, args...) -> `ret bytes`, one per slot.
+    /// thiscall -> cdecl(this, args...) -> `ret bytes`, one per slot (W^X: RW -> RX).
     pub fn trampolines(targets: &[(Fp, u16)]) -> Vec<Fp> {
-        // MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE
-        let mem = unsafe { VirtualAlloc(std::ptr::null_mut(), targets.len() * SIZE, 0x3000, 0x40) } as *mut u8;
+        if targets.is_empty() {
+            return Vec::new();
+        }
+        let Some(total_size) = targets.len().checked_mul(SIZE) else {
+            return targets.iter().map(|_| super::zero as Fp).collect();
+        };
+        let mem = unsafe { VirtualAlloc(std::ptr::null_mut(), total_size, MEM_COMMIT_RESERVE, PAGE_READWRITE) } as *mut u8;
         if mem.is_null() {
             return targets.iter().map(|_| super::zero as Fp).collect();
         }
-        targets
-            .iter()
-            .enumerate()
-            .map(|(i, &(target, bytes))| {
-                let code = code(target as u32, bytes);
-                unsafe {
-                    let at = mem.add(i * SIZE);
-                    std::ptr::copy_nonoverlapping(code.as_ptr(), at, code.len());
-                    at as Fp
-                }
-            })
-            .collect()
+        let mut out = Vec::with_capacity(targets.len());
+        for (i, &(target, bytes)) in targets.iter().enumerate() {
+            let code = code(target as u32, bytes);
+            if code.len() > SIZE {
+                unsafe { VirtualFree(mem as *mut c_void, 0, MEM_RELEASE) };
+                return targets.iter().map(|_| super::zero as Fp).collect();
+            }
+            unsafe {
+                let at = mem.add(i * SIZE);
+                std::ptr::copy_nonoverlapping(code.as_ptr(), at, code.len());
+                out.push(at as Fp);
+            }
+        }
+        let mut old = 0u32;
+        if unsafe { VirtualProtect(mem as *mut c_void, total_size, PAGE_EXECUTE_READ, &mut old) } == 0 {
+            unsafe { VirtualFree(mem as *mut c_void, 0, MEM_RELEASE) };
+            return targets.iter().map(|_| super::zero as Fp).collect();
+        }
+        unsafe { FlushInstructionCache(GetCurrentProcess(), mem as *const c_void, total_size) };
+        out
     }
 
     fn code(target: u32, bytes: u16) -> Vec<u8> {
@@ -148,6 +184,15 @@ mod x86 {
             let t = super::trampolines(&[(sum as super::Fp, 16)]);
             let f: F = unsafe { std::mem::transmute(t[0]) };
             assert_eq!(unsafe { f(100 as *mut u8, 1, 1 << 40, 2.0) }, 100 + 1 + (1 << 40) + 2);
+        }
+
+        #[test]
+        fn trampoline_pages_are_rx_not_rwx() {
+            let t = super::trampolines(&[(sum as super::Fp, 16)]);
+            let mut mbi = super::MemoryBasicInformation::default();
+            let ret = unsafe { super::VirtualQuery(t[0] as *const super::c_void, &mut mbi, std::mem::size_of::<super::MemoryBasicInformation>()) };
+            assert_ne!(ret, 0);
+            assert_eq!(mbi.protect, super::PAGE_EXECUTE_READ);
         }
     }
 }
