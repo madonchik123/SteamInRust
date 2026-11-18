@@ -2418,3 +2418,13 @@
 "Your custom profile address on the Steam Community." = "你在 Steam 社区的自定义个人资料地址。"
 "Your real name here…" = "你的真实姓名…"
 "{hours} hours past 2 weeks" = "过去两周 {hours} 小时"
+
+# --- Redesign: Friends & Chat window ---
+"Pick a friend to chat with" = "选择一位好友开始聊天"
+"Change your status" = "更改你的状态"
+"sent a game invite" = "发送了游戏邀请"
+"is now online" = "现在在线"
+"went offline" = "已离线"
+"started playing {game}" = "开始玩 {game}"
+"Messages and what your friends are up to show here." = "消息和好友的动态会显示在这里。"
+"Unblock" = "解除屏蔽"

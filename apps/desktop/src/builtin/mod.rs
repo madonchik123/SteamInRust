@@ -3,8 +3,8 @@
 //! implements `extensions::Extension` and register it below. For scripts that
 //! users install themselves, see the `plugins` crate.
 
-pub mod community;
 pub mod community_home;
+pub mod friends;
 mod downloads;
 mod gallery;
 pub mod hub;
@@ -24,8 +24,8 @@ pub fn registry(rt: tokio::runtime::Handle, ctx: egui::Context, flags: settings:
     let mut r = Registry::default();
     r.register(store::Store::new(rt.clone(), ctx.clone()));
     r.register(library::Library::new(rt.clone(), ctx.clone(), flags.clone()));
-    r.register(community::Community::default());
     r.register(community_home::CommunityHome::default());
+    r.register(friends::Friends::default());
     r.register(profile::Profile::default());
     r.register(downloads::Downloads::new(flags.clone()));
     r.register(workshop::Workshop::default());

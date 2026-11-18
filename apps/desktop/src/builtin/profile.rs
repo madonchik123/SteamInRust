@@ -590,12 +590,12 @@ fn side_column(ui: &mut Ui, t: &Theme, d: &FrameData, here: Here, go: &mut Vec<G
             let n = d.friends_total.unwrap_or(d.friends.len());
             let r = ui.add(egui::Label::new(w::body_l(t, t!("Friends ({n})", n = n), t.text_dim)).sense(Sense::click()));
             if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                go.push(if d.mine { Go::Nav("community", None) } else { Go::Nav("profile", Some(format!("{id}/friends"))) });
+                go.push(if d.mine { Go::Nav("friends", None) } else { Go::Nav("profile", Some(format!("{id}/friends"))) });
             }
             if d.mine {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if w::icon_button(ui, t, icons::USER_PLUS, t!("Add a friend"), false, 0).clicked() {
-                        go.push(Go::Nav("community", None));
+                        go.push(Go::Nav("friends", None));
                     }
                 });
             }

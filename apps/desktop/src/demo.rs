@@ -80,6 +80,7 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
     }));
     events.push(Event::Wallet { balance: 1234, currency: 1, pending: 250 });
     events.push(Event::Message(ChatMessage { friend: BASE + 101, from: BASE + 101, text: "gg! one more?".into(), time: now - 30, invite: None }));
+    events.extend(group_chat(me, ferris, now));
     events.extend(inventory(me, now));
     events.extend(crate::builtin::hub::demo::events());
     events.extend(crate::builtin::store::demo::events(now));
@@ -300,4 +301,34 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
         }),
     });
     out
+}
+
+/// A made-up group chat of friends, for the Friends & Chat window.
+fn group_chat(me: u64, ferris: u64, now: u64) -> Vec<Event> {
+    use model::{ChatGroup, ChatRoom, GroupMessage};
+    let (nova, quartz) = (ferris + 1, ferris + 3);
+    let group = 4_200_001;
+    let said = [(ferris, "who's in for Portal 2 co-op tonight?", 3600), (quartz, "me! after 9", 3400), (nova, "I'll join after this match", 3300), (me, "count me in", 1500), (ferris, "great, I'll set it up", 1200)];
+    let messages: Vec<GroupMessage> = said
+        .iter()
+        .enumerate()
+        .map(|(i, (from, text, ago))| GroupMessage { group, room: 1, sender: *from, text: (*text).into(), time: (now - ago) as u32, ordinal: i as u32 })
+        .collect();
+    let last = messages.last().cloned().unwrap_or_default();
+    vec![
+        Event::ChatGroups(Ok(vec![ChatGroup {
+            id: group,
+            name: "Co-op Night".into(),
+            default_room: 1,
+            active_members: 3,
+            rooms: vec![
+                ChatRoom { id: 1, name: "general".into(), last_message: last.text.clone(), last_time: last.time, last_sender: last.sender, unread: true, ..Default::default() },
+                ChatRoom { id: 2, name: "screenshots".into(), ..Default::default() },
+            ],
+            unread: true,
+            ..Default::default()
+        }])),
+        Event::ChatGroupMembers(vec![(group, vec![me, ferris, nova, quartz])]),
+        Event::GroupHistory { group, room: 1, result: Ok((messages, false)), older: false },
+    ]
 }

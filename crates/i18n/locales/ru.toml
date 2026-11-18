@@ -2418,3 +2418,13 @@
 "Your custom profile address on the Steam Community." = "Ваш собственный адрес профиля в сообществе Steam."
 "Your real name here…" = "Ваше настоящее имя…"
 "{hours} hours past 2 weeks" = "{hours} ч за 2 недели"
+
+# --- Redesign: Friends & Chat window ---
+"Pick a friend to chat with" = "Выберите друга, чтобы начать чат"
+"Change your status" = "Изменить статус"
+"sent a game invite" = "отправил приглашение в игру"
+"is now online" = "теперь в сети"
+"went offline" = "вышел из сети"
+"started playing {game}" = "начал играть в {game}"
+"Messages and what your friends are up to show here." = "Здесь появятся сообщения и то, чем заняты ваши друзья."
+"Unblock" = "Разблокировать"

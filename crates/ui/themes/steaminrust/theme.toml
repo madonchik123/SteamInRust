@@ -85,7 +85,7 @@ nav = "top"
 nav_width = 220
 search = "page_bar"
 friends_side = "right"
-friends_width = 290
+friends_width = 338
 status_bar = false
 status_bar_height = 34
 game_card = "cover"
@@ -473,3 +473,26 @@ padding = [10, 10]
 normal = { fill = "chrome@0.5", text = "text", icon = "text_dim" }
 hover = { fill = "surface_hover" }
 selected = { icon = "accent" }
+
+# ---- friends and chat (Figma "friends" 447:3850) ----
+
+[components.friends_panel]
+padding = [20, 20]
+normal = { fill = { linear = ["mix(raised, accent_2, 0.5)", "raised"], end = 0.2 } }
+
+[components.friends_box]
+padding = [20, 20]
+radius = "small"
+normal = { fill = "surface_hover" }
+
+[components.friend_row]
+height = 66
+padding = [10, 10]
+text = "heading_s"
+normal = { fill = "transparent" }
+hover = { fill = "lighten(surface_hover, 0.05)" }
+selected = { fill = "accent_2@0.45" }
+
+[components.friend_avatar]
+radius = 2
+border = 2

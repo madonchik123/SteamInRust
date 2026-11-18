@@ -308,8 +308,8 @@ use area):
 | `nav` | `"top"`, `"left"` | `"top"` | the main sections across the top bar, or in a column on the left |
 | `nav_width` | points | 220 | the left column's width |
 | `search` | `"page_bar"`, `"top_bar"` | `"page_bar"` | where the app-wide search box sits (a page with its own bar shows its own search) |
-| `friends_side` | `"left"`, `"right"` | `"right"` | which side the friends list docks on |
-| `friends_width` | points | 290 | its width |
+| `friends_side` | `"left"`, `"right"` | `"right"` | which side of the Friends & Chat window the friends list docks on; an open chat grows the window toward the other side |
+| `friends_width` | points | 338 | the friends list's width in that window |
 | `status_bar` | `true`, `false` | `false` | a bar along the bottom with downloads and Friends & Chat |
 | `status_bar_height` | points | 34 | its height |
 | `game_card` | `"cover"`, `"header"` | `"cover"` | game cards as tall cover art or the wide header picture (pages using the shared game card) |
@@ -375,7 +375,7 @@ then `pressed` while clicked and `disabled` when it can't be used.
 | `top_bar` | the top bar (`normal`; `border` draws a line under it) |
 | `page_bar` | the page bar |
 | `status_bar` | the bottom bar (`border` draws a line over it) |
-| `sidebar` | the left navigation column and the friends list |
+| `sidebar` | the left navigation column |
 | `sidebar_item` | rows in the left navigation column |
 | `game_card` | game cards (`hover` `border` outlines the one under the pointer; the default theme has none and shows the title and Play instead) |
 | `price` | the discount box ("-34%") |
@@ -400,6 +400,10 @@ then `pressed` while clicked and `disabled` when it can't be used.
 | `settings_nav_item` | a section in that column (`selected` is the open one) |
 | `settings_group` | a group of settings (`text` is the group title's style and color) |
 | `notification` | one notification in the notifications popup (`selected` is unread; its `icon` is the unread dot) |
+| `friends_panel` | the Friends & Chat window's list column (`normal` fill, `padding` around it) |
+| `friends_box` | the box holding the friends list under its Friends / Activity tabs (those are `sort`) |
+| `friend_row` | a friend or group chat in the list: `height` includes the gap to the next row, `padding` is around the avatar and text, `text` is the name (the status line under it is `body_m`, or `body_s` in rows under 56 points); `selected` is the open conversation |
+| `friend_avatar` | friends' pictures in the list and chats: `radius`, and a `border` that's drawn in the friend's status color (0 draws a round status dot instead) |
 
 ## What a theme can't change
 

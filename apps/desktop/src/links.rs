@@ -89,12 +89,12 @@ pub fn parse(url: &str) -> Option<Link> {
         "store" | "advertise" => Link::Store(id()?),
         "nav" | "open" => match parts.next().unwrap_or_default() {
             "downloads" => Link::Page("downloads"),
-            "friends" => Link::Page("community"),
+            "friends" => Link::Page("friends"),
             "settings" => Link::Page("settings"),
             "games" | "library" => Link::Page("library"),
             _ => Link::Show,
         },
-        "friends" => Link::Page("community"),
+        "friends" => Link::Page("friends"),
         _ => Link::Show,
     })
 }

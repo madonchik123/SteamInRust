@@ -2418,3 +2418,13 @@
 "Your custom profile address on the Steam Community." = "Deine eigene Profiladresse in der Steam-Community."
 "Your real name here…" = "Dein echter Name…"
 "{hours} hours past 2 weeks" = "{hours} Stunden in den letzten 2 Wochen"
+
+# --- Redesign: Friends & Chat window ---
+"Pick a friend to chat with" = "Wähle einen Freund zum Chatten"
+"Change your status" = "Status ändern"
+"sent a game invite" = "hat eine Spieleinladung gesendet"
+"is now online" = "ist jetzt online"
+"went offline" = "ist offline gegangen"
+"started playing {game}" = "spielt jetzt {game}"
+"Messages and what your friends are up to show here." = "Hier erscheinen Nachrichten und was deine Freunde gerade machen."
+"Unblock" = "Blockierung aufheben"

@@ -767,7 +767,7 @@ fn friends_chat(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
             ctx.toast(t!("Friend code copied"));
         }
         if text_row(ui, t, t!("Friends"), "", &ctx.state.friend_list().len().to_string(), t.text, Some(t!("Open friends list"))) {
-            ctx.navigate("community", None);
+            ctx.navigate("friends", None);
         }
         if text_row(ui, t, t!("Privacy"), t!("Who can see your status and send invites"), "", t.text_dim, Some(t!("Privacy settings"))) {
             ctx.navigate("settings", Some("privacy".into()));

@@ -24,7 +24,6 @@ pub struct Prefs {
     pub disabled: Vec<String>,
     pub ext_data: HashMap<String, String>,
     pub page: String,
-    pub friends_open: bool,
     pub overlay_enabled: bool,
     /// Account to sign in automatically at startup (cleared on log out).
     pub auto_login: Option<String>,
@@ -99,7 +98,6 @@ impl Default for Prefs {
             disabled: Vec::new(),
             ext_data: HashMap::new(),
             page: "library".into(),
-            friends_open: true,
             overlay_enabled: true,
             auto_login: None,
             language: None,
@@ -144,6 +142,8 @@ pub struct SteamApp {
     pub login: crate::login::LoginForm,
     pub toasts: Vec<Toast>,
     pub friend_filter: String,
+    /// `--friends=<what>`: what to open in the friends window once signed in.
+    pub pending_friends: Option<String>,
     /// An open friend dialog (nickname, server info, remove, block) and the
     /// window it belongs to.
     pub friend_dialog: Option<(egui::ViewportId, crate::shell::FriendDialog)>,
@@ -290,6 +290,7 @@ impl SteamApp {
             login: Default::default(),
             toasts: Vec::new(),
             friend_filter: String::new(),
+            pending_friends: None,
             friend_dialog: None,
             search: String::new(),
             back: Vec::new(),
@@ -340,17 +341,15 @@ impl SteamApp {
         }
         app.login.signing_in = auto_account;
         // `--overlay` opens the Shift+Tab overlay right away (for previews).
-        // `--friends` opens the Friends & Chat window right away (for previews).
+        // `--friends` opens the Friends & Chat window right away (for
+        // previews); `--friends=<what>` opens it on a friends link's target
+        // (a SteamID, `group:<id>`, `add`, `invites`, `activity`…), and
+        // `--friends=chat` / `--friends=group` on the first conversation.
         if std::env::args().any(|a| a == "--friends") {
-            app.friends_window.open = true;
+            app.friends_window.raise();
         }
-        // `--friends-panel` starts with the friends list beside the page (checks).
-        if std::env::args().any(|a| a == "--friends-panel") {
-            app.prefs.friends_open = true;
-        }
-        // `--no-friends-panel` starts without it (screenshots at the design's width).
-        if std::env::args().any(|a| a == "--no-friends-panel") {
-            app.prefs.friends_open = false;
+        if let Some(what) = flag("friends") {
+            app.pending_friends = Some(what);
         }
         // `--tray-menu` opens the tray menu near the screen corner (previews).
         if std::env::args().any(|a| a == "--tray-menu") {
@@ -375,7 +374,7 @@ impl SteamApp {
         while let Ok(e) = self.events.try_recv() {
             // Toast-worthy things are decided before state changes.
             if let Event::Message(m) = &e {
-                let open = self.prefs.page == "community" && self.current_arg.as_deref() == Some(&m.friend.to_string());
+                let open = self.friends_window.showing_chat(m.friend);
                 if m.from != self.state.steam_id && !open && self.prefs.toast_messages {
                     let name = self.state.persona(m.from).name;
                     self.toast(now, name, m.text.clone());
@@ -388,6 +387,10 @@ impl SteamApp {
                 }
             }
             crate::offline_ui::on_event(self, &e, now);
+            // What friends start doing, for the friends window's Activity tab.
+            if let Event::Personas(list) = &e {
+                self.friends_window.note_personas(&self.state, list);
+            }
             self.state.apply(&e);
             match &e {
                 Event::LoggedIn { account, .. } => {
@@ -465,7 +468,23 @@ impl SteamApp {
         self.registry.tick(env);
     }
 
-    pub fn navigate(&mut self, page: String, arg: Option<String>) {
+    pub fn navigate(&mut self, mut page: String, arg: Option<String>) {
+        // Friends and chat open in the Friends & Chat window, from any link
+        // ("friends", or the old friends page's "community" with a target).
+        if page == "friends" || (page == "community" && arg.is_some()) {
+            self.friends_window.route(arg.as_deref());
+            return;
+        }
+        // Plain "community" (the tray, plugins, older links) was the friends
+        // page: the Community home now when there is one, else the window.
+        if page == "community" && !self.registry.pages().iter().any(|p| p.id == "community") {
+            if self.registry.pages().iter().any(|p| p.id == "community_home") {
+                page = "community_home".into();
+            } else {
+                self.friends_window.route(None);
+                return;
+            }
+        }
         if page != self.prefs.page || arg != self.current_arg {
             self.back.push((self.prefs.page.clone(), self.current_arg.clone()));
             self.forward.clear();
@@ -556,7 +575,7 @@ impl SteamApp {
                         self.prefs.disabled.push(id);
                     }
                 }
-                Action::OpenChat(id) => self.navigate("community".into(), Some(id.to_string())),
+                Action::OpenChat(id) => self.friends_window.show(crate::friends_window::Pane::Chat(id)),
                 Action::ReloadLocal => {
                     if let Ok(l) = local::load(Some(self.local.steam_root.clone())) {
                         self.local = l;
@@ -668,7 +687,7 @@ impl SteamApp {
                     self.show_window(ctx);
                     actions.push(Action::Navigate { page: page.into(), arg: None });
                 }
-                TrayCmd::Friends => self.friends_window.open = true,
+                TrayCmd::Friends => self.friends_window.raise(),
                 TrayCmd::Status(s) => self.client.send(Command::SetPersonaState(s)),
                 TrayCmd::Exit => {
                     self.show_window(ctx);
@@ -769,7 +788,8 @@ impl eframe::App for SteamApp {
 
     /// Previews of an `--offscreen` copy can't be pointed at with the real
     /// mouse: `--pointer=x,y` keeps a pretend pointer there (hover states),
-    /// and `--click=x,y` clicks there once, 4 seconds in.
+    /// and `--click=x,y` clicks there once, 4 seconds in (or
+    /// `--click-after=<seconds>`).
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if !offscreen() || raw_input.viewport_id != egui::ViewportId::ROOT {
             return;
@@ -786,7 +806,8 @@ impl eframe::App for SteamApp {
         }
         if let Some(p) = at("click") {
             let done = ctx.data(|d| d.get_temp::<bool>(egui::Id::unique("preview-clicked"))).unwrap_or(false);
-            if time > 4.0 && !done {
+            let after = std::env::args().find_map(|a| a.strip_prefix("--click-after=").and_then(|v| v.parse::<f64>().ok())).unwrap_or(4.0);
+            if time > after && !done {
                 ctx.data_mut(|d| d.insert_temp(egui::Id::unique("preview-clicked"), true));
                 let modifiers = egui::Modifiers::NONE;
                 raw_input.events.push(egui::Event::PointerMoved(p));

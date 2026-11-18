@@ -2111,3 +2111,38 @@ pub fn info_tip(ui: &mut Ui, t: &Theme, tip: &str) -> Response {
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, crate::icons::INFO, font(size - 2.0), color);
     resp.on_hover_text(tip)
 }
+
+// ---------- friends ----------
+
+/// A friend's picture in the theme's `friend_avatar` style: a square with
+/// an outline in their status color (the redesign), or round with a status
+/// dot when the style has no `border` (Classic). `status` `None` draws it
+/// plain.
+pub fn presence_avatar(ui: &mut Ui, t: &Theme, url: &str, size: f32, status: Option<Color32>) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    paint_presence_avatar(ui, t, rect, url, status);
+    resp
+}
+
+/// [`presence_avatar`] painted into `rect`.
+pub fn paint_presence_avatar(ui: &Ui, t: &Theme, rect: Rect, url: &str, status: Option<Color32>) {
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let c = &t.components.friend_avatar;
+    let radius = t.radius_of(c);
+    // A radius past half the size is a circle.
+    let radius = CornerRadius::same(radius.nw.min((rect.width() / 2.0) as u8));
+    if !paint_cover(ui, rect, url, radius) {
+        ui.painter().rect_filled(rect, radius, t.surface_hover);
+    }
+    let Some(color) = status else { return };
+    if c.border > 0.0 {
+        ui.painter().rect_stroke(rect, radius, Stroke::new(c.border, color), StrokeKind::Inside);
+    } else {
+        let r = (rect.width() * 0.14).max(4.0);
+        let center = rect.right_bottom() - Vec2::splat(r * 0.9);
+        ui.painter().circle_filled(center, r + 2.0, t.chrome);
+        ui.painter().circle_filled(center, r, color);
+    }
+}
