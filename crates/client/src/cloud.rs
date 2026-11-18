@@ -16,7 +16,7 @@ use net::Connection;
 use proto::*;
 use sha1::{Digest, Sha1};
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// What to do.
@@ -62,6 +62,10 @@ impl Target {
         let home = base.as_ref().map(|b| b.home_dir().to_path_buf());
         Some(match key.as_str() {
             "gameinstall" => self.install_dir.clone(),
+            "steamclouddocuments" => self.remote_dir(),
+            // Windows locations everywhere: many games' rules name only these,
+            // and on a Mac/Linux the nearest folders stand in (we don't read
+            // Steam's root overrides). Files must still match a rule.
             "winmydocuments" => user.as_ref()?.document_dir()?.to_path_buf(),
             "winappdatalocal" => base.as_ref()?.data_local_dir().to_path_buf(),
             "winappdataroaming" => base.as_ref()?.data_dir().to_path_buf(),
@@ -70,7 +74,17 @@ impl Target {
             "winpictures" => user.as_ref()?.picture_dir()?.to_path_buf(),
             "winvideos" => user.as_ref()?.video_dir()?.to_path_buf(),
             "winmusic" => user.as_ref()?.audio_dir()?.to_path_buf(),
-            "steamclouddocuments" => self.remote_dir(),
+            // Steam's macOS roots.
+            "machome" if cfg!(target_os = "macos") => home?,
+            "macappsupport" if cfg!(target_os = "macos") => base.as_ref()?.data_dir().to_path_buf(),
+            "macdocuments" if cfg!(target_os = "macos") => user.as_ref()?.document_dir()?.to_path_buf(),
+            "macdesktop" if cfg!(target_os = "macos") => user.as_ref()?.desktop_dir()?.to_path_buf(),
+            "maccaches" if cfg!(target_os = "macos") => base.as_ref()?.cache_dir().to_path_buf(),
+            // Steam's Linux roots.
+            "linuxhome" if cfg!(target_os = "linux") => home?,
+            "linuxxdgdatahome" if cfg!(target_os = "linux") => base.as_ref()?.data_dir().to_path_buf(),
+            "linuxxdgconfighome" if cfg!(target_os = "linux") => base.as_ref()?.config_dir().to_path_buf(),
+            "linuxxdgcachehome" if cfg!(target_os = "linux") => base.as_ref()?.cache_dir().to_path_buf(),
             _ => return None,
         })
     }
@@ -80,15 +94,61 @@ impl Target {
         path.replace("{64BitSteamID}", &self.steam_id.to_string()).replace("{Steam3AccountID}", &self.account().to_string())
     }
 
-    /// Local file for a cloud name ("%Root%dir/file" or a plain API name).
-    pub fn local_path(&self, name: &str) -> Option<PathBuf> {
+    fn resolve_cloud_target(&self, name: &str) -> Option<(PathBuf, Vec<String>)> {
+        if name.is_empty() || name.contains('\0') {
+            return None;
+        }
         if let Some(rest) = name.strip_prefix('%') {
             let end = rest.find('%')?;
-            let dir = self.root_dir(&rest[..end])?;
-            Some(join(&dir, &self.expand(&rest[end + 1..])))
+            let raw_root = &rest[..end];
+            let after_root = &rest[end + 1..];
+            if raw_root.is_empty() {
+                return None;
+            }
+            let cfg = self.config.as_ref()?;
+            if cfg.save_files.is_empty() {
+                return None;
+            }
+            cfg.save_files.iter().find_map(|rule| self.matches_save_rule(raw_root, after_root, rule))
         } else {
-            Some(join(&self.remote_dir(), name))
+            let segs = safe_rel_segments(name)?;
+            Some((self.remote_dir(), segs))
         }
+    }
+
+    fn matches_save_rule(&self, raw_root: &str, after_root: &str, rule: &model::SaveRule) -> Option<(PathBuf, Vec<String>)> {
+        if !canonical_root(raw_root).eq_ignore_ascii_case(&canonical_root(&rule.root)) {
+            return None;
+        }
+        let base = self.root_dir(&rule.root)?;
+        safe_rel_segments(after_root)?;
+        let segs = safe_rel_segments(&self.expand(after_root))?;
+        let rule_sub = rule_dir(&self.expand(&rule.path));
+        let rule_segs = if rule_sub.is_empty() { Vec::new() } else { safe_rel_segments(&rule_sub)? };
+        let file_dir = &segs[..segs.len() - 1];
+        let file_name = &segs[segs.len() - 1];
+        if file_dir.len() < rule_segs.len() {
+            return None;
+        }
+        if !rule.recursive && file_dir.len() != rule_segs.len() {
+            return None;
+        }
+        if !file_dir[..rule_segs.len()].iter().zip(&rule_segs).all(|(a, b)| a.eq_ignore_ascii_case(b)) {
+            return None;
+        }
+        if !glob(&rule.pattern, file_name) {
+            return None;
+        }
+        let mut out_segs = rule_segs;
+        out_segs.extend_from_slice(&segs[out_segs.len()..]);
+        Some((base, out_segs))
+    }
+
+    /// Local file for a cloud name ("%Root%dir/file" or a plain API name),
+    /// enforcing active `SaveRule`s and rejecting traversal or symlinks.
+    pub fn local_path(&self, name: &str) -> Option<PathBuf> {
+        let (base, segs) = self.resolve_cloud_target(name)?;
+        resolve_under_root(&base, &segs)
     }
 
     /// Files on this PC that belong in the cloud: everything in the API
@@ -96,27 +156,48 @@ impl Target {
     fn scan_local(&self) -> BTreeMap<String, PathBuf> {
         let mut out = BTreeMap::new();
         let remote = self.remote_dir();
-        for file in walk(&remote, true) {
-            if let Ok(rel) = file.strip_prefix(&remote) {
-                out.insert(slashes(rel), file);
+        if let Some(canon_remote) = resolve_scan_root(&remote) {
+            for file in walk(&remote, true) {
+                if let Ok(rel) = file.strip_prefix(&remote) {
+                    let key = slashes(rel);
+                    if safe_rel_segments(&key).is_some()
+                        && file.canonicalize().is_ok_and(|c| c.starts_with(&canon_remote))
+                    {
+                        out.insert(key, file);
+                    }
+                }
             }
         }
         for rule in self.config.iter().flat_map(|c| c.save_files.iter()) {
             let Some(base) = self.root_dir(&rule.root) else { continue };
             let sub = self.expand(&rule_dir(&rule.path));
-            let dir = join(&base, &sub);
+            let dir = if sub.is_empty() {
+                let Some(_) = resolve_scan_root(&base) else { continue };
+                base
+            } else {
+                let Some(sub_segs) = safe_rel_segments(&sub) else { continue };
+                let Some(d) = resolve_scan_dir(&base, &sub_segs) else { continue };
+                d
+            };
+            let Some(canon_dir) = resolve_scan_root(&dir) else { continue };
             for file in walk(&dir, rule.recursive) {
                 let Some(fname) = file.file_name().and_then(|n| n.to_str()) else { continue };
                 if !glob(&rule.pattern, fname) {
                     continue;
                 }
                 let Ok(rel) = file.strip_prefix(&dir) else { continue };
+                let rel_str = slashes(rel);
+                if safe_rel_segments(&rel_str).is_none()
+                    || !file.canonicalize().is_ok_and(|c| c.starts_with(&canon_dir))
+                {
+                    continue;
+                }
                 let mut name = format!("%{}%", canonical_root(&rule.root));
                 if !sub.is_empty() {
                     name.push_str(&rule_dir(&rule.path));
                     name.push('/');
                 }
-                name.push_str(&slashes(rel));
+                name.push_str(&rel_str);
                 out.insert(name, file);
             }
         }
@@ -132,41 +213,243 @@ fn rule_dir(path: &str) -> String {
     path.replace('\\', "/").trim_matches('/').to_string()
 }
 
-fn join(base: &Path, rel: &str) -> PathBuf {
-    let mut p = base.to_path_buf();
-    for part in rel.split(['/', '\\']).filter(|s| !s.is_empty() && *s != "." && *s != "..") {
-        p.push(part);
-    }
-    p
-}
-
 fn slashes(p: &Path) -> String {
     p.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/")
+}
+
+fn is_symlink_or_reparse(meta: &std::fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_windows_reserved(seg: &str) -> bool {
+    let stem = seg.split('.').next().unwrap_or("");
+    let upper = stem.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "CONIN$"
+            | "CONOUT$"
+            | "COM0"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT0"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        return true;
+    }
+    if stem.len() > 3
+        && stem.is_char_boundary(3)
+        && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
+        && matches!(&stem[3..], "\u{00b9}" | "\u{00b2}" | "\u{00b3}")
+    {
+        return true;
+    }
+    false
+}
+
+fn is_valid_cloud_segment(seg: &str) -> bool {
+    if seg.is_empty() || seg == "." || seg == ".." || seg.ends_with('.') || seg.ends_with(' ') {
+        return false;
+    }
+    if seg.contains(['/', '\\', ':', '\0']) || seg.chars().any(|c| (c as u32) < 0x20) {
+        return false;
+    }
+    if seg.to_ascii_lowercase().ends_with(".sircloud") || is_windows_reserved(seg) {
+        return false;
+    }
+    let mut comps = Path::new(seg).components();
+    matches!((comps.next(), comps.next()), (Some(Component::Normal(s)), None) if !s.is_empty())
+}
+
+fn safe_rel_segments(rel: &str) -> Option<Vec<String>> {
+    if rel.is_empty() || rel.contains('\0') {
+        return None;
+    }
+    let norm = rel.replace('\\', "/");
+    let mut out = Vec::new();
+    for seg in norm.split('/') {
+        if !is_valid_cloud_segment(seg) {
+            return None;
+        }
+        out.push(seg.to_string());
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn resolve_scan_root(base: &Path) -> Option<PathBuf> {
+    let m = std::fs::symlink_metadata(base).ok()?;
+    if is_symlink_or_reparse(&m) || !m.is_dir() {
+        return None;
+    }
+    base.canonicalize().ok()
+}
+
+fn resolve_scan_dir(base: &Path, segs: &[String]) -> Option<PathBuf> {
+    let m = std::fs::symlink_metadata(base).ok()?;
+    if is_symlink_or_reparse(&m) || !m.is_dir() {
+        return None;
+    }
+    let mut cur = base.to_path_buf();
+    for seg in segs {
+        cur.push(seg);
+        let dm = std::fs::symlink_metadata(&cur).ok()?;
+        if is_symlink_or_reparse(&dm) || !dm.is_dir() {
+            return None;
+        }
+    }
+    Some(cur)
+}
+
+fn resolve_under_root(base: &Path, segs: &[String]) -> Option<PathBuf> {
+    if segs.is_empty() {
+        return None;
+    }
+    match std::fs::symlink_metadata(base) {
+        Ok(m) if is_symlink_or_reparse(&m) || !m.is_dir() => return None,
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return None,
+    }
+    let mut cur = base.to_path_buf();
+    for (idx, seg) in segs.iter().enumerate() {
+        cur.push(seg);
+        let is_last = idx + 1 == segs.len();
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) => {
+                if is_symlink_or_reparse(&m) {
+                    return None;
+                }
+                if !is_last && !m.is_dir() {
+                    return None;
+                }
+                if is_last && m.is_dir() {
+                    return None;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                for rest in &segs[idx + 1..] {
+                    cur.push(rest);
+                }
+                break;
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(cur)
+}
+
+fn prepare_parent_under_root(base: &Path, segs: &[String]) -> Result<PathBuf, String> {
+    if segs.is_empty() {
+        return Err("empty cloud path".into());
+    }
+    std::fs::create_dir_all(base).map_err(|e| e.to_string())?;
+    let base_meta = std::fs::symlink_metadata(base).map_err(|e| e.to_string())?;
+    if is_symlink_or_reparse(&base_meta) || !base_meta.is_dir() {
+        return Err("refusing symlink save root".into());
+    }
+    let mut cur = base.to_path_buf();
+    for seg in &segs[..segs.len() - 1] {
+        cur.push(seg);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) => {
+                if is_symlink_or_reparse(&m) || !m.is_dir() {
+                    return Err("refusing symlink or non-directory component in cloud path".into());
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&cur).map_err(|e| e.to_string())?;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    cur.push(&segs[segs.len() - 1]);
+    if let Ok(m) = std::fs::symlink_metadata(&cur)
+        && (is_symlink_or_reparse(&m) || m.is_dir())
+    {
+        return Err("refusing symlink or directory cloud target".into());
+    }
+    Ok(cur)
+}
+
+fn cloud_tmp_path(p: &Path) -> PathBuf {
+    let mut s = p.as_os_str().to_owned();
+    s.push(".sircloud");
+    PathBuf::from(s)
 }
 
 /// Steam's spelling of root names in cloud file names.
 fn canonical_root(root: &str) -> String {
     match root.trim_matches('%').to_lowercase().as_str() {
         "gameinstall" => "GameInstall".into(),
+        "steamclouddocuments" => "SteamCloudDocuments".into(),
         "winmydocuments" => "WinMyDocuments".into(),
         "winappdatalocal" => "WinAppDataLocal".into(),
         "winappdataroaming" => "WinAppDataRoaming".into(),
         "winappdatalocallow" => "WinAppDataLocalLow".into(),
         "winsavedgames" => "WinSavedGames".into(),
+        "winpictures" => "WinPictures".into(),
+        "winvideos" => "WinVideos".into(),
+        "winmusic" => "WinMusic".into(),
+        "linuxhome" => "LinuxHome".into(),
+        "linuxxdgdatahome" => "LinuxXdgDataHome".into(),
+        "linuxxdgconfighome" => "LinuxXdgConfigHome".into(),
+        "linuxxdgcachehome" => "LinuxXdgCacheHome".into(),
+        "machome" => "MacHome".into(),
+        "macappsupport" => "MacAppSupport".into(),
+        "macdocuments" => "MacDocuments".into(),
+        "macdesktop" => "MacDesktop".into(),
+        "maccaches" => "MacCaches".into(),
         _ => root.trim_matches('%').to_string(),
     }
 }
 
 fn walk(dir: &Path, recursive: bool) -> Vec<PathBuf> {
     let mut out = Vec::new();
+    let Ok(meta) = std::fs::symlink_metadata(dir) else { return out };
+    if is_symlink_or_reparse(&meta) || !meta.is_dir() {
+        return out;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else { return out };
     for e in entries.flatten() {
         let p = e.path();
-        if p.is_dir() {
+        let Ok(em) = std::fs::symlink_metadata(&p) else { continue };
+        if is_symlink_or_reparse(&em) {
+            continue;
+        }
+        if em.is_dir() {
             if recursive {
                 out.extend(walk(&p, true));
             }
-        } else {
+        } else if em.is_file() {
             out.push(p);
         }
     }
@@ -254,8 +537,13 @@ fn save_snapshot(t: &Target, s: &Snapshot) {
 
 /// Copy a local file aside before it's replaced. Kept per app and time.
 fn backup(t: &Target, name: &str, path: &Path, stamp: u64) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if is_symlink_or_reparse(&m) || !m.is_file() => {
+            return Err("refusing to back up symlink or non-regular file".into());
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
     }
     let safe: String = name.chars().map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect();
     let dir = crate::store::config_dir().join("cloud-backups").join(t.app_id.to_string()).join(stamp.to_string());
@@ -411,6 +699,12 @@ pub async fn sync(conn: &Connection, t: &Target, mode: Mode, keep_local: &[Strin
 
 /// Fetch one file from the cloud into place (backing up what was there).
 async fn download(conn: &Connection, t: &Target, name: &str, path: &Path, stamp: u64) -> Result<String, String> {
+    let clean = clean_name(name);
+    let (base, segs) = t.resolve_cloud_target(&clean).ok_or_else(|| "Cloud file is not allowed by save rules".to_string())?;
+    let expected = resolve_under_root(&base, &segs).ok_or_else(|| "Cloud file path traverses a symlink".to_string())?;
+    if expected != path {
+        return Err("Cloud file target path mismatch".into());
+    }
     let r: CCloudClientFileDownloadResponse = conn
         .call("Cloud.ClientFileDownload#1", &CCloudClientFileDownloadRequest { appid: Some(t.app_id), filename: Some(name.to_string()), ..Default::default() })
         .await
@@ -441,14 +735,23 @@ async fn download(conn: &Connection, t: &Target, name: &str, path: &Path, stamp:
         return Err("The downloaded file didn't match Steam's checksum".into());
     }
     backup(t, name, path, stamp)?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let verified = prepare_parent_under_root(&base, &segs)?;
+    let tmp = cloud_tmp_path(&verified);
+    if let Ok(m) = std::fs::symlink_metadata(&tmp)
+        && (is_symlink_or_reparse(&m) || m.is_dir())
+    {
+        return Err("refusing symlink temporary cloud file".into());
     }
-    let tmp = path.with_extension("sircloud");
     std::fs::write(&tmp, &data).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    if let Ok(m) = std::fs::symlink_metadata(&verified)
+        && (is_symlink_or_reparse(&m) || m.is_dir())
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return Err("refusing symlink cloud target".into());
+    }
+    std::fs::rename(&tmp, &verified).map_err(|e| e.to_string())?;
     if r.time_stamp() > 0 {
-        if let Ok(f) = std::fs::File::options().write(true).open(path) {
+        if let Ok(f) = std::fs::File::options().write(true).open(&verified) {
             let _ = f.set_modified(UNIX_EPOCH + Duration::from_secs(r.time_stamp()));
         }
     }
@@ -592,9 +895,107 @@ mod tests {
         assert!(glob("*.sav", "slot1.SAV"));
         assert!(glob("save?.dat", "save3.dat"));
         assert!(!glob("*.sav", "slot1.bak"));
-        let t = Target { app_id: 10, steam_id: 76561197960265729, install_dir: PathBuf::from("C:/Games/X"), steam_root: Some(PathBuf::from("C:/Steam")), config: None, cell_id: 0 };
+        let cfg = CloudConfig {
+            quota: 1000,
+            max_files: 10,
+            save_files: vec![model::SaveRule { root: "GameInstall".into(), path: "saves".into(), pattern: "*.sav".into(), recursive: false }],
+        };
+        let t = Target { app_id: 10, steam_id: 76561197960265729, install_dir: PathBuf::from("C:/Games/X"), steam_root: Some(PathBuf::from("C:/Steam")), config: Some(cfg), cell_id: 0 };
         assert_eq!(t.local_path("%GameInstall%saves/a.sav").unwrap(), PathBuf::from("C:/Games/X").join("saves").join("a.sav"));
         assert_eq!(t.local_path("profile.dat").unwrap(), PathBuf::from("C:/Steam/userdata/1/10/remote/profile.dat"));
         assert_eq!(t.expand("{Steam3AccountID}/x"), "1/x");
+    }
+
+    #[test]
+    fn enforces_save_rules_and_rejects_traversal() {
+        let base_target = |config| Target {
+            app_id: 10,
+            steam_id: 76561197960265729,
+            install_dir: PathBuf::from("/tmp/sir-cloud-game"),
+            steam_root: Some(PathBuf::from("/tmp/sir-cloud-steam")),
+            config,
+            cell_id: 0,
+        };
+
+        let t_none = base_target(None);
+        assert!(t_none.local_path("%GameInstall%version.dll").is_none());
+        assert!(t_none.local_path("profile.dat").is_some());
+        assert!(t_none.local_path("../escape.dat").is_none());
+        assert!(t_none.local_path("").is_none());
+
+        let t_empty = base_target(Some(CloudConfig { quota: 1000, max_files: 10, save_files: vec![] }));
+        assert!(t_empty.local_path("%GameInstall%saves/a.sav").is_none());
+
+        let cfg = CloudConfig {
+            quota: 1000,
+            max_files: 10,
+            save_files: vec![
+                model::SaveRule { root: "GameInstall".into(), path: "Saves/{Steam3AccountID}".into(), pattern: "*.sav".into(), recursive: false },
+                model::SaveRule { root: "GameInstall".into(), path: "Profiles".into(), pattern: "*.cfg".into(), recursive: true },
+            ],
+        };
+        let t_ruled = base_target(Some(cfg));
+        assert_eq!(
+            t_ruled.local_path("%GameInstall%Saves/1/slot1.sav").unwrap(),
+            PathBuf::from("/tmp/sir-cloud-game/Saves/1/slot1.sav")
+        );
+        assert_eq!(
+            t_ruled.local_path("%GameInstall%Saves/{Steam3AccountID}/slot1.sav").unwrap(),
+            PathBuf::from("/tmp/sir-cloud-game/Saves/1/slot1.sav")
+        );
+        assert_eq!(
+            t_ruled.local_path("%GameInstall%Profiles/deep/sub/user.cfg").unwrap(),
+            PathBuf::from("/tmp/sir-cloud-game/Profiles/deep/sub/user.cfg")
+        );
+        assert!(t_ruled.local_path("%GameInstall%version.dll").is_none());
+        assert!(t_ruled.local_path("%GameInstall%Saves/1/evil.dll").is_none());
+        assert!(t_ruled.local_path("%GameInstall%Saves/1/sub/slot1.sav").is_none());
+        assert!(t_ruled.local_path("%GameInstall%Saves/2/slot1.sav").is_none());
+        assert!(t_ruled.local_path("%GameInstall%Saves/1/../slot1.sav").is_none());
+        assert!(t_ruled.local_path("%LinuxHome%.bashrc").is_none());
+
+        // A rule under a Windows location works on every platform (Mac and
+        // Linux use the nearest folder), still only for matching files.
+        let win = base_target(Some(CloudConfig {
+            quota: 1000,
+            max_files: 10,
+            save_files: vec![model::SaveRule { root: "WinAppDataLocal".into(), path: "KnightsEnd/Saved".into(), pattern: "*.sav".into(), recursive: true }],
+        }));
+        let save = win.local_path("%WinAppDataLocal%KnightsEnd/Saved/SaveGames/Save02.sav").expect("windows root resolves");
+        assert!(save.ends_with("KnightsEnd/Saved/SaveGames/Save02.sav"));
+        assert!(win.local_path("%WinAppDataLocal%KnightsEnd/evil.dll").is_none());
+        assert!(win.local_path("%WinAppDataLocal%Other/x.sav").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_intermediate_symlinks_under_save_root() {
+        let root = std::env::temp_dir().join(format!("sir-cloud-sym-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let game = root.join("game");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, game.join("saves")).unwrap();
+
+        let t = Target {
+            app_id: 10,
+            steam_id: 76561197960265729,
+            install_dir: game,
+            steam_root: Some(root.join("steam")),
+            config: Some(CloudConfig {
+                quota: 1000,
+                max_files: 10,
+                save_files: vec![model::SaveRule { root: "GameInstall".into(), path: "saves".into(), pattern: "*.sav".into(), recursive: false }],
+            }),
+            cell_id: 0,
+        };
+        assert!(t.local_path("%GameInstall%saves/slot1.sav").is_none());
+        assert!(prepare_parent_under_root(&t.install_dir, &["saves".into(), "slot1.sav".into()]).is_err());
+        let sym_file = outside.join("real.txt");
+        std::fs::write(&sym_file, b"secret").unwrap();
+        std::os::unix::fs::symlink(&sym_file, t.install_dir.join("link.sav")).unwrap();
+        assert!(backup(&t, "link.sav", &t.install_dir.join("link.sav"), 1).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
