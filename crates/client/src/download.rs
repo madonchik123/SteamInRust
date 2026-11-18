@@ -550,7 +550,45 @@ fn remove_added(req: &InstallRequest, dir: &Path, added: &[&depot::Manifest], be
 fn remove_unfinished(req: &InstallRequest, dir: &Path, fresh: bool) {
     // Only ever inside <library>/steamapps/common/<game>.
     let common = req.library.join("steamapps").join("common");
-    if dir.parent() != Some(common.as_path()) {
+    if let Err(e) = local::validate_common_child(&common, dir) {
+        tracing::warn!("cancelled: {e}");
+        return;
+    }
+    let Ok(common_meta) = std::fs::symlink_metadata(&common) else {
+        return;
+    };
+    if local::is_symlink_or_reparse(&common_meta) || !common_meta.is_dir() {
+        tracing::warn!("cancelled: refusing symlink or non-directory {}", common.display());
+        return;
+    }
+    let dir_meta = match std::fs::symlink_metadata(dir) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!("cancelled: couldn't inspect {}: {e}", dir.display());
+            return;
+        }
+    };
+    if local::is_symlink_or_reparse(&dir_meta) {
+        if fresh {
+            match local::unlink_symlink_or_junction(dir, &dir_meta) {
+                Ok(()) => tracing::info!("cancelled: unlinked symlink {}", dir.display()),
+                Err(e) => tracing::warn!("cancelled: couldn't unlink {}: {e}", dir.display()),
+            }
+        } else {
+            tracing::warn!("cancelled: refusing to walk symlink {}", dir.display());
+        }
+        return;
+    }
+    if !dir_meta.is_dir() {
+        return;
+    }
+    let (Ok(canon_common), Ok(canon_dir)) = (common.canonicalize(), dir.canonicalize()) else {
+        tracing::warn!("cancelled: couldn't canonicalize {}", dir.display());
+        return;
+    };
+    if canon_dir == canon_common || canon_dir.parent() != Some(canon_common.as_path()) {
+        tracing::warn!("cancelled: refusing {} outside {}", dir.display(), common.display());
         return;
     }
     if fresh {
@@ -565,16 +603,22 @@ fn remove_unfinished(req: &InstallRequest, dir: &Path, fresh: bool) {
     let mut stack = vec![dir.to_path_buf()];
     let mut freed = 0u64;
     while let Some(d) = stack.pop() {
+        let Ok(dm) = std::fs::symlink_metadata(&d) else { continue };
+        if local::is_symlink_or_reparse(&dm) || !dm.is_dir() {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&d) else { continue };
         for e in entries.flatten() {
             let path = e.path();
-            match e.file_type() {
-                Ok(t) if t.is_dir() => stack.push(path),
-                Ok(_) if path.extension().is_some_and(|x| x == "sirpart") => {
-                    freed += e.metadata().map(|m| m.len()).unwrap_or(0);
-                    let _ = std::fs::remove_file(&path);
-                }
-                _ => {}
+            let Ok(em) = std::fs::symlink_metadata(&path) else { continue };
+            if local::is_symlink_or_reparse(&em) {
+                continue;
+            }
+            if em.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|x| x == "sirpart") {
+                freed += em.len();
+                let _ = std::fs::remove_file(&path);
             }
         }
     }
@@ -725,6 +769,61 @@ mod cancel_tests {
         remove_unfinished(&req, &other, true);
         assert!(other.exists());
         let _ = std::fs::remove_dir_all(lib);
+    }
+
+    #[test]
+    fn remove_unfinished_rejects_dotdot_and_unlinks_only_symlink() {
+        let lib = std::env::temp_dir().join(format!("sir-cancel-sec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lib);
+        let apps = lib.join("steamapps");
+        let common = apps.join("common");
+        let compat = apps.join("compatdata");
+        std::fs::create_dir_all(&common).unwrap();
+        std::fs::create_dir_all(&compat).unwrap();
+        let keep = compat.join("keep.sirpart");
+        std::fs::write(&keep, b"keep").unwrap();
+
+        let req = InstallRequest {
+            app_id: 1,
+            library: lib.clone(),
+            steam_root: lib.clone(),
+            branch: "public".into(),
+            language: "english".into(),
+            skip_dlc: vec![],
+            add_dlc: vec![],
+        };
+
+        for bad_dir in [common.join(".."), common.join("."), common.join("sub").join("..")] {
+            remove_unfinished(&req, &bad_dir, true);
+            remove_unfinished(&req, &bad_dir, false);
+            assert!(keep.exists(), "remove_unfinished deleted outside common via {bad_dir:?}!");
+            assert!(common.exists(), "remove_unfinished deleted common via {bad_dir:?}!");
+        }
+
+        #[cfg(unix)]
+        {
+            let outside = std::env::temp_dir().join(format!("sir-cancel-ext-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&outside);
+            std::fs::create_dir_all(&outside).unwrap();
+            let ext_part = outside.join("ext.sirpart");
+            let ext_file = outside.join("ext.exe");
+            std::fs::write(&ext_part, b"part").unwrap();
+            std::fs::write(&ext_file, b"exe").unwrap();
+            let sym = common.join("SymGame");
+            std::os::unix::fs::symlink(&outside, &sym).unwrap();
+
+            remove_unfinished(&req, &sym, false);
+            assert!(ext_part.exists(), "remove_unfinished(fresh=false) walked into symlink!");
+            assert!(ext_file.exists());
+
+            remove_unfinished(&req, &sym, true);
+            assert!(ext_part.exists(), "remove_unfinished(fresh=true) recursed into symlink target!");
+            assert!(ext_file.exists(), "remove_unfinished(fresh=true) deleted symlink target!");
+            assert!(std::fs::symlink_metadata(&sym).is_err(), "symlink itself was not unlinked!");
+            let _ = std::fs::remove_dir_all(&outside);
+        }
+
+        let _ = std::fs::remove_dir_all(&lib);
     }
 
     #[test]

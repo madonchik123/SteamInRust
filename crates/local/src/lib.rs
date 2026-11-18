@@ -8,7 +8,7 @@ pub mod manage;
 use model::{AppId, InstallState, InstalledGame, LocalAccount};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -177,6 +177,133 @@ fn is_tool(app_id: AppId, name: &str) -> bool {
         || name == "Steamworks Common Redistributables"
 }
 
+fn is_windows_reserved(seg: &str) -> bool {
+    let stem = seg.split('.').next().unwrap_or("");
+    let upper = stem.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "CONIN$"
+            | "CONOUT$"
+            | "COM0"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT0"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        return true;
+    }
+    if stem.len() > 3
+        && stem.is_char_boundary(3)
+        && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
+        && matches!(&stem[3..], "\u{00b9}" | "\u{00b2}" | "\u{00b3}")
+    {
+        return true;
+    }
+    false
+}
+
+/// True when `name` is a single safe directory entry name (never empty, `.`,
+/// `..`, a path containing `/` or `\`, a drive/ADS `:`, control characters, or
+/// a Windows reserved device name).
+pub fn is_valid_folder_name(name: &str) -> bool {
+    if name.is_empty() || name == "." || name == ".." {
+        return false;
+    }
+    if name.contains(['/', '\\', '\0']) || name.chars().any(|c| (c as u32) < 0x20) {
+        return false;
+    }
+    // Names only Windows can't hold (a trailing dot or space, a drive colon,
+    // CON/NUL/COM1...): fine as Mac and Linux folder names.
+    if cfg!(windows) && (name.ends_with(' ') || name.ends_with('.') || name.contains(':') || is_windows_reserved(name)) {
+        return false;
+    }
+    let mut comps = Path::new(name).components();
+    matches!((comps.next(), comps.next()), (Some(Component::Normal(s)), None) if !s.is_empty())
+}
+
+/// True when `meta` describes a symlink or Windows reparse point / junction.
+pub fn is_symlink_or_reparse(meta: &fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Remove only the symlink or NTFS junction at `path` without recursing into
+/// its target directory.
+pub fn unlink_symlink_or_junction(path: &Path, meta: &fs::Metadata) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+        if meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            return fs::remove_dir(path);
+        }
+    }
+    let _ = meta;
+    fs::remove_file(path)
+}
+
+pub(crate) fn has_only_normal_components(path: &Path) -> bool {
+    let raw = path.as_os_str().to_string_lossy();
+    if raw.is_empty() || raw.split(['/', '\\']).any(|seg| seg == "." || seg == "..") {
+        return false;
+    }
+    path.components().all(|c| matches!(c, Component::Prefix(_) | Component::RootDir | Component::Normal(_)))
+}
+
+/// Verify lexically that `dir` is a direct single-folder child of `common`
+/// with no `.` / `..` / non-`Normal` path segments.
+pub fn validate_common_child(common: &Path, dir: &Path) -> std::result::Result<(), String> {
+    if !has_only_normal_components(common) || !has_only_normal_components(dir) {
+        return Err(format!("refusing to delete {}: unsafe path components", dir.display()));
+    }
+    let Some(fname) = dir.file_name().and_then(|n| n.to_str()) else {
+        return Err(format!("refusing to delete {}: missing valid folder name", dir.display()));
+    };
+    if !is_valid_folder_name(fname) {
+        return Err(format!("refusing to delete {}: unsafe folder name {fname:?}", dir.display()));
+    }
+    if dir == common || dir.parent() != Some(common) {
+        return Err(format!("refusing to delete {}: not a game folder in {}", dir.display(), common.display()));
+    }
+    let Ok(rel) = dir.strip_prefix(common) else {
+        return Err(format!("refusing to delete {}: not inside {}", dir.display(), common.display()));
+    };
+    let mut comps = rel.components();
+    if !matches!((comps.next(), comps.next()), (Some(Component::Normal(s)), None) if s == fname) {
+        return Err(format!("refusing to delete {}: not a direct child of {}", dir.display(), common.display()));
+    }
+    Ok(())
+}
+
 fn parse_manifest(path: &Path, lib: &Path) -> Result<Option<InstalledGame>> {
     let doc = read_vdf(path)?;
     let Some(app) = doc.obj("AppState") else { return Ok(None) };
@@ -185,10 +312,14 @@ fn parse_manifest(path: &Path, lib: &Path) -> Result<Option<InstalledGame>> {
     if is_tool(app_id, &name) {
         return Ok(None);
     }
+    let Some(raw_install_dir) = app.str("installdir").filter(|s| is_valid_folder_name(s)) else {
+        tracing::warn!("ignoring {}: unsafe installdir {:?}", path.display(), app.str("installdir"));
+        return Ok(None);
+    };
     let install_dir = lib
         .join("steamapps")
         .join("common")
-        .join(app.str("installdir").unwrap_or_default());
+        .join(raw_install_dir);
     Ok(Some(InstalledGame {
         app_id,
         name,
@@ -264,5 +395,51 @@ pub fn playtime(root: &Path, account_id: u32) -> HashMap<AppId, Usage> {
 pub fn open_folder(path: &Path) {
     if let Err(e) = open::that_detached(path) {
         tracing::error!("failed to open {}: {e}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unsafe_installdir_in_appmanifest() {
+        let lib = std::env::temp_dir().join(format!("sir-local-manifest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&lib);
+        let apps = lib.join("steamapps");
+        fs::create_dir_all(apps.join("common")).unwrap();
+
+        let mut bad_names = vec!["..", ".", "", "../outside", "a/b", r"a\b", "/etc"];
+        // Only Windows can't hold these (fine as Mac and Linux folders).
+        if cfg!(windows) {
+            bad_names.extend(["C:evil", "CON", "trailing."]);
+        }
+        for (idx, bad) in bad_names.iter().enumerate() {
+            assert!(!is_valid_folder_name(bad), "accepted {bad:?}");
+            let id = 1000 + idx as u32;
+            let state = vdf::Obj::default()
+                .with("appid", id.to_string())
+                .with("name", format!("Bad {idx}"))
+                .with("installdir", *bad)
+                .with("StateFlags", "4");
+            let doc = vdf::Obj::default().with_obj("AppState", state);
+            fs::write(apps.join(format!("appmanifest_{id}.acf")), vdf::write(&doc)).unwrap();
+        }
+        let good = "\"AppState\"\n{\n\t\"appid\"\t\"2000\"\n\t\"name\"\t\"Good Game\"\n\t\"installdir\"\t\"Good Game\"\n\t\"StateFlags\"\t\"4\"\n}\n";
+        fs::write(apps.join("appmanifest_2000.acf"), good).unwrap();
+
+        let games = scan_library(&lib);
+        assert_eq!(games.len(), 1, "unsafe installdir entries were not rejected: {games:?}");
+        assert_eq!(games[0].app_id, 2000);
+        let _ = fs::remove_dir_all(&lib);
+    }
+
+    #[test]
+    fn refuses_dotdot_traversal_in_validate_common_child() {
+        let common = PathBuf::from("/tmp/steam/steamapps/common");
+        for bad in [common.join(".."), common.join("."), common.join("Game").join("..")] {
+            assert!(validate_common_child(&common, &bad).is_err(), "accepted {bad:?}");
+        }
+        assert!(validate_common_child(&common, &common.join("ValidGame")).is_ok());
     }
 }
