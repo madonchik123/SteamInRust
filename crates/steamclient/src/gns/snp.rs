@@ -509,8 +509,8 @@ impl Snp {
                 }
                 self.highest_msg = self.highest_msg.max(cur_unrel);
                 let offset = if lead & 0x08 != 0 {
-                    match get_varint(d, &mut at) {
-                        Some(o) => o as u32,
+                    match get_varint(d, &mut at).and_then(|o| u32::try_from(o).ok()) {
+                        Some(o) => o,
                         None => return bad("unreliable data offset"),
                     }
                 } else {
@@ -676,35 +676,117 @@ impl Snp {
     }
 
     fn unreliable_segment(&mut self, num: i64, offset: u32, data: &[u8], last: bool, lane: u32, now: Instant) {
-        if offset == 0 && last {
+        let Ok(seg_len) = u32::try_from(data.len()) else {
+            return;
+        };
+        let Some(seg_end) = offset.checked_add(seg_len) else {
+            return;
+        };
+        if (offset as usize).checked_add(data.len()).is_none_or(|end| end > MAX_MESSAGE) {
+            return;
+        }
+        if offset == 0 && last && !self.partials.contains_key(&num) {
             self.inbox.push_back(Msg { data: data.to_vec(), num, reliable: false, lane });
             return;
         }
-        if offset as usize + data.len() > MAX_MESSAGE || self.partials.len() > 64 {
+        if data.is_empty() && !last {
             return;
         }
-        let p = self.partials.entry(num).or_default();
-        p.since.get_or_insert(now);
-        p.parts.insert(offset, data.to_vec());
-        if last {
-            p.total = Some(offset + data.len() as u32);
+        if !self.partials.contains_key(&num) && self.partials.len() >= 64 {
+            return;
         }
-        let Some(total) = p.total else { return };
-        let mut have = 0u32;
-        for (&o, part) in &p.parts {
-            if o > have {
-                return;
+        let invalid = {
+            let p = self.partials.entry(num).or_default();
+            p.since.get_or_insert(now);
+            if last {
+                if p.total.is_some_and(|t| t != seg_end) {
+                    true
+                } else {
+                    p.total = Some(seg_end);
+                    false
+                }
+            } else {
+                p.total.is_some_and(|t| seg_end > t)
             }
-            have = have.max(o + part.len() as u32);
-        }
-        if have < total {
+        };
+        if invalid {
+            self.partials.remove(&num);
             return;
         }
-        let mut msg = vec![0u8; total as usize];
-        for (&o, part) in &p.parts {
-            msg[o as usize..o as usize + part.len()].copy_from_slice(part);
+        let overlap_or_limit = {
+            let p = self.partials.get_mut(&num).unwrap();
+            if let Some(existing) = p.parts.get(&offset) {
+                existing.as_slice() != data
+            } else if p.parts.len() >= 1024 {
+                true
+            } else {
+                let prev_overlaps = p
+                    .parts
+                    .range(..offset)
+                    .next_back()
+                    .is_some_and(|(&po, pv)| u32::try_from(pv.len()).ok().and_then(|l| po.checked_add(l)).is_none_or(|pe| pe > offset));
+                let next_overlaps = p
+                    .parts
+                    .range((std::ops::Bound::Excluded(offset), std::ops::Bound::Unbounded))
+                    .next()
+                    .is_some_and(|(&no, _)| seg_end > no);
+                if prev_overlaps || next_overlaps {
+                    true
+                } else {
+                    p.parts.insert(offset, data.to_vec());
+                    false
+                }
+            }
+        };
+        if overlap_or_limit {
+            self.partials.remove(&num);
+            return;
         }
-        self.partials.remove(&num);
+        let Some(total) = self.partials.get(&num).and_then(|p| p.total) else {
+            return;
+        };
+        let (bad_partial, complete) = {
+            let p = &self.partials[&num];
+            let mut prev_end = 0u32;
+            let mut has_gap = false;
+            let mut bad = false;
+            for (&o, part) in &p.parts {
+                let Some(end) = u32::try_from(part.len()).ok().and_then(|l| o.checked_add(l)) else {
+                    bad = true;
+                    break;
+                };
+                if o < prev_end || end > total || (part.is_empty() && o != total) {
+                    bad = true;
+                    break;
+                }
+                if o > prev_end {
+                    has_gap = true;
+                }
+                prev_end = end;
+            }
+            (bad, !bad && !has_gap && prev_end == total)
+        };
+        if bad_partial {
+            self.partials.remove(&num);
+            return;
+        }
+        if !complete {
+            return;
+        }
+        let Some(p) = self.partials.remove(&num) else {
+            return;
+        };
+        let mut msg = vec![0u8; total as usize];
+        for (o, part) in p.parts {
+            let start = o as usize;
+            let Some(end) = start.checked_add(part.len()) else {
+                return;
+            };
+            let Some(dst) = msg.get_mut(start..end) else {
+                return;
+            };
+            dst.copy_from_slice(&part);
+        }
         self.inbox.push_back(Msg { data: msg, num, reliable: false, lane });
     }
 
@@ -850,5 +932,61 @@ mod tests {
         a.tick(t + Duration::from_secs(1));
         deliver(&mut a, &mut b, t + Duration::from_secs(1), |_| false);
         assert_eq!(b.inbox.pop_front().unwrap().data, b"x");
+    }
+
+    fn unreliable_frame(msg_num: u16, offset: u64, payload: &[u8], last: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut lead = if last { 0x20u8 } else { 0u8 };
+        let mut body = Vec::new();
+        body.extend_from_slice(&msg_num.to_le_bytes());
+        if offset > 0 {
+            lead |= 0x08;
+            put_varint(&mut body, offset);
+        }
+        put_size(&mut body, &mut lead, payload.len());
+        out.push(lead);
+        out.extend_from_slice(&body);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn unreliable_fragment_oob_and_overflow_rejected() {
+        let t = Instant::now();
+        let mut rx = Snp::new();
+
+        // 1. Out-of-order high-offset fragment [120..170), followed by smaller last=true
+        // fragment [100..120) (setting total=120), followed by gap-filler [0..100).
+        let f1 = unreliable_frame(1, 120, &[0xAA; 50], false);
+        let f2 = unreliable_frame(1, 100, &[0xBB; 20], true);
+        let f3 = unreliable_frame(1, 0, &[0xCC; 100], false);
+        rx.receive(2, &f1, t).unwrap();
+        rx.receive(3, &f2, t).unwrap();
+        rx.receive(4, &f3, t).unwrap();
+        assert!(rx.inbox.is_empty(), "malformed partial exceeding total must be dropped");
+
+        // 2. Conflicting last=true totals for msg 2 must drop the partial.
+        rx.receive(5, &unreliable_frame(2, 40, &[1; 20], true), t).unwrap();
+        rx.receive(6, &unreliable_frame(2, 40, &[1; 30], true), t).unwrap();
+        rx.receive(7, &unreliable_frame(2, 0, &[1; 40], false), t).unwrap();
+        assert!(rx.inbox.is_empty(), "conflicting totals must be dropped");
+
+        // 3. Inconsistent overlapping fragments for msg 3 must drop the partial.
+        rx.receive(8, &unreliable_frame(3, 0, &[0x11; 60], false), t).unwrap();
+        rx.receive(9, &unreliable_frame(3, 40, &[0x22; 40], true), t).unwrap();
+        assert!(rx.inbox.is_empty(), "overlapping fragments must be dropped");
+
+        // 4. u32 / 32-bit usize overflow on offset + data.len() must not wrap into MAX_MESSAGE.
+        rx.unreliable_segment(4, u32::MAX - 8, &[0x55; 16], true, 0, t);
+        let _ = rx.receive(10, &unreliable_frame(5, (u32::MAX as u64) + 1, &[0x66; 8], true), t);
+        assert!(rx.inbox.is_empty(), "overflowing offsets must be rejected");
+
+        // 5. Valid out-of-order unreliable fragments still reassemble cleanly.
+        rx.receive(11, &unreliable_frame(6, 20, b"world!", true), t).unwrap();
+        rx.receive(12, &unreliable_frame(6, 0, b"hello-----", false), t).unwrap();
+        rx.receive(13, &unreliable_frame(6, 10, b"0123456789", false), t).unwrap();
+        let msg = rx.inbox.pop_front().expect("valid out-of-order message");
+        assert_eq!(msg.data, b"hello-----0123456789world!");
+        assert!(!msg.reliable);
     }
 }
