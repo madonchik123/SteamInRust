@@ -2287,8 +2287,10 @@ impl Online {
     fn support_ticket(&self, id: String, url: String, sink: &Sink) {
         self.with_web(sink, move |web, sink| async move {
             let result = match web {
-                Ok(w) if url.starts_with("https://help.steampowered.com/") => crate::market::page(&w, &url).await.map(|b| crate::support::parse_messages(&b)),
-                Ok(_) => Err("not a Steam Support link".into()),
+                Ok(w) => match validate_support_ticket_url(&url) {
+                    Ok(valid) => crate::market::page(&w, valid.as_str()).await.map(|b| crate::support::parse_messages(&b)),
+                    Err(e) => Err(e),
+                },
                 Err(e) => Err(e),
             };
             sink(Event::SupportTicket { id, result });
@@ -3329,5 +3331,26 @@ mod invite_tests {
         assert_eq!(super::lobby_of("+connect_lobby 109775243904435019"), 109775243904435019);
         assert_eq!(super::lobby_of("-dev +connect 1.2.3.4"), 0);
         assert_eq!(super::invite_link(477160, "+connect_lobby 5"), "steam://run/477160//+connect_lobby%205");
+    }
+}
+
+fn validate_support_ticket_url(url: &str) -> Result<reqwest::Url, String> {
+    crate::market::validate_steam_url(url, "help.steampowered.com").map_err(|_| "not a Steam Support link".to_string())
+}
+
+#[cfg(test)]
+mod support_url_tests {
+    #[test]
+    fn support_ticket_url_rejects_traversal_and_bad_origins() {
+        for bad in [
+            "https://help.steampowered.com/en/%2e%2e/admin",
+            "https://help.steampowered.com/en/../admin",
+            "https://help.steampowered.com.evil.tld/en/",
+            "https://user@help.steampowered.com/en/",
+            "http://help.steampowered.com/en/",
+        ] {
+            assert!(super::validate_support_ticket_url(bad).is_err(), "must reject {bad}");
+        }
+        assert!(super::validate_support_ticket_url("https://help.steampowered.com/en/wizard/HelpRequest/HT-1234").is_ok());
     }
 }

@@ -131,15 +131,7 @@ impl ImageCache {
     pub fn install(ctx: &egui::Context, rt: tokio::runtime::Handle) {
         let dir = dir();
         let _ = std::fs::create_dir_all(&dir);
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("SteamInRust/", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(30))
-            // Now and then a picture stalls; give up on it sooner and try
-            // again rather than hold a download slot for half a minute.
-            .connect_timeout(Duration::from_secs(10))
-            .read_timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
+        let http = build_http_client();
         // Keep the folder under its limit (in the background, at start).
         let trim_dir = dir.clone();
         rt.spawn_blocking(move || trim(&trim_dir));
@@ -169,6 +161,9 @@ impl BytesLoader for ImageCache {
     fn load(&self, ctx: &egui::Context, uri: &str) -> BytesLoadResult {
         if !(uri.starts_with("https://") || uri.starts_with("http://")) {
             return Err(LoadError::NotSupported);
+        }
+        if let Err(err) = validate_image_url(uri) {
+            return Err(LoadError::Loading(err));
         }
         if let Some(e) = self.entries.lock().unwrap().get(uri).cloned() {
             return match e {
@@ -216,6 +211,11 @@ impl BytesLoader for ImageCache {
                 r => r,
             };
             match sent {
+                Ok(resp) if resp.remote_addr().is_some_and(|a| !is_public_ip(a.ip())) => {
+                    if saved.is_none() {
+                        done(Entry::Failed("blocked non-public image host".into()));
+                    }
+                }
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
                     // Still current: mark it fresh again.
                     if let Ok(f) = std::fs::File::options().append(true).open(&path) {
@@ -225,16 +225,16 @@ impl BytesLoader for ImageCache {
                 Ok(resp) if resp.status().is_success() => {
                     let header = |name| resp.headers().get(name).and_then(|v: &reqwest::header::HeaderValue| v.to_str().ok()).map(String::from);
                     let meta = Meta { mime: header(reqwest::header::CONTENT_TYPE), etag: header(reqwest::header::ETAG), last_modified: header(reqwest::header::LAST_MODIFIED) };
-                    match resp.bytes().await {
+                    match read_image_bytes(resp).await {
                         Ok(bytes) => {
                             let tmp = path.with_extension("part");
                             if std::fs::write(&tmp, &bytes).is_ok() {
                                 let _ = std::fs::rename(&tmp, &path);
                                 let _ = std::fs::write(path.with_extension("json"), serde_json::to_string(&meta).unwrap_or_default());
                             }
-                            done(Entry::Ready(Bytes::from(bytes.to_vec()), meta.mime));
+                            done(Entry::Ready(Bytes::from(bytes), meta.mime));
                         }
-                        Err(e) if saved.is_none() => done(Entry::Failed(e.to_string())),
+                        Err(e) if saved.is_none() => done(Entry::Failed(e)),
                         Err(_) => {}
                     }
                 }
@@ -312,5 +312,242 @@ mod gate_tests {
             t.await.unwrap();
         }
         assert_eq!(*order.lock().unwrap(), vec![2, 1, 0]);
+    }
+}
+
+const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+
+fn is_public_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, _, _] = ip.octets();
+    !(ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || ip.is_documentation()
+        || ip.is_unspecified()
+        || a == 0
+        || (a == 100 && (b & 0b1100_0000) == 64)
+        || (a == 198 && (b & 0b1111_1110) == 18)
+        || a >= 240)
+}
+
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => is_public_ipv4(v4),
+        std::net::IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return false;
+            }
+            if let Some(v4) = v6.to_ipv4_mapped().or_else(|| v6.to_ipv4()) {
+                return is_public_ipv4(v4);
+            }
+            let segs = v6.segments();
+            !((segs[0] & 0xfe00) == 0xfc00
+                || (segs[0] & 0xffc0) == 0xfe80
+                || (segs[0] == 0x2001 && segs[1] == 0x0db8))
+        }
+    }
+}
+
+fn validate_parsed_image_url(url: &reqwest::Url) -> Result<(), String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("unsupported image scheme".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("image URLs cannot carry credentials".into());
+    }
+    let Some(host) = url.host_str() else {
+        return Err("image URL missing host".into());
+    };
+    let clean = host.trim_end_matches('.');
+    let unbracketed = clean.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(clean);
+    if let Ok(ip) = unbracketed.parse::<std::net::IpAddr>() {
+        if !is_public_ip(ip) {
+            return Err("blocked non-public IP address".into());
+        }
+        return Ok(());
+    }
+    let lower = unbracketed.to_ascii_lowercase();
+    if lower.is_empty()
+        || lower == "localhost"
+        || lower.ends_with(".localhost")
+        || lower.ends_with(".local")
+        || lower.ends_with(".internal")
+    {
+        return Err("blocked local image hostname".into());
+    }
+    Ok(())
+}
+
+fn resolve_public_addrs(host: &str) -> Result<Vec<std::net::SocketAddr>, String> {
+    use std::net::ToSocketAddrs;
+    let mut out = Vec::new();
+    for addr in (host, 0).to_socket_addrs().map_err(|e| e.to_string())? {
+        if !is_public_ip(addr.ip()) {
+            return Err("blocked non-public DNS resolution".into());
+        }
+        out.push(addr);
+    }
+    if out.is_empty() {
+        return Err("DNS returned no addresses".into());
+    }
+    Ok(out)
+}
+
+struct PublicDnsResolver;
+
+impl reqwest::dns::Resolve for PublicDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs = tokio::task::spawn_blocking(move || resolve_public_addrs(&host))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                .map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)) as Box<dyn std::error::Error + Send + Sync>)?;
+            let iter: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
+fn build_http_client() -> reqwest::Client {
+    let redirect = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            return attempt.error("too many redirects");
+        }
+        if let Err(err) = validate_parsed_image_url(attempt.url()) {
+            return attempt.error(err);
+        }
+        attempt.follow()
+    });
+    reqwest::Client::builder()
+        .user_agent(concat!("SteamInRust/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(30))
+        // Now and then a picture stalls; give up on it sooner and try
+        // again rather than hold a download slot for half a minute.
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(10))
+        .redirect(redirect)
+        .dns_resolver(Arc::new(PublicDnsResolver))
+        .build()
+        .unwrap_or_default()
+}
+
+fn validate_image_url(uri: &str) -> Result<reqwest::Url, String> {
+    if uri.bytes().any(|b| b < 0x20 || b == 0x7f) || uri.contains('\\') {
+        return Err("invalid character in image URL".into());
+    }
+    let url = reqwest::Url::parse(uri).map_err(|e| e.to_string())?;
+    validate_parsed_image_url(&url)?;
+    Ok(url)
+}
+
+async fn read_image_bytes(mut resp: reqwest::Response) -> Result<Vec<u8>, String> {
+    if resp.content_length().is_some_and(|len| len > MAX_IMAGE_BYTES as u64) {
+        return Err("image exceeds 16 MiB limit".into());
+    }
+    let cap = resp.content_length().map(|n| (n as usize).min(MAX_IMAGE_BYTES)).unwrap_or(0);
+    let mut buf = Vec::with_capacity(cap);
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if buf.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES {
+            return Err("image exceeds 16 MiB limit".into());
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+#[cfg(test)]
+mod ssrf_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn rejects_ssrf_private_loopback_and_link_local_urls() {
+        for bad in [
+            "http://127.0.0.1/a.png",
+            "https://127.0.1.1:8080/a.png",
+            "http://[::1]/a.png",
+            "http://[::ffff:127.0.0.1]/a.png",
+            "http://localhost/a.png",
+            "https://sub.localhost/a.png",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[fe80::1]/a.png",
+            "http://10.0.0.1/a.png",
+            "http://172.16.0.1/a.png",
+            "http://192.168.1.1/a.png",
+            "http://[fc00::1]/a.png",
+            "http://[fd12:3456::1]/a.png",
+            "http://0.0.0.0/a.png",
+        ] {
+            assert!(validate_image_url(bad).is_err(), "must reject SSRF url {bad}");
+        }
+        assert!(validate_image_url("https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/440/header.jpg").is_ok());
+    }
+
+    #[tokio::test]
+    async fn blocks_redirect_ssrf_and_caps_streaming_body_at_16_mib() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req);
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 17825792\r\nConnection: close\r\n\r\n");
+            let block = vec![0u8; 1024 * 1024];
+            for _ in 0..17 {
+                if sock.write_all(&block).is_err() {
+                    break;
+                }
+            }
+        });
+        let raw_client = reqwest::Client::new();
+        let resp = raw_client.get(format!("http://{addr}/bomb.png")).send().await.unwrap();
+        assert!(read_image_bytes(resp).await.is_err(), "image > 16 MiB must be rejected");
+        tokio::task::spawn_blocking(move || srv.join().unwrap()).await.unwrap();
+
+        let chunked = TcpListener::bind("127.0.0.1:0").unwrap();
+        let caddr = chunked.local_addr().unwrap();
+        let csrv = std::thread::spawn(move || {
+            let (mut sock, _) = chunked.accept().unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req);
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+            let chunk_hdr = format!("{:x}\r\n", 1024 * 1024);
+            let block = vec![b'a'; 1024 * 1024];
+            for _ in 0..17 {
+                if sock.write_all(chunk_hdr.as_bytes()).is_err()
+                    || sock.write_all(&block).is_err()
+                    || sock.write_all(b"\r\n").is_err()
+                {
+                    break;
+                }
+            }
+            let _ = sock.write_all(b"0\r\n\r\n");
+        });
+        let resp = raw_client.get(format!("http://{caddr}/chunked.png")).send().await.unwrap();
+        assert!(read_image_bytes(resp).await.is_err(), "chunked image > 16 MiB must be rejected");
+        drop(raw_client);
+        tokio::task::spawn_blocking(move || csrv.join().unwrap()).await.unwrap();
+
+        let redir = TcpListener::bind("127.0.0.1:0").unwrap();
+        let raddr = redir.local_addr().unwrap();
+        let rsrv = std::thread::spawn(move || {
+            let (mut sock, _) = redir.accept().unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req);
+            let _ = sock.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        });
+        let cache_http = build_http_client();
+        let err = cache_http.get(format!("http://{raddr}/redir")).send().await.unwrap_err();
+        assert!(err.is_redirect(), "redirect to link-local IP must be blocked, got {err}");
+        tokio::task::spawn_blocking(move || rsrv.join().unwrap()).await.unwrap();
+
+        assert!(validate_image_url("http://2130706433/a.png").is_err());
+        assert!(validate_image_url("http://0177.0.0.1/a.png").is_err());
+        assert!(resolve_public_addrs("127.0.0.1").is_err());
+        assert!(resolve_public_addrs("169.254.169.254").is_err());
     }
 }

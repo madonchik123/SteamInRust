@@ -395,6 +395,34 @@ fn want_personas(conn: &Connection, ids: Vec<SteamId>) {
     }
 }
 
+fn guide_url(file_id: u64, language: &str) -> String {
+    let mut url = reqwest::Url::parse(&format!("{COMMUNITY}/sharedfiles/filedetails/")).expect("static Steam URL");
+    url.query_pairs_mut().append_pair("id", &file_id.to_string()).append_pair("l", language);
+    url.into()
+}
+
+fn topics_url(app_id: AppId, forum: &str, page: u32, language: &str) -> Result<String, String> {
+    let path = if forum.is_empty() { "discussions/" } else { forum };
+    if path.starts_with('/') || path.contains('?') || path.contains('#') || path.contains("://") || path.contains('\\') {
+        return Err("not a forum".to_string());
+    }
+    let mut url = crate::market::validate_steam_url(&format!("{COMMUNITY}/app/{app_id}/{path}"), "steamcommunity.com").map_err(|_| "not a forum".to_string())?;
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("not a forum".to_string());
+    }
+    url.query_pairs_mut().append_pair("fp", &page.max(1).to_string()).append_pair("l", language);
+    Ok(url.into())
+}
+
+fn thread_url(url: &str, page: u32, language: &str) -> Result<String, String> {
+    let mut parsed = crate::market::validate_steam_url(url, "steamcommunity.com").map_err(|_| "not a Steam discussion".to_string())?;
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("not a Steam discussion".to_string());
+    }
+    parsed.query_pairs_mut().append_pair("ctp", &page.max(1).to_string()).append_pair("l", language);
+    Ok(parsed.into())
+}
+
 /// Run one request; called by the session with the signed-in web session.
 pub(crate) async fn handle(conn: Connection, me: SteamId, web: Result<Arc<Web>, String>, req: Request, sink: Sink) {
     let anon = Arc::new(Web::anonymous());
@@ -444,7 +472,7 @@ pub(crate) async fn handle(conn: Connection, me: SteamId, web: Result<Arc<Web>, 
             out(Response::Files { key, result });
         }
         Request::Guide { file_id, language } => {
-            let url = format!("{COMMUNITY}/sharedfiles/filedetails/?id={file_id}&l={language}");
+            let url = guide_url(file_id, &language);
             let result = crate::market::page(&web_or_anon, &url).await.and_then(|b| parse_guide(&b));
             out(Response::Guide { file_id, result });
         }
@@ -454,22 +482,17 @@ pub(crate) async fn handle(conn: Connection, me: SteamId, web: Result<Arc<Web>, 
         }
         Request::Topics { app_id, forum, page, language } => {
             let key = topics_key(app_id, &forum, page);
-            let path = if forum.is_empty() { "discussions/".to_string() } else { forum };
-            let result = if path.contains("..") || path.contains('?') || path.contains("://") {
-                Err("not a forum".to_string())
-            } else {
-                let url = format!("{COMMUNITY}/app/{app_id}/{path}?fp={}&l={language}", page.max(1));
-                crate::market::page(&web_or_anon, &url).await.and_then(|b| parse_topics(&b, app_id))
+            let result = match topics_url(app_id, &forum, page, &language) {
+                Ok(url) => crate::market::page(&web_or_anon, &url).await.and_then(|b| parse_topics(&b, app_id)),
+                Err(e) => Err(e),
             };
             out(Response::Topics { key, result });
         }
         Request::Thread { url, page, language } => {
             let key = thread_key(&url, page);
-            let result = if !url.starts_with(COMMUNITY) || url.contains('?') {
-                Err("not a Steam discussion".to_string())
-            } else {
-                let full = format!("{url}?ctp={}&l={language}", page.max(1));
-                crate::market::page(&web_or_anon, &full).await.and_then(|b| parse_thread(&b))
+            let result = match thread_url(&url, page, &language) {
+                Ok(full) => crate::market::page(&web_or_anon, &full).await.and_then(|b| parse_thread(&b)),
+                Err(e) => Err(e),
             };
             out(Response::Thread { key, result });
         }
@@ -842,7 +865,13 @@ pub fn parse_topics(body: &str, app_id: AppId) -> Result<TopicPage, String> {
         for block in list.split("<div class=\"rightbox_list_option").skip(1) {
             let threads = between(block, "<div class=\"forum_list_postcount\">", "</div>").map(|n| n.trim().replace([',', '.', ' ', '\u{a0}'], "")).and_then(|n| n.parse().ok()).unwrap_or(0);
             let Some(href) = between(block, "href=\"", "\"") else { continue };
+            if crate::market::validate_steam_url(href, "steamcommunity.com").is_err() {
+                continue;
+            }
             let Some(path) = href.strip_prefix(&base) else { continue };
+            if path.contains('?') || path.contains('#') {
+                continue;
+            }
             let name = between(block, "\">", "</a>").map(strip_tags).unwrap_or_default();
             let name = block.find("<a ").and_then(|i| between(&block[i..], ">", "</a>")).map(strip_tags).unwrap_or(name);
             forums.push(Forum { name, path: path.to_string(), threads });
@@ -1105,5 +1134,33 @@ fn real_pages() {
     println!("guide {:?} by {:?} sections {}", g.title, g.authors, g.sections.len());
     for s in g.sections.iter().take(3) {
         println!("  {:?}: {:.100}", s.title, s.html);
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_host_and_traversal_bypasses_and_encodes_query() {
+        for bad in [
+            "https://steamcommunity.com.evil.tld/app/440/discussions/0/1/",
+            "https://user@steamcommunity.com/app/440/discussions/0/1/",
+            "http://steamcommunity.com/app/440/discussions/0/1/",
+            "https://steamcommunity.com/app/440/%2e%2e/market/",
+            "https://steamcommunity.com/app/440/../market/",
+        ] {
+            assert!(thread_url(bad, 1, "english").is_err(), "thread_url must reject {bad}");
+        }
+        assert!(topics_url(440, "%2e%2e/market/", 1, "english").is_err());
+        assert!(topics_url(440, "../market/", 1, "english").is_err());
+        assert!(topics_url(440, "discussions/#frag", 1, "english").is_err());
+
+        let g = guide_url(123, "english&evil=1");
+        assert!(!g.contains("&evil=1"), "language must be percent-encoded: {g}");
+        let t = thread_url("https://steamcommunity.com/app/440/discussions/0/1/", 2, "english&evil=1").unwrap();
+        assert!(!t.contains("&evil=1"), "language must be percent-encoded: {t}");
+        let top = topics_url(440, "discussions/0/", 1, "english&evil=1").unwrap();
+        assert!(!top.contains("&evil=1"), "language must be percent-encoded: {top}");
     }
 }

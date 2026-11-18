@@ -205,11 +205,7 @@ pub async fn send(web: &Web, partner: SteamId, give: &[TradeAsset], get: &[Trade
     if let Some(c) = counter {
         form.push(("tradeofferid_countered", c.to_string()));
     }
-    let referer = match (counter, token) {
-        (Some(c), _) => format!("{COMMUNITY}/tradeoffer/{c}/"),
-        (None, Some(t)) => format!("{COMMUNITY}/tradeoffer/new/?partner={account}&token={t}"),
-        (None, None) => format!("{COMMUNITY}/tradeoffer/new/?partner={account}"),
-    };
+    let referer = trade_offer_referer(account, counter, token);
     let r = web.http.post(format!("{COMMUNITY}/tradeoffer/new/send")).header("Referer", referer).form(&form).send().await.map_err(|e| e.to_string())?;
     let status = r.status();
     let v: Value = r.json().await.unwrap_or(Value::Null);
@@ -285,5 +281,19 @@ mod tests {
         assert_eq!(parse_link("https://steamcommunity.com/tradeoffer/new/?partner=42&token=AbC_1"), Some((INDIVIDUAL + 42, Some("AbC_1".into()))));
         assert_eq!(parse_link("https://steamcommunity.com/tradeoffer/new/?partner=42"), Some((INDIVIDUAL + 42, None)));
         assert_eq!(parse_link("https://steamcommunity.com/id/someone"), None);
+    }
+
+    #[test]
+    fn encodes_trade_offer_referer_token() {
+        let r = super::trade_offer_referer(42, None, Some("tok&evil=1"));
+        assert!(!r.contains("&evil=1"), "trade offer referer token must be encoded: {r}");
+    }
+}
+
+fn trade_offer_referer(account: u64, counter: Option<u64>, token: Option<&str>) -> String {
+    match (counter, token) {
+        (Some(c), _) => format!("{COMMUNITY}/tradeoffer/{c}/"),
+        (None, Some(t)) => format!("{COMMUNITY}/tradeoffer/new/?partner={account}&token={}", crate::market::encode(t)),
+        (None, None) => format!("{COMMUNITY}/tradeoffer/new/?partner={account}"),
     }
 }
