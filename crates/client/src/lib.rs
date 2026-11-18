@@ -42,7 +42,7 @@ pub mod state;
 pub mod store;
 
 pub use auth::Guard;
-pub use launch::{LaunchMode, mode as launch_mode, mode_cached as launch_mode_cached, mode_peek as launch_mode_peek};
+pub use launch::{LaunchArgs, LaunchMode, mode as launch_mode, mode_cached as launch_mode_cached, mode_peek as launch_mode_peek, safe_connect_args};
 pub use state::State;
 pub use store::SavedAccount;
 
@@ -74,14 +74,14 @@ pub enum Command {
     ForgetAccount { account: String },
     SetPersonaState(PersonaState),
     /// Start an installed game from its folder.
-    Launch { app_id: AppId, install_dir: PathBuf, args: String },
+    Launch { app_id: AppId, install_dir: PathBuf, args: LaunchArgs },
     /// Start a game without the Steam Cloud check (after a conflict, "play anyway").
-    LaunchWithoutCloud { app_id: AppId, install_dir: PathBuf, args: String },
+    LaunchWithoutCloud { app_id: AppId, install_dir: PathBuf, args: LaunchArgs },
     /// Where Steam keeps `userdata`, and games with Steam Cloud turned off.
     CloudSettings { steam_root: Option<PathBuf>, disabled: Vec<AppId> },
     /// Sync a game's saves now. Conflicts listed in `keep_local` are uploaded,
     /// in `keep_cloud` downloaded. `then_launch` starts the game afterwards.
-    CloudSync { app_id: AppId, install_dir: PathBuf, mode: cloud::Mode, keep_local: Vec<String>, keep_cloud: Vec<String>, then_launch: Option<String> },
+    CloudSync { app_id: AppId, install_dir: PathBuf, mode: cloud::Mode, keep_local: Vec<String>, keep_cloud: Vec<String>, then_launch: Option<LaunchArgs> },
     /// Close a running game (and the processes it started).
     StopGame { app_id: AppId },
     /// For developers: let a game started by hand (a debugger, a test probe)
@@ -323,7 +323,7 @@ pub enum Event {
     WorkshopPreparing { app_id: AppId, done: u32, total: u32, title: String },
     /// Result of a Steam Cloud sync. `held_launch` is set when the game
     /// wasn't started because of conflicts (its launch arguments).
-    CloudReport { report: model::CloudReport, held_launch: Option<String> },
+    CloudReport { report: model::CloudReport, held_launch: Option<LaunchArgs> },
     GameStopped { app_id: AppId },
     /// The running game entered (`Some`) or left a matchmaking lobby, so
     /// friends can be invited to it.

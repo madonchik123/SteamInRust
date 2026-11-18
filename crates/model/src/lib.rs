@@ -496,10 +496,10 @@ impl Persona {
 
     /// Launch arguments that join them in their game, if Steam says how.
     pub fn join_args(&self) -> Option<String> {
-        if let Some(c) = self.connect.as_ref().filter(|c| !c.trim().is_empty()) {
-            return Some(c.trim().to_string());
+        if let Some(tokens) = self.connect.as_deref().and_then(|c| safe_connect_tokens(c).ok()).filter(|t| !t.is_empty()) {
+            return Some(tokens.join(" "));
         }
-        if let Some(s) = &self.server {
+        if let Some(s) = self.server.as_deref().map(str::trim).filter(|s| is_safe_host_port(s)) {
             return Some(format!("+connect {s}"));
         }
         self.lobby.map(|l| format!("+connect_lobby {l}"))
@@ -507,6 +507,48 @@ impl Persona {
 
     pub fn in_game(&self) -> bool {
         self.game_app_id.is_some() || self.game_name.is_some()
+    }
+}
+
+/// Safe `host` / `host:port` / `[ipv6]:port` token for `+connect`.
+pub fn is_safe_host_port(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 255
+        && !s.starts_with(['-', '+'])
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'[' | b']' | b'-'))
+}
+
+fn is_u64_digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && s.parse::<u64>().is_ok()
+}
+
+fn is_safe_connect_password(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && !s.starts_with(['-', '+'])
+        && !s.contains("%command%")
+        && !s.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '\\'))
+}
+
+/// Validate an untrusted remote join/invite `connect` string into argv tokens.
+/// Empty or whitespace-only strings return `Ok(Vec::new())`.
+pub fn safe_connect_tokens(connect: &str) -> Result<Vec<String>, &'static str> {
+    if connect.chars().any(char::is_control) {
+        return Err("unsafe control characters in connect arguments");
+    }
+    let trimmed = connect.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    match tokens.as_slice() {
+        ["+connect_lobby", id] if is_u64_digits(id) => Ok(vec!["+connect_lobby".into(), (*id).into()]),
+        ["+invite", id] if is_u64_digits(id) => Ok(vec!["+invite".into(), (*id).into()]),
+        ["+connect", addr] if is_safe_host_port(addr) => Ok(vec!["+connect".into(), (*addr).into()]),
+        ["+connect", addr, "+password", pw] if is_safe_host_port(addr) && is_safe_connect_password(pw) => {
+            Ok(vec!["+connect".into(), (*addr).into(), "+password".into(), (*pw).into()])
+        }
+        _ => Err("unsafe connect arguments"),
     }
 }
 
@@ -1878,5 +1920,44 @@ mod steam_id_tests {
         assert_eq!(f[1].1, "[U:1:22202]");
         assert_eq!(f[2].1, "STEAM_0:0:11101");
         assert_eq!(f[3].1, "22202");
+    }
+
+    #[test]
+    fn persona_join_args_hardens_server_and_connect() {
+        use super::Persona;
+        let ok_srv = Persona { server: Some("192.168.1.5:27015".into()), ..Default::default() };
+        assert_eq!(ok_srv.join_args().as_deref(), Some("+connect 192.168.1.5:27015"));
+        let ok_v6 = Persona { server: Some("[2001:db8::1]:27015".into()), ..Default::default() };
+        assert_eq!(ok_v6.join_args().as_deref(), Some("+connect [2001:db8::1]:27015"));
+
+        for bad in [
+            "1.2.3.4:27015 --gpu-launcher=/bin/sh",
+            "-mono-assembly-path=/tmp/x",
+            "+exec evil.cfg",
+            "LD_PRELOAD=/tmp/x.so %command%",
+            "1.2.3.4:27015\n+quit",
+            "",
+        ] {
+            let p = Persona { server: Some(bad.into()), ..Default::default() };
+            assert_eq!(p.join_args(), None, "unsafe server must be rejected: {bad:?}");
+        }
+
+        for bad_connect in [
+            "LD_PRELOAD=/tmp/x.so /bin/sh %command%",
+            "%command%",
+            "--gpu-launcher=/bin/sh",
+            "+exec autoexec.cfg",
+        ] {
+            let p = Persona { connect: Some(bad_connect.into()), ..Default::default() };
+            assert_eq!(p.join_args(), None, "unsafe connect must be rejected: {bad_connect:?}");
+        }
+
+        let fallback = Persona {
+            connect: Some("%command%".into()),
+            server: Some("-bad".into()),
+            lobby: Some(42),
+            ..Default::default()
+        };
+        assert_eq!(fallback.join_args().as_deref(), Some("+connect_lobby 42"));
     }
 }

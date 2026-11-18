@@ -490,12 +490,14 @@ impl SteamApp {
                 Action::ToggleOverlay => self.overlay.toggle(),
                 Action::JoinGame { app_id, connect } => {
                     let now = ctx.input(|i| i.time);
-                    if self.overlay.game.is_some_and(|(id, _)| id == app_id) {
+                    if let Err(msg) = client::safe_connect_args(&connect) {
+                        self.toast(now, i18n::t!("Something went wrong"), i18n::tr_dyn(&msg));
+                    } else if self.overlay.game.is_some_and(|(id, _)| id == app_id) {
                         // A second copy would just fight the first one.
                         self.toast(now, i18n::tr("The game is already running"), i18n::tr("Join from the game's own menu."));
                     } else if let Some(g) = self.local.games.iter().find(|g| g.app_id == app_id) {
                         self.launch_popup = Some(crate::launch_popup::LaunchPopup::new(app_id, g.name.clone(), now));
-                        self.client.send(Command::Launch { app_id, install_dir: g.install_dir.clone(), args: connect });
+                        self.client.send(Command::Launch { app_id, install_dir: g.install_dir.clone(), args: client::LaunchArgs::connect(connect) });
                     } else {
                         self.navigate("library".into(), Some(format!("install:{app_id}")));
                     }
@@ -561,7 +563,7 @@ impl SteamApp {
                     Some(g) => {
                         let now = ctx.input(|i| i.time);
                         self.launch_popup = Some(crate::launch_popup::LaunchPopup::new(id, g.name.clone(), now));
-                        self.client.send(Command::Launch { app_id: id, install_dir: g.install_dir.clone(), args: String::new() });
+                        self.client.send(Command::Launch { app_id: id, install_dir: g.install_dir.clone(), args: client::LaunchArgs::default() });
                     }
                     None => actions.push(nav("library", Some(format!("install:{id}")))),
                 },
