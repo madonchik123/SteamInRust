@@ -91,6 +91,8 @@ status_bar_height = 34
 game_card = "cover"
 density = "comfortable"
 corners = "rounded"
+# The design is drawn on a 1920 px canvas at a large size; show it smaller.
+scale = 0.85
 
 # ---- buttons ----
 
@@ -467,6 +469,7 @@ selected = { fill = "surface_hover" }
 padding = [20, 20]
 text = "heading_m"
 normal = { fill = "chrome", text = "text_dim" }
+hover = { fill = "raised" }
 
 [components.notification]
 padding = [10, 10]

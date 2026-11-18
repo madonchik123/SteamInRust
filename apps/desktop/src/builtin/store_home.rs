@@ -237,27 +237,33 @@ impl Store {
         // Bottom: Wishlist on the left, the price and Buy on the right.
         let row_h = t.dense(44.0);
         let bottom = Rect::from_min_max(pos2(col.left(), col.bottom() - row_h), col.max);
-        let mut b = ui.new_child(UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)));
+        // The price and Buy first (right to left), then Wishlist in what's left.
+        let mut rb = ui.new_child(UiBuilder::new().max_rect(bottom).layout(Layout::right_to_left(Align::Center)));
+        if owned {
+            rb.label(w::body_l(t, t!("In library"), t.play));
+        } else {
+            let label = if item.price.final_.unwrap_or(0) == 0 { t!("Free").to_string() } else { item.price.label() };
+            let r = w::main_cta_rtl(&mut rb, t, &label, item.price.original_label().as_deref(), item.price.discount, t!("Buy Now"));
+            if r.clicked() {
+                open = true;
+            }
+        }
+        let left_w = (bottom.width() - rb.min_rect().width() - gap).max(0.0);
+        let mut b = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(bottom.min, vec2(left_w, row_h))).layout(Layout::left_to_right(Align::Center)));
         let wished = ctx.state.wishlist.as_ref().is_some_and(|l| l.iter().any(|(a, _)| *a == item.app_id));
-        if !owned && ctx.state.steam_id != 0 {
-            // Narrow: just the heart, so it never runs into the price.
-            let label = (col.width() >= t.dense(440.0)).then(|| t!("Wishlist"));
+        if !owned && ctx.state.steam_id != 0 && left_w >= row_h {
+            // Just the heart when the word doesn't fit, so it never runs into the price.
+            let word = t!("Wishlist");
+            let c = &t.components.wishlist;
+            let word_w = ui.painter().layout_no_wrap(word.to_string(), t.font_of(c), egui::Color32::PLACEHOLDER).size().x;
+            // The button's own width with the word (see `wishlist_button_sized`).
+            let needed = t.padding_of(c).x * 2.0 + (row_h * 0.42).round() + 13.0 + word_w;
+            let label = (needed <= left_w).then_some(word);
             let r = w::wishlist_button_sized(&mut b, t, wished, label, Some(row_h));
             if r.clicked() {
                 ctx.send(if wished { Command::WishlistRemove { app_id: item.app_id } } else { Command::WishlistAdd { app_id: item.app_id } });
             }
         }
-        b.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if owned {
-                ui.label(w::body_l(t, t!("In library"), t.play));
-            } else {
-                let label = if item.price.final_.unwrap_or(0) == 0 { t!("Free").to_string() } else { item.price.label() };
-                let r = w::main_cta_rtl(ui, t, &label, item.price.original_label().as_deref(), item.price.discount, t!("Buy Now"));
-                if r.clicked() {
-                    open = true;
-                }
-            }
-        });
 
         // Above it: name, blurb, screenshots, tags (each part only if it fits).
         let upper = Rect::from_min_max(col.min, pos2(col.right(), bottom.top() - gap));

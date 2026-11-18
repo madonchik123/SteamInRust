@@ -454,6 +454,10 @@ pub struct Layout {
     pub game_card: CardStyle,
     pub density: Density,
     pub corners: Corners,
+    /// The whole app's size for this theme, on top of the user's own zoom:
+    /// 0.85 draws everything 15% smaller. Lets a theme keep its design's
+    /// numbers while showing at a comfortable size.
+    pub scale: f32,
 }
 
 impl Default for Layout {
@@ -472,6 +476,7 @@ impl Default for Layout {
             game_card: CardStyle::Cover,
             density: Density::Comfortable,
             corners: Corners::Rounded,
+            scale: 1.0,
         }
     }
 }

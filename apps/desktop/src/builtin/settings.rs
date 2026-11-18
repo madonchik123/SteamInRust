@@ -295,7 +295,9 @@ fn label_w(ui: &Ui) -> f32 {
 /// buttons or notes. `value` and `rest` draw left to right.
 pub(crate) fn row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: impl FnOnce(&mut Ui), rest: impl FnOnce(&mut Ui)) {
     let lw = label_w(ui);
-    ui.horizontal(|ui| {
+    // A soft highlight behind the row under the pointer (`settings_group`'s hover).
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let r = ui.horizontal(|ui| {
         ui.set_min_height(t.dense(44.0));
         ui.spacing_mut().item_spacing.x = t.spacing.sm + 2.0;
         ui.allocate_ui_with_layout(vec2(lw, t.dense(44.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -313,6 +315,14 @@ pub(crate) fn row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: impl Fn
         });
         rest(ui);
     });
+    let rect = egui::Rect::from_min_max(r.response.rect.min, egui::pos2(ui.max_rect().right(), r.response.rect.max.y)).expand2(vec2(t.spacing.sm, 2.0));
+    let hover = ui.ctx().animate_bool_with_time(r.response.id.with("row-hover"), ui.rect_contains_pointer(rect), 0.1);
+    if hover > 0.0 {
+        let look = t.look(&t.components.settings_group, ui::theme::Interact { hover, ..Default::default() });
+        if let ui::theme::ResolvedFill::Color(c) = look.fill {
+            ui.painter().set(bg, egui::Shape::rect_filled(rect, t.corner_small(), c));
+        }
+    }
 }
 
 /// A row whose value is text (in `color`) and whose only action is a
@@ -538,6 +548,11 @@ impl Settings {
             }
         });
         group(ui, t, t!("VAC"), |ui| {
+            // The VAC status comes with your profile: ask for it once.
+            static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !ctx.state.profiles.contains_key(&ctx.state.steam_id) && !ASKED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                ctx.send(Command::LoadProfile { steam_id: ctx.state.steam_id });
+            }
             let (vac, color) = match ctx.state.profiles.get(&ctx.state.steam_id) {
                 Some(p) if p.vac_banned => (t!("VAC bans on record").to_string(), t.danger),
                 Some(_) => (t!("No VAC bans on this account").to_string(), t.text),
@@ -552,23 +567,6 @@ impl Settings {
             if text_row(ui, t, t!("Steam ID"), "", &id, t.text_dim, Some(t!("Sign out"))) {
                 ctx.send(Command::LogOut);
             }
-        });
-        group(ui, t, t!("Danger Zone"), |ui| {
-            row(
-                ui,
-                t,
-                t!("Permanently delete your account"),
-                t!("Deleting an account removes its games and items for good. Steam Support handles it, on Steam's site."),
-                |ui| {
-                    if secondary(ui, t, t!("Learn more")) {
-                        web("https://help.steampowered.com/faqs/view/4F62-35F9-F395-5C23");
-                    }
-                    if w::button(ui, t, None, t!("Delete Account"), w::Kind::Danger, w::Size::Md).clicked() {
-                        web("https://help.steampowered.com/wizard/HelpDeleteAccount");
-                    }
-                },
-                |_| {},
-            );
         });
     }
 

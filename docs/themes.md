@@ -315,6 +315,7 @@ use area):
 | `game_card` | `"cover"`, `"header"` | `"cover"` | game cards as tall cover art or the wide header picture (pages using the shared game card) |
 | `density` | `"comfortable"`, `"compact"` | `"comfortable"` | compact makes controls and text about 15% smaller |
 | `corners` | `"rounded"`, `"square"` | `"rounded"` | square ignores every radius |
+| `scale` | a number, 0.5 to 2 | `1` | the whole app's size for this theme, times the user's own zoom (the default theme uses 0.85: its design is drawn large) |
 
 ### `[components.*]`: the look of each widget
 
@@ -398,7 +399,7 @@ then `pressed` while clicked and `disabled` when it can't be used.
 | `profile_row` | rows on a profile: its links with counts, friends, games (`selected` is the page showing) |
 | `settings_nav` | the column of sections in Settings and Profile Settings |
 | `settings_nav_item` | a section in that column (`selected` is the open one) |
-| `settings_group` | a group of settings (`text` is the group title's style and color) |
+| `settings_group` | a group of settings (`text` is the group title's style and color; `hover` is the highlight behind the row under the pointer) |
 | `notification` | one notification in the notifications popup (`selected` is unread; its `icon` is the unread dot) |
 | `friends_panel` | the Friends & Chat window's list column (`normal` fill, `padding` around it) |
 | `friends_box` | the box holding the friends list under its Friends / Activity tabs (those are `sort`) |

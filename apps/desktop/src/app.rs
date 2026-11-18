@@ -829,9 +829,12 @@ impl eframe::App for SteamApp {
             self.prefs.theme.apply(&ctx);
             self.applied_theme = Some(self.prefs.theme.clone());
         }
-        if self.applied_zoom != self.prefs.zoom {
-            ctx.set_zoom_factor(self.prefs.zoom);
-            self.applied_zoom = self.prefs.zoom;
+        // The user's zoom times the theme's own size (a theme drawn large,
+        // like the redesign, shrinks itself to a comfortable size).
+        let zoom = self.prefs.zoom * self.prefs.theme.layout.scale.clamp(0.5, 2.0);
+        if self.applied_zoom != zoom {
+            ctx.set_zoom_factor(zoom);
+            self.applied_zoom = zoom;
         }
         // Update checks (not in demo/preview runs).
         if !self.demo {

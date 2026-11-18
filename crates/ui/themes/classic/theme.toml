@@ -43,7 +43,12 @@ community = "bg"
 profile = "bg"
 
 [typography]
+heading_l = { size = 24, weight = "bold" }
 heading_m = { size = 24, weight = "semibold" }
+heading_s = { size = 15, weight = "semibold" }
+body_l = { size = 14, weight = "regular" }
+body_m = { size = 13, weight = "regular" }
+body_s = { size = 12, weight = "regular" }
 button = { size = 14, weight = "semibold" }
 button_large = { size = 16, weight = "semibold" }
 section = { size = 13, weight = "bold" }
@@ -339,6 +344,7 @@ radius = "large"
 text = { size = 15, weight = "semibold" }
 border = 1
 normal = { fill = "surface", text = "text", border = "border" }
+hover = { fill = "surface_hover" }
 
 [components.notification]
 padding = [8, 8]
