@@ -554,6 +554,21 @@ fn clean_update_dir(keep: Option<&str>) {
 
 /// Delete installers in the update folder for this version or older.
 fn clean_old_updates() {
+    // Updates used to be kept in the temp folder: whatever was left there
+    // (finished or half-downloaded installers) is no longer used.
+    let old = std::env::temp_dir().join("SteamInRust-update");
+    if std::fs::symlink_metadata(&old).is_ok_and(|m| m.is_dir()) {
+        if let Ok(entries) = std::fs::read_dir(&old) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let ours = name.starts_with("SteamInRust") && [".exe", ".dmg", ".zip", ".part"].iter().any(|x| name.ends_with(x));
+                if ours && e.file_type().is_ok_and(|t| t.is_file()) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+        let _ = std::fs::remove_dir(&old);
+    }
     let Ok(entries) = std::fs::read_dir(update_dir()) else { return };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
