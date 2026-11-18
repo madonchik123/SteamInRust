@@ -263,9 +263,9 @@ pub struct ThemeChoice {
 /// The theme for a choice: the built-in theme (the default if it's
 /// unknown) with the user's changes on top.
 pub fn resolve(choice: &ThemeChoice) -> Theme {
-    let mut t = builtin(&choice.id).unwrap_or_else(|| {
+    let mut t = find(&choice.id).unwrap_or_else(|| {
         if !choice.id.is_empty() {
-            tracing::warn!("theme {:?} isn't built in; using the default", choice.id);
+            tracing::warn!("theme {:?} isn't built in or in the themes folder; using the default", choice.id);
         }
         default_theme()
     });
@@ -291,7 +291,7 @@ pub fn apply_overrides(t: &mut Theme, choice: &ThemeChoice) {
 /// The choice that gives this theme: its id, and whatever differs from the
 /// built-in theme as the user's changes.
 pub fn choice_for(t: &Theme) -> ThemeChoice {
-    let base = builtin(&t.id);
+    let base = find(&t.id);
     let differs = |a: Color32, b: Option<Color32>| (Some(a) != b).then_some(a);
     ThemeChoice {
         id: t.id.clone(),
@@ -362,6 +362,54 @@ mod opt_hex {
             None => Ok(None),
         }
     }
+}
+
+// ---------- the user's own themes ----------
+
+static USER_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Where the user's own themes live (one theme package per folder inside).
+/// Set once at startup; without it there are only the built-in themes.
+pub fn set_user_dir(dir: PathBuf) {
+    let _ = USER_DIR.set(dir);
+}
+
+/// The user's themes folder, if the app set one.
+pub fn user_dir() -> Option<&'static Path> {
+    USER_DIR.get().map(|p| p.as_path())
+}
+
+/// Every theme package in the user's themes folder that loads, by name.
+/// A theme with a built-in theme's id is left out (the built-in wins).
+pub fn user_themes() -> Vec<Theme> {
+    let Some(dir) = user_dir() else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<Theme> = Vec::new();
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path.join("theme.toml").is_file() {
+            continue;
+        }
+        match load_dir(&path) {
+            Ok(t) if BUILTINS.iter().any(|b| b.id == t.id) => tracing::warn!("theme in {}: id {:?} is a built-in theme's; skipped", path.display(), t.id),
+            Ok(t) if out.iter().any(|o| o.id == t.id) => tracing::warn!("theme in {}: id {:?} is used twice; skipped", path.display(), t.id),
+            Ok(t) => out.push(t),
+            Err(e) => tracing::warn!("theme not loaded: {e}"),
+        }
+    }
+    out.sort_by_key(|t| t.name.to_lowercase());
+    out
+}
+
+/// A theme by id: built in, or from the user's themes folder.
+pub fn find(id: &str) -> Option<Theme> {
+    if id.is_empty() {
+        return None;
+    }
+    if BUILTINS.iter().any(|b| b.id == id) {
+        return builtin(id);
+    }
+    user_themes().into_iter().find(|t| t.id == id)
 }
 
 #[cfg(test)]

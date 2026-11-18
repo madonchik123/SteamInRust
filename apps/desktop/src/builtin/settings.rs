@@ -1,9 +1,12 @@
-//! Settings: account, appearance, plugins, extensions, overlay, library folders, about.
+//! Settings (Figma "settings" `475:6189`): a column of sections on the
+//! left, groups of settings on the right. Profile Settings uses the same
+//! layout (`layout`, `group`, `row` here).
 
 use i18n::t;
 use client::Command;
-use egui::{Align, Layout, Margin, Sense, Ui, vec2};
+use egui::{Sense, Ui, vec2};
 use extensions::{Action, Ctx, Extension, Manifest, PageSpec};
+use model::ProfilePrivacy;
 use ui::{Theme, icons, widgets as w};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -13,10 +16,13 @@ enum Section {
     Friends,
     Family,
     Security,
+    Privacy,
+    Wallet,
+    Store,
+    Language,
     Notifications,
     Interface,
     Appearance,
-    Store,
     Library,
     Downloads,
     Folders,
@@ -27,27 +33,29 @@ enum Section {
     About,
 }
 
-/// Steam's settings list, in Steam's order; `None` draws a divider.
-const SECTIONS: [Option<(Section, &str, &str)>; 19] = [
-    Some((Section::Account, icons::USER_CIRCLE, "Account")),
-    Some((Section::Friends, icons::USERS, "Friends & Chat")),
-    Some((Section::Family, icons::USERS_THREE, "Family")),
-    Some((Section::Security, icons::SHIELD, "Security")),
+/// The sections, in the design's order; `None` draws a divider.
+const SECTIONS: [Option<(Section, &str)>; 21] = [
+    Some((Section::Account, "Account")),
+    Some((Section::Friends, "Friends & Chat")),
+    Some((Section::Family, "Family")),
+    Some((Section::Security, "Security")),
+    Some((Section::Privacy, "Privacy")),
+    Some((Section::Wallet, "Wallet & Purchases")),
+    Some((Section::Store, "Store Preferences")),
+    Some((Section::Language, "Language")),
     None,
-    Some((Section::Notifications, icons::BELL, "Notifications")),
-    Some((Section::Interface, icons::MONITOR, "Interface")),
-    Some((Section::Appearance, icons::PALETTE, "Appearance")),
-    Some((Section::Store, icons::STORE, "Store")),
-    Some((Section::Library, icons::BOOKS, "Library")),
-    Some((Section::Downloads, icons::DOWNLOAD, "Downloads")),
-    Some((Section::Folders, icons::DRIVES, "Storage")),
-    Some((Section::Cloud, icons::CLOUD_CHECK, "Cloud")),
-    Some((Section::Overlay, icons::CONTROLLER, "In game")),
-    Some((Section::Accessibility, icons::EYE, "Accessibility")),
+    Some((Section::Notifications, "Notifications")),
+    Some((Section::Interface, "Interface")),
+    Some((Section::Appearance, "Appearance")),
+    Some((Section::Library, "Library")),
+    Some((Section::Downloads, "Downloads")),
+    Some((Section::Folders, "Storage")),
+    Some((Section::Cloud, "Cloud")),
+    Some((Section::Overlay, "In game")),
+    Some((Section::Accessibility, "Accessibility")),
     None,
-    Some((Section::Plugins, icons::PLUGS, "Plugins")),
-    Some((Section::About, icons::INFO, "About")),
-    None,
+    Some((Section::Plugins, "Plugins")),
+    Some((Section::About, "About")),
 ];
 
 /// App-level options the Settings page edits (owned by the app, shared here).
@@ -75,11 +83,31 @@ pub struct Settings {
     flags: SharedFlags,
     /// Cached "are we the steam:// handler?" (registry lookups are slow).
     handler: Option<bool>,
+    /// The search box above the sections.
+    search: String,
+    /// Privacy asked for, and a change sent to Steam but not back yet.
+    privacy_asked: bool,
+    privacy_pending: Option<ProfilePrivacy>,
+    /// The themes to pick from: built in, then the user's own (read from
+    /// their folder when Appearance opens).
+    user_themes: Option<Vec<Theme>>,
+    /// Show the account name instead of dots.
+    reveal_account: bool,
 }
 
 impl Settings {
     pub fn new(flags: SharedFlags) -> Self {
-        Self { section: Section::default(), acct: Default::default(), flags, handler: None }
+        Self {
+            section: Section::default(),
+            acct: Default::default(),
+            flags,
+            handler: None,
+            search: String::new(),
+            privacy_asked: false,
+            privacy_pending: None,
+            user_themes: None,
+            reveal_account: false,
+        }
     }
 }
 
@@ -97,8 +125,14 @@ impl Extension for Settings {
         match arg {
             Some("plugins") => self.section = Section::Plugins,
             Some("family") => self.section = Section::Family,
+            Some("privacy") => self.section = Section::Privacy,
+            Some("appearance") => self.section = Section::Appearance,
+            Some("about") => self.section = Section::About,
+            Some("ingame") => self.section = Section::Overlay,
+            Some("wallet") => self.section = Section::Wallet,
+            Some("notifications") => self.section = Section::Notifications,
             Some(a @ ("history" | "licenses" | "account-details")) => {
-                self.section = Section::Account;
+                self.section = if a == "account-details" { Section::Account } else { Section::Wallet };
                 self.acct.open(match a {
                     "history" => AccountView::Purchases,
                     "licenses" => AccountView::Licenses,
@@ -107,199 +141,670 @@ impl Extension for Settings {
             }
             _ => {}
         }
+        if self.section == Section::Appearance {
+            self.user_themes = None;
+        }
+    }
+
+    fn on_event(&mut self, event: &client::Event, _ctx: &mut Ctx) {
+        // Steam refused a privacy change: show what it has again.
+        if let client::Event::ProfileSaved { what: model::ProfileSave::Privacy, result } = event {
+            if result.is_err() {
+                self.privacy_pending = None;
+            }
+        }
     }
 
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {
         let t = ctx.theme.clone();
-        egui::Panel::left("settings-nav")
-            .exact_size(240.0)
-            .resizable(false)
-            .frame(egui::Frame::new().fill(t.chrome).inner_margin(Margin { left: 14, right: 10, top: 22, bottom: 10 }))
-            .show(ui, |ui| {
-                ui.label(w::text_bold(t!("SETTINGS"), 18.0, t.accent));
-                ui.add_space(12.0);
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for entry in SECTIONS {
-                        let Some((s, icon, label)) = entry else {
-                            ui.add_space(4.0);
-                            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-                            ui.painter().hline(r.x_range(), r.center().y, egui::Stroke::new(1.0, t.border));
-                            ui.add_space(4.0);
-                            continue;
-                        };
-                        let on = self.section == s;
-                        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
-                        if on || resp.hovered() {
-                            ui.painter().rect_filled(r, t.corner_small(), if on { t.surface_hover } else { t.surface });
+        let mut pick = None;
+        let mut search = std::mem::take(&mut self.search);
+        let current = self.section;
+        layout(
+            ui,
+            &t,
+            t!("Settings"),
+            |_| {},
+            |ui| {
+                let width = ui.available_width();
+                w::search(ui, &t, &mut search, t!("Search settings…"), width);
+                ui.add_space(t.spacing.sm + 2.0);
+                let q = search.trim().to_lowercase();
+                for entry in SECTIONS {
+                    match entry {
+                        None if q.is_empty() => nav_divider(ui, &t),
+                        None => {}
+                        Some((s, en)) => {
+                            let label = i18n::tr_dyn(en);
+                            if !q.is_empty() && !label.to_lowercase().contains(&q) && !en.to_lowercase().contains(&q) {
+                                continue;
+                            }
+                            if nav_item(ui, &t, &label, current == s).clicked() {
+                                pick = Some(s);
+                            }
                         }
-                        ui.painter().text(egui::pos2(r.left() + 18.0, r.center().y), egui::Align2::CENTER_CENTER, icon, w::font(17.0), if on { t.text } else { t.text_dim });
-                        ui.painter().text(egui::pos2(r.left() + 40.0, r.center().y), egui::Align2::LEFT_CENTER, i18n::tr_dyn(label), w::font_medium(14.0), if on { t.text } else { t.text_dim });
-                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                            self.section = s;
-                            self.acct.open(Default::default());
-                        }
                     }
-                });
-            });
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg)).show(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                ui.add_space(28.0);
-                w::centered(ui, 820.0, 32.0, |ui| match self.section {
-                    Section::Account if self.acct.view != Default::default() => self.acct.show(ui, &t, ctx),
-                    Section::Account => account(ui, &t, ctx, &mut self.acct),
-                    Section::Friends => friends_chat(ui, &t, ctx),
-                    Section::Family => self.acct.family(ui, &t, ctx),
-                    Section::Security => security(ui, &t, ctx, &mut self.acct),
-                    Section::Notifications => notifications(ui, &t, &self.flags),
-                    Section::Library => library(ui, &t, ctx),
-                    Section::Downloads => downloads(ui, &t, ctx, &self.flags),
-                    Section::Cloud => cloud(ui, &t, &self.flags),
-                    Section::Accessibility => accessibility(ui, &t, ctx),
-                    Section::Appearance => appearance(ui, &t, ctx, &self.flags),
-                    Section::Plugins => {
-                        w::page_title(ui, &t, t!("Plugins"), Some(t!("Scripts you install yourself. Each one runs in a sandbox and only gets the permissions you approve.")));
-                        ctx.settings_for("plugins", ui);
-                    }
-                    Section::Interface => interface(ui, &t, ctx, &self.flags, &mut self.handler),
-                    Section::Store => {
-                        w::page_title(ui, &t, t!("Store"), None);
-                        w::card(&t).show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ctx.settings_for("store", ui);
-                        });
-                    }
-                    Section::Overlay => overlay(ui, &t, ctx),
-                    Section::Folders => folders(ui, &t, ctx),
-                    Section::About => about(ui, &t),
-                });
-                ui.add_space(40.0);
-            });
-        });
+                }
+            },
+            |ui| match self.section {
+                Section::Account | Section::Wallet if self.acct.view != Default::default() => self.acct.show(ui, &t, ctx),
+                Section::Account => self.account(ui, &t, ctx),
+                Section::Wallet => wallet(ui, &t, ctx, &mut self.acct),
+                Section::Friends => friends_chat(ui, &t, ctx),
+                Section::Family => group(ui, &t, t!("Family"), |ui| self.acct.family(ui, &t, ctx)),
+                Section::Security => security(ui, &t, ctx, &mut self.acct),
+                Section::Privacy => self.privacy(ui, &t, ctx),
+                Section::Notifications => notifications(ui, &t, &self.flags),
+                Section::Library => library(ui, &t, ctx),
+                Section::Downloads => downloads(ui, &t, ctx, &self.flags),
+                Section::Cloud => cloud(ui, &t, &self.flags),
+                Section::Accessibility => accessibility(ui, &t, ctx),
+                Section::Appearance => self.appearance(ui, &t, ctx),
+                Section::Language => language(ui, &t, ctx),
+                Section::Plugins => group(ui, &t, t!("Plugins"), |ui| {
+                    ui.label(w::body_m(&t, t!("Scripts you install yourself. Each one runs in a sandbox and only gets the permissions you approve."), t.text_dim));
+                    ui.add_space(t.spacing.md);
+                    ctx.settings_for("plugins", ui);
+                }),
+                Section::Interface => interface(ui, &t, ctx, &self.flags, &mut self.handler),
+                Section::Store => group(ui, &t, t!("Store Preferences"), |ui| {
+                    ctx.settings_for("store", ui);
+                }),
+                Section::Overlay => overlay(ui, &t, ctx),
+                Section::Folders => folders(ui, &t, ctx),
+                Section::About => about(ui, &t),
+            },
+        );
+        self.search = search;
+        if let Some(s) = pick {
+            self.section = s;
+            self.acct.open(Default::default());
+            if s == Section::Appearance {
+                self.user_themes = None;
+            }
+        }
     }
 }
 
-/// A row like Steam's settings: label, value, and a button on the right.
-pub(super) fn info_row(ui: &mut Ui, t: &Theme, label: &str, value: &str, button: Option<&str>) -> bool {
-    let mut clicked = false;
-    egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(w::text_medium(label, 14.0, t.text));
-            ui.add_space(8.0);
-            ui.label(w::text(value, 13.0, t.text_dim));
-            if let Some(b) = button {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    clicked = w::button(ui, t, None, b, w::Kind::Secondary, w::Size::Sm).clicked();
+// ---------- the layout (shared with Profile Settings) ----------
+
+/// The settings layout: the title (with `right` at its far end), the
+/// section column (`nav`) on the left, and the groups (`body`) beside it.
+pub(crate) fn layout(ui: &mut Ui, t: &Theme, title: &str, right: impl FnOnce(&mut Ui), nav: impl FnOnce(&mut Ui), body: impl FnOnce(&mut Ui)) {
+    w::paint_background(ui, t, ui.max_rect(), "page");
+    egui::ScrollArea::vertical().id_salt(("settings-layout", title)).auto_shrink([false, false]).show(ui, |ui| {
+        ui.add_space(t.spacing.xl + t.spacing.xl + t.spacing.sm);
+        w::centered(ui, 1564.0, t.spacing.xl + t.spacing.sm, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(w::heading_l(t, title, t.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
+            });
+            ui.add_space(t.spacing.xl);
+            let gap = t.spacing.lg + 2.0;
+            let nav_w = (ui.available_width() * 0.2).clamp(200.0, 299.0);
+            let body_w = (ui.available_width() - nav_w - gap).max(200.0);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                ui.allocate_ui_with_layout(vec2(nav_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_width(nav_w);
+                    w::component_frame(t, &t.components.settings_nav).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = t.spacing.sm + 2.0;
+                        nav(ui);
+                    });
                 });
-            }
+                ui.allocate_ui_with_layout(vec2(body_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_width(body_w);
+                    ui.spacing_mut().item_spacing.y = t.spacing.lg + 4.0;
+                    body(ui);
+                });
+            });
+            ui.add_space(t.spacing.xl * 2.0);
         });
     });
-    ui.add_space(6.0);
+}
+
+/// A section in the left column.
+pub(crate) fn nav_item(ui: &mut Ui, t: &Theme, label: &str, selected: bool) -> egui::Response {
+    w::list_row(ui, t, &t.components.settings_nav_item, None, label, "", None, selected)
+}
+
+/// The line between groups of sections.
+pub(crate) fn nav_divider(ui: &mut Ui, t: &Theme) {
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(r.x_range(), r.center().y, egui::Stroke::new(1.0, t.surface_hover));
+}
+
+/// A group of settings ("Profile", "Contact Info").
+pub(crate) fn group<R>(ui: &mut Ui, t: &Theme, title: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    w::titled_box(ui, t, &t.components.settings_group, title, "", |ui| {
+        ui.spacing_mut().item_spacing.y = t.spacing.md - 1.0;
+        if !title.is_empty() {
+            ui.add_space(t.spacing.lg);
+        }
+        add(ui)
+    })
+}
+
+/// The width of the name column of a row.
+fn label_w(ui: &Ui) -> f32 {
+    (ui.available_width() * 0.28).clamp(150.0, 265.0)
+}
+
+/// One setting: its name (with an "i" explaining it), its value, then
+/// buttons or notes. `value` and `rest` draw left to right.
+pub(crate) fn row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: impl FnOnce(&mut Ui), rest: impl FnOnce(&mut Ui)) {
+    let lw = label_w(ui);
+    ui.horizontal(|ui| {
+        ui.set_min_height(t.dense(44.0));
+        ui.spacing_mut().item_spacing.x = t.spacing.sm + 2.0;
+        ui.allocate_ui_with_layout(vec2(lw, t.dense(44.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_width(lw);
+            ui.spacing_mut().item_spacing.x = t.spacing.xs + 1.0;
+            ui.add(egui::Label::new(w::heading_s(t, label, t.text)).truncate());
+            if !tip.is_empty() {
+                w::info_tip(ui, t, tip);
+            }
+        });
+        let vw = (ui.available_width() * 0.35).clamp(120.0, 312.0);
+        ui.allocate_ui_with_layout(vec2(vw, t.dense(44.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_width(vw);
+            value(ui);
+        });
+        rest(ui);
+    });
+}
+
+/// A row whose value is text (in `color`) and whose only action is a
+/// button; true when the button is pressed.
+pub(crate) fn text_row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: &str, color: egui::Color32, button: Option<&str>) -> bool {
+    let mut clicked = false;
+    row(
+        ui,
+        t,
+        label,
+        tip,
+        |ui| {
+            ui.add(egui::Label::new(w::body_l(t, value, color)).truncate());
+        },
+        |ui| {
+            if let Some(b) = button {
+                clicked = secondary(ui, t, b);
+            }
+        },
+    );
     clicked
 }
 
-/// A big square shortcut tile (icon, title, line under it).
-fn tile(ui: &mut Ui, t: &Theme, icon: &str, title: &str, sub: &str, width: f32) -> bool {
-    let (r, resp) = ui.allocate_exact_size(vec2(width, 132.0), Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
-    ui.painter().rect_filled(r, t.corner_small(), w::mix(t.surface, t.surface_hover, hover));
-    ui.painter().text(egui::pos2(r.center().x, r.top() + 42.0), egui::Align2::CENTER_CENTER, icon, w::font(34.0), t.text);
-    ui.painter().text(egui::pos2(r.center().x, r.top() + 84.0), egui::Align2::CENTER_CENTER, title, w::font_semibold(14.5), t.text);
-    let g = ui.painter().layout(sub.to_string(), w::font(12.0), t.text_dim, width - 20.0);
-    ui.painter().galley(egui::pos2(r.center().x - g.size().x / 2.0, r.top() + 98.0), g, t.text_dim);
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+/// The design's secondary button in settings rows.
+pub(crate) fn secondary(ui: &mut Ui, t: &Theme, label: &str) -> bool {
+    w::button(ui, t, None, label, w::Kind::Secondary, w::Size::Md).clicked()
+}
+
+/// A switch with a note after it.
+fn switch_row(ui: &mut Ui, t: &Theme, label: &str, note: &str, value: &mut bool) -> bool {
+    let mut changed = false;
+    row(
+        ui,
+        t,
+        label,
+        "",
+        |ui| changed = w::toggle(ui, t, value).changed(),
+        |ui| {
+            ui.add(egui::Label::new(w::body_m(t, note, t.text_dim)).wrap());
+        },
+    );
+    changed
+}
+
+/// A row as Steam's account pages had it (name, value, one button): kept
+/// for the account pages (`settings_account.rs`).
+pub(super) fn info_row(ui: &mut Ui, t: &Theme, label: &str, value: &str, button: Option<&str>) -> bool {
+    text_row(ui, t, label, "", value, t.text_dim, button)
 }
 
 pub(super) fn web(url: &str) {
     crate::links::open_http(url);
 }
 
-/// Like Steam's Account page.
-fn account(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pages: &mut super::settings_account::AccountPages) {
-    use super::settings_account::AccountView;
-    w::page_title(ui, t, t!("Account"), None);
-    let me = ctx.state.persona(ctx.state.steam_id);
-    let name = if ctx.state.persona_name.is_empty() { me.name.clone() } else { ctx.state.persona_name.clone() };
-    ui.horizontal(|ui| {
-        w::avatar(ui, t, &model::art::avatar_full(me.avatar_hash.as_deref()), 60.0, None);
-        ui.vertical(|ui| {
-            ui.add_space(8.0);
-            ui.label(w::text_semibold(&name, 16.0, t.accent));
-            ui.label(w::text(i18n::tr_dyn(me.state.label()), 13.0, crate::shell::status_color(t, &me)));
+/// "••••@gmail.com": the address with its name part hidden.
+fn masked_email(e: &str) -> String {
+    match e.split_once('@') {
+        Some((name, domain)) => format!("{}@{domain}", "*".repeat(name.chars().count().clamp(3, 8))),
+        None => "*".repeat(e.chars().count().min(12)),
+    }
+}
+
+// ---------- the profile's privacy (here and in Profile Settings) ----------
+
+/// The labels for Steam's privacy levels (3 public, 2 friends, 1 private).
+fn levels(max: u8) -> Vec<(u8, String)> {
+    [(3u8, t!("Public")), (2, t!("Friends only")), (1, t!("Private"))].into_iter().filter(|(v, _)| *v <= max).map(|(v, l)| (v, l.to_string())).collect()
+}
+
+/// Who can see your profile and each of its parts (Figma "privacy
+/// settings" `477:7327`). True when something changed.
+pub(crate) fn privacy_rows(ui: &mut Ui, t: &Theme, p: &mut ProfilePrivacy) -> bool {
+    let before = *p;
+    let select_w = (ui.available_width() * 0.2).clamp(150.0, 181.0);
+    let indent = t.spacing.xl + t.spacing.md;
+    let line = |ui: &mut Ui, label: &str, tip: &str, sub: bool, draw: &mut dyn FnMut(&mut Ui)| {
+        ui.horizontal(|ui| {
+            if sub {
+                ui.add_space(indent);
+            }
+            let lw = label_w(ui) + if sub { 0.0 } else { indent };
+            ui.allocate_ui_with_layout(vec2(lw, t.dense(44.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_width(lw);
+                ui.spacing_mut().item_spacing.x = t.spacing.xs + 1.0;
+                ui.add(egui::Label::new(w::heading_s(t, label, t.text)).truncate());
+                w::info_tip(ui, t, tip);
+            });
+            draw(ui);
         });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if w::button(ui, t, None, t!("View profile"), w::Kind::Secondary, w::Size::Md).clicked() {
-                ctx.navigate("profile", None);
+    };
+    line(ui, &t!("My profile"), &t!("Your level, badges, friends, groups and summary."), false, &mut |ui| {
+        w::select(ui, t, &mut p.profile, &levels(3), select_w);
+    });
+    let top = p.profile;
+    // Nothing can be more public than the profile itself.
+    p.games = p.games.min(top);
+    p.friends = p.friends.min(top);
+    p.inventory = p.inventory.min(top);
+    line(ui, &t!("Game details"), &t!("The games you own, your playtime and achievements."), true, &mut |ui| {
+        w::select(ui, t, &mut p.games, &levels(top), select_w);
+    });
+    if p.games > 1 {
+        let mut hide = p.playtime == 1;
+        line(ui, &t!("Total playtime"), &t!("Always keep my total playtime private"), true, &mut |ui| {
+            let games = levels(3).into_iter().find(|(v, _)| *v == p.games).map(|(_, l)| l).unwrap_or_default();
+            w::select(ui, t, &mut hide, &[(false, games), (true, t!("Private").to_string())], select_w);
+        });
+        p.playtime = if hide { 1 } else { p.games };
+    } else {
+        p.playtime = p.games;
+    }
+    line(ui, &t!("Friends list"), &t!("Who can see your friends."), true, &mut |ui| {
+        w::select(ui, t, &mut p.friends, &levels(top), select_w);
+    });
+    line(ui, &t!("Inventory"), &t!("Your items, trading cards and gifts."), true, &mut |ui| {
+        w::select(ui, t, &mut p.inventory, &levels(top), select_w);
+    });
+    if p.inventory > 1 {
+        let mut hide = p.gifts == 1;
+        line(ui, &t!("Steam Gifts"), &t!("Always keep Steam Gifts private"), true, &mut |ui| {
+            let inv = levels(3).into_iter().find(|(v, _)| *v == p.inventory).map(|(_, l)| l).unwrap_or_default();
+            w::select(ui, t, &mut hide, &[(false, inv), (true, t!("Private").to_string())], select_w);
+        });
+        p.gifts = if hide { 1 } else { p.inventory };
+    } else {
+        p.gifts = p.inventory;
+    }
+    // Comments: 1 everyone, 0 friends, 2 nobody.
+    line(ui, &t!("Profile comments"), &t!("Can post comments on my profile"), true, &mut |ui| {
+        w::select(ui, t, &mut p.comments, &[(1, t!("Public").to_string()), (0, t!("Friends only").to_string()), (2, t!("Private").to_string())], select_w);
+    });
+    *p != before
+}
+
+// ---------- sections ----------
+
+impl Settings {
+    /// Account (the frame itself): profile, contact info, VAC, and the
+    /// danger zone.
+    fn account(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        use super::settings_account::AccountView;
+        let me = ctx.state.persona(ctx.state.steam_id);
+        let name = if ctx.state.persona_name.is_empty() { me.name.clone() } else { ctx.state.persona_name.clone() };
+        let reveal = &mut self.reveal_account;
+        group(ui, t, t!("Profile"), |ui| {
+            row(
+                ui,
+                t,
+                t!("Account name"),
+                t!("The name you sign in with. Only you see it."),
+                |ui| {
+                    let shown = if *reveal { ctx.state.account.clone() } else { "•".repeat(ctx.state.account.chars().count().clamp(6, 12)) };
+                    let r = ui.add(egui::Label::new(w::body_l(t, shown, t.text_dim)).sense(Sense::click()));
+                    if r.on_hover_text(t!("Click to show or hide")).clicked() {
+                        *reveal = !*reveal;
+                    }
+                },
+                |ui| {
+                    ui.label(w::body_l(t, t!("You can't change your account name."), t.text_dim));
+                },
+            );
+            let (mut visit, mut edit) = (false, None);
+            row(
+                ui,
+                t,
+                t!("Profile name"),
+                t!("The name everyone sees on your profile and in chat."),
+                |ui| {
+                    visit = ui.add(egui::Label::new(w::body_l(t, &name, t.accent)).sense(Sense::click()).truncate()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                },
+                |ui| {
+                    if secondary(ui, t, t!("Edit Profile")) {
+                        edit = Some(Some("edit".to_string()));
+                    }
+                    if secondary(ui, t, t!("Visit Profile")) {
+                        edit = Some(None);
+                    }
+                },
+            );
+            if let Some(arg) = edit.or(visit.then_some(None)) {
+                ctx.navigate("profile", arg);
+            }
+            if text_row(ui, t, t!("Account details"), "", t!("Contact, Steam Guard, password, devices"), t.text_dim, Some(t!("View"))) {
+                self.acct.open(AccountView::Details);
             }
         });
-    });
-    ui.add_space(14.0);
-    let width = (ui.available_width() - 16.0) / 3.0;
-    let balance = ctx.state.wallet.map(|(b, c)| model::format_money(b, c)).unwrap_or_else(|| "—".into());
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        if tile(ui, t, icons::COINS, t!("Add funds"), &t!("Current balance: {amount}", amount = balance), width) {
-            web("https://store.steampowered.com/steamaccount/addfunds");
-        }
-        if tile(ui, t, icons::EYE_SLASH, t!("Privacy settings"), t!("Profile, games, inventory and more"), width) {
-            ctx.navigate("profile", Some("edit/privacy".into()));
-        }
-        if tile(ui, t, icons::NOTE, t!("Account details"), t!("Contact, Steam Guard, password, devices"), width) {
-            pages.open(AccountView::Details);
-        }
-    });
-    ui.add_space(10.0);
-    if info_row(ui, t, t!("Purchase history"), t!("Purchases, gifts, refunds, wallet and Market"), Some(t!("View"))) {
-        pages.open(AccountView::Purchases);
-    }
-    if info_row(ui, t, t!("Licenses and product key activations"), t!("Everything on your account and how you got it"), Some(t!("View"))) {
-        pages.open(AccountView::Licenses);
-    }
-    let code = (ctx.state.steam_id & 0xFFFF_FFFF).to_string();
-    if info_row(ui, t, t!("Your friend code"), &code, Some(t!("Add friends"))) {
-        ctx.navigate("community", None);
-    }
-    let email = ctx.state.email.as_ref().map(|(e, ok)| if *ok { e.clone() } else { format!("{e} ({})", t!("not verified")) }).unwrap_or_else(|| "—".into());
-    if info_row(ui, t, t!("Email address"), &email, Some(t!("Change email address"))) {
-        web("https://help.steampowered.com/wizard/HelpChangeEmail");
-    }
-    let vac = match ctx.state.profiles.get(&ctx.state.steam_id) {
-        Some(p) if p.vac_banned => t!("VAC bans on record").to_string(),
-        Some(_) => t!("No VAC bans").to_string(),
-        None => "…".into(),
-    };
-    if info_row(ui, t, t!("VAC status"), &vac, Some(t!("Learn more"))) {
-        web("https://help.steampowered.com/faqs/view/647C-5CC1-7EA9-3C29");
-    }
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.label(w::text(format!("{} · {} · {}", ctx.state.account, ctx.state.steam_id, ctx.state.country), 12.0, t.text_faint));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if w::button(ui, t, Some(icons::SIGN_OUT), t!("Sign out"), w::Kind::Danger, w::Size::Sm).clicked() {
+        group(ui, t, t!("Contact Info"), |ui| {
+            row(
+                ui,
+                t,
+                t!("Email"),
+                t!("Where Steam sends receipts and Steam Guard codes."),
+                |ui| match &ctx.state.email {
+                    Some((e, ok)) => {
+                        ui.label(w::body_l(t, masked_email(e), t.accent)).on_hover_text(e);
+                        if *ok {
+                            ui.label(w::body_l(t, icons::CHECK, t.play)).on_hover_text(t!("verified"));
+                        } else {
+                            ui.label(w::body_s(t, t!("not verified"), t.away));
+                        }
+                    }
+                    None => {
+                        ui.label(w::body_l(t, "—", t.text_dim));
+                    }
+                },
+                |ui| {
+                    if secondary(ui, t, t!("Change Email")) {
+                        web("https://help.steampowered.com/wizard/HelpChangeEmail");
+                    }
+                    if secondary(ui, t, t!("Email Preferences")) {
+                        web("https://store.steampowered.com/account/emailoptout");
+                    }
+                },
+            );
+            self.acct.ask_security(ctx);
+            let phone = match &ctx.state.account_security {
+                Some(Ok(s)) if s.phone_verified => t!("A verified phone number is on your account").to_string(),
+                Some(Ok(_)) => t!("No phone number").to_string(),
+                _ => "…".into(),
+            };
+            if text_row(ui, t, t!("Phone Number"), "", &phone, t.accent, Some(t!("Manage phone number"))) {
+                web("https://store.steampowered.com/phone/manage");
+            }
+        });
+        group(ui, t, t!("VAC"), |ui| {
+            let (vac, color) = match ctx.state.profiles.get(&ctx.state.steam_id) {
+                Some(p) if p.vac_banned => (t!("VAC bans on record").to_string(), t.danger),
+                Some(_) => (t!("No VAC bans on this account").to_string(), t.text),
+                None => ("…".into(), t.text_dim),
+            };
+            if text_row(ui, t, t!("Status"), t!("Valve Anti-Cheat bans on this account."), &vac, color, Some(t!("Learn more"))) {
+                web("https://help.steampowered.com/faqs/view/647C-5CC1-7EA9-3C29");
+            }
+        });
+        group(ui, t, t!("Sign in"), |ui| {
+            let id = format!("{} · {}", ctx.state.steam_id, ctx.state.country);
+            if text_row(ui, t, t!("Steam ID"), "", &id, t.text_dim, Some(t!("Sign out"))) {
                 ctx.send(Command::LogOut);
             }
         });
+        group(ui, t, t!("Danger Zone"), |ui| {
+            row(
+                ui,
+                t,
+                t!("Permanently delete your account"),
+                t!("Deleting an account removes its games and items for good. Steam Support handles it, on Steam's site."),
+                |ui| {
+                    if secondary(ui, t, t!("Learn more")) {
+                        web("https://help.steampowered.com/faqs/view/4F62-35F9-F395-5C23");
+                    }
+                    if w::button(ui, t, None, t!("Delete Account"), w::Kind::Danger, w::Size::Md).clicked() {
+                        web("https://help.steampowered.com/wizard/HelpDeleteAccount");
+                    }
+                },
+                |_| {},
+            );
+        });
+    }
+
+    /// Privacy (Figma "privacy settings" `477:7327`): saved right away.
+    fn privacy(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        if !self.privacy_asked && ctx.state.profile_edit.is_none() {
+            self.privacy_asked = true;
+            ctx.send(Command::LoadProfileEdit { language: i18n::language().steam_name().into() });
+        }
+        let saved = ctx.state.profile_edit.as_ref().and_then(|r| r.as_ref().ok()).map(|e| e.privacy);
+        if saved.is_some() && saved == self.privacy_pending {
+            self.privacy_pending = None;
+        }
+        group(ui, t, t!("Profile Privacy"), |ui| match (self.privacy_pending.or(saved), &ctx.state.profile_edit) {
+            (Some(mut p), _) => {
+                if privacy_rows(ui, t, &mut p) {
+                    self.privacy_pending = Some(p);
+                    ctx.send(Command::SaveProfilePrivacy(p));
+                }
+                ui.label(w::body_s(t, t!("Changes are saved right away."), t.text_faint));
+            }
+            (None, Some(Err(e))) => {
+                ui.label(w::body_m(t, t!("Couldn't load your profile settings"), t.text));
+                ui.label(w::body_s(t, i18n::tr_dyn(e), t.text_dim));
+                if secondary(ui, t, t!("Retry")) {
+                    ctx.send(Command::LoadProfileEdit { language: i18n::language().steam_name().into() });
+                }
+            }
+            (None, _) => {
+                for _ in 0..5 {
+                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
+                    w::skeleton(ui, t, r, t.corner_small());
+                }
+            }
+        });
+    }
+
+    /// Appearance: the theme (built in, or from the themes folder), with
+    /// the user's colors on top, and the tray icon.
+    fn appearance(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        let all = self.user_themes.get_or_insert_with(|| ui::themes::builtins().into_iter().chain(ui::themes::user_themes()).collect()).clone();
+        let mut reload = false;
+        group(ui, t, t!("Theme"), |ui| {
+            ui.label(w::body_m(t, t!("Changes the look of the whole app. Your own colors below go on top of it."), t.text_dim));
+            ui.add_space(t.spacing.sm);
+            let mut pick = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(t.spacing.md, t.spacing.md);
+                for preset in all {
+                    if theme_card(ui, t, &preset, preset.id == t.id).clicked() && preset.id != t.id {
+                        pick = Some(preset);
+                    }
+                }
+            });
+            if let Some(mut preset) = pick {
+                // Keep the user's own colors and roundness on the new theme.
+                let mine = ui::themes::choice_for(t);
+                ui::themes::apply_overrides(&mut preset, &mine);
+                ctx.act(Action::SetTheme(preset));
+            }
+            ui.add_space(t.spacing.sm);
+            ui.horizontal(|ui| {
+                if let Some(dir) = ui::themes::user_dir() {
+                    if secondary(ui, t, t!("Open themes folder")) {
+                        let _ = std::fs::create_dir_all(dir);
+                        local::open_folder(dir);
+                    }
+                    if secondary(ui, t, t!("Reload")) {
+                        reload = true;
+                    }
+                }
+                if ui.link(w::body_m(t, t!("How to make a theme"), t.accent)).clicked() {
+                    web("https://github.com/madonchik123/SteamInRust/blob/main/docs/themes.md");
+                }
+            });
+        });
+        if reload {
+            self.user_themes = None;
+            // Read the picked theme's files again too.
+            if let Some(fresh) = ui::themes::find(&t.id) {
+                let mut fresh = fresh;
+                ui::themes::apply_overrides(&mut fresh, &ui::themes::choice_for(t));
+                ctx.act(Action::SetTheme(fresh));
+            }
+        }
+        let mut theme = t.clone();
+        let mine = ui::themes::choice_for(t);
+        group(ui, t, t!("Colors"), |ui| {
+            row(ui, t, t!("Accent color"), t!("Links, the open section and focus."), |ui| {
+                ui.color_edit_button_srgba(&mut theme.accent);
+            }, |_| {});
+            row(ui, t, t!("Second accent"), t!("Main buttons and the selected tab."), |ui| {
+                ui.color_edit_button_srgba(&mut theme.accent_2);
+            }, |_| {});
+            row(ui, t, t!("Corner roundness"), "", |ui| {
+                ui.add(egui::Slider::new(&mut theme.radius, 0..=20));
+            }, |_| {});
+            if mine.accent.is_some() || mine.accent_2.is_some() || mine.radius.is_some() {
+                row(ui, t, "", "", |ui| {
+                    if secondary(ui, t, t!("Use the theme's colors")) {
+                        if let Some(base) = ui::themes::find(&t.id) {
+                            theme = base;
+                        }
+                    }
+                }, |_| {});
+            }
+        });
+        if &theme != t {
+            ctx.act(Action::SetTheme(theme));
+        }
+        group(ui, t, t!("Interface size"), |ui| {
+            row(ui, t, t!("Interface scale"), t!("Makes text and everything else bigger or smaller."), |ui| {
+                let mut zoom = ctx.zoom;
+                if ui.add(egui::Slider::new(&mut zoom, 0.8..=1.6).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).drag_stopped() {
+                    ctx.act(Action::SetZoom(zoom));
+                }
+            }, |_| {});
+        });
+        group(ui, t, t!("Tray icon"), |ui| tray_icon_picker(ui, t, &self.flags));
+    }
+}
+
+/// A theme to pick: its preview picture (or a sketch in its colors), name
+/// and author.
+fn theme_card(ui: &mut Ui, t: &Theme, preset: &Theme, selected: bool) -> egui::Response {
+    let size = vec2(t.dense(196.0), t.dense(168.0));
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+    let pic = egui::Rect::from_min_size(rect.min, vec2(size.x, size.y - t.dense(48.0)));
+    let p = ui.painter();
+    let shown = preset.preview.as_deref().and_then(|path| ui::themes::image_uri(ui.ctx(), preset, path)).is_some_and(|uri| w::paint_cover(ui, pic, &uri, t.corner()));
+    if !shown {
+        // A sketch of the app in the theme's own colors.
+        p.rect_filled(pic, t.corner(), preset.bg);
+        let top = egui::Rect::from_min_size(pic.min, vec2(pic.width(), pic.height() * 0.16));
+        p.rect_filled(top, egui::CornerRadius { nw: t.corner().nw, ne: t.corner().ne, sw: 0, se: 0 }, preset.chrome);
+        let pad = pic.width() * 0.07;
+        let card = |x: f32, wd: f32| egui::Rect::from_min_size(pic.min + vec2(x, top.height() + pad), vec2(wd, pic.height() * 0.36));
+        p.rect_filled(card(pad, pic.width() * 0.38), preset.corner_small(), preset.surface);
+        p.rect_filled(card(pad * 2.0 + pic.width() * 0.38, pic.width() - pad * 3.0 - pic.width() * 0.38), preset.corner_small(), preset.surface);
+        let button = egui::Rect::from_min_size(egui::pos2(pic.left() + pad, pic.bottom() - pad - pic.height() * 0.12), vec2(pic.width() * 0.3, pic.height() * 0.12));
+        p.rect_filled(button, preset.corner_small(), preset.accent_2);
+        let link = egui::Rect::from_min_size(egui::pos2(button.right() + pad, button.center().y - 2.0), vec2(pic.width() * 0.22, 4.0));
+        p.rect_filled(link, egui::CornerRadius::same(2), preset.accent);
+        p.circle_filled(egui::pos2(top.right() - pad, top.center().y), top.height() * 0.22, preset.accent);
+    }
+    let ring = if selected { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, w::mix(t.surface_hover, t.text_dim, hover)) };
+    p.rect_stroke(pic, t.corner(), ring, egui::StrokeKind::Outside);
+    let name = if selected { format!("{}  {}", icons::CHECK, preset.name) } else { preset.name.clone() };
+    let mut job = egui::text::LayoutJob::simple_singleline(name, t.font_of(&t.components.settings_nav_item), if selected { t.accent } else { t.text });
+    job.wrap = egui::text::TextWrapping::truncate_at_width(size.x);
+    p.galley(egui::pos2(rect.left(), pic.bottom() + t.spacing.sm), ui.painter().layout_job(job), t.text);
+    let by = if preset.author.is_empty() { String::new() } else { t!("by {author}", author = preset.author) };
+    let mut job = egui::text::LayoutJob::simple_singleline(by, egui::FontId::proportional(t.typography.body_s.size), t.text_dim);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(size.x);
+    p.galley(egui::pos2(rect.left(), pic.bottom() + t.spacing.sm + t.typography.body_l.size + t.spacing.xs + 2.0), ui.painter().layout_job(job), t.text_dim);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The versions of the logo the tray icon can show, each on the top bar's
+/// color, like the theme cards.
+fn tray_icon_picker(ui: &mut Ui, t: &Theme, flags: &SharedFlags) {
+    use ui::brand::Logo;
+    ui.label(w::body_m(t, t!("The logo SteamInRust shows in the system tray."), t.text_dim));
+    ui.add_space(t.spacing.sm);
+    let mut current = flags.lock().unwrap().tray_icon;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(t.spacing.md, t.spacing.md);
+        for logo in Logo::ALL {
+            let (rect, resp) = ui.allocate_exact_size(vec2(t.dense(112.0), t.dense(104.0)), Sense::click());
+            let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+            ui.painter().rect_filled(rect, t.corner(), w::mix(t.raised, t.surface_hover, hover * 0.5));
+            let mark = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + rect.height() * 0.37), vec2(rect.height() * 0.46, rect.height() * 0.46));
+            logo.image().paint_at(ui, mark);
+            let on = logo == current;
+            ui.painter().text(egui::pos2(rect.center().x, rect.bottom() - rect.height() * 0.15), egui::Align2::CENTER_CENTER, i18n::tr_dyn(logo.name()), egui::FontId::proportional(t.typography.body_s.size), if on { t.text } else { t.text_dim });
+            if on {
+                ui.painter().rect_stroke(rect, t.corner(), egui::Stroke::new(2.0, t.accent), egui::StrokeKind::Outside);
+            }
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                current = logo;
+            }
+        }
     });
+    flags.lock().unwrap().tray_icon = current;
 }
 
 fn friends_chat(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
-    w::page_title(ui, t, t!("Friends & Chat"), None);
-    let code = (ctx.state.steam_id & 0xFFFF_FFFF).to_string();
-    if info_row(ui, t, t!("Your friend code"), &code, Some(t!("Copy"))) {
-        ui.ctx().copy_text(code);
-        ctx.toast(t!("Friend code copied"));
-    }
-    if info_row(ui, t, t!("Friends"), &ctx.state.friend_list().len().to_string(), Some(t!("Open friends list"))) {
-        ctx.navigate("community", None);
-    }
-    if info_row(ui, t, t!("Who can see your status and send invites"), "", Some(t!("Privacy settings"))) {
-        ctx.navigate("profile", Some("edit/privacy".into()));
-    }
+    group(ui, t, t!("Friends & Chat"), |ui| {
+        let code = (ctx.state.steam_id & 0xFFFF_FFFF).to_string();
+        if text_row(ui, t, t!("Your friend code"), t!("Friends can add you with this code."), &code, t.accent, Some(t!("Copy"))) {
+            ui.ctx().copy_text(code);
+            ctx.toast(t!("Friend code copied"));
+        }
+        if text_row(ui, t, t!("Friends"), "", &ctx.state.friend_list().len().to_string(), t.text, Some(t!("Open friends list"))) {
+            ctx.navigate("community", None);
+        }
+        if text_row(ui, t, t!("Privacy"), t!("Who can see your status and send invites"), "", t.text_dim, Some(t!("Privacy settings"))) {
+            ctx.navigate("settings", Some("privacy".into()));
+        }
+    });
 }
 
+fn wallet(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pages: &mut super::settings_account::AccountPages) {
+    use super::settings_account::AccountView;
+    group(ui, t, t!("Steam Wallet"), |ui| {
+        let balance = ctx.state.wallet.map(|(b, c)| model::format_money(b, c)).unwrap_or_else(|| "—".into());
+        if text_row(ui, t, t!("Balance"), "", &balance, t.text, Some(t!("Add funds"))) {
+            web("https://store.steampowered.com/steamaccount/addfunds");
+        }
+        if ctx.state.wallet_pending > 0 {
+            if let Some((_, c)) = ctx.state.wallet {
+                text_row(ui, t, t!("Pending"), t!("Money from recent Market sales or refunds that Steam hasn't released yet. It's added to your balance automatically."), &model::format_money(ctx.state.wallet_pending, c), t.away, None);
+            }
+        }
+        if text_row(ui, t, t!("Wallet code"), "", "", t.text_dim, Some(t!("Redeem a Steam Wallet code…"))) {
+            web("https://store.steampowered.com/account/redeemwalletcode");
+        }
+    });
+    group(ui, t, t!("Purchases"), |ui| {
+        if text_row(ui, t, t!("Purchase history"), "", t!("Purchases, gifts, refunds, wallet and Market"), t.text_dim, Some(t!("View"))) {
+            pages.open(AccountView::Purchases);
+        }
+        if text_row(ui, t, t!("Licenses"), "", t!("Everything on your account and how you got it"), t.text_dim, Some(t!("View"))) {
+            pages.open(AccountView::Licenses);
+        }
+        if text_row(ui, t, t!("Market listings"), "", "", t.text_dim, Some(t!("View"))) {
+            ctx.navigate("inventory", Some("listings".into()));
+        }
+    });
+}
 
 fn security(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pages: &mut super::settings_account::AccountPages) {
-    w::page_title(ui, t, t!("Security"), None);
     pages.ask_security(ctx);
     let (guard, password) = match &ctx.state.account_security {
         Some(Ok(s)) => (
@@ -318,262 +823,120 @@ fn security(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pages: &mut super::settings_a
         ),
         _ => (t!("Protects your account with codes from the Steam Mobile app").to_string(), String::new()),
     };
-    if info_row(ui, t, t!("Steam Guard"), &guard, Some(t!("Manage Steam Guard"))) {
-        web("https://store.steampowered.com/twofactor/manage");
-    }
-    if info_row(ui, t, t!("Authorized devices"), t!("See and remove devices signed in to your account"), Some(t!("Manage devices"))) {
-        web("https://store.steampowered.com/account/authorizeddevices");
-    }
-    if info_row(ui, t, t!("Password"), &password, Some(t!("Change password"))) {
-        web("https://help.steampowered.com/wizard/HelpChangePassword");
-    }
-    if info_row(ui, t, t!("This PC"), t!("Saved sign-in for this account is stored on this PC"), Some(t!("Sign out"))) {
-        ctx.send(Command::LogOut);
-    }
-}
-
-fn switch(ui: &mut Ui, t: &Theme, title: &str, body: &str, value: &mut bool) {
-    egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(w::text_medium(title, 14.0, t.text));
-                if !body.is_empty() {
-                    ui.add(egui::Label::new(w::text(body, 12.5, t.text_dim)).wrap());
-                }
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add(toggle(value));
-            });
-        });
+    group(ui, t, t!("Security"), |ui| {
+        if text_row(ui, t, t!("Steam Guard"), "", &guard, t.text_dim, Some(t!("Manage Steam Guard"))) {
+            web("https://store.steampowered.com/twofactor/manage");
+        }
+        if text_row(ui, t, t!("Authorized devices"), t!("See and remove devices signed in to your account"), "", t.text_dim, Some(t!("Manage devices"))) {
+            web("https://store.steampowered.com/account/authorizeddevices");
+        }
+        if text_row(ui, t, t!("Password"), "", &password, t.text_dim, Some(t!("Change password"))) {
+            web("https://help.steampowered.com/wizard/HelpChangePassword");
+        }
+        if text_row(ui, t, t!("This PC"), "", t!("Saved sign-in for this account is stored on this PC"), t.text_dim, Some(t!("Sign out"))) {
+            ctx.send(Command::LogOut);
+        }
     });
-    ui.add_space(6.0);
 }
 
 fn notifications(ui: &mut Ui, t: &Theme, flags: &SharedFlags) {
-    w::page_title(ui, t, t!("Notifications"), None);
     let mut f = *flags.lock().unwrap();
-    switch(ui, t, t!("New chat messages"), t!("Show a pop-up when a friend messages you."), &mut f.toast_messages);
-    switch(ui, t, t!("Steam notifications"), t!("Show a pop-up for gifts, items, friend requests, sales and more."), &mut f.toast_notifications);
+    group(ui, t, t!("Notifications"), |ui| {
+        switch_row(ui, t, t!("New chat messages"), t!("Show a pop-up when a friend messages you."), &mut f.toast_messages);
+        switch_row(ui, t, t!("Steam notifications"), t!("Show a pop-up for gifts, items, friend requests, sales and more."), &mut f.toast_notifications);
+    });
     *flags.lock().unwrap() = f;
 }
 
 fn library(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
-    w::page_title(ui, t, t!("Library"), None);
-    if info_row(ui, t, t!("Collections"), t!("Steam's Favorites and Hidden are imported automatically"), Some(t!("Open library"))) {
-        ctx.navigate("library", None);
-    }
-    if info_row(ui, t, t!("Add a non-Steam game"), "", Some(t!("Open library"))) {
-        ctx.navigate("library", None);
-    }
+    group(ui, t, t!("Library"), |ui| {
+        if text_row(ui, t, t!("Collections"), "", t!("Steam's Favorites and Hidden are imported automatically"), t.text_dim, Some(t!("Open library"))) {
+            ctx.navigate("library", None);
+        }
+        if text_row(ui, t, t!("Add a non-Steam game"), "", "", t.text_dim, Some(t!("Open library"))) {
+            ctx.navigate("library", None);
+        }
+    });
 }
 
 fn downloads(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags) {
-    w::page_title(ui, t, t!("Downloads"), None);
     let mut f = *flags.lock().unwrap();
-    switch(ui, t, t!("Automatic updates"), t!("Keep installed games up to date. Turn off to update only when you choose (or when you launch a game)."), &mut f.auto_updates);
+    group(ui, t, t!("Downloads"), |ui| {
+        switch_row(ui, t, t!("Automatic updates"), t!("Keep installed games up to date. Turn off to update only when you choose (or when you launch a game)."), &mut f.auto_updates);
+        if text_row(ui, t, t!("Download region, speed limit, schedule"), "", "", t.text_dim, Some(t!("Open download settings"))) {
+            ctx.navigate("downloads", None);
+        }
+    });
     *flags.lock().unwrap() = f;
-    if info_row(ui, t, t!("Download region, speed limit, schedule"), "", Some(t!("Open download settings"))) {
-        ctx.navigate("downloads", None);
-    }
 }
 
 fn cloud(ui: &mut Ui, t: &Theme, flags: &SharedFlags) {
-    w::page_title(ui, t, t!("Cloud"), Some(t!("Steam Cloud keeps your game data the same on every PC.")));
     let mut f = *flags.lock().unwrap();
-    switch(ui, t, t!("Enable Steam Cloud for games that support it"), t!("Each game can also be turned off in its Properties."), &mut f.cloud);
+    group(ui, t, t!("Cloud"), |ui| {
+        ui.label(w::body_m(t, t!("Steam Cloud keeps your game data the same on every PC."), t.text_dim));
+        switch_row(ui, t, t!("Steam Cloud"), t!("Enable Steam Cloud for games that support it. Each game can also be turned off in its Properties."), &mut f.cloud);
+    });
     *flags.lock().unwrap() = f;
 }
 
 fn accessibility(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
-    w::page_title(ui, t, t!("Accessibility"), None);
-    egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(w::text_medium(t!("Interface size"), 14.0, t.text));
-                ui.label(w::text(t!("Makes text and everything else bigger or smaller."), 12.5, t.text_dim));
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut zoom = ctx.zoom;
-                if ui.add(egui::Slider::new(&mut zoom, 0.8..=1.6).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed() {
-                    ctx.act(Action::SetZoom(zoom));
-                }
-            });
-        });
-    });
-}
-
-fn appearance(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags) {
-    w::page_title(ui, t, t!("Appearance"), None);
-    ui.label(w::text_semibold(t!("Theme"), 15.0, t.text));
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
-        for preset in ui::themes::builtins() {
-            let selected = preset.id == t.id;
-            let (rect, resp) = ui.allocate_exact_size(vec2(150.0, 104.0), Sense::click());
-            let p = ui.painter();
-            p.rect_filled(rect, t.corner(), preset.bg);
-            let top = egui::Rect::from_min_size(rect.min, vec2(rect.width(), 18.0));
-            p.rect_filled(top, egui::CornerRadius { nw: t.radius, ne: t.radius, sw: 0, se: 0 }, preset.chrome);
-            p.rect_filled(egui::Rect::from_min_size(rect.min + vec2(12.0, 28.0), vec2(56.0, 38.0)), egui::CornerRadius::same(5), preset.surface);
-            p.rect_filled(egui::Rect::from_min_size(rect.min + vec2(76.0, 28.0), vec2(62.0, 38.0)), egui::CornerRadius::same(5), preset.surface);
-            p.rect_filled(egui::Rect::from_min_size(rect.min + vec2(12.0, 72.0), vec2(36.0, 10.0)), egui::CornerRadius::same(5), preset.accent);
-            p.text(rect.right_bottom() - vec2(10.0, 10.0), egui::Align2::RIGHT_BOTTOM, &preset.name, w::font_semibold(12.0), preset.text);
-            let stroke = if selected { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, t.border) };
-            p.rect_stroke(rect, t.corner(), stroke, egui::StrokeKind::Outside);
-            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                ctx.act(Action::SetTheme(preset));
-            }
-        }
-    });
-    ui.add_space(16.0);
-    let mut theme = t.clone();
-    w::card(t).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        egui::Grid::new("appearance").num_columns(2).spacing(vec2(32.0, 14.0)).show(ui, |ui| {
-            ui.label(w::text_medium(t!("Accent color"), 14.0, t.text));
-            ui.horizontal(|ui| {
-                ui.color_edit_button_srgba(&mut theme.accent);
-                ui.color_edit_button_srgba(&mut theme.accent_2);
-            });
-            ui.end_row();
-            ui.label(w::text_medium(t!("Corner roundness"), 14.0, t.text));
-            ui.add(egui::Slider::new(&mut theme.radius, 0..=20));
-            ui.end_row();
-            ui.label(w::text_medium(t!("Interface scale"), 14.0, t.text));
+    group(ui, t, t!("Accessibility"), |ui| {
+        row(ui, t, t!("Interface size"), t!("Makes text and everything else bigger or smaller."), |ui| {
             let mut zoom = ctx.zoom;
-            if ui.add(egui::Slider::new(&mut zoom, 0.8..=1.6).step_by(0.05)).drag_stopped() {
+            if ui.add(egui::Slider::new(&mut zoom, 0.8..=1.6).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed() {
                 ctx.act(Action::SetZoom(zoom));
             }
-            ui.end_row();
-        });
+        }, |_| {});
     });
-    if &theme != t {
-        ctx.act(Action::SetTheme(theme));
-    }
-    ui.add_space(24.0);
-    tray_icon_picker(ui, t, flags);
 }
 
-/// The versions of the logo the tray icon can show, each on the top bar's
-/// color, like the theme tiles.
-fn tray_icon_picker(ui: &mut Ui, t: &Theme, flags: &SharedFlags) {
-    use ui::brand::Logo;
-    ui.label(w::text_semibold(t!("Tray icon"), 15.0, t.text));
-    ui.label(w::text(t!("The logo SteamInRust shows in the system tray."), 12.5, t.text_dim));
-    ui.add_space(8.0);
-    let mut current = flags.lock().unwrap().tray_icon;
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
-        for logo in Logo::ALL {
-            let (rect, resp) = ui.allocate_exact_size(vec2(112.0, 104.0), Sense::click());
-            let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
-            ui.painter().rect_filled(rect, t.corner(), w::mix(t.chrome, t.surface_hover, hover * 0.5));
-            let mark = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 38.0), vec2(48.0, 48.0));
-            logo.image().paint_at(ui, mark);
-            ui.painter().text(egui::pos2(rect.center().x, rect.bottom() - 16.0), egui::Align2::CENTER_CENTER, i18n::tr_dyn(logo.name()), w::font_medium(12.5), if logo == current { t.text } else { t.text_dim });
-            let stroke = if logo == current { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, t.border) };
-            ui.painter().rect_stroke(rect, t.corner(), stroke, egui::StrokeKind::Outside);
-            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                current = logo;
+fn language(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+    group(ui, t, t!("Language"), |ui| {
+        row(ui, t, t!("Interface language"), t!("The language of SteamInRust's own text. Store pages follow it too."), |ui| {
+            let mut lang = i18n::language();
+            let options: Vec<(i18n::Lang, String)> = i18n::Lang::ALL.iter().map(|l| (*l, l.native_name().to_string())).collect();
+            let width = ui.available_width().min(260.0);
+            if w::select(ui, t, &mut lang, &options, width) {
+                ctx.act(Action::SetLanguage(lang.code().into()));
             }
-        }
+        }, |_| {});
     });
-    flags.lock().unwrap().tray_icon = current;
 }
 
 fn interface(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags, handler: &mut Option<bool>) {
-    w::page_title(ui, t, t!("Interface"), None);
     let mut f = *flags.lock().unwrap();
-    w::card(t).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        let row = |ui: &mut Ui, title: &str, body: &str, value: &mut bool| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(w::text_semibold(title, 14.5, t.text));
-                    ui.label(w::text(body, 12.5, t.text_dim));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add(toggle(value));
-                });
-            });
-            ui.add_space(8.0);
-        };
-        row(ui, t!("Close to tray"), t!("Keep SteamInRust running in the system tray when you close the window."), &mut f.close_to_tray);
-        row(ui, t!("Ask which account to use"), t!("Show the account picker at startup instead of signing in automatically."), &mut f.ask_account);
+    group(ui, t, t!("Interface"), |ui| {
+        switch_row(ui, t, t!("Close to tray"), t!("Keep SteamInRust running in the system tray when you close the window."), &mut f.close_to_tray);
+        switch_row(ui, t, t!("Ask which account to use"), t!("Show the account picker at startup instead of signing in automatically."), &mut f.ask_account);
+        let mut on = *handler.get_or_insert_with(crate::links::is_default_handler);
+        if switch_row(ui, t, t!("Open steam:// links"), t!("Store buttons, desktop shortcuts and links like steam://rungameid/570 will open here. Turning it off gives them back to the official Steam client."), &mut on) {
+            let r = if on { crate::links::register() } else { crate::links::unregister() };
+            match r {
+                Ok(()) => ctx.toast(if on { t!("steam:// links now open in SteamInRust") } else { t!("steam:// links handed back") }),
+                Err(e) => ctx.toast(e),
+            }
+            *handler = None;
+        }
+        // macOS: what the system has to allow (Shift+Tab in games).
+        #[cfg(target_os = "macos")]
+        {
+            let state = if crate::mac_permissions::missing() { t!("Some features need your permission.") } else { t!("Everything SteamInRust needs is allowed.") };
+            if text_row(ui, t, t!("macOS permissions"), "", state, t.text_dim, Some(t!("Review…"))) {
+                crate::mac_permissions::open();
+            }
+        }
     });
     *flags.lock().unwrap() = f;
-    ui.add_space(12.0);
-    // macOS: what the system has to allow (Shift+Tab in games).
-    #[cfg(target_os = "macos")]
-    {
-        w::card(t).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(w::text_semibold(t!("macOS permissions"), 14.5, t.text));
-                    let state = if crate::mac_permissions::missing() { t!("Some features need your permission.") } else { t!("Everything SteamInRust needs is allowed.") };
-                    ui.label(w::text(state, 12.5, t.text_dim));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if w::button(ui, t, None, t!("Review…"), w::Kind::Secondary, w::Size::Sm).clicked() {
-                        crate::mac_permissions::open();
-                    }
-                });
-            });
-        });
-        ui.add_space(12.0);
-    }
-    let mut on = *handler.get_or_insert_with(crate::links::is_default_handler);
-    w::card(t).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                // Leave room for the switch on the right.
-                ui.set_max_width(ui.available_width() - 64.0);
-                ui.label(w::text_semibold(t!("Open steam:// links with SteamInRust"), 14.5, t.text));
-                ui.add(egui::Label::new(w::text(t!("Store buttons, desktop shortcuts and links like steam://rungameid/570 will open here. Turning it off gives them back to the official Steam client."), 12.5, t.text_dim)).wrap());
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(toggle(&mut on)).changed() {
-                    let r = if on { crate::links::register() } else { crate::links::unregister() };
-                    match r {
-                        Ok(()) => ctx.toast(if on { t!("steam:// links now open in SteamInRust") } else { t!("steam:// links handed back") }),
-                        Err(e) => ctx.toast(e),
-                    }
-                    *handler = None;
-                }
-            });
-        });
-    });
-    ui.add_space(12.0);
-    w::card(t).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.label(w::text_semibold(t!("Language"), 15.0, t.text));
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            for lang in i18n::Lang::ALL {
-                if w::chip(ui, t, lang.native_name(), i18n::language() == lang).clicked() {
-                    ctx.act(Action::SetLanguage(lang.code().into()));
-                }
-            }
-        });
-    });
 }
 
 fn overlay(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
-    w::page_title(ui, t, t!("In-game overlay"), None);
-    w::card(t).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.label(w::text_semibold(t!("Shift+Tab"), 15.0, t.text));
-        ui.add(egui::Label::new(w::text(
+    group(ui, t, t!("In-game overlay"), |ui| {
+        ui.label(w::heading_s(t, t!("Shift+Tab"), t.text));
+        ui.add(egui::Label::new(w::body_m(
+            t,
             t!("While a game you started from SteamInRust is running, press Shift+Tab to open the overlay: friends, quick chat and notes. It's a separate always-on-top window that never touches the game's process, so it's safe with anti-cheat. It shows over windowed and borderless games; exclusive fullscreen hides it."),
-            13.5,
             t.text_dim,
         )).wrap());
-        ui.add_space(10.0);
         if w::button(ui, t, Some(icons::EYE), t!("Preview overlay"), w::Kind::Secondary, w::Size::Md).clicked() {
             ctx.act(Action::ToggleOverlay);
         }
@@ -582,84 +945,67 @@ fn overlay(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
 
 fn folders(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
     // Saved pictures (store and library art), like Steam's web browser cache.
-    w::card(t).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(w::text(icons::IMAGE, 22.0, t.accent));
-            ui.vertical(|ui| {
-                ui.label(w::text_semibold(t!("Picture cache"), 15.0, t.text));
-                let size = ui.ctx().memory(|m| m.data.get_temp::<u64>(egui::Id::unique("image-cache-size")));
-                let size = size.unwrap_or_else(|| {
-                    let s = crate::image_cache::size();
-                    ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("image-cache-size"), s));
-                    s
-                });
-                ui.label(w::text(t!("{size} of store and library pictures, kept so pages open instantly and work offline.", size = ui::bytes(size)), 12.5, t.text_dim));
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if w::button(ui, t, Some(icons::TRASH), t!("Clear"), w::Kind::Secondary, w::Size::Sm).clicked() {
+    group(ui, t, t!("Picture cache"), |ui| {
+        let size = ui.ctx().memory(|m| m.data.get_temp::<u64>(egui::Id::unique("image-cache-size")));
+        let size = size.unwrap_or_else(|| {
+            let s = crate::image_cache::size();
+            ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("image-cache-size"), s));
+            s
+        });
+        row(
+            ui,
+            t,
+            &ui::bytes(size),
+            "",
+            |ui| {
+                ui.add(egui::Label::new(w::body_m(t, t!("Store and library pictures, kept so pages open instantly and work offline."), t.text_dim)).wrap());
+            },
+            |ui| {
+                if w::button(ui, t, Some(icons::TRASH), t!("Clear"), w::Kind::Secondary, w::Size::Md).clicked() {
                     crate::image_cache::clear(ui.ctx());
                     ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("image-cache-size"), 0u64));
                 }
-            });
-        });
+            },
+        );
     });
-    ui.add_space(14.0);
-    w::page_title(ui, t, t!("Library folders"), Some(t!("Folders where games are installed (read from your Steam setup).")));
-    if ctx.local.libraries.is_empty() {
-        w::empty(ui, t, icons::DRIVES, t!("No library folders found"), t!("Install location detection looks for an existing Steam install."));
-    }
-    for lib in &ctx.local.libraries {
-        let games: Vec<_> = ctx.local.games.iter().filter(|g| &g.library == lib).collect();
-        let size: u64 = games.iter().map(|g| g.size_on_disk).sum();
-        w::card(t).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(w::text(icons::DRIVES, 24.0, t.accent));
-                ui.vertical(|ui| {
-                    ui.label(w::text_semibold(lib.display().to_string(), 14.5, t.text));
-                    ui.label(w::text(t!("{n} games · {size}", n = games.len(), size = ui::bytes(size)), 13.0, t.text_dim));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if w::button(ui, t, Some(icons::FOLDER), t!("Open"), w::Kind::Secondary, w::Size::Sm).clicked() {
-                        local::open_folder(lib);
-                    }
-                });
-            });
-        });
-        ui.add_space(8.0);
-    }
+    group(ui, t, t!("Library folders"), |ui| {
+        ui.label(w::body_m(t, t!("Folders where games are installed (read from your Steam setup)."), t.text_dim));
+        if ctx.local.libraries.is_empty() {
+            w::empty(ui, t, icons::DRIVES, t!("No library folders found"), t!("Install location detection looks for an existing Steam install."));
+        }
+        for lib in &ctx.local.libraries {
+            let games: Vec<_> = ctx.local.games.iter().filter(|g| &g.library == lib).collect();
+            let size: u64 = games.iter().map(|g| g.size_on_disk).sum();
+            let info = t!("{n} games · {size}", n = games.len(), size = ui::bytes(size));
+            if text_row(ui, t, &lib.display().to_string(), "", &info, t.text_dim, Some(t!("Open"))) {
+                local::open_folder(lib);
+            }
+        }
+    });
 }
 
 fn about(ui: &mut Ui, t: &Theme) {
-    w::page_title(ui, t, t!("About"), None);
     crate::updater::settings_ui(ui, t);
-    ui.add_space(12.0);
-    w::card(t).show(ui, |ui| {
-        ui.set_width(ui.available_width());
+    group(ui, t, t!("About"), |ui| {
         ui.horizontal(|ui| {
-            w::app_icon(ui, 40.0);
+            w::app_icon(ui, t.dense(40.0));
             ui.vertical(|ui| {
-                ui.label(w::text_bold(format!("SteamInRust {}", env!("CARGO_PKG_VERSION")), 18.0, t.text));
-                ui.label(w::text(t!("A native Steam client written in Rust."), 13.5, t.text_dim));
+                ui.label(w::heading_s(t, format!("SteamInRust {}", env!("CARGO_PKG_VERSION")), t.text));
+                ui.label(w::body_m(t, t!("A native Steam client written in Rust."), t.text_dim));
             });
         });
-        ui.add_space(10.0);
-        ui.label(w::text(t!("Not affiliated with Valve. Steam is a trademark of Valve Corporation."), 12.5, t.text_faint));
-        ui.label(w::text(t!("Fonts: Inter (OFL). Icons: Phosphor (MIT). Protocol definitions: SteamTracking/Protobufs."), 12.5, t.text_faint));
+        ui.label(w::body_s(t, t!("Not affiliated with Valve. Steam is a trademark of Valve Corporation."), t.text_faint));
+        ui.label(w::body_s(t, t!("Fonts: Inter (OFL). Icons: Phosphor (MIT). Protocol definitions: SteamTracking/Protobufs."), t.text_faint));
         let dir = client::store::config_dir();
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.label(w::text(t!("Data folder: {path}", path = dir.display()), 12.5, t.text_dim));
-            if w::button(ui, t, Some(icons::FOLDER), t!("Open"), w::Kind::Ghost, w::Size::Sm).clicked() {
-                let _ = std::fs::create_dir_all(&dir);
-                local::open_folder(&dir);
-            }
-        });
+        if text_row(ui, t, t!("Data folder"), "", &dir.display().to_string(), t.text_dim, Some(t!("Open"))) {
+            let _ = std::fs::create_dir_all(&dir);
+            local::open_folder(&dir);
+        }
     });
 }
 
-/// iOS-style switch.
+/// The old switch, for pages that haven't moved to `w::toggle` yet (it
+/// takes the theme's `toggle` style; this one only egui's colors).
 pub fn toggle(on: &mut bool) -> impl egui::Widget + '_ {
     move |ui: &mut Ui| {
         let size = vec2(40.0, 22.0);
@@ -670,13 +1016,11 @@ pub fn toggle(on: &mut bool) -> impl egui::Widget + '_ {
         }
         let k = ui.ctx().animate_bool_with_time(resp.id, *on, 0.15);
         let v = ui.visuals();
-        let accent = v.selection.stroke.color;
-        let off = v.widgets.inactive.bg_fill;
-        let fill = w::mix(off, accent, k);
+        let fill = w::mix(v.widgets.inactive.bg_fill, v.selection.stroke.color, k);
         let fill = if ui.is_enabled() { fill } else { fill.gamma_multiply(0.5) };
         ui.painter().rect_filled(rect, egui::CornerRadius::same(11), fill);
         let x = egui::lerp(rect.left() + 11.0..=rect.right() - 11.0, k);
-        ui.painter().circle_filled(egui::pos2(x, rect.center().y), 8.0, egui::Color32::WHITE);
+        ui.painter().circle_filled(egui::pos2(x, rect.center().y), 8.0, v.widgets.active.fg_stroke.color);
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     }
 }

@@ -1661,3 +1661,146 @@ impl EditMenu for Response {
         self
     }
 }
+
+// ---------- rows, boxes and fields (profile and settings) ----------
+
+/// A full-width row in a row component (`profile_row`, `settings_nav_item`):
+/// an optional icon, the label on the left and `value` on the right, in
+/// the state's `icon` color unless `value_color` says otherwise.
+#[allow(clippy::too_many_arguments)]
+pub fn list_row(ui: &mut Ui, t: &Theme, c: &Component, icon: Option<&str>, label: &str, value: &str, value_color: Option<Color32>, selected: bool) -> Response {
+    let fid = t.font_of(c);
+    let pad = t.padding_of(c);
+    let h = t.height_of(c, fid.size + pad.y * 2.0 + 6.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(h), h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let look = t.look(c, interact(ui, &resp, selected));
+        paint_box(ui, t, rect, c, &look, 0.0);
+        let mut x = rect.left() + pad.x;
+        if let Some(i) = icon {
+            paint_icon(ui.painter(), pos2(x + fid.size * 0.55, rect.center().y), i, fid.size * 1.1, look.icon);
+            x += fid.size * 1.1 + (fid.size * 0.55).round();
+        }
+        let right = rect.right() - pad.x;
+        let vg = (!value.is_empty()).then(|| ui.painter().layout_no_wrap(value.to_string(), fid.clone(), Color32::PLACEHOLDER));
+        let vw = vg.as_ref().map(|g| g.size().x + pad.x).unwrap_or(0.0);
+        let mut job = egui::text::LayoutJob::simple_singleline(label.to_string(), fid.clone(), look.text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((right - vw - x).max(10.0));
+        let g = ui.painter().layout_job(job);
+        ui.painter().galley(pos2(x, rect.center().y - g.size().y / 2.0), g, look.text);
+        if let Some(vg) = vg {
+            ui.painter().galley(pos2(right - vg.size().x, rect.center().y - vg.size().y / 2.0), vg, value_color.unwrap_or(look.icon));
+        }
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A box in a component's style (`profile_box`, `settings_group`) with a
+/// title in the component's text style and color, and a note on the
+/// title's right. An empty title draws just the box.
+pub fn titled_box<R>(ui: &mut Ui, t: &Theme, c: &Component, title: &str, note: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    component_frame(t, c)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if !title.is_empty() || !note.is_empty() {
+                let look = t.look(c, Interact::default());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(title).font(t.font_of(c)).color(look.text));
+                    if !note.is_empty() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(body_s(t, note, look.text));
+                        });
+                    }
+                });
+            }
+            add(ui)
+        })
+        .inner
+}
+
+/// A text field in the `input` style, `width` wide; more than one row
+/// makes it a text area.
+pub fn text_input(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width: f32, rows: usize) -> Response {
+    let c = &t.components.input;
+    let fid = t.font_of(c);
+    let pad = t.padding_of(c);
+    let line = ui.fonts_mut(|f| f.row_height(&fid));
+    let single = t.height_of(c, 34.0);
+    let h = if rows <= 1 { single } else { (line * rows as f32 + (single - line).max(pad.x)).round() };
+    let (rect, _) = ui.allocate_exact_size(vec2(width.max(60.0), h), Sense::hover());
+    let rest = t.look(c, Interact::default());
+    paint_box(ui, t, rect, c, &rest, 0.0);
+    let inner = if rows <= 1 {
+        Rect::from_min_max(pos2(rect.left() + pad.x, rect.top()), pos2(rect.right() - pad.x, rect.bottom()))
+    } else {
+        rect.shrink2(vec2(pad.x, ((single - line) / 2.0).max(4.0)))
+    };
+    let edit = if rows <= 1 { egui::TextEdit::singleline(value).align(Align2::LEFT_CENTER) } else { egui::TextEdit::multiline(value).desired_rows(rows) };
+    let resp = ui
+        .place(
+            inner,
+            edit.hint_text(RichText::new(hint).font(fid.clone()).color(rest.icon))
+                .font(fid)
+                .text_color(rest.text)
+                .frame(Frame::NONE)
+                .margin(vec2(0.0, 0.0))
+                .desired_width(inner.width()),
+        )
+        .with_edit_menu();
+    if resp.has_focus() {
+        let focus = t.look(c, Interact { selected: true, ..Default::default() });
+        if focus.border.a() > 0 {
+            ui.painter().rect_stroke(rect, t.radius_of(c), Stroke::new(c.border.max(1.0), focus.border), StrokeKind::Inside);
+        }
+    }
+    resp
+}
+
+/// A dropdown field in the `input` style showing the chosen option, with
+/// the options in a menu. True when the choice changed.
+pub fn select<T: PartialEq + Clone>(ui: &mut Ui, t: &Theme, value: &mut T, options: &[(T, String)], width: f32) -> bool {
+    let c = &t.components.input;
+    let fid = t.font_of(c);
+    let pad = t.padding_of(c);
+    let shown = options.iter().find(|(v, _)| v == value).map(|(_, l)| l.clone()).unwrap_or_default();
+    let (rect, resp) = ui.allocate_exact_size(vec2(width.max(80.0), t.height_of(c, 34.0)), Sense::click());
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    if ui.is_rect_visible(rect) {
+        let s = interact(ui, &resp, open);
+        let look = t.look(c, Interact { selected: false, ..s });
+        paint_box(ui, t, rect, c, &look, 0.0);
+        if s.hover > 0.0 {
+            ui.painter().rect_filled(rect, t.radius_of(c), Color32::WHITE.gamma_multiply(0.03 * s.hover));
+        }
+        let mut job = egui::text::LayoutJob::simple_singleline(shown, fid.clone(), look.text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - pad.x * 2.0 - 20.0).max(10.0));
+        let g = ui.painter().layout_job(job);
+        ui.painter().galley(pos2(rect.left() + pad.x, rect.center().y - g.size().y / 2.0), g, look.text);
+        let caret = if open { crate::icons::CARET_UP } else { crate::icons::CARET_DOWN };
+        ui.painter().text(pos2(rect.right() - pad.x, rect.center().y), Align2::RIGHT_CENTER, caret, font(fid.size), look.text);
+    }
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let mut changed = false;
+    egui::Popup::menu(&resp).width(rect.width()).show(|ui| {
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            for (v, label) in options {
+                let on = v == value;
+                let r = menu_item_tinted(ui, t, if on { crate::icons::CHECK } else { "" }, label, on.then_some(t.accent));
+                if r.clicked() && !on {
+                    *value = v.clone();
+                    changed = true;
+                }
+            }
+        });
+    });
+    changed
+}
+
+/// The small "i" after a setting's name, with its explanation on hover.
+pub fn info_tip(ui: &mut Ui, t: &Theme, tip: &str) -> Response {
+    let size = t.typography.body_l.size + 2.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let color = if resp.hovered() { t.text } else { t.text_dim };
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, crate::icons::INFO, font(size - 2.0), color);
+    resp.on_hover_text(tip)
+}

@@ -278,5 +278,24 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
             cat("Language", true, &["English", "Spanish", "French", "German", "Russian", "Italian", "Chinese", "Japanese", "Korean", "Polish", "Portuguese", "Vietnamese"]),
         ]),
     });
+    // Your profile settings and badges, for the profile pages (made up).
+    out.push(Event::ProfileEdit(Ok(model::ProfileEdit {
+        persona_name: "You".into(),
+        custom_url: "demo-player".into(),
+        summary: "Collector of indie gems and long co-op nights.".into(),
+        privacy: model::ProfilePrivacy { profile: 3, inventory: 3, gifts: 1, games: 3, playtime: 1, friends: 2, comments: 1 },
+        ..Default::default()
+    })));
+    let badge = |title: &str, detail: &str| model::Badge { title: title.into(), detail: detail.into(), ..Default::default() };
+    out.push(Event::Badges {
+        steam_id: 76561197960265728 + 1,
+        result: Ok(model::Badges {
+            level: 23,
+            xp: "2,410 XP".into(),
+            next: "90 XP to reach Level 24".into(),
+            progress: 0.6,
+            items: vec![badge("Years of Service", "300 XP"), badge("Community Leader", "100 XP"), badge("Pillar of Community", "100 XP")],
+        }),
+    });
     out
 }

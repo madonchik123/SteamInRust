@@ -245,3 +245,47 @@ normal = { fill = "raised", text = "text", border = "border" }
 
 [components.progress]
 normal = { fill = "raised" }
+
+# ---- profile and settings (bordered cards, like before) ----
+
+[components.profile_panel]
+padding = [0, 0]
+normal = { fill = "transparent" }
+
+[components.profile_box]
+padding = [18, 18]
+radius = "large"
+text = { size = 17, weight = "bold" }
+normal = { fill = "chrome@0.85", text = "text", border = "border" }
+
+[components.profile_inset]
+padding = [0, 0]
+normal = { fill = "transparent" }
+
+[components.profile_row]
+height = 38
+normal = { fill = "transparent", text = "text_dim", icon = "text" }
+hover = { fill = "surface_hover", text = "text" }
+selected = { fill = "surface_hover", text = "text" }
+
+[components.settings_nav]
+padding = [12, 14]
+normal = { fill = "chrome" }
+
+[components.settings_nav_item]
+height = 38
+text = { size = 14, weight = "medium" }
+normal = { fill = "transparent", text = "text_dim" }
+hover = { fill = "surface", text = "text" }
+selected = { fill = "surface_hover", text = "text" }
+
+[components.settings_group]
+padding = [18, 16]
+radius = "large"
+text = { size = 15, weight = "semibold" }
+border = 1
+normal = { fill = "surface", text = "text", border = "border" }
+
+[components.notification]
+padding = [8, 8]
+normal = { fill = "transparent" }

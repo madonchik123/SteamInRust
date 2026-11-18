@@ -197,6 +197,8 @@ impl SteamApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         ui::install_fonts(&cc.egui_ctx);
         let mut prefs: Prefs = cc.storage.and_then(|s| eframe::get_value(s, "prefs")).unwrap_or_default();
+        // The user's own themes (Settings → Appearance lists them).
+        ui::themes::set_user_dir(client::store::config_dir().join("themes"));
         // Settings from before theme packages: the matching package.
         prefs.settle_theme();
         // `--lang=en` / `--lang=ru` overrides the saved choice (screenshots, testing).
@@ -533,7 +535,7 @@ impl SteamApp {
                 Action::SetTheme(t) => {
                     // A built-in theme with the user's changes: remember the
                     // choice (the small radius follows the large one).
-                    if ui::themes::builtin(&t.id).is_some() {
+                    if ui::themes::find(&t.id).is_some() {
                         self.prefs.skin = ui::themes::choice_for(&t);
                         self.prefs.theme = ui::themes::resolve(&self.prefs.skin);
                     } else {

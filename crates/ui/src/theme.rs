@@ -724,6 +724,24 @@ pub struct Components {
     pub progress: Component,
     /// Toast messages.
     pub toast: Component,
+    /// The profile's page-wide block behind its header and columns.
+    pub profile_panel: Component,
+    /// A titled box on a profile ("Recent Activity", "Comments"); its
+    /// `text` is the title's style and color.
+    pub profile_box: Component,
+    /// The darker block inside a profile box, and the profile's side column.
+    pub profile_inset: Component,
+    /// A row on a profile: its links ("Games 350"), friends, games.
+    pub profile_row: Component,
+    /// The column of sections in Settings and Profile Settings.
+    pub settings_nav: Component,
+    /// A section in that column (`selected` is the open one).
+    pub settings_nav_item: Component,
+    /// A group of settings ("Profile", "Contact Info"); its `text` is the
+    /// group title's style and color.
+    pub settings_group: Component,
+    /// One notification in the notifications popup (`selected` is unread).
+    pub notification: Component,
 }
 
 // ---------- assets ----------
@@ -1153,6 +1171,14 @@ impl Components {
             ("wishlist", &self.wishlist),
             ("progress", &self.progress),
             ("toast", &self.toast),
+            ("profile_panel", &self.profile_panel),
+            ("profile_box", &self.profile_box),
+            ("profile_inset", &self.profile_inset),
+            ("profile_row", &self.profile_row),
+            ("settings_nav", &self.settings_nav),
+            ("settings_nav_item", &self.settings_nav_item),
+            ("settings_group", &self.settings_group),
+            ("notification", &self.notification),
         ]
     }
 }
