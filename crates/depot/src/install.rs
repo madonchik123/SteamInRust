@@ -19,7 +19,7 @@ use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -132,10 +132,210 @@ fn part_path(p: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+fn is_symlink_or_reparse(meta: &fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_windows_reserved(seg: &str) -> bool {
+    let stem = seg.split('.').next().unwrap_or("");
+    let upper = stem.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "CONIN$"
+            | "CONOUT$"
+            | "COM0"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT0"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        return true;
+    }
+    if stem.len() > 3
+        && stem.is_char_boundary(3)
+        && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
+        && matches!(&stem[3..], "\u{00b9}" | "\u{00b2}" | "\u{00b3}")
+    {
+        return true;
+    }
+    false
+}
+
+fn is_valid_segment(seg: &str) -> bool {
+    if seg.is_empty() || seg == "." || seg == ".." || seg.ends_with('.') || seg.ends_with(' ') {
+        return false;
+    }
+    if seg.contains(['/', '\\', ':', '\0']) || seg.chars().any(|c| (c as u32) < 0x20) {
+        return false;
+    }
+    let lower = seg.to_ascii_lowercase();
+    if lower.ends_with(".sirpart") || lower == ".sirresume" || lower == ".sirresume.tmp" || is_windows_reserved(seg) {
+        return false;
+    }
+    let mut comps = Path::new(seg).components();
+    matches!((comps.next(), comps.next()), (Some(Component::Normal(s)), None) if !s.is_empty())
+}
+
+/// Validate a single folder name (e.g. `<library>/steamapps/common/<folder>`).
+pub fn validate_folder_name(name: &str) -> Result<String> {
+    if !is_valid_segment(name) {
+        return Err(Error::Format(format!("unsafe folder name: {name:?}")));
+    }
+    Ok(name.to_string())
+}
+
+/// Validate a relative manifest path (`\` normalized to `/`), allowing only
+/// non-empty `Component::Normal` segments without reserved names or `.sirpart`.
+pub fn validate_rel_path(rel: &str) -> Result<PathBuf> {
+    if rel.is_empty() || rel.contains('\0') {
+        return Err(Error::Format(format!("unsafe manifest path: {rel:?}")));
+    }
+    let norm = rel.replace('\\', "/");
+    let mut out = PathBuf::new();
+    for seg in norm.split('/') {
+        if !is_valid_segment(seg) {
+            return Err(Error::Format(format!("unsafe manifest path: {rel:?}")));
+        }
+        out.push(seg);
+    }
+    if out.as_os_str().is_empty()
+        || !out.components().all(|c| matches!(c, Component::Normal(s) if !s.is_empty()))
+    {
+        return Err(Error::Format(format!("unsafe manifest path: {rel:?}")));
+    }
+    Ok(out)
+}
+
+/// Verify `dir` (if it already exists) is a real directory, not a symlink/reparse point.
+pub fn ensure_real_dir(dir: &Path) -> Result<()> {
+    match fs::symlink_metadata(dir) {
+        Ok(m) if is_symlink_or_reparse(&m) => {
+            Err(Error::Format(format!("refusing symlink directory: {}", dir.display())))
+        }
+        Ok(m) if !m.is_dir() => Err(Error::Format(format!("not a directory: {}", dir.display()))),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Io(e)),
+    }
+}
+
+fn ensure_not_symlink(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(m) if is_symlink_or_reparse(&m) => {
+            Err(Error::Format(format!("refusing symlink target: {}", path.display())))
+        }
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Io(e)),
+    }
+}
+
+fn resolve_inside_opts(dir: &Path, rel: &str, allow_leaf_symlink: bool) -> Result<PathBuf> {
+    let rel_path = validate_rel_path(rel)?;
+    ensure_real_dir(dir)?;
+    let mut cur = dir.to_path_buf();
+    let mut comps = rel_path.components().peekable();
+    while let Some(c) = comps.next() {
+        cur.push(c);
+        let is_last = comps.peek().is_none();
+        match fs::symlink_metadata(&cur) {
+            Ok(m) => {
+                if is_symlink_or_reparse(&m) && !(allow_leaf_symlink && is_last) {
+                    return Err(Error::Format(format!("refusing symlink path component in {rel:?}")));
+                }
+                if !is_last && !m.is_dir() {
+                    return Err(Error::Format(format!("non-directory ancestor in {rel:?}")));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                for rest in comps {
+                    cur.push(rest);
+                }
+                break;
+            }
+            Err(e) => return Err(Error::Io(e)),
+        }
+    }
+    Ok(cur)
+}
+
+/// Validate `rel` and check via `symlink_metadata` that `dir` and every
+/// existing component inside `dir` along `rel` is free of symlinks/reparse points.
+pub fn resolve_inside(dir: &Path, rel: &str) -> Result<PathBuf> {
+    resolve_inside_opts(dir, rel, false)
+}
+
+#[cfg(unix)]
+fn validate_symlink_target(dir: &Path, link_path: &Path, target: &str) -> Result<()> {
+    if target.is_empty() || target.contains('\0') {
+        return Err(Error::Format(format!("unsafe symlink target: {target:?}")));
+    }
+    let norm = target.replace('\\', "/");
+    if norm.starts_with('/') {
+        return Err(Error::Format(format!("refusing absolute symlink target: {target:?}")));
+    }
+    let rel_link = link_path.strip_prefix(dir).map_err(|_| Error::Format("symlink outside dir".into()))?;
+    let mut stack: Vec<String> = rel_link
+        .parent()
+        .map(|p| p.components().filter_map(|c| match c { Component::Normal(s) => Some(s.to_string_lossy().into_owned()), _ => None }).collect())
+        .unwrap_or_default();
+    for seg in norm.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if stack.pop().is_none() {
+                    return Err(Error::Format(format!("symlink target escapes install dir: {target:?}")));
+                }
+            }
+            s => stack.push(s.to_string()),
+        }
+    }
+    Ok(())
+}
+
 pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: Arc<Progress>) -> Result<Report> {
     let mut report = Report::default();
     progress.set_phase(Phase::Checking);
+    ensure_real_dir(dir)?;
+    for job in &jobs {
+        for f in &job.manifest.files {
+            validate_rel_path(&f.name)?;
+        }
+    }
     fs::create_dir_all(dir)?;
+    ensure_real_dir(dir)?;
+    ensure_not_symlink(&Record::path(dir))?;
+    ensure_not_symlink(&dir.join(".sirresume.tmp"))?;
 
     // A file can be in more than one depot (a language or platform depot
     // replacing a base file). Like Steam, the later depot's copy wins; the
@@ -155,25 +355,36 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
     let mut record = Record::default();
 
     // Plan: which files need work, and where each chunk comes from.
-    let mut files: Vec<(PathBuf, FileEntry)> = Vec::new();
+    let mut files: Vec<(PathBuf, String, FileEntry)> = Vec::new();
     let mut prints: Vec<Fingerprint> = Vec::new();
     // Chunks still to write, per file.
     let mut todo: Vec<usize> = Vec::new();
     let mut work: Vec<Work> = Vec::new();
     for (job_index, job) in jobs.iter().enumerate() {
         let key = Arc::new(job.key.clone());
-        let old_files: HashMap<&str, &FileEntry> = job.old.iter().flat_map(|m| &m.files).map(|f| (f.name.as_str(), f)).collect();
-        // Index of every chunk in the installed version, for reuse.
-        let mut old_chunks: HashMap<&[u8], (&str, u64)> = HashMap::new();
-        for f in job.old.iter().flat_map(|m| &m.files) {
+        let mut old_files: HashMap<String, &FileEntry> = HashMap::new();
+        // Index of every verified chunk in the installed version, for reuse.
+        let mut old_chunks: HashMap<&[u8], (PathBuf, u64)> = HashMap::new();
+        for f in job.old.iter().flat_map(|m| &m.files).filter(|f| !f.directory && f.link.is_none()) {
+            let Ok(old_path) = resolve_inside(dir, &f.name) else { continue };
+            let is_reg = fs::symlink_metadata(&old_path)
+                .map(|m| !is_symlink_or_reparse(&m) && m.is_file())
+                .unwrap_or(false);
+            if !is_reg {
+                continue;
+            }
+            old_files.insert(key_of(&f.name), f);
             for c in &f.chunks {
-                old_chunks.entry(c.sha.as_slice()).or_insert((f.name.as_str(), c.offset));
+                if c.sha.len() == 20 {
+                    old_chunks.entry(c.sha.as_slice()).or_insert_with(|| (old_path.clone(), c.offset));
+                }
             }
         }
         for f in &job.manifest.files {
-            let path = dir.join(&f.name);
+            let path = resolve_inside(dir, &f.name)?;
             if f.directory {
                 fs::create_dir_all(&path)?;
+                ensure_real_dir(&path)?;
                 continue;
             }
             if f.link.is_some() || owner.get(&key_of(&f.name)) != Some(&job_index) {
@@ -184,17 +395,20 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
             let fp = resume::fingerprint(f);
             // Unchanged since the installed version, or finished by an
             // earlier attempt, and the size matches: trust it.
-            let same_as_old = old_files.get(f.name.as_str()).is_some_and(|o| o.sha == f.sha);
-            let finished_before = saved.files.get(&fp) == Some(&FileState::Finished);
-            let size_ok = fs::metadata(&path).map(|m| m.len() == f.size).unwrap_or(false);
-            if size_ok && (same_as_old || finished_before || sha1_file(&path).is_some_and(|h| f.sha.is_empty() || h == f.sha)) {
+            let same_as_old = old_files.get(&key_of(&f.name)).is_some_and(|o| f.sha.len() == 20 && o.sha == f.sha);
+            let finished_before = f.sha.len() == 20 && saved.files.get(&fp) == Some(&FileState::Finished);
+            let size_ok = fs::symlink_metadata(&path)
+                .map(|m| !is_symlink_or_reparse(&m) && m.is_file() && m.len() == f.size)
+                .unwrap_or(false);
+            if size_ok && (same_as_old || finished_before || sha1_file(&path).is_some_and(|h| f.sha.len() == 20 && h == f.sha)) {
                 report.skipped += 1;
                 progress.disk_done.fetch_add(f.size, Ordering::Relaxed);
                 record.mark_finished(fp);
                 continue;
             }
             // Chunks an earlier attempt wrote to the unfinished file.
-            let part_ok = fs::metadata(part_path(&path)).is_ok_and(|m| m.len() == f.size);
+            let part_ok = fs::symlink_metadata(part_path(&path))
+                .is_ok_and(|m| !is_symlink_or_reparse(&m) && m.is_file() && m.len() == f.size);
             let done = match saved.files.get(&fp) {
                 Some(FileState::Partial(b)) if part_ok && b.len() == f.chunks.len() => Some(b.clone()),
                 _ => None,
@@ -211,13 +425,17 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
                     continue;
                 }
                 left += 1;
-                let reuse_from = old_chunks.get(c.sha.as_slice()).map(|(name, off)| (dir.join(name), *off)).filter(|(p, _)| p.exists());
+                let reuse_from = if c.sha.len() == 20 {
+                    old_chunks.get(c.sha.as_slice()).cloned()
+                } else {
+                    None
+                };
                 if reuse_from.is_none() {
                     progress.download_total.fetch_add(c.compressed as u64, Ordering::Relaxed);
                 }
                 work.push(Work { file: idx, index, depot: job.depot, key: key.clone(), chunk: c.clone(), reuse_from });
             }
-            files.push((path, f.clone()));
+            files.push((path, f.name.clone(), f.clone()));
             prints.push(fp);
             todo.push(left);
         }
@@ -225,16 +443,19 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
     progress.files_total.store(files.len(), Ordering::Relaxed);
 
     // Pre-allocate partial files.
-    for (path, f) in &files {
+    for (path, rel, f) in &files {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let part = OpenOptions::new().create(true).write(true).truncate(false).open(part_path(path))?;
-        part.set_len(f.size)?;
+        let checked = resolve_inside(dir, rel)?;
+        let part = part_path(&checked);
+        ensure_not_symlink(&part)?;
+        let file = OpenOptions::new().create(true).write(true).truncate(false).open(&part)?;
+        file.set_len(f.size)?;
     }
     let remaining: Arc<Vec<AtomicUsize>> = Arc::new(todo.iter().map(|&n| AtomicUsize::new(n)).collect());
     // Empty files, and files an earlier attempt wrote completely, are done.
-    for (i, (path, _)) in files.iter().enumerate() {
+    for (i, (path, _, _)) in files.iter().enumerate() {
         if todo[i] == 0 {
             finish_file(path)?;
             progress.files_done.fetch_add(1, Ordering::Relaxed);
@@ -292,7 +513,7 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
                 },
                 None => download(&cdn, &w, &progress, started).await?,
             };
-            let (path, _) = &files[w.file];
+            let (path, _, _) = &files[w.file];
             write_at(&part_path(path), w.chunk.offset, &data)?;
             checkpoint.wrote(w.file, w.index);
             progress.disk_done.fetch_add(data.len() as u64, Ordering::Relaxed);
@@ -326,9 +547,11 @@ pub async fn install(cdn: Arc<Cdn>, dir: &Path, jobs: Vec<DepotJob>, progress: A
     unix_finish(dir, &jobs)?;
     for job in &jobs {
         if let Some(old) = &job.old {
-            let keep: std::collections::HashSet<&str> = job.manifest.files.iter().map(|f| f.name.as_str()).collect();
-            for f in old.files.iter().filter(|f| !f.directory && !keep.contains(f.name.as_str())) {
-                if fs::remove_file(dir.join(&f.name)).is_ok() {
+            let keep: std::collections::HashSet<String> = job.manifest.files.iter().map(|f| key_of(&f.name)).collect();
+            for f in old.files.iter().filter(|f| !f.directory && !keep.contains(&key_of(&f.name))) {
+                if let Ok(path) = resolve_inside(dir, &f.name)
+                    && fs::remove_file(path).is_ok()
+                {
                     report.removed += 1;
                 }
             }
@@ -362,8 +585,8 @@ struct Pending {
 }
 
 impl Checkpoint {
-    fn new(dir: &Path, record: Record, files: &[(PathBuf, FileEntry)], prints: Vec<Fingerprint>) -> Checkpoint {
-        let files = files.iter().zip(prints).map(|((path, f), fp)| (part_path(path), path.clone(), fp, f.chunks.len())).collect();
+    fn new(dir: &Path, record: Record, files: &[(PathBuf, String, FileEntry)], prints: Vec<Fingerprint>) -> Checkpoint {
+        let files = files.iter().zip(prints).map(|((path, _, f), fp)| (part_path(path), path.clone(), fp, f.chunks.len())).collect();
         Checkpoint { dir: dir.to_path_buf(), files, pending: Default::default(), record: std::sync::Mutex::new(Some(record)) }
     }
 
@@ -392,7 +615,10 @@ impl Checkpoint {
             .filter(|&i| {
                 let (part, done, ..) = &self.files[i];
                 // A file can get its final name between being written and now.
-                [part, done].iter().any(|p| OpenOptions::new().write(true).open(p).and_then(|f| f.sync_data()).is_ok())
+                [part, done].iter().any(|p| {
+                    !fs::symlink_metadata(p).is_ok_and(|m| is_symlink_or_reparse(&m))
+                        && OpenOptions::new().write(true).open(p).and_then(|f| f.sync_data()).is_ok()
+                })
             })
             .collect();
         for (file, index) in pending.chunks.into_iter().filter(|c| flushed.contains(&c.0)) {
@@ -445,6 +671,10 @@ async fn throttle(progress: &Progress, total: u64, started: Instant) {
 }
 
 fn read_range(path: &Path, offset: u64, len: usize) -> Option<Vec<u8>> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    if is_symlink_or_reparse(&meta) || !meta.is_file() {
+        return None;
+    }
     let mut f = fs::File::open(path).ok()?;
     f.seek(SeekFrom::Start(offset)).ok()?;
     let mut buf = vec![0u8; len];
@@ -453,6 +683,7 @@ fn read_range(path: &Path, offset: u64, len: usize) -> Option<Vec<u8>> {
 }
 
 fn write_at(path: &Path, offset: u64, data: &[u8]) -> Result<()> {
+    ensure_not_symlink(path)?;
     let mut f = OpenOptions::new().write(true).open(path)?;
     f.seek(SeekFrom::Start(offset))?;
     f.write_all(data)?;
@@ -465,9 +696,10 @@ fn write_at(path: &Path, offset: u64, data: &[u8]) -> Result<()> {
 fn unix_finish(dir: &Path, jobs: &[DepotJob]) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     for f in jobs.iter().flat_map(|j| &j.manifest.files) {
-        let path = dir.join(&f.name);
         if let Some(target) = &f.link {
+            let path = resolve_inside_opts(dir, &f.name, true)?;
             let target = target.replace('\\', "/");
+            validate_symlink_target(dir, &path, &target)?;
             if fs::read_link(&path).is_ok_and(|t| t == Path::new(&target)) {
                 continue;
             }
@@ -480,10 +712,15 @@ fn unix_finish(dir: &Path, jobs: &[DepotJob]) -> Result<()> {
             }
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
+                ensure_real_dir(parent)?;
             }
             std::os::unix::fs::symlink(&target, &path)?;
         } else if !f.directory && (f.executable || is_bundle_program(&f.name)) {
-            if let Ok(m) = fs::metadata(&path) {
+            let path = resolve_inside(dir, &f.name)?;
+            if let Ok(m) = fs::symlink_metadata(&path)
+                && !is_symlink_or_reparse(&m)
+                && m.is_file()
+            {
                 let mode = m.permissions().mode();
                 if mode & 0o111 != 0o111 {
                     fs::set_permissions(&path, fs::Permissions::from_mode(mode | 0o755))?;
@@ -504,6 +741,8 @@ fn is_bundle_program(name: &str) -> bool {
 
 fn finish_file(path: &Path) -> Result<()> {
     let part = part_path(path);
+    ensure_not_symlink(&part)?;
+    ensure_not_symlink(path)?;
     if path.exists() {
         fs::remove_file(path)?;
     }
@@ -652,8 +891,11 @@ mod resume_tests {
     #[test]
     fn notes_only_chunks_that_reached_the_disk() {
         let dir = temp("checkpoint");
-        let files = vec![(dir.join("a.bin"), entry("a.bin", &[0, 1])), (dir.join("gone.bin"), entry("gone.bin", &[0]))];
-        let prints: Vec<Fingerprint> = files.iter().map(|(_, f)| resume::fingerprint(f)).collect();
+        let files = vec![
+            (dir.join("a.bin"), "a.bin".to_string(), entry("a.bin", &[0, 1])),
+            (dir.join("gone.bin"), "gone.bin".to_string(), entry("gone.bin", &[0])),
+        ];
+        let prints: Vec<Fingerprint> = files.iter().map(|(_, _, f)| resume::fingerprint(f)).collect();
         fs::write(dir.join("a.bin.sirpart"), vec![0u8; 2 * CHUNK]).unwrap();
         let cp = Checkpoint::new(&dir, Record::default(), &files, prints.clone());
         cp.wrote(0, 1);
@@ -670,5 +912,79 @@ mod resume_tests {
         cp.save(true);
         assert_eq!(Record::load(&dir), saved);
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    fn empty_file(name: &str) -> FileEntry {
+        FileEntry {
+            name: name.into(),
+            size: 0,
+            sha: Sha1::digest(b"").to_vec(),
+            chunks: vec![],
+            directory: false,
+            executable: false,
+            install_script: false,
+            link: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_traversal_reserved_and_sirpart_manifest_names() {
+        let root = std::env::temp_dir().join(format!("sir-aur02-trav-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("game");
+        fs::create_dir_all(&dir).unwrap();
+        let cdn = Arc::new(Cdn::new(vec![]));
+
+        for bad in [
+            "../escaped.txt",
+            "sub/../../escaped.txt",
+            r"..\escaped.txt",
+            "./dot.txt",
+            "sub/./dot.txt",
+            "/abs_escaped.txt",
+            r"\abs_escaped.txt",
+            r"C:\evil.dll",
+            "C:evil.dll",
+            "bad\0name.txt",
+            "CON",
+            "sub/NUL.txt",
+            "com1.bin",
+            "game.exe.sirpart",
+            "GAME.EXE.SIRPART",
+            ".sirresume",
+            ".sirresume.tmp",
+        ] {
+            let m = Manifest { depot: 1, gid: 1, files: vec![empty_file(bad)], ..Default::default() };
+            let job = DepotJob { depot: 1, manifest: m, key: vec![0; 32], old: None };
+            let res = install(cdn.clone(), &dir, vec![job], Arc::new(Progress::default())).await;
+            assert!(res.is_err(), "expected {bad:?} to be rejected");
+        }
+        assert!(!root.join("escaped.txt").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlink_escape_on_install() {
+        let root = std::env::temp_dir().join(format!("sir-aur02-sym-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("game");
+        let outside = root.join("outside");
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("sub")).unwrap();
+        let cdn = Arc::new(Cdn::new(vec![]));
+
+        let m = Manifest { depot: 1, gid: 1, files: vec![empty_file("sub/pwn.txt")], ..Default::default() };
+        let job = DepotJob { depot: 1, manifest: m, key: vec![0; 32], old: None };
+        let res = install(cdn, &dir, vec![job], Arc::new(Progress::default())).await;
+        assert!(res.is_err(), "expected symlink ancestor write to be rejected");
+        assert!(!outside.join("pwn.txt").exists());
+        let _ = fs::remove_dir_all(&root);
     }
 }
