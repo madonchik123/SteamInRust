@@ -301,6 +301,18 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
             items: vec![badge("Years of Service", "300 XP"), badge("Community Leader", "100 XP"), badge("Pillar of Community", "100 XP")],
         }),
     });
+    // Someone who isn't your friend (BASE + 300), for the profile's
+    // "Add Friend" and "More" buttons.
+    let stranger = 76561197960265728 + 300;
+    out.push(Event::Personas(vec![model::Persona { steam_id: stranger, name: "Lumen".into(), state: model::PersonaState::Online, ..Default::default() }]));
+    out.push(Event::Profile(model::ProfileInfo {
+        steam_id: stranger,
+        real_name: "Lumen Vale".into(),
+        summary: "Speedrunner. Mostly platformers.".into(),
+        location: "Somewhere".into(),
+        visibility: model::Visibility::Public,
+        ..Default::default()
+    }));
     out
 }
 

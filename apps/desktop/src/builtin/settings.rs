@@ -294,7 +294,16 @@ fn label_w(ui: &Ui) -> f32 {
 /// One setting: its name (with an "i" explaining it), its value, then
 /// buttons or notes. `value` and `rest` draw left to right.
 pub(crate) fn row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: impl FnOnce(&mut Ui), rest: impl FnOnce(&mut Ui)) {
+    row_sized(ui, t, label, tip, 0.0, value, rest);
+}
+
+/// [`row`] whose value wants `wanted` points: it gets them, past the
+/// design's column, out of the room the buttons leave (they're measured
+/// the frame before). What still doesn't fit wraps.
+fn row_sized(ui: &mut Ui, t: &Theme, label: &str, tip: &str, wanted: f32, value: impl FnOnce(&mut Ui), rest: impl FnOnce(&mut Ui)) {
     let lw = label_w(ui);
+    let rest_id = ui.scope_id().with(("settings-row-rest", label));
+    let rest_w = ui.ctx().data(|d| d.get_temp::<f32>(rest_id)).unwrap_or(0.0);
     // A soft highlight behind the row under the pointer (`settings_group`'s hover).
     let bg = ui.painter().add(egui::Shape::Noop);
     let r = ui.horizontal(|ui| {
@@ -308,12 +317,20 @@ pub(crate) fn row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: impl Fn
                 w::info_tip(ui, t, tip);
             }
         });
-        let vw = (ui.available_width() * 0.35).clamp(120.0, 312.0);
+        let gap = ui.spacing().item_spacing.x;
+        let design = (ui.available_width() * 0.35).clamp(120.0, 312.0);
+        let room = (ui.available_width() - rest_w - gap).max(design);
+        let vw = wanted.clamp(design, room);
         ui.allocate_ui_with_layout(vec2(vw, t.dense(44.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.set_width(vw);
             value(ui);
         });
-        rest(ui);
+        let r = ui.horizontal(|ui| rest(ui)).response;
+        let w = if r.rect.width() > 1.0 { r.rect.width() } else { 0.0 };
+        if (w - rest_w).abs() > 0.5 {
+            ui.ctx().data_mut(|d| d.insert_temp(rest_id, w));
+            ui.ctx().request_repaint();
+        }
     });
     let rect = egui::Rect::from_min_max(r.response.rect.min, egui::pos2(ui.max_rect().right(), r.response.rect.max.y)).expand2(vec2(t.spacing.sm, 2.0));
     let hover = ui.ctx().animate_bool_with_time(r.response.id.with("row-hover"), ui.rect_contains_pointer(rect), 0.1);
@@ -329,13 +346,15 @@ pub(crate) fn row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: impl Fn
 /// button; true when the button is pressed.
 pub(crate) fn text_row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: &str, color: egui::Color32, button: Option<&str>) -> bool {
     let mut clicked = false;
-    row(
+    let wanted = ui.painter().layout_no_wrap(value.to_string(), t.typography.body_l.font(), color).size().x + 2.0;
+    row_sized(
         ui,
         t,
         label,
         tip,
+        wanted,
         |ui| {
-            ui.add(egui::Label::new(w::body_l(t, value, color)).truncate());
+            ui.add(egui::Label::new(w::body_l(t, value, color)).wrap());
         },
         |ui| {
             if let Some(b) = button {
@@ -562,7 +581,7 @@ impl Settings {
                 web("https://help.steampowered.com/faqs/view/647C-5CC1-7EA9-3C29");
             }
         });
-        group(ui, t, t!("Sign in"), |ui| {
+        group(ui, t, t!("Current sign-in"), |ui| {
             let id = format!("{} · {}", ctx.state.steam_id, ctx.state.country);
             if text_row(ui, t, t!("Steam ID"), "", &id, t.text_dim, Some(t!("Sign out"))) {
                 ctx.send(Command::LogOut);

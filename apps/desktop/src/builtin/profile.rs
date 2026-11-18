@@ -173,6 +173,7 @@ impl Extension for Profile {
                 Go::Nav(page, arg) => ctx.navigate(page, arg),
                 Go::Act(a) => ctx.act(a),
                 Go::Game(app) => ctx.act(crate::shell::game_page(ctx.state, app)),
+                Go::Send(c) => ctx.send(c),
             }
         }
     }
@@ -231,6 +232,8 @@ pub(crate) enum Go {
     Act(Action),
     /// A game: your library if you own it, else the store.
     Game(model::AppId),
+    /// Something for Steam (add friend, block…).
+    Send(Command),
 }
 
 /// Everything the frame shows, read from the state up front (so the page
@@ -251,6 +254,8 @@ pub(crate) struct FrameData {
     wishlist: String,
     friends: Vec<Persona>,
     friends_total: Option<usize>,
+    /// Whether they're your friend, asked to be, or blocked.
+    relationship: Relationship,
     /// Requests for what isn't loaded yet (send them).
     pub wants: Vec<Command>,
 }
@@ -268,6 +273,11 @@ impl FrameData {
         let mut wants = Vec::new();
         if id != 0 && ask_once(id, 0) {
             wants.push(Command::LoadProfile { steam_id: id });
+        }
+        // Someone who isn't your friend: Steam only sends their name and
+        // picture when asked.
+        if id != 0 && !mine && !state.personas.get(&id).is_some_and(|p| !p.name.is_empty()) && ask_once(id, 2) {
+            wants.push(Command::LoadPersonas { ids: vec![id] });
         }
         let persona = state.persona(id);
         let info = state.profiles.get(&id).cloned();
@@ -321,6 +331,7 @@ impl FrameData {
             wishlist: if mine { state.wishlist.as_ref().map(|w| w.len().to_string()).unwrap_or_default() } else { String::new() },
             friends,
             friends_total,
+            relationship: state.friends.get(&id).copied().unwrap_or(Relationship::None),
             wants,
         }
     }
@@ -457,19 +468,28 @@ fn header(ui: &mut Ui, t: &Theme, d: &FrameData, here: Here, side: f32, go: &mut
             ui.spacing_mut().item_spacing.y = t.spacing.lg + t.spacing.xs;
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = t.spacing.md + 2.0;
+                    ui.spacing_mut().item_spacing.x = t.spacing.sm + 2.0;
                     if d.mine {
                         if w::button(ui, t, None, t!("Edit Profile"), w::Kind::Secondary, w::Size::Md).clicked() {
                             go.push(Go::Nav("profile", Some("edit".into())));
                         }
-                    } else if w::button(ui, t, Some(icons::CHAT), t!("Message"), w::Kind::Primary, w::Size::Md).clicked() {
-                        go.push(Go::Act(Action::OpenChat(d.id)));
-                    }
-                    if here != Here::Profile && w::button(ui, t, None, t!("Back to Profile"), w::Kind::Secondary, w::Size::Md).clicked() {
-                        go.push(Go::Nav("profile", Some(d.id.to_string())));
+                        if here != Here::Profile && w::button(ui, t, None, t!("Back to Profile"), w::Kind::Secondary, w::Size::Md).clicked() {
+                            go.push(Go::Nav("profile", Some(d.id.to_string())));
+                        }
+                    } else {
+                        their_actions(ui, t, d, go);
                     }
                 });
             });
+            // Someone else's: their buttons fill the row, so "Back" goes under them.
+            if !d.mine && here != Here::Profile {
+                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                    if w::button(ui, t, Some(icons::ARROW_LEFT), t!("Back to Profile"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                        go.push(Go::Nav("profile", Some(d.id.to_string())));
+                    }
+                });
+            }
+            confirm(ui, t, d, go);
             if let Some(b) = &d.badges {
                 w::component_frame(t, &t.components.profile_inset).show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -1187,5 +1207,121 @@ fn badge_icon(ui: &mut Ui, t: &Theme, badge: &model::Badge, size: f32) {
     let tip = [badge.title.clone(), badge.detail.clone(), unlocked_text(badge)].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
     if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !badge.url.is_empty() {
         crate::links::open_http(&badge.url);
+    }
+}
+
+/// What [`their_actions`] asks to confirm first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Confirm {
+    Remove,
+    Block,
+}
+
+fn confirm_id(id: SteamId) -> egui::Id {
+    egui::Id::unique(("profile-confirm", id))
+}
+
+/// The buttons on someone else's profile, like Steam's: what fits your
+/// relationship (add, accept, cancel, unblock), Message for friends, and
+/// "More" with the rest. Drawn right to left.
+fn their_actions(ui: &mut Ui, t: &Theme, d: &FrameData, go: &mut Vec<Go>) {
+    let id = d.id;
+    let rel = d.relationship;
+    let link = format!("https://steamcommunity.com/profiles/{id}");
+    // "More": the rest of what you can do.
+    let more = w::icon_box(ui, t, icons::DOTS, t!("More"), false);
+    egui::Popup::menu(&more).width(t.dense(240.0)).show(|ui| {
+        if rel == Relationship::RequestRecipient && w::menu_item(ui, t, icons::X, t!("Ignore")).clicked() {
+            go.push(Go::Send(Command::RemoveFriend { steam_id: id }));
+        }
+        if w::menu_item(ui, t, icons::LINK, t!("Copy profile link")).clicked() {
+            ui.ctx().copy_text(link.clone());
+            go.push(Go::Act(Action::Toast(t!("Copied: {what}", what = link.as_str()))));
+        }
+        if w::menu_item(ui, t, icons::EXTERNAL, t!("View on Steam")).clicked() {
+            crate::links::open_http(&link);
+        }
+        if w::menu_item(ui, t, icons::BACKPACK, t!("Inventory")).clicked() {
+            go.push(Go::Nav("inventory", Some(id.to_string())));
+        }
+        ui.separator();
+        if rel == Relationship::Friend && w::menu_item_tinted(ui, t, icons::USER, t!("Remove friend"), Some(t.danger)).clicked() {
+            ui.ctx().data_mut(|m| m.insert_temp(confirm_id(id), Confirm::Remove));
+        }
+        if rel == Relationship::Blocked {
+            if w::menu_item(ui, t, icons::LOCK_SIMPLE, t!("Unblock")).clicked() {
+                go.push(Go::Send(Command::BlockFriend { steam_id: id, block: false }));
+            }
+        } else if w::menu_item_tinted(ui, t, icons::LOCK_SIMPLE, t!("Block"), Some(t.danger)).clicked() {
+            ui.ctx().data_mut(|m| m.insert_temp(confirm_id(id), Confirm::Block));
+        }
+        // Steam takes reports on its own page (under its "More" button there).
+        if w::menu_item(ui, t, icons::WARNING, t!("Report on Steam…")).clicked() {
+            crate::links::open_http(&link);
+        }
+    });
+    let button = |ui: &mut Ui, icon: &str, label: &str, kind: w::Kind| w::button(ui, t, Some(icon), label, kind, w::Size::Md).clicked();
+    match rel {
+        Relationship::Friend => {
+            if button(ui, icons::CHAT, t!("Message"), w::Kind::Primary) {
+                go.push(Go::Act(Action::OpenChat(id)));
+            }
+        }
+        Relationship::RequestRecipient => {
+            if button(ui, icons::CHECK, t!("Accept"), w::Kind::Primary) {
+                go.push(Go::Send(Command::AddFriend { steam_id: id }));
+            }
+        }
+        Relationship::RequestInitiator => {
+            if button(ui, icons::X, t!("Cancel invite"), w::Kind::Secondary) {
+                go.push(Go::Send(Command::RemoveFriend { steam_id: id }));
+            }
+        }
+        Relationship::Blocked => {
+            ui.label(w::body_m(t, t!("Blocked"), t.text_dim));
+        }
+        _ => {
+            if button(ui, icons::USER_PLUS, t!("Add Friend"), w::Kind::Primary) {
+                go.push(Go::Send(Command::AddFriend { steam_id: id }));
+                go.push(Go::Act(Action::Toast(t!("Friend invite sent").to_string())));
+            }
+        }
+    }
+}
+
+/// "Are you sure?" for removing or blocking, asked from [`their_actions`].
+fn confirm(ui: &mut Ui, t: &Theme, d: &FrameData, go: &mut Vec<Go>) {
+    let key = confirm_id(d.id);
+    let Some(what) = ui.ctx().data(|m| m.get_temp::<Confirm>(key)) else { return };
+    let mut close = false;
+    egui::Modal::new(key.with("modal")).show(ui.ctx(), |ui| {
+        ui.set_width(t.dense(400.0));
+        let (title, body, label, cmd) = match what {
+            Confirm::Remove => (t!("Remove {name} from your friends?", name = d.name.as_str()), String::new(), t!("Remove friend"), Command::RemoveFriend { steam_id: d.id }),
+            Confirm::Block => (
+                t!("Block all communication with {name}?", name = d.name.as_str()),
+                t!("They'll be removed from your friends and can't message you or invite you.").to_string(),
+                t!("Block"),
+                Command::BlockFriend { steam_id: d.id, block: true },
+            ),
+        };
+        ui.add(egui::Label::new(w::heading_s(t, title, t.text)).wrap());
+        if !body.is_empty() {
+            ui.add_space(t.spacing.xs);
+            ui.add(egui::Label::new(w::body_m(t, body, t.text_dim)).wrap());
+        }
+        ui.add_space(t.spacing.lg);
+        ui.horizontal(|ui| {
+            if w::button(ui, t, None, label, w::Kind::Danger, w::Size::Md).clicked() {
+                go.push(Go::Send(cmd));
+                close = true;
+            }
+            if w::button(ui, t, None, t!("Cancel"), w::Kind::Ghost, w::Size::Md).clicked() {
+                close = true;
+            }
+        });
+    });
+    if close || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ui.ctx().data_mut(|m| m.remove::<Confirm>(key));
     }
 }
