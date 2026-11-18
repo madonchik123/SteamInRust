@@ -261,17 +261,23 @@ fn bounded_field(ptr: *const u8, max_len: usize) -> String {
     }
 }
 
-/// MatchMakingKeyValuePair_t (256-byte key, 256-byte value) pointer array → "\key\value...".
+/// MatchMakingKeyValuePair_t (256-byte key, 256-byte value) list → "\\key\\value...".
+///
+/// `ppchFilters` is a pointer to ONE pointer to a contiguous array of pairs,
+/// as Valve's SDK sample passes it (`&pFilter` with `pFilter = pFilters`)
+/// and Steam reads it: the pairs follow each other 512 bytes apart. Each
+/// field is read up to its 256 bytes, so an unterminated one can't run on.
 fn filter_text(filters: *const *const u8, n: u32) -> String {
     if filters.is_null() || n == 0 {
         return String::new();
     }
+    let list = unsafe { *filters };
+    if list.is_null() {
+        return String::new();
+    }
     let mut out = String::new();
     for i in 0..n.min(64) as usize {
-        let pair = unsafe { *filters.add(i) };
-        if pair.is_null() {
-            continue;
-        }
+        let pair = unsafe { list.add(i * 512) };
         let k = bounded_field(pair, 256);
         let v = bounded_field(unsafe { pair.add(256) }, 256);
         out.push_str(&format!("\\{k}\\{v}"));
@@ -605,23 +611,21 @@ mod tests {
 
     #[test]
     fn filters_become_text() {
-        let mut pair0 = Box::new([0u8; 512]);
-        pair0[..7].copy_from_slice(b"gamedir");
-        pair0[256..260].copy_from_slice(b"csgo");
-
-        // Separate allocation (not contiguous with pair0) + null entry skipped.
-        let _spacer = Box::new([0xFFu8; 1024]);
-        let mut pair1 = Box::new([0u8; 512]);
-        pair1[..4].copy_from_slice(b"full");
-        pair1[256..257].copy_from_slice(b"1");
-
-        // Unterminated 256-byte key and 256-byte value must be bounded at 256 bytes each.
-        let pair2 = Box::new([b'x'; 512]);
-
-        let ptrs: [*const u8; 4] = [pair0.as_ptr(), std::ptr::null(), pair1.as_ptr(), pair2.as_ptr()];
-        let got = filter_text(ptrs.as_ptr(), ptrs.len() as u32);
+        // The SDK's layout: one pointer to a contiguous array of pairs.
+        let mut pairs = vec![0u8; 512 * 3];
+        pairs[..7].copy_from_slice(b"gamedir");
+        pairs[256..260].copy_from_slice(b"csgo");
+        pairs[512..516].copy_from_slice(b"full");
+        pairs[768..769].copy_from_slice(b"1");
+        // Unterminated 256-byte key and value: each read stops at 256 bytes.
+        pairs[1024..].fill(b'x');
+        let list = pairs.as_ptr();
+        let got = filter_text(&list, 3);
         let expected_256 = "x".repeat(256);
         assert_eq!(got, format!("\\gamedir\\csgo\\full\\1\\{expected_256}\\{expected_256}"));
+        // No list at all.
+        let none: *const u8 = std::ptr::null();
+        assert_eq!(filter_text(&none, 2), "");
     }
 
     #[test]
