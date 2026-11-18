@@ -596,6 +596,22 @@ pub struct ProfileInfo {
     /// VAC bans on record (from the public profile).
     #[serde(default)]
     pub vac_banned: bool,
+    /// An animated background's video (MP4), played behind the profile;
+    /// `background` is its still picture.
+    #[serde(default)]
+    pub background_video: Option<String>,
+    /// Whether the background fills the window (Steam's "Full Screen")
+    /// rather than showing at its own size.
+    #[serde(default)]
+    pub background_full: bool,
+    /// An animated avatar from the Points Shop (an animated GIF).
+    #[serde(default)]
+    pub animated_avatar: Option<String>,
+    /// The mini profile's background: picture and video.
+    #[serde(default)]
+    pub mini_background: Option<String>,
+    #[serde(default)]
+    pub mini_background_video: Option<String>,
 }
 
 /// Steam community visibility of a profile.
@@ -841,6 +857,15 @@ pub struct ProfileItemChoice {
     pub name: String,
     pub image: String,
     pub app_id: AppId,
+    /// The full-size picture (backgrounds), when there's one.
+    #[serde(default)]
+    pub large: String,
+    /// Its video (MP4) for animated items.
+    #[serde(default)]
+    pub movie: String,
+    /// The game (or Steam collection) it comes from.
+    #[serde(default)]
+    pub app_name: String,
 }
 
 /// Your profile as Steam's Edit Profile pages show it.
@@ -868,6 +893,12 @@ pub struct ProfileEdit {
     /// Equipped item ids: background, mini profile background, frame,
     /// animated avatar (0 = none).
     pub equipped: [u64; 4],
+    /// The equipped background fills the window (Steam's "Full Screen").
+    #[serde(default)]
+    pub background_full: bool,
+    /// The featured badge (a community badge's id; 0 = none).
+    #[serde(default)]
+    pub favorite_badge: u32,
 }
 
 /// Which part of the profile a save was for.

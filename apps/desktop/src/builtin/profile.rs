@@ -345,7 +345,7 @@ pub(crate) fn frame(ui: &mut Ui, t: &Theme, d: &FrameData, here: Here, embedded:
     let mut go = Vec::new();
     let full = if embedded { ui.clip_rect() } else { ui.max_rect() };
     // The profile's own background from Steam (a picture they chose), or the theme's.
-    let painted = d.info.as_ref().and_then(|i| i.background.as_deref()).is_some_and(|u| w::paint_cover(ui, full, u, CornerRadius::ZERO));
+    let painted = d.info.as_ref().is_some_and(|i| paint_profile_background(ui, t, full, i.background.as_deref(), i.background_video.as_deref(), i.background_full));
     if painted {
         ui.painter().rect_filled(full, CornerRadius::ZERO, t.overlay_dark(2));
     } else {
@@ -398,12 +398,14 @@ fn header(ui: &mut Ui, t: &Theme, d: &FrameData, here: Here, side: f32, go: &mut
             let (r, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
             let frame_url = d.info.as_ref().and_then(|i| i.avatar_frame.as_deref());
             let img = if frame_url.is_some() { r.shrink(size * 0.08) } else { r };
-            if !w::paint_cover(ui, img, &art::avatar_full(d.persona.avatar_hash.as_deref()), t.corner_small()) {
+            let still = art::avatar_full(d.persona.avatar_hash.as_deref());
+            let avatar = d.info.as_ref().and_then(|i| i.animated_avatar.clone()).unwrap_or(still);
+            if !paint_picture(ui, img, &avatar, t.corner_small()) {
                 w::skeleton(ui, t, img, t.corner_small());
             }
             match frame_url {
                 Some(f) => {
-                    w::paint_cover(ui, r, f, CornerRadius::ZERO);
+                    paint_picture(ui, r, f, CornerRadius::ZERO);
                 }
                 None => {
                     ui.painter().rect_stroke(r, t.corner_small(), Stroke::new(t.dense(4.0), t.text_dim), egui::StrokeKind::Inside);
@@ -1169,7 +1171,7 @@ fn game_row(ui: &mut Ui, t: &Theme, ctx: &Ctx, g: &model::PlayerGame) -> bool {
 
 /// Steam-style level circle; its color steps every 10 levels (Steam's own
 /// level colors, like a picture from Steam).
-fn level_badge(ui: &mut Ui, t: &Theme, level: u32, size: f32) {
+pub(super) fn level_badge(ui: &mut Ui, t: &Theme, level: u32, size: f32) {
     let colors = [0x9B9B9B, 0xC02942, 0xD95B43, 0xFECC23, 0x467A3C, 0x4E8DDB, 0x7652C9, 0xC252C9, 0x542437, 0x997C52];
     let c = colors[(level as usize / 10) % colors.len()];
     let color = egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
@@ -1194,7 +1196,7 @@ fn unlocked_text(b: &model::Badge) -> String {
 }
 
 /// A badge picture with its name and details on hover.
-fn badge_icon(ui: &mut Ui, t: &Theme, badge: &model::Badge, size: f32) {
+pub(super) fn badge_icon(ui: &mut Ui, t: &Theme, badge: &model::Badge, size: f32) {
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
     match &badge.icon {
         Some(u) => {
@@ -1324,4 +1326,84 @@ fn confirm(ui: &mut Ui, t: &Theme, d: &FrameData, go: &mut Vec<Go>) {
     if close || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         ui.ctx().data_mut(|m| m.remove::<Confirm>(key));
     }
+}
+
+// ---------- moving pictures: animated avatars, frames and backgrounds ----------
+
+/// The app's async runtime, for the background videos.
+static RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Called once when the extensions are made.
+pub fn set_runtime(rt: tokio::runtime::Handle) {
+    let _ = RUNTIME.set(rt);
+}
+
+thread_local! {
+    /// Background videos playing, by address, with the frame each was last
+    /// drawn in. A player that isn't drawn pauses itself.
+    static VIDEOS: std::cell::RefCell<std::collections::HashMap<String, (video::Player, u64)>> = Default::default();
+}
+
+/// Play an MP4 looped and muted, covering `rect`. False until its first
+/// frame is ready, and when it can't play (draw the still picture then).
+pub(crate) fn paint_video(ui: &Ui, rect: Rect, url: &str, radius: CornerRadius) -> bool {
+    let Some(rt) = RUNTIME.get() else { return false };
+    if crate::links::validate_http_url(url).is_none() {
+        return false;
+    }
+    let pass = ui.ctx().cumulative_pass_nr();
+    VIDEOS.with(|v| {
+        let mut v = v.borrow_mut();
+        // Videos not shown for a while are dropped (only a few at a time).
+        v.retain(|k, (_, last)| k == url || pass.saturating_sub(*last) < 300);
+        let entry = v.entry(url.to_string()).or_insert_with(|| {
+            let opts = video::Options { autoplay: true, muted: true, volume: 0.0, looping: true, width: 1920 };
+            (video::Player::new(rt, ui.ctx(), video::Source::Mp4(url.to_string()), opts), pass)
+        });
+        entry.1 = pass;
+        let p = &mut entry.0;
+        if p.status() == video::Status::Failed {
+            return false;
+        }
+        p.poll(ui.ctx());
+        let Some((tex, size)) = p.texture() else { return false };
+        let (want, have) = (rect.width() / rect.height().max(1.0), size.x / size.y.max(1.0));
+        let uv = if have > want {
+            let w = want / have;
+            Rect::from_min_max(egui::pos2((1.0 - w) / 2.0, 0.0), egui::pos2((1.0 + w) / 2.0, 1.0))
+        } else {
+            let h = have / want;
+            Rect::from_min_max(egui::pos2(0.0, (1.0 - h) / 2.0), egui::pos2(1.0, (1.0 + h) / 2.0))
+        };
+        ui.painter_at(rect).add(egui::epaint::RectShape::filled(rect, radius, egui::Color32::WHITE).with_texture(tex, uv));
+        true
+    })
+}
+
+/// A picture covering `rect`; an animated GIF (animated avatars) plays.
+pub(crate) fn paint_picture(ui: &Ui, rect: Rect, url: &str, radius: CornerRadius) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url).to_lowercase();
+    if path.ends_with(".gif") {
+        if w::image_state(ui, url) == w::ImageState::Missing {
+            return false;
+        }
+        egui::Image::new(url.to_string()).corner_radius(radius).paint_at(ui, rect);
+        return true;
+    }
+    w::paint_cover(ui, rect, url, radius)
+}
+
+/// A profile background in `rect`: its video when it has one (the still
+/// until the video shows, or if it can't play), full screen or at its own
+/// size (across the top, not stretched to the bottom). False when there's
+/// nothing to show.
+pub(crate) fn paint_profile_background(ui: &Ui, t: &Theme, rect: Rect, still: Option<&str>, video: Option<&str>, full: bool) -> bool {
+    let area = if full { rect } else { Rect::from_min_size(rect.min, vec2(rect.width(), (rect.width() * 9.0 / 16.0).min(rect.height()))) };
+    if !full {
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, t.chrome);
+    }
+    if video.is_some_and(|v| paint_video(ui, area, v, CornerRadius::ZERO)) {
+        return true;
+    }
+    still.is_some_and(|s| w::paint_cover(ui, area, s, CornerRadius::ZERO))
 }

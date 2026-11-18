@@ -288,6 +288,27 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
         custom_url: "demo-player".into(),
         summary: "Collector of indie gems and long co-op nights.".into(),
         privacy: model::ProfilePrivacy { profile: 3, inventory: 3, gifts: 1, games: 3, playtime: 1, friends: 2, comments: 1 },
+        // Made-up items you own, with game art standing in for their pictures.
+        themes: ["Summer", "Midnight", "Steel", "Cosmic", "DarkMode"].iter().map(|n| (n.to_string(), if *n == "DarkMode" { "Dark Mode".to_string() } else { n.to_string() })).collect(),
+        theme: "Midnight".into(),
+        backgrounds: [(1145360, "Hades Underworld", "Hades"), (413150, "Pelican Town", "Stardew Valley"), (620, "Aperture Labs", "Portal 2"), (440, "Mann Co. Workshop", "Team Fortress 2"), (570, "Dire Ancient", "Dota 2")]
+            .iter()
+            .enumerate()
+            .map(|(i, (app, name, game))| model::ProfileItemChoice { id: 9100 + i as u64, name: (*name).into(), image: model::art::header(*app), large: model::art::hero(*app), app_id: *app, app_name: (*game).into(), ..Default::default() })
+            .collect(),
+        mini_backgrounds: [(1145360, "Elysium Fields", "Hades"), (413150, "Starry Farm", "Stardew Valley"), (730, "Dust II Dawn", "Counter-Strike 2")]
+            .iter()
+            .enumerate()
+            .map(|(i, (app, name, game))| model::ProfileItemChoice { id: 9200 + i as u64, name: (*name).into(), image: model::art::header(*app), large: model::art::hero(*app), app_id: *app, app_name: (*game).into(), ..Default::default() })
+            .collect(),
+        animated_avatars: [(413150, "Junimo Hop", "Stardew Valley"), (1145360, "Zagreus", "Hades"), (620, "Turret Blink", "Portal 2"), (440, "Heavy Grin", "Team Fortress 2"), (570, "Roshan Roar", "Dota 2"), (730, "Bomb Planted", "Counter-Strike 2"), (292030, "White Wolf", "The Witcher 3: Wild Hunt")]
+            .iter()
+            .enumerate()
+            .map(|(i, (app, name, game))| model::ProfileItemChoice { id: 9300 + i as u64, name: (*name).into(), image: model::art::capsule(*app), app_id: *app, app_name: (*game).into(), ..Default::default() })
+            .collect(),
+        equipped: [9100, 9200, 0, 0],
+        background_full: true,
+        favorite_badge: 2,
         ..Default::default()
     })));
     let badge = |title: &str, detail: &str| model::Badge { title: title.into(), detail: detail.into(), ..Default::default() };
@@ -298,7 +319,11 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
             xp: "2,410 XP".into(),
             next: "90 XP to reach Level 24".into(),
             progress: 0.6,
-            items: vec![badge("Years of Service", "300 XP"), badge("Community Leader", "100 XP"), badge("Pillar of Community", "100 XP")],
+            items: vec![
+                model::Badge { url: "https://steamcommunity.com/profiles/76561197960265729/badges/1".into(), ..badge("Years of Service", "300 XP") },
+                model::Badge { url: "https://steamcommunity.com/profiles/76561197960265729/badges/2".into(), ..badge("Community Leader", "100 XP") },
+                model::Badge { url: "https://steamcommunity.com/profiles/76561197960265729/badges/13".into(), ..badge("Pillar of Community", "100 XP") },
+            ],
         }),
     });
     // Someone who isn't your friend (BASE + 300), for the profile's
