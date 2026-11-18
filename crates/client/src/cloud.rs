@@ -545,9 +545,12 @@ fn is_valid_cloud_host(host: &str) -> bool {
     name.split('.').all(|label| !label.is_empty() && !label.starts_with('-') && !label.ends_with('-'))
 }
 
+/// The transfer's address, always over HTTPS: when Steam says plain HTTP
+/// (`use_https == false`) it's upgraded rather than refused, so saves keep
+/// syncing and nothing travels unencrypted (the SHA-1 check still applies).
 fn cloud_https_url(use_https: bool, host: &str, path: &str) -> Result<reqwest::Url, String> {
     if !use_https {
-        return Err("Refusing insecure plaintext HTTP Steam Cloud transfer".into());
+        tracing::debug!("Steam Cloud offered plain HTTP for {host}; using HTTPS");
     }
     if !is_valid_cloud_host(host) {
         return Err("Invalid Steam Cloud host".into());
@@ -644,11 +647,17 @@ mod https_tests {
         rt.block_on(async {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
-            let hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let hit_srv = hit.clone();
+            let leaked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let leaked_srv = leaked.clone();
             let srv = tokio::spawn(async move {
                 if let Ok((mut sock, _)) = tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept()).await.unwrap_or(Err(std::io::Error::other("timeout"))) {
-                    hit_srv.store(true, std::sync::atomic::Ordering::SeqCst);
+                    // Whatever arrives must not be the plaintext request.
+                    let mut buf = vec![0u8; 4096];
+                    let n = tokio::time::timeout(std::time::Duration::from_millis(250), tokio::io::AsyncReadExt::read(&mut sock, &mut buf)).await.ok().and_then(|r| r.ok()).unwrap_or(0);
+                    let got = String::from_utf8_lossy(&buf[..n]);
+                    if got.contains("top-secret") || got.contains("secret-save") || got.starts_with("PUT") || got.starts_with("POST") {
+                        leaked_srv.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     let _ = tokio::io::AsyncWriteExt::write_all(&mut sock, b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
                 }
             });
@@ -671,15 +680,18 @@ mod https_tests {
             let res = send_blocks(&resp, b"secret-save").await;
             let _ = srv.await;
 
-            assert!(res.is_err(), "send_blocks allowed use_https=false plaintext HTTP upload!");
-            assert!(!hit.load(std::sync::atomic::Ordering::SeqCst), "send_blocks leaked Cloud headers over plaintext HTTP!");
+            // Upgraded to HTTPS: a plain server can't complete it, and it never
+            // sees the headers or the save in the clear.
+            assert!(res.is_err(), "a plain-HTTP server accepted an upload that should be HTTPS");
+            assert!(!leaked.load(std::sync::atomic::Ordering::SeqCst), "send_blocks sent Cloud headers or data over plaintext HTTP!");
         });
     }
 
     #[test]
     fn cloud_download_requires_https_and_mandatory_20_byte_sha1() {
         assert!(cloud_https_url(true, "steamcloud-usw2.storage.googleapis.com", "/upload/1").is_ok());
-        assert!(cloud_https_url(false, "steamcloud-usw2.storage.googleapis.com", "/upload/1").is_err());
+        // Plain HTTP from Steam is upgraded, not refused.
+        assert_eq!(cloud_https_url(false, "steamcloud-usw2.storage.googleapis.com", "/upload/1").unwrap().scheme(), "https");
         assert!(cloud_https_url(true, "user@evil.com", "/upload/1").is_err());
         assert!(cloud_https_url(true, "evil.com/extra", "/upload/1").is_err());
         assert!(cloud_https_url(true, "steamcloud.local", "relative/path").is_err());

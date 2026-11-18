@@ -178,7 +178,12 @@ fn validate_https_url(url: &str) -> Result<reqwest::Url, String> {
     if url.is_empty() || url.contains('\\') || url.chars().any(|c| c.is_control()) {
         return Err("invalid Workshop item URL".into());
     }
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid Workshop item URL: {e}"))?;
+    let mut parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid Workshop item URL: {e}"))?;
+    // Steam still hands out http:// addresses for older items: upgrade them
+    // (its file hosts serve HTTPS) instead of refusing the download.
+    if parsed.scheme() == "http" {
+        parsed.set_scheme("https").map_err(|_| "invalid Workshop item URL".to_string())?;
+    }
     if parsed.scheme() != "https" {
         return Err("refusing non-HTTPS Workshop item URL".into());
     }
@@ -329,7 +334,12 @@ mod legacy_tests {
             let hit_srv = hit.clone();
             let srv = tokio::spawn(async move {
                 if let Ok((mut sock, _)) = tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept()).await.unwrap_or(Err(std::io::Error::other("timeout"))) {
-                    hit_srv.store(true, std::sync::atomic::Ordering::SeqCst);
+                    // Upgraded to HTTPS: only a TLS handshake may arrive, never a plain GET.
+                    let mut buf = vec![0u8; 1024];
+                    let n = tokio::time::timeout(std::time::Duration::from_millis(250), tokio::io::AsyncReadExt::read(&mut sock, &mut buf)).await.ok().and_then(|r| r.ok()).unwrap_or(0);
+                    if buf[..n].starts_with(b"GET") {
+                        hit_srv.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     let _ = tokio::io::AsyncWriteExt::write_all(&mut sock, b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntest").await;
                 }
             });
@@ -341,8 +351,8 @@ mod legacy_tests {
             let _ = srv.await;
             let _ = std::fs::remove_dir_all(&dir);
 
-            assert!(res.is_err(), "legacy_item accepted plaintext HTTP URL!");
-            assert!(!hit.load(std::sync::atomic::Ordering::SeqCst), "legacy_item connected over plaintext HTTP!");
+            assert!(res.is_err(), "a plain-HTTP server served an item that should come over HTTPS");
+            assert!(!hit.load(std::sync::atomic::Ordering::SeqCst), "legacy_item sent a plaintext HTTP request!");
         });
     }
 
@@ -357,7 +367,8 @@ mod legacy_tests {
         assert_eq!(safe_legacy_filename("CON.zip"), "item");
 
         assert!(validate_https_url("https://steamuserimages-a.akamaihd.net/ugc/123/mod.zip").is_ok());
-        assert!(validate_https_url("http://steamuserimages-a.akamaihd.net/ugc/123/mod.zip").is_err());
+        // Older items' http:// addresses are upgraded, not refused.
+        assert_eq!(validate_https_url("http://steamuserimages-a.akamaihd.net/ugc/123/mod.zip").unwrap().scheme(), "https");
         assert!(validate_https_url("file:///etc/passwd").is_err());
         assert!(validate_https_url("https://user:pass@example.com/mod.zip").is_err());
 
