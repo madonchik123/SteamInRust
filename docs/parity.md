@@ -18,7 +18,7 @@ Steam's website" still works; it just isn't native yet.
 | Community | 0.75 | Starting a new discussion topic, and joining or leaving a group, open Steam's website |
 | Inventory and Market | 1 | |
 | Steam Cloud | 1 | |
-| Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers; inventory item definitions |
+| Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser or screenshots |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | Seven languages (Steam has about 30); no Linux version; Mac builds aren't signed with an Apple developer ID |
@@ -172,7 +172,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | `ISteamNetworkingSockets` / `ISteamNetworkingMessages` with players on the official client | Partly: Valve's protocol (Steam-signed certificates, rendezvous, encrypted SNP) over direct ICE connections, which official players allow for friends. No Steam Datagram Relay, which the official client uses for strangers. Not yet tested against an official player |
 | `ISteamNetworkingSockets`, `ISteamNetworkingMessages` between SteamInRust players | Done, on Valve's protocol over ICE (P2P; connecting by IP to dedicated servers isn't possible) |
 | Workshop (`ISteamUGC`): queries, subscriptions, votes, favorites, downloads | Done. Publishing items isn't supported |
-| Inventory (`ISteamInventory`): items, drops, promos, crafting, properties | Done. Item definitions don't load yet; no purchases |
+| Inventory (`ISteamInventory`): items, drops, promos, crafting, properties | Done, including item definitions (through the web session when Steam won't give them to the game's session). No purchases |
 | Server browser (`ISteamMatchmakingServers`): internet and LAN lists, ping, players, rules | Done |
 | Screenshots (`ISteamScreenshots`) into the Steam screenshot folder | Done. Not uploaded |
 | Steam Input on Xbox-style pads with the game's bindings | Done on Windows. No gyro, trackpads or binding panel; no controllers in games on a Mac yet |

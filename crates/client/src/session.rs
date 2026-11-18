@@ -2866,8 +2866,11 @@ impl Online {
                 });
             }
             Request::ItemDefs => {
+                let (refresh, cache) = (self.refresh_token.clone(), self.web.clone());
                 tokio::spawn(async move {
-                    let _ = reply.send(crate::game_inventory::item_defs(&conn, app_id).await);
+                    // The web session is the fallback for the digest.
+                    let token = crate::market::web(&conn, me, &refresh, &cache).await.ok().map(|w| w.access_token.clone());
+                    let _ = reply.send(crate::game_inventory::item_defs(&conn, app_id, token).await);
                 });
             }
             Request::InputConfig => {
