@@ -70,25 +70,77 @@ pub fn entries<'a>(state: &'a client::State, local: &'a local::LocalState) -> Ve
 /// profile link), each with its value; the clicked one is copied. Returns
 /// what was copied, for a "copied" message.
 pub(crate) fn steam_id_menu(ui: &mut egui::Ui, t: &ui::Theme, id: u64) -> Option<String> {
+    use ui::widgets as w;
+    let c = &t.components.menu_item;
+    let pad = t.padding_of(c).x;
+    let name_font = t.font_of(c);
+    let value_font = egui::FontId::new(t.typography.body_s.size, t.typography.body_s.weight.family());
+    let rows: Vec<(String, String)> = model::steam_id_formats(id)
+        .into_iter()
+        .map(|(name, value)| {
+            let label = match name {
+                "friend_code" => i18n::t!("Friend code").to_string(),
+                "link" => i18n::t!("Profile link").to_string(),
+                other => other.to_string(),
+            };
+            (label, value)
+        })
+        .collect();
+    // As wide as the longest value (the profile link), within reason; a
+    // value that still doesn't fit is cut with "…" and shown whole on hover.
+    let painter = ui.painter().clone();
+    let measure = |s: &str, f: &egui::FontId| painter.layout_no_wrap(s.to_string(), f.clone(), egui::Color32::PLACEHOLDER).size().x;
+    let widest = rows.iter().map(|(l, v)| measure(l, &name_font).max(measure(v, &value_font))).fold(0.0, f32::max);
+    let screen = ui.ctx().content_rect().width();
+    let width = (widest + pad * 2.0).clamp(t.dense(240.0), t.dense(460.0).min(screen - 32.0).max(t.dense(200.0)));
+    let height = t.height_of(c, 38.0) + t.typography.body_s.size + 2.0;
     let mut copied = None;
-    for (name, value) in model::steam_id_formats(id) {
-        let label = match name {
-            "friend_code" => i18n::t!("Friend code").to_string(),
-            "link" => i18n::t!("Profile link").to_string(),
-            other => other.to_string(),
-        };
-        let (rect, r) = ui.allocate_exact_size(egui::vec2(280.0, 40.0), egui::Sense::click());
-        if r.hovered() {
-            ui.painter().rect_filled(rect, t.corner_small(), t.surface_hover);
-        }
-        let p = ui.painter();
-        p.text(rect.left_top() + egui::vec2(10.0, 7.0), egui::Align2::LEFT_TOP, &label, ui::widgets::font_medium(13.0), t.text);
-        p.text(rect.left_bottom() + egui::vec2(10.0, -6.0), egui::Align2::LEFT_BOTTOM, &value, ui::widgets::font(11.5), t.text_faint);
-        if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+    for (label, value) in rows {
+        let (rect, r) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+        let look = t.look(c, w::interact(ui, &r, false));
+        w::paint_box(ui, t, rect, c, &look, 0.0);
+        let inner = rect.width() - pad * 2.0;
+        let name = crate::builtin::friends::fit(ui, label.clone(), name_font.clone(), look.text, inner);
+        let shown = crate::builtin::friends::fit(ui, value.clone(), value_font.clone(), t.text_dim, inner);
+        let cut = shown.size().x + 1.0 < measure(&value, &value_font);
+        let gap = 2.0;
+        let top = rect.center().y - (name.size().y + gap + shown.size().y) / 2.0;
+        let nh = name.size().y;
+        ui.painter().galley(egui::pos2(rect.left() + pad, top), name, look.text);
+        ui.painter().galley(egui::pos2(rect.left() + pad, top + nh + gap), shown, t.text_dim);
+        let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let r = if cut { r.on_hover_text(&value) } else { r };
+        if r.clicked() {
             ui.ctx().copy_text(value);
             copied = Some(label);
             ui.close();
         }
     }
     copied
+}
+
+#[cfg(test)]
+mod tests {
+    /// The SteamID menu is wide enough for the whole profile link (it used
+    /// to run past the menu's edge).
+    #[test]
+    fn steam_id_menu_fits_the_profile_link() {
+        let ctx = egui::Context::default();
+        let t = ui::Theme::default();
+        let id = 76561197960287930u64;
+        let mut width = 0.0;
+        let mut needed = 0.0;
+        let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| {
+            egui::Area::new(egui::Id::unique("menu")).show(ui.ctx(), |ui| {
+                super::steam_id_menu(ui, &t, id);
+                width = ui.min_rect().width();
+                let link = model::steam_id_formats(id).into_iter().find(|(n, _)| *n == "link").map(|(_, v)| v).unwrap_or_default();
+                let font = egui::FontId::new(t.typography.body_s.size, t.typography.body_s.weight.family());
+                needed = ui.painter().layout_no_wrap(link, font, egui::Color32::WHITE).size().x + 2.0 * t.padding_of(&t.components.menu_item).x;
+            });
+        });
+        out.textures_delta.clear();
+        assert!(width + 0.5 >= needed, "menu {width} wide, the link needs {needed}");
+    }
 }

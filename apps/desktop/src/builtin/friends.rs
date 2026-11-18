@@ -226,19 +226,25 @@ impl Friends {
                     }
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         let size = t.dense(46.0);
-                        if w::presence_avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), size, Some(color)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        let av = w::presence_avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), size, Some(color));
+                        if hover_ring(ui, t, av).on_hover_text(t!("View profile")).clicked() {
                             ctx.navigate("profile", Some(id.to_string()));
                         }
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = t.spacing.xs;
                             let name = if p.display_name().is_empty() { id.to_string() } else { p.display_name() };
-                            ui.add(egui::Label::new(w::heading_s(t, name, t.text)).truncate());
+                            let r = ui.add(egui::Label::new(w::heading_s(t, name, t.text)).truncate().sense(Sense::click()));
+                            if link_hover(ui, r, t.text).on_hover_text(t!("View profile")).clicked() {
+                                ctx.navigate("profile", Some(id.to_string()));
+                            }
                             let status = crate::shell::status_text(ctx.state, &p);
                             let r = ui.add(egui::Label::new(w::body_m(t, &status, color)).truncate().sense(Sense::click()));
                             if let Some(game) = p.game_app_id.filter(|_| p.in_game()) {
-                                if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Open the game's page")).clicked() {
+                                if link_hover(ui, r, color).on_hover_text(t!("Open the game's page")).clicked() {
                                     ctx.act(crate::shell::game_page(ctx.state, game));
                                 }
+                            } else {
+                                r.on_hover_text(&status);
                             }
                         });
                     });
@@ -262,22 +268,27 @@ impl Friends {
         let x = t.spacing.xl as i8;
         egui::Frame::new().inner_margin(Margin { left: x, right: x, top: 0, bottom: t.spacing.lg as i8 }).show(ui, |ui| {
             ui.set_width(ui.available_width());
+            // The close button first, then the tabs in what's left, on a
+            // second line when they don't fit (long names in some languages).
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = t.spacing.lg;
-                let h = t.height_of(&t.components.nav_tab, 36.0);
-                for (p, label) in [
-                    (Pane::Add, t!("Add a friend").to_string()),
-                    (Pane::Invites, if invites_n > 0 { format!("{} ({invites_n})", t!("Invites")) } else { t!("Invites").to_string() }),
-                    (Pane::Blocked, if blocked_n > 0 { format!("{} ({blocked_n})", t!("Blocked")) } else { t!("Blocked").to_string() }),
-                ] {
-                    if w::nav_tab(ui, t, &label, pane == p, h).clicked() {
-                        convs.show(p);
-                    }
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                     if w::icon_button(ui, t, icons::X, t!("Close"), false, 0).clicked() {
                         convs.close(pane);
                     }
+                    ui.add_space(t.spacing.sm);
+                    ui.with_layout(Layout::left_to_right(Align::Min).with_main_wrap(true), |ui| {
+                        ui.spacing_mut().item_spacing = vec2(t.spacing.lg, t.spacing.xs);
+                        let h = t.height_of(&t.components.nav_tab, 36.0);
+                        for (p, label) in [
+                            (Pane::Add, t!("Add a friend").to_string()),
+                            (Pane::Invites, if invites_n > 0 { format!("{} ({invites_n})", t!("Invites")) } else { t!("Invites").to_string() }),
+                            (Pane::Blocked, if blocked_n > 0 { format!("{} ({blocked_n})", t!("Blocked")) } else { t!("Blocked").to_string() }),
+                        ] {
+                            if w::nav_tab(ui, t, &label, pane == p, h).clicked() {
+                                convs.show(p);
+                            }
+                        }
+                    });
                 });
             });
             ui.add_space(t.spacing.md);
@@ -493,14 +504,15 @@ impl Friends {
             ui.set_width(ui.available_width());
             ui.label(w::caption_text(t, t!("YOUR FRIEND CODE")));
             ui.add_space(t.spacing.xs);
-            ui.horizontal(|ui| {
+            // Narrow: the box and its button on their own lines.
+            let narrow = ui.available_width() < t.dense(440.0);
+            ends(ui, |ui| {
+                if action(ui, t, icons::COPY, t!("Copy"), w::Kind::Primary, ui.available_width() < t.dense(260.0)).clicked() {
+                    ui.ctx().copy_text(code.clone());
+                    ctx.toast(t!("Friend code copied"));
+                }
+            }, |ui| {
                 ui.label(w::heading_l(t, &code, t.text));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if w::button(ui, t, Some(icons::COPY), t!("Copy"), w::Kind::Primary, w::Size::Md).clicked() {
-                        ui.ctx().copy_text(code.clone());
-                        ctx.toast(t!("Friend code copied"));
-                    }
-                });
             });
             ui.add_space(t.spacing.sm);
             ui.add(egui::Label::new(w::body_s(t, t!("Enter your friend's friend code to send them an invite. A profile link or a Quick Invite link works too."), t.text_dim)).wrap());
@@ -509,15 +521,24 @@ impl Friends {
             let target = parse_friend(&self.add);
             let ready = target.is_some() || invite_link.is_some();
             let mut send = false;
-            // The button first (right to left), so the box takes what's left.
-            ui.allocate_ui_with_layout(vec2(ui.available_width(), t.height_of(&t.components.button_primary, 40.0)), Layout::right_to_left(Align::Center), |ui| {
+            if narrow {
+                let r = w::search(ui, t, &mut self.add, t!("Enter a friend code"), ui.available_width());
+                send |= ready && r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.add_space(t.spacing.sm);
                 ui.add_enabled_ui(ready, |ui| {
                     send |= w::button(ui, t, Some(icons::USER_PLUS), t!("Send invite"), w::Kind::Primary, w::Size::Md).clicked();
                 });
-                ui.add_space(t.spacing.sm);
-                let r = w::search(ui, t, &mut self.add, t!("Enter a friend code"), ui.available_width());
-                send |= ready && r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-            });
+            } else {
+                // The button first (right to left), so the box takes what's left.
+                ui.allocate_ui_with_layout(vec2(ui.available_width(), t.height_of(&t.components.button_primary, 40.0)), Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_enabled_ui(ready, |ui| {
+                        send |= w::button(ui, t, Some(icons::USER_PLUS), t!("Send invite"), w::Kind::Primary, w::Size::Md).clicked();
+                    });
+                    ui.add_space(t.spacing.sm);
+                    let r = w::search(ui, t, &mut self.add, t!("Enter a friend code"), ui.available_width());
+                    send |= ready && r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                });
+            }
             if send {
                 match (invite_link, target) {
                     (Some((steam_id, token)), _) => ctx.send(Command::RedeemQuickInvite { steam_id, token }),
@@ -562,14 +583,14 @@ impl Friends {
                     let link = q.link.clone();
                     egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(t.spacing.md as i8, t.spacing.xs as i8 + 2)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Label::new(strong(t, &link, t.text)).truncate());
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if w::button(ui, t, Some(icons::COPY), t!("Copy"), w::Kind::Primary, w::Size::Md).clicked() {
-                                    ui.ctx().copy_text(link.clone());
-                                    ctx.toast(t!("Invite link copied"));
-                                }
-                            });
+                        let narrow = ui.available_width() < t.dense(360.0);
+                        ends(ui, |ui| {
+                            if action(ui, t, icons::COPY, t!("Copy"), w::Kind::Primary, narrow).clicked() {
+                                ui.ctx().copy_text(link.clone());
+                                ctx.toast(t!("Invite link copied"));
+                            }
+                        }, |ui| {
+                            ui.add(egui::Label::new(strong(t, &link, t.text)).truncate()).on_hover_text(&link);
                         });
                     });
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -676,39 +697,40 @@ impl Friends {
     fn found_row(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, u: &model::FoundUser) {
         egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(t.spacing.md as i8, t.spacing.sm as i8)).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                if w::presence_avatar(ui, t, &u.avatar, t.dense(44.0), None).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    ctx.navigate("profile", Some(u.steam_id.to_string()));
-                }
-                ui.vertical(|ui| {
-                    ui.add_space(2.0);
-                    let name = ui.add(egui::Label::new(strong(t, &u.name, t.text)).sense(Sense::click()).truncate());
-                    if name.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        ctx.navigate("profile", Some(u.steam_id.to_string()));
-                    }
-                    for line in u.details.lines().take(2) {
-                        ui.add(egui::Label::new(w::body_s(t, line, t.text_faint)).truncate());
-                    }
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let narrow = ui.available_width() < t.dense(420.0);
+            let mut open = false;
+            ends(ui, |ui| {
                     let rel = ctx.state.friends.get(&u.steam_id).copied();
                     if u.steam_id == ctx.state.steam_id {
                         ui.label(w::body_s(t, t!("That's you"), t.text_faint));
                     } else if rel == Some(model::Relationship::Friend) {
                         ui.label(w::body_s(t, format!("{}  {}", icons::CHECK, t!("Friends")), t.online));
                     } else if rel == Some(model::Relationship::RequestRecipient) {
-                        if w::button(ui, t, Some(icons::CHECK), t!("Accept"), w::Kind::Primary, w::Size::Sm).clicked() {
+                        if action(ui, t, icons::CHECK, t!("Accept"), w::Kind::Primary, narrow).clicked() {
                             ctx.send(Command::AddFriend { steam_id: u.steam_id });
                         }
                     } else if rel == Some(model::Relationship::RequestInitiator) || self.invited.contains(&u.steam_id) {
                         ui.label(w::body_s(t, t!("Invite sent"), t.text_dim));
-                    } else if w::button(ui, t, Some(icons::USER_PLUS), t!("Add as friend"), w::Kind::Primary, w::Size::Sm).clicked() {
+                    } else if action(ui, t, icons::USER_PLUS, t!("Add as friend"), w::Kind::Primary, narrow).clicked() {
                         ctx.send(Command::AddFriend { steam_id: u.steam_id });
                         self.invited.insert(u.steam_id);
                         ctx.toast(t!("Friend invite sent to {name}", name = u.name));
                     }
+            }, |ui| {
+                let av = w::presence_avatar(ui, t, &u.avatar, t.dense(44.0), None);
+                open |= hover_ring(ui, t, av).clicked();
+                ui.vertical(|ui| {
+                    ui.add_space(2.0);
+                    let name = ui.add(egui::Label::new(strong(t, &u.name, t.text)).sense(Sense::click()).truncate());
+                    open |= link_hover(ui, name, t.text).clicked();
+                    for line in u.details.lines().take(2) {
+                        ui.add(egui::Label::new(w::body_s(t, line, t.text_faint)).truncate());
+                    }
                 });
             });
+            if open {
+                ctx.navigate("profile", Some(u.steam_id.to_string()));
+            }
         });
         ui.add_space(t.spacing.xs);
     }
@@ -729,26 +751,31 @@ impl Friends {
             for p in &list {
                 egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(t.spacing.md as i8, t.spacing.sm as i8)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        w::presence_avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), t.dense(36.0), None);
-                        let name = if p.name.is_empty() { p.steam_id.to_string() } else { p.name.clone() };
-                        ui.add(egui::Label::new(strong(t, name, t.text)).truncate());
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if incoming {
-                                if w::button(ui, t, Some(icons::X), t!("Ignore"), w::Kind::Ghost, w::Size::Sm).clicked() {
-                                    ctx.send(client::Command::RemoveFriend { steam_id: p.steam_id });
-                                }
-                                if w::button(ui, t, Some(icons::CHECK), t!("Accept"), w::Kind::Primary, w::Size::Sm).clicked() {
-                                    ctx.send(client::Command::AddFriend { steam_id: p.steam_id });
-                                }
-                            } else if w::button(ui, t, Some(icons::X), t!("Cancel invite"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                    // Text buttons while they fit beside a readable name; icons
+                    // (with the words on hover) in a narrow window.
+                    let narrow = ui.available_width() < t.dense(if incoming { 470.0 } else { 400.0 });
+                    let mut open = false;
+                    ends(ui, |ui| {
+                        if incoming {
+                            if action(ui, t, icons::X, t!("Ignore"), w::Kind::Ghost, narrow).clicked() {
                                 ctx.send(client::Command::RemoveFriend { steam_id: p.steam_id });
                             }
-                            if w::icon_button(ui, t, icons::USER_CIRCLE, t!("Profile"), false, 0).clicked() {
-                                ctx.navigate("profile", Some(p.steam_id.to_string()));
+                            if action(ui, t, icons::CHECK, t!("Accept"), w::Kind::Primary, narrow).clicked() {
+                                ctx.send(client::Command::AddFriend { steam_id: p.steam_id });
                             }
-                        });
+                        } else if action(ui, t, icons::X, t!("Cancel invite"), w::Kind::Ghost, narrow).clicked() {
+                            ctx.send(client::Command::RemoveFriend { steam_id: p.steam_id });
+                        }
+                    }, |ui| {
+                        let av = w::presence_avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), t.dense(36.0), None);
+                        open |= hover_ring(ui, t, av).on_hover_text(t!("View profile")).clicked();
+                        let name = if p.name.is_empty() { p.steam_id.to_string() } else { p.name.clone() };
+                        let r = ui.add(egui::Label::new(strong(t, name, t.text)).truncate().sense(Sense::click()));
+                        open |= link_hover(ui, r, t.text).on_hover_text(t!("View profile")).clicked();
                     });
+                    if open {
+                        ctx.navigate("profile", Some(p.steam_id.to_string()));
+                    }
                 });
                 ui.add_space(t.spacing.sm);
             }
@@ -763,20 +790,23 @@ impl Friends {
         if list.is_empty() {
             ui.label(w::body_m(t, t!("You haven't blocked anyone."), t.text_faint));
         }
+        let narrow = ui.available_width() < t.dense(320.0);
         for p in &list {
-            ui.horizontal(|ui| {
-                w::presence_avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), t.dense(32.0), None);
-                let name = if p.name.is_empty() { p.steam_id.to_string() } else { p.name.clone() };
-                ui.label(strong(t, name, t.text));
-                if ui.link(w::body_s(t, t!("Profile"), t.accent)).clicked() {
-                    ctx.navigate("profile", Some(p.steam_id.to_string()));
+            let mut open = false;
+            ends(ui, |ui| {
+                if action(ui, t, icons::LOCK_SIMPLE, t!("Unblock"), w::Kind::Ghost, narrow).clicked() {
+                    ctx.send(Command::BlockFriend { steam_id: p.steam_id, block: false });
                 }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if w::button(ui, t, None, t!("Unblock"), w::Kind::Ghost, w::Size::Sm).clicked() {
-                        ctx.send(Command::BlockFriend { steam_id: p.steam_id, block: false });
-                    }
-                });
+            }, |ui| {
+                let av = w::presence_avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), t.dense(32.0), None);
+                open |= hover_ring(ui, t, av).on_hover_text(t!("View profile")).clicked();
+                let name = if p.name.is_empty() { p.steam_id.to_string() } else { p.name.clone() };
+                let r = ui.add(egui::Label::new(strong(t, name, t.text)).truncate().sense(Sense::click()));
+                open |= link_hover(ui, r, t.text).on_hover_text(t!("View profile")).clicked();
             });
+            if open {
+                ctx.navigate("profile", Some(p.steam_id.to_string()));
+            }
             ui.add_space(t.spacing.xs);
         }
     }
@@ -792,6 +822,44 @@ fn parse_friend(input: &str) -> Option<SteamId> {
         76561197960265729..=76561202255233023 => Some(n),
         _ => None,
     }
+}
+
+/// A row with things at its right end (`right`, laid out first and right to
+/// left) and the rest on the left in what's left over, so a long name gets
+/// cut off instead of pushing the buttons out of the panel.
+pub(crate) fn ends<R>(ui: &mut Ui, right: impl FnOnce(&mut Ui), left: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            right(ui);
+            ui.with_layout(Layout::left_to_right(Align::Center), left).inner
+        })
+        .inner
+    })
+    .inner
+}
+
+/// A button with its words, or just its icon (the words on hover) when
+/// `narrow`.
+pub(crate) fn action(ui: &mut Ui, t: &Theme, icon: &str, label: &str, kind: w::Kind, narrow: bool) -> egui::Response {
+    if narrow { w::icon_button(ui, t, icon, label, false, 0) } else { w::button(ui, t, Some(icon), label, kind, w::Size::Sm) }
+}
+
+/// A clickable picture: an outline while the pointer is on it.
+pub(crate) fn hover_ring(ui: &Ui, t: &Theme, r: egui::Response) -> egui::Response {
+    if r.hovered() {
+        let radius = t.radius_of(&t.components.friend_avatar);
+        let radius = egui::CornerRadius::same(radius.nw.min((r.rect.width() / 2.0) as u8 + 2));
+        ui.painter().rect_stroke(r.rect.expand(2.0), radius, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Outside);
+    }
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Clickable text: underlined while the pointer is on it.
+pub(crate) fn link_hover(ui: &Ui, r: egui::Response, color: egui::Color32) -> egui::Response {
+    if r.hovered() {
+        ui.painter().hline(r.rect.x_range(), r.rect.bottom(), egui::Stroke::new(1.0, color));
+    }
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Text that fits `width` on one line (cut with "…").

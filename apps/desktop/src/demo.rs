@@ -62,7 +62,7 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
         Event::Level(27),
         Event::Licenses { count: apps.len() },
         Event::Apps(apps),
-        Event::Friends((0..friends.len()).map(|i| (BASE + 100 + i as u64, Relationship::Friend)).collect()),
+        Event::Friends((0..friends.len()).map(|i| (BASE + 100 + i as u64, Relationship::Friend)).chain(friend_requests().iter().map(|(id, _, rel)| (*id, *rel))).collect()),
         Event::Personas(personas),
     ];
     events.push(Event::History {
@@ -81,6 +81,7 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
     events.push(Event::Wallet { balance: 1234, currency: 1, pending: 250 });
     events.push(Event::Message(ChatMessage { friend: BASE + 101, from: BASE + 101, text: "gg! one more?".into(), time: now - 30, invite: None }));
     events.extend(group_chat(me, ferris, now));
+    events.push(Event::Personas(friend_requests().iter().map(|(id, name, _)| Persona { steam_id: *id, name: (*name).into(), state: PersonaState::Online, ..Default::default() }).collect()));
     events.extend(inventory(me, now));
     events.extend(crate::builtin::hub::demo::events());
     events.extend(crate::builtin::store::demo::events(now));
@@ -330,5 +331,19 @@ fn group_chat(me: u64, ferris: u64, now: u64) -> Vec<Event> {
         }])),
         Event::ChatGroupMembers(vec![(group, vec![me, ferris, nova, quartz])]),
         Event::GroupHistory { group, room: 1, result: Ok((messages, false)), older: false },
+    ]
+}
+
+/// Made-up friend invites (sent and received) and blocked people, with long
+/// names, for the Friends & Chat window's Invites and Blocked pages.
+fn friend_requests() -> [(u64, &'static str, Relationship); 6] {
+    const BASE: u64 = 76561197960265728;
+    [
+        (BASE + 200, "Maximilian_the_Extraordinarily_Long_Nickname", Relationship::RequestRecipient),
+        (BASE + 201, "Orbit", Relationship::RequestRecipient),
+        (BASE + 202, "Cobalt Wanderer of the Northern Servers", Relationship::RequestInitiator),
+        (BASE + 203, "Spammy McSpamface the Third", Relationship::Blocked),
+        (BASE + 204, "Grief", Relationship::Blocked),
+        (BASE + 205, "xX_NoScope_Xx", Relationship::Ignored),
     ]
 }
