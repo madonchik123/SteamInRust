@@ -718,6 +718,7 @@ fn feed_tab(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId, t
             post::Click::Hub(a) => io.go(View::Hub { app: a, tab: HubTab::All }),
             post::Click::Store(a) => io.go(View::Page("store".into(), Some(format!("app:{a}")))),
             post::Click::Profile(id) => io.go(View::Page("profile".into(), Some(id.to_string()))),
+            post::Click::News(a) => io.go(View::Hub { app: a, tab: HubTab::News }),
         }
     }
     if loading {

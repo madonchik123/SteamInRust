@@ -415,6 +415,7 @@ selected = { fill = "mix(chrome, accent_2, 0.25)" }
 padding = [15, 15]
 radius = "large"
 normal = { fill = "chrome@0.5", text = "text" }
+hover = { fill = "raised@0.8" }
 
 [components.filter_bar]
 padding = [10, 10]

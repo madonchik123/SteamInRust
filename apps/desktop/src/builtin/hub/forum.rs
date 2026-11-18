@@ -141,9 +141,10 @@ pub(super) fn forum(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: 
 /// One topic (Figma `505:8934`): its title and author, when it was last
 /// answered and how many replies. True when clicked.
 fn topic_row(ui: &mut Ui, t: &Theme, topic: &hub::Topic) -> bool {
-    let top = ui.cursor().top();
     let pad = t.spacing.lg + 3.0;
-    w::post_card(t).inner_margin(egui::Margin::symmetric(pad as i8, t.spacing.lg as i8)).show(ui, |ui| {
+    let id = egui::Id::unique(("topic", topic.id, &topic.url));
+    let margin = Some(egui::Margin::symmetric(pad as i8, t.spacing.lg as i8));
+    let (_, resp) = w::hover_frame(ui, t, &t.components.post_card, id, margin, |ui| {
         ui.set_width(ui.available_width());
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
         let right_w = 330.0f32.min(r.width() * 0.45);
@@ -174,14 +175,9 @@ fn topic_row(ui: &mut Ui, t: &Theme, topic: &hub::Topic) -> bool {
         }
         let _ = gw;
     });
-    let rect = egui::Rect::from_min_max(egui::pos2(ui.min_rect().left(), top), egui::pos2(ui.max_rect().right(), ui.cursor().top()));
-    let resp = ui.interact(rect, ui.scope_id().with(("topic", topic.id, &topic.url)), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_stroke(rect, t.corner(), egui::Stroke::new(1.0, t.surface_hover), egui::StrokeKind::Inside);
-    }
     ui.add_space(t.spacing.lg - ui.spacing().item_spacing.y);
     let resp = if topic.preview.is_empty() { resp } else { resp.on_hover_text(&topic.preview) };
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    resp.clicked()
 }
 
 pub(super) fn thread(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, url: &str) {

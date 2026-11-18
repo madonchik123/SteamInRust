@@ -173,6 +173,7 @@ impl CommunityHome {
             post::Click::Hub(app) => ctx.navigate("hub", Some(app.to_string())),
             post::Click::Store(app) => ctx.navigate("store", Some(format!("app:{app}"))),
             post::Click::Profile(id) => ctx.navigate("profile", Some(id.to_string())),
+            post::Click::News(app) => ctx.navigate("hub", Some(format!("{app}/news"))),
         }
     }
 }
@@ -640,14 +641,7 @@ impl CommunityHome {
         }
         let refs: Vec<&Post> = news.iter().take(40).collect();
         if let Some(c) = post::masonry(ui, t, state, &refs, "developers", true) {
-            match c {
-                // Our own reader: the game's news in its hub.
-                post::Click::Open(url) if url.starts_with("hub-news:") => {
-                    let app = url.trim_start_matches("hub-news:").to_string();
-                    ctx.navigate("hub", Some(format!("{app}/news")));
-                }
-                c => self.open(ctx, c),
-            }
+            self.open(ctx, c);
         }
         if loading {
             w::loading(ui, t, &t!("Loading…"));
@@ -760,7 +754,7 @@ fn news_post(app: AppId, game: &str, n: &News) -> Post {
         title: n.title.clone(),
         text: plain.chars().take(400).collect(),
         images: vec![image.unwrap_or_else(|| art::header(app))],
-        url: format!("hub-news:{app}"),
+        url: n.url.clone(),
         time: n.time,
         ..Default::default()
     }
@@ -815,6 +809,6 @@ mod tests {
         assert_eq!(p.images, ["https://x/a.png"]);
         assert!(p.text.contains("Fixed") && p.text.contains("bugs") && !p.text.contains("[b]") && !p.text.contains("https://"), "{}", p.text);
         assert_eq!(p.author_name, "Announcements");
-        assert_eq!(p.url, "hub-news:620");
+        assert_eq!(p.url, "");
     }
 }

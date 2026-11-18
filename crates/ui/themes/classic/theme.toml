@@ -293,6 +293,7 @@ hover = { fill = "surface_hover" }
 padding = [16, 16]
 border = 1
 normal = { fill = "surface", border = "border", text = "text" }
+hover = { fill = "surface_hover", border = "border" }
 
 [components.filter_bar]
 padding = [8, 8]

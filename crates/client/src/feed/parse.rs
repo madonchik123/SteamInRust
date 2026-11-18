@@ -255,20 +255,31 @@ fn explore_card(card: &str) -> Option<Post> {
             p.game = game.trim().to_string();
         }
     }
+    // The kind from the card's markup: Steam writes the label in the
+    // reader's language. Screenshots and artwork look the same; the label
+    // tells them apart in English, Steam's file details in any language.
     let kind = label.rsplit(": ").next().unwrap_or_default().to_lowercase();
-    p.kind = if card.contains("apphub_UserReviewCardContent") {
+    let classes = attr(head, "class").unwrap_or_default();
+    let has_class = |c: &str| classes.split_whitespace().any(|x| x == c);
+    p.kind = if has_class("Announcement_Card") || card.contains("apphub_CardContentNewsTitle") {
+        PostKind::Announcement
+    } else if card.contains("apphub_CardContentDiscussionTitle") {
+        PostKind::Discussion
+    } else if card.contains("apphub_UserReviewCardContent") {
         PostKind::Review
-    } else if head.contains("Broadcast_Card") || kind.contains("broadcast") {
+    } else if has_class("Broadcast_Card") {
         PostKind::Broadcast
-    } else if card.contains("apphub_CardContentGuideTitle") || kind.contains("guide") {
+    } else if card.contains("apphub_CardContentGuideTitle") || classes_of(card, "apphub_CardContentType").iter().any(|c| c == "guide") {
         PostKind::Guide
+    } else if card.contains("apphub_CardContentPlayVideoIcon") {
+        PostKind::Video
+    } else if classes_of(card, "apphub_CardBG").iter().any(|c| c == "workshop") {
+        PostKind::Workshop
     } else if kind.contains("artwork") {
         PostKind::Artwork
-    } else if kind.contains("video") || card.contains("apphub_CardContentPlayVideoIcon") {
-        PostKind::Video
-    } else if kind.contains("screenshot") {
+    } else if card.contains("apphub_CardContentPreviewImage") {
         PostKind::Screenshot
-    } else if kind.contains("workshop") || head.contains("ugc") {
+    } else if has_class("ugc") {
         PostKind::Workshop
     } else {
         PostKind::Other
@@ -285,6 +296,34 @@ fn explore_card(card: &str) -> Option<Post> {
         p.avatar = img_srcs(block).into_iter().find(|s| s.contains("avatars."));
     }
     match p.kind {
+        PostKind::Announcement => {
+            p.title = div_inner(card, "apphub_CardContentNewsTitle").map(text).unwrap_or_default();
+            p.when = div_inner(card, "apphub_CardContentNewsDate").map(text).unwrap_or_default();
+            if p.app_id == 0 {
+                // Steam quotes this one with single quotes.
+                let id = attr(head, "data-partner-event-appid").or_else(|| between(head, "data-partner-event-appid='", "'").map(String::from));
+                p.app_id = id.and_then(|a| a.parse().ok()).unwrap_or(0);
+            }
+            if let Some(body) = div_inner(card, "apphub_CardTextContent") {
+                p.images = img_srcs(body).into_iter().take(1).collect();
+                p.text = shorten(&text_lines(body), 600);
+            }
+        }
+        PostKind::Discussion => {
+            p.title = div_inner(card, "apphub_CardContentDiscussionTitle").map(text).unwrap_or_default();
+            p.text = div_inner(card, "apphub_CardTextContent").map(text_lines).map(|t| shorten(&t, 600)).unwrap_or_default();
+            // Which forum it's in, where a friend's post says what they did.
+            p.action = div_inner(card, "apphub_CardContentDiscussionType").map(text).unwrap_or_default();
+            if let Some(block) = div_inner(card, "apphub_CardContentDiscussionAuthorBlock") {
+                p.author = miniprofile(block);
+                if p.author == 0 {
+                    p.author = profile_id(block);
+                }
+                p.author_name = div_inner(block, "apphub_CardContentAuthorName").map(text).unwrap_or_default();
+                p.avatar = img_srcs(block).into_iter().find(|s| s.contains("avatars."));
+                p.when = div_inner(block, "apphub_CardContentDiscussionDate").map(text).unwrap_or_default();
+            }
+        }
         PostKind::Review => {
             review_fields(&mut p, card);
             if p.author == 0 {
@@ -313,7 +352,9 @@ fn explore_card(card: &str) -> Option<Post> {
         }
     }
     p.comments = div_inner(card, "apphub_CardCommentCount").map(|c| first_number(&text(c))).unwrap_or(0);
-    (!p.url.is_empty() || !p.images.is_empty()).then_some(p)
+    // Never a card with nothing in it.
+    let something = !p.title.is_empty() || !p.text.is_empty() || !p.images.is_empty();
+    (something && (!p.url.is_empty() || !p.images.is_empty())).then_some(p)
 }
 
 // ---------- small HTML helpers ----------

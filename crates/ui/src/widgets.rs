@@ -2250,3 +2250,39 @@ pub fn paint_presence_avatar(ui: &Ui, t: &Theme, rect: Rect, url: &str, status: 
         ui.painter().circle_filled(center, r, color);
     }
 }
+
+/// A frame in component `c`'s style that lights up under the pointer (its
+/// `hover` state) and can be clicked anywhere no other control is: post
+/// cards, topic rows, Workshop rows. `id` must stay the same between
+/// frames. Returns what `add` returned and the frame's response (hovered
+/// while the pointer is anywhere on it; clicked on its own empty parts).
+pub fn hover_frame<R>(ui: &mut Ui, t: &Theme, c: &Component, id: egui::Id, margin: Option<Margin>, add: impl FnOnce(&mut Ui) -> R) -> (R, Response) {
+    // The frame's place from last frame, claimed before its contents so
+    // they keep their own clicks.
+    let last: Option<Rect> = ui.data(|d| d.get_temp(id));
+    let behind = last.map(|r| ui.interact(r, id, Sense::click()));
+    let hovered = behind.as_ref().is_some_and(|r| r.contains_pointer());
+    let anim = ui.ctx().animate_bool_with_time(id.with("hover"), hovered, 0.12);
+    let look = t.look(c, Interact { hover: anim, ..Default::default() });
+    let mut frame = component_frame(t, c);
+    if let ResolvedFill::Color(fill) = look.fill {
+        frame = frame.fill(fill);
+    }
+    if look.border.a() > 0 && c.border > 0.0 {
+        frame = frame.stroke(Stroke::new(c.border, look.border));
+    }
+    if let Some(m) = margin {
+        frame = frame.inner_margin(m);
+    }
+    let inner = frame.show(ui, add);
+    let rect = inner.response.rect;
+    if last != Some(rect) {
+        ui.data_mut(|d| d.insert_temp(id, rect));
+        ui.ctx().request_repaint();
+    }
+    let resp = match behind {
+        Some(r) => r.on_hover_cursor(egui::CursorIcon::PointingHand),
+        None => ui.interact(Rect::NOTHING, id.with("first"), Sense::hover()),
+    };
+    (inner.inner, resp)
+}
