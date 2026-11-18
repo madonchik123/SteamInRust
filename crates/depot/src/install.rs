@@ -192,14 +192,19 @@ fn is_windows_reserved(seg: &str) -> bool {
 }
 
 fn is_valid_segment(seg: &str) -> bool {
-    if seg.is_empty() || seg == "." || seg == ".." || seg.ends_with('.') || seg.ends_with(' ') {
+    if seg.is_empty() || seg == "." || seg == ".." {
         return false;
     }
-    if seg.contains(['/', '\\', ':', '\0']) || seg.chars().any(|c| (c as u32) < 0x20) {
+    if seg.contains(['/', '\\', '\0']) || seg.chars().any(|c| (c as u32) < 0x20) {
+        return false;
+    }
+    // Names only Windows can't hold (a trailing dot or space, a drive colon,
+    // CON/NUL/COM1...): fine for Mac and Linux depots, which do ship them.
+    if cfg!(windows) && (seg.ends_with('.') || seg.ends_with(' ') || seg.contains(':') || is_windows_reserved(seg)) {
         return false;
     }
     let lower = seg.to_ascii_lowercase();
-    if lower.ends_with(".sirpart") || lower == ".sirresume" || lower == ".sirresume.tmp" || is_windows_reserved(seg) {
+    if lower.ends_with(".sirpart") || lower == ".sirresume" || lower == ".sirresume.tmp" {
         return false;
     }
     let mut comps = Path::new(seg).components();
@@ -940,7 +945,7 @@ mod security_tests {
         fs::create_dir_all(&dir).unwrap();
         let cdn = Arc::new(Cdn::new(vec![]));
 
-        for bad in [
+        let mut bad_names = vec![
             "../escaped.txt",
             "sub/../../escaped.txt",
             r"..\escaped.txt",
@@ -948,17 +953,17 @@ mod security_tests {
             "sub/./dot.txt",
             "/abs_escaped.txt",
             r"\abs_escaped.txt",
-            r"C:\evil.dll",
-            "C:evil.dll",
             "bad\0name.txt",
-            "CON",
-            "sub/NUL.txt",
-            "com1.bin",
             "game.exe.sirpart",
             "GAME.EXE.SIRPART",
             ".sirresume",
             ".sirresume.tmp",
-        ] {
+        ];
+        // Only Windows can't hold these (Mac and Linux depots ship them).
+        if cfg!(windows) {
+            bad_names.extend([r"C:\evil.dll", "C:evil.dll", "CON", "sub/NUL.txt", "com1.bin", "trailing.", "trailing "]);
+        }
+        for bad in bad_names {
             let m = Manifest { depot: 1, gid: 1, files: vec![empty_file(bad)], ..Default::default() };
             let job = DepotJob { depot: 1, manifest: m, key: vec![0; 32], old: None };
             let res = install(cdn.clone(), &dir, vec![job], Arc::new(Progress::default())).await;
