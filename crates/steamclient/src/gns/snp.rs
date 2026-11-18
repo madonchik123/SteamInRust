@@ -17,6 +17,8 @@ pub const MAX_PLAINTEXT: usize = 1100;
 /// Biggest message we take (Valve's k_cbMaxSteamNetworkingSocketsMessageSizeSend).
 pub const MAX_MESSAGE: usize = 512 * 1024;
 const MAX_RECV_STREAM: usize = 4 * 1024 * 1024;
+const MAX_RECEIVED: usize = 4096;
+const MAX_ACK_BLOCKS: usize = 64;
 
 /// A complete message from the peer.
 #[derive(Debug, Clone, PartialEq)]
@@ -219,30 +221,40 @@ impl Snp {
             return;
         }
         let latest = self.max_recv;
-        let mut blocks: Vec<(u64, u64)> = Vec::new();
-        let mut pos = latest; // next packet to account for (going down)
         let floor = self.ack_floor;
-        loop {
-            let mut acks = 0u64;
-            while pos >= floor && self.received.contains(&pos) {
-                acks += 1;
-                pos -= 1;
+        let mut blocks: Vec<(u64, u64)> = Vec::new();
+        // Next packet number we expect going down from `latest`, or `None` once past `0`.
+        let mut cursor = Some(latest);
+        let mut acks = 0u64;
+
+        for &pkt in self.received.iter().rev() {
+            if pkt > latest {
+                continue;
             }
-            if pos < floor {
-                // Everything left is received: the implicit block covers it.
-                if !blocks.is_empty() || acks == 0 {
-                    // nothing more to say
+            if pkt < floor {
+                break;
+            }
+            let Some(cur) = cursor else { break };
+            if pkt == cur {
+                acks = acks.saturating_add(1);
+                cursor = cur.checked_sub(1);
+            } else if pkt < cur {
+                let nacks = cur - pkt;
+                blocks.push((acks, nacks));
+                if blocks.len() >= MAX_ACK_BLOCKS {
+                    cursor = None;
+                    break;
                 }
-                break;
+                acks = 1;
+                cursor = pkt.checked_sub(1);
             }
-            let mut nacks = 0u64;
-            while pos >= floor && !self.received.contains(&pos) {
-                nacks += 1;
-                pos -= 1;
-            }
-            blocks.push((acks, nacks));
-            if pos < floor || blocks.len() >= 255 {
-                break;
+        }
+        if blocks.len() < MAX_ACK_BLOCKS {
+            if let Some(cur) = cursor {
+                if cur >= floor {
+                    let nacks = (cur - floor).saturating_add(1);
+                    blocks.push((acks, nacks));
+                }
             }
         }
         let delay = self.max_recv_at.map(|t| (now.saturating_duration_since(t).as_micros() >> 5).min(0xfffe) as u16).unwrap_or(0xffff);
@@ -617,7 +629,14 @@ impl Snp {
             }
         }
         // Record the packet for our acks.
-        self.received.insert(pkt);
+        if pkt >= self.ack_floor {
+            self.received.insert(pkt);
+            while self.received.len() > MAX_RECEIVED {
+                if let Some(oldest) = self.received.pop_first() {
+                    self.ack_floor = self.ack_floor.max(oldest.saturating_add(1));
+                }
+            }
+        }
         if pkt > self.max_recv {
             self.max_recv = pkt;
             self.max_recv_at = Some(now);
@@ -861,6 +880,62 @@ impl Snp {
             self.recv_pos += used as u64;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod ack_perf_tests {
+    use super::*;
+
+    #[test]
+    fn ack_frame_huge_gap_is_fast_and_caps_received_and_blocks() {
+        let t = Instant::now();
+        let mut s = Snp::new();
+        s.receive(2, &[], t).unwrap();
+        s.receive(100_000_002, &[], t).unwrap();
+
+        let started = Instant::now();
+        let mut out = Vec::new();
+        s.ack_frame(t, &mut out);
+        assert!(started.elapsed() < Duration::from_millis(50), "ack_frame took {:?} on huge gap", started.elapsed());
+        assert!(!out.is_empty());
+
+        let mut flooded = Snp::new();
+        for pkt in 2..=5000u64 {
+            flooded.receive(pkt, &[], t).unwrap();
+        }
+        assert!(flooded.received.len() <= 4096, "received len was {}", flooded.received.len());
+        assert!(flooded.received.contains(&5000));
+
+        let mut gappy = Snp::new();
+        for i in 0..80u64 {
+            gappy.receive(2 + i * 2, &[], t).unwrap();
+        }
+        let mut frame = Vec::new();
+        gappy.ack_frame(t, &mut frame);
+        let lead = frame[0];
+        assert_eq!(lead & 0xf8, 0x98);
+        let block_count = if lead & 7 == 7 { frame[5] } else { lead & 7 };
+        assert!(block_count <= 64, "block_count was {block_count}");
+    }
+
+    #[test]
+    fn ack_frame_preserves_multi_gap_and_floor_zero_semantics() {
+        let t = Instant::now();
+        let mut s = Snp::new();
+        s.receive(5, &[], t).unwrap();
+        s.receive(10, &[], t).unwrap();
+        let mut out = Vec::new();
+        s.ack_frame(t, &mut out);
+        assert_eq!(out, vec![0x9a, 10, 0, 0, 0, (1 << 4) | 4, (1 << 4) | 3]);
+
+        let mut z = Snp::new();
+        z.ack_floor = 0;
+        z.max_recv = 2;
+        z.received.extend([0, 1, 2]);
+        let mut out_z = Vec::new();
+        z.ack_frame(t, &mut out_z);
+        assert_eq!(out_z, vec![0x98, 2, 0, 0xff, 0xff]);
     }
 }
 

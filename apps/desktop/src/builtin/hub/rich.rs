@@ -704,7 +704,8 @@ fn show_blocks(ui: &mut Ui, t: &Theme, blocks: &[Block], links: &[String], size:
             }
             Block::Image(url) => {
                 let max = ui.available_width().min(900.0);
-                let img = egui::Image::new(url.clone()).max_width(max).max_height(700.0).fit_to_original_size(1.0).corner_radius(CornerRadius::same(4)).sense(Sense::click());
+                let sized = crate::sized_images::inline_url(url, max, 700.0, ui.ctx().pixels_per_point());
+                let img = egui::Image::new(sized).max_width(max).max_height(700.0).fit_to_original_size(1.0).corner_radius(CornerRadius::same(4)).sense(Sense::click());
                 let r = ui.add(img);
                 if r.rect.height() < 4.0 {
                     let (rect, _) = ui.allocate_exact_size(vec2(max.min(480.0), 220.0), Sense::hover());

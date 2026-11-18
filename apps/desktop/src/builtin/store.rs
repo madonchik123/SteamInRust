@@ -1534,7 +1534,9 @@ pub fn blocks(ui: &mut Ui, t: &Theme, blocks: &[Block], width: f32) {
             }
             Block::Image(url) => {
                 ui.add_space(6.0);
-                ui.add(egui::Image::new(url.clone()).max_width(width.min(860.0)).corner_radius(t.corner_small()));
+                let max_w = width.min(860.0);
+                let sized = crate::sized_images::inline_url(url, max_w, 1200.0, ui.ctx().pixels_per_point());
+                ui.add(egui::Image::new(sized).max_width(max_w).corner_radius(t.corner_small()));
                 ui.add_space(6.0);
             }
             Block::Video(id) => {
