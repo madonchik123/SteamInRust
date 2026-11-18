@@ -7,7 +7,7 @@
 //! at any UI zoom.
 
 use crate::app::SteamApp;
-use egui::{Align2, Color32, CornerRadius, Pos2, Sense, Stroke, Ui, Vec2, ViewportBuilder, ViewportId, pos2, vec2};
+use egui::{Align2, CornerRadius, Pos2, Sense, Stroke, Ui, ViewportBuilder, ViewportId, pos2, vec2};
 use i18n::t;
 use model::{Persona, PersonaState};
 use std::sync::{Arc, Mutex, mpsc};
@@ -117,7 +117,9 @@ impl Tray {
         for cmd in self.rx.try_iter() {
             match cmd {
                 TrayCmd::Menu(x, y) => {
-                    let ppp = ctx.native_pixels_per_point().unwrap_or(1.0);
+                    // The cursor is in screen pixels; window positions are in
+                    // points times the app's zoom (the theme's size included).
+                    let ppp = ctx.native_pixels_per_point().unwrap_or(1.0) * ctx.zoom_factor();
                     let mut m = self.menu.lock().unwrap();
                     m.anchor = pos2(x as f32 / ppp, y as f32 / ppp);
                     m.open = true;
@@ -176,12 +178,18 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
         let mut used = 0.0;
         // Fill the whole window (Windows rounds its corners itself); a rounded
         // shape inside a see-through window left light edges at the corners.
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.chrome)).show(ui, |ui| {
+        // The theme's menu style: its fill, border and padding.
+        let menu_c = &t.components.menu;
+        let look = t.look(menu_c, ui::theme::Interact::default());
+        let pad = t.padding_of(menu_c);
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(w::solid_fill(&t, menu_c))).show(ui, |ui| {
             let rect = ui.max_rect();
-            ui.painter().rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-            let mut c = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(8.0)).layout(egui::Layout::top_down(egui::Align::Min)));
+            let border = if look.border.a() > 0 && menu_c.border > 0.0 { look.border } else { t.border };
+            ui.painter().rect_stroke(rect, CornerRadius::ZERO, Stroke::new(menu_c.border.max(1.0), border), egui::StrokeKind::Inside);
+            let inner = rect.shrink2(vec2(pad.x.max(6.0), pad.y.max(6.0)));
+            let mut c = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
             picked = contents(&data, &mut c, &t);
-            used = c.min_rect().height() + 20.0;
+            used = c.min_rect().height() + pad.y.max(6.0) * 2.0 + 4.0;
         });
         // Fit the window to what was drawn (UI zoom, languages…).
         if (used - m.height).abs() > 1.0 {
@@ -216,38 +224,44 @@ fn snapshot(app: &SteamApp) -> MenuData {
 
 fn contents(d: &MenuData, ui: &mut Ui, t: &Theme) -> Option<TrayCmd> {
     let mut picked = None;
-    // Who's signed in, and status dots.
+    let item = &t.components.menu_item;
+    let item_pad = t.padding_of(item).x;
+    // Who's signed in.
     ui.horizontal(|ui| {
-        ui.add_space(4.0);
+        ui.add_space(item_pad * 0.5);
         if d.signed_in {
             w::avatar(ui, t, &model::art::avatar(d.me.avatar_hash.as_deref()), 34.0, Some(crate::shell::status_color(t, &d.me)));
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                ui.label(w::text_semibold(&d.name, 14.0, t.text));
-                ui.label(w::text(i18n::tr_dyn(d.me.state.label()), 12.0, crate::shell::status_color(t, &d.me)));
+                ui.label(egui::RichText::new(&d.name).font(t.font_of(item)).color(t.text).strong());
+                ui.label(w::body_s(t, i18n::tr_dyn(d.me.state.label()), crate::shell::status_color(t, &d.me)));
             });
         } else {
             w::logo(ui, t, 26.0);
-            ui.label(w::text_semibold("SteamInRust", 14.0, t.text));
+            ui.label(egui::RichText::new("SteamInRust").font(t.font_of(item)).color(t.text).strong());
         }
     });
     if d.signed_in {
-        ui.add_space(6.0);
-        // Statuses in a 2×2 grid, with their full names.
+        ui.add_space(t.spacing.sm);
+        // Statuses in a 2×2 grid, in the theme's chip style.
+        let chip = &t.components.chip;
         let states = [(PersonaState::Online, t.online), (PersonaState::Away, t.away), (PersonaState::Busy, t.danger), (PersonaState::Invisible, t.text_faint)];
         for pair in states.chunks(2) {
             ui.horizontal(|ui| {
-                ui.add_space(4.0);
-                ui.spacing_mut().item_spacing.x = 4.0;
-                let cell = (ui.available_width() - 8.0) / 2.0;
+                ui.spacing_mut().item_spacing.x = t.spacing.xs;
+                let cell = ((ui.available_width() - t.spacing.xs) / 2.0).floor();
                 for (s, color) in pair {
                     let on = d.me.state == *s;
-                    let (r, resp) = ui.allocate_exact_size(vec2(cell, 26.0), Sense::click());
-                    let hover = resp.hovered();
-                    ui.painter().rect_filled(r, CornerRadius::same(13), if on { color.gamma_multiply(0.2) } else if hover { t.surface_hover } else { t.raised });
+                    let (r, resp) = ui.allocate_exact_size(vec2(cell, t.height_of(chip, 28.0).min(30.0)), Sense::click());
+                    let look = t.look(chip, w::interact(ui, &resp, on));
+                    w::paint_box(ui, t, r, chip, &look, if on { 1.0 } else { 0.0 });
                     crate::shell::status_mark(ui.painter(), pos2(r.left() + 12.0, r.center().y), 4.0, *s, *color);
                     let label = i18n::tr_dyn(s.label());
-                    ui.painter().text(pos2(r.left() + 22.0, r.center().y), Align2::LEFT_CENTER, &label, w::font_medium(11.5), if on { t.text } else { t.text_dim });
+                    let font = t.font_of(chip);
+                    let mut job = egui::text::LayoutJob::simple_singleline(label.to_string(), font, look.text);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width((r.width() - 30.0).max(10.0));
+                    let g = ui.painter().layout_job(job);
+                    ui.painter().galley(pos2(r.left() + 22.0, r.center().y - g.size().y / 2.0), g, look.text);
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         picked = Some(TrayCmd::Status(*s));
                     }
@@ -255,7 +269,7 @@ fn contents(d: &MenuData, ui: &mut Ui, t: &Theme) -> Option<TrayCmd> {
             });
         }
     }
-    ui.add_space(6.0);
+    ui.add_space(t.spacing.sm);
     separator(ui, t);
     let items: [(&str, &str, TrayCmd); 7] = [
         (icons::STORE, t!("Store"), TrayCmd::Page("store")),
@@ -272,33 +286,23 @@ fn contents(d: &MenuData, ui: &mut Ui, t: &Theme) -> Option<TrayCmd> {
             TrayCmd::Page("downloads") => d.download.clone(),
             _ => None,
         };
-        if row(ui, t, icon, label, extra.as_deref(), t.text) {
+        let resp = w::menu_item(ui, t, icon, label);
+        if let Some(extra) = extra {
+            let look = t.look(item, ui::theme::Interact::default());
+            ui.painter().text(pos2(resp.rect.right() - item_pad, resp.rect.center().y), Align2::RIGHT_CENTER, extra, t.font_of(&t.components.chip), look.icon);
+        }
+        if resp.clicked() {
             picked = Some(cmd);
         }
     }
     separator(ui, t);
-    if row(ui, t, icons::POWER, t!("Exit SteamInRust"), None, t.danger) {
+    if w::menu_item_tinted(ui, t, icons::POWER, t!("Exit SteamInRust"), Some(t.danger)).clicked() {
         picked = Some(TrayCmd::Exit);
     }
     picked
 }
 
 fn separator(ui: &mut Ui, t: &Theme) {
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), t.spacing.sm * 2.0 + 1.0), Sense::hover());
     ui.painter().hline(r.x_range().shrink(6.0), r.center().y, Stroke::new(1.0, t.border));
-}
-
-fn row(ui: &mut Ui, t: &Theme, icon: &str, label: &str, extra: Option<&str>, color: Color32) -> bool {
-    let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.08);
-    if hover > 0.0 {
-        ui.painter().rect_filled(r, CornerRadius::same(6), t.surface_hover.gamma_multiply(hover));
-    }
-    let p = ui.painter();
-    p.text(pos2(r.left() + 16.0, r.center().y), Align2::CENTER_CENTER, icon, w::font(15.0), if color == t.text { t.accent } else { color });
-    p.text(pos2(r.left() + 34.0, r.center().y), Align2::LEFT_CENTER, label, w::font_medium(13.5), color);
-    if let Some(extra) = extra {
-        p.text(pos2(r.right() - 10.0, r.center().y), Align2::RIGHT_CENTER, extra, w::font(12.0), t.text_dim);
-    }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
