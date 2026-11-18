@@ -225,13 +225,15 @@ fn is_windows_reserved(seg: &str) -> bool {
 /// `..`, a path containing `/` or `\`, a drive/ADS `:`, control characters, or
 /// a Windows reserved device name).
 pub fn is_valid_folder_name(name: &str) -> bool {
-    if name.is_empty() || name == "." || name == ".." || name.ends_with(' ') || name.ends_with('.') {
+    if name.is_empty() || name == "." || name == ".." {
         return false;
     }
-    if name.contains(['/', '\\', ':', '\0']) || name.chars().any(|c| (c as u32) < 0x20) {
+    if name.contains(['/', '\\', '\0']) || name.chars().any(|c| (c as u32) < 0x20) {
         return false;
     }
-    if is_windows_reserved(name) {
+    // Names only Windows can't hold (a trailing dot or space, a drive colon,
+    // CON/NUL/COM1...): fine as Mac and Linux folder names.
+    if cfg!(windows) && (name.ends_with(' ') || name.ends_with('.') || name.contains(':') || is_windows_reserved(name)) {
         return false;
     }
     let mut comps = Path::new(name).components();
@@ -407,7 +409,12 @@ mod tests {
         let apps = lib.join("steamapps");
         fs::create_dir_all(apps.join("common")).unwrap();
 
-        for (idx, bad) in ["..", ".", "", "../outside", "a/b", r"a\b", "C:evil", "/etc", "CON", "trailing."].iter().enumerate() {
+        let mut bad_names = vec!["..", ".", "", "../outside", "a/b", r"a\b", "/etc"];
+        // Only Windows can't hold these (fine as Mac and Linux folders).
+        if cfg!(windows) {
+            bad_names.extend(["C:evil", "CON", "trailing."]);
+        }
+        for (idx, bad) in bad_names.iter().enumerate() {
             assert!(!is_valid_folder_name(bad), "accepted {bad:?}");
             let id = 1000 + idx as u32;
             let state = vdf::Obj::default()
