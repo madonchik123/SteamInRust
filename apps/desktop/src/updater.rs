@@ -34,12 +34,38 @@ pub enum Status {
     UpToDate,
     Available(Release),
     Downloading(Release, f32),
-    Ready(Release, PathBuf),
+    Ready(Release, PathBuf, String),
     /// The check failed.
     Failed(String),
     /// The check worked but the download didn't (it continues where it
     /// stopped next time).
     DownloadFailed(Release, String),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PendingUpdate {
+    pub version: String,
+    pub path: PathBuf,
+    pub sha256: String,
+}
+
+fn deserialize_pending<'de, D>(deserializer: D) -> Result<Option<PendingUpdate>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        Current(PendingUpdate),
+        Tuple3((String, PathBuf, String)),
+        LegacyTuple2((serde::de::IgnoredAny, serde::de::IgnoredAny)),
+    }
+    Ok(match Option::<Repr>::deserialize(deserializer)? {
+        Some(Repr::Current(p)) => Some(p),
+        Some(Repr::Tuple3((version, path, sha256))) => Some(PendingUpdate { version, path, sha256 }),
+        // Legacy entries without an expected SHA-256 are discarded fail-closed.
+        Some(Repr::LegacyTuple2(_)) | None => None,
+    })
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -50,7 +76,8 @@ pub struct Settings {
     /// A version the user chose to skip.
     pub skipped: Option<String>,
     /// Downloaded and verified, waiting for the next start.
-    pub pending: Option<(String, PathBuf)>,
+    #[serde(default, deserialize_with = "deserialize_pending")]
+    pub pending: Option<PendingUpdate>,
 }
 
 impl Default for Settings {
@@ -80,9 +107,8 @@ fn load() -> Settings {
 }
 
 fn save(s: &Settings) {
-    let _ = std::fs::create_dir_all(client::store::config_dir());
     if let Ok(text) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(settings_path(), text);
+        let _ = write_atomic_private(&client::store::config_dir(), "updater.json", text.as_bytes());
     }
 }
 
@@ -132,17 +158,17 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 /// opens (Steam does the same). Returns true when the app should quit.
 pub fn apply_pending_on_start() -> bool {
     let mut s = load();
-    let Some((version, setup)) = s.pending.take() else {
+    let Some(pending) = s.pending.take() else {
         // Installers for this version or older aren't needed any more; a
         // newer one (finished or half-downloaded) is kept to use or continue.
         clean_old_updates();
         return false;
     };
     save(&s);
-    if !is_installed() || !setup.exists() || !is_newer(&version, env!("CARGO_PKG_VERSION")) {
+    if !is_installed() || !is_newer(&pending.version, env!("CARGO_PKG_VERSION")) {
         return false;
     }
-    run_setup(&setup)
+    run_setup(&pending.path, &pending.sha256)
 }
 
 /// macOS: after this copy quits, put the app from the downloaded disk image
@@ -167,14 +193,26 @@ rmdir "$mnt"
 "#;
 
 #[cfg(target_os = "macos")]
-fn run_setup(dmg: &std::path::Path) -> bool {
+fn run_setup(dmg: &std::path::Path, expected_sha256: &str) -> bool {
     let Some(app) = bundle() else { return false };
+    if std::fs::symlink_metadata(&app).is_ok_and(|m| m.file_type().is_symlink()) {
+        tracing::warn!("refusing to replace symlink app bundle {}", app.display());
+        return false;
+    }
+    if !verify_staged_setup_in(&update_dir(), dmg, expected_sha256) {
+        tracing::warn!("refusing to mount unverified or tampered disk image {}", dmg.display());
+        return false;
+    }
     std::process::Command::new("/bin/sh").arg("-c").arg(MAC_UPDATE).arg("sh").arg(std::process::id().to_string()).arg(dmg).arg(&app).spawn().is_ok()
 }
 
 #[cfg(not(target_os = "macos"))]
-fn run_setup(setup: &std::path::Path) -> bool {
+fn run_setup(setup: &std::path::Path, expected_sha256: &str) -> bool {
     let Some(dir) = install_dir() else { return false };
+    if !verify_staged_setup_in(&update_dir(), setup, expected_sha256) {
+        tracing::warn!("refusing to run unverified or tampered installer {}", setup.display());
+        return false;
+    }
     std::process::Command::new(setup).args(["--update", "--dir"]).arg(&dir).spawn().is_ok()
 }
 
@@ -199,7 +237,7 @@ pub fn tick(app: &mut SteamApp, ctx: &egui::Context) {
         g = state.lock().unwrap();
     }
     // Ready: offer a restart once per version.
-    if let Status::Ready(r, _) = &g.status {
+    if let Status::Ready(r, _, _) = &g.status {
         if g.prompted.as_deref() != Some(&r.version) {
             g.prompted = Some(r.version.clone());
             g.open = true;
@@ -284,10 +322,10 @@ fn download(ctx: egui::Context, r: Release) {
         let result = block_on(fetch_setup(&r, progress));
         let mut g = state.lock().unwrap();
         g.status = match result {
-            Ok(path) => {
-                g.settings.pending = Some((r.version.clone(), path.clone()));
+            Ok((path, sha256)) => {
+                g.settings.pending = Some(PendingUpdate { version: r.version.clone(), path: path.clone(), sha256: sha256.clone() });
                 save(&g.settings);
-                Status::Ready(r, path)
+                Status::Ready(r, path, sha256)
             }
             Err(e) => {
                 tracing::warn!("update download: {e}");
@@ -318,9 +356,185 @@ fn http_download() -> reqwest::Client {
         .unwrap_or_default()
 }
 
-/// Where downloaded updates are kept until they're installed.
+const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Where downloaded updates are kept until they're installed (private per-user dir, not world-writable temp).
 fn update_dir() -> PathBuf {
-    std::env::temp_dir().join("SteamInRust-update")
+    client::store::config_dir().join("updates")
+}
+
+pub(crate) fn is_safe_setup_name(name: &str) -> bool {
+    if name.len() <= 4
+        || name.starts_with('.')
+        || name.ends_with(['.', ' '])
+        || name != name.trim()
+        || name.contains(['/', '\\', ':'])
+        || name.contains("..")
+        || name.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    if !(lower.ends_with(".exe") || lower.ends_with(".dmg")) {
+        return false;
+    }
+    let mut comps = std::path::Path::new(name).components();
+    matches!((comps.next(), comps.next()), (Some(std::path::Component::Normal(_)), None))
+}
+
+fn is_valid_sha256(h: &str) -> bool {
+    h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn ct_eq_hex(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x.to_ascii_lowercase() ^ y.to_ascii_lowercase())) == 0
+}
+
+fn ensure_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true).mode(0o700);
+        b.create(dir)?;
+        let meta = std::fs::symlink_metadata(dir)?;
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "directory is a symlink"));
+        }
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
+}
+
+fn write_atomic_private(dir: &std::path::Path, file_name: &str, data: &[u8]) -> std::io::Result<PathBuf> {
+    use rand::RngCore;
+    use std::io::Write;
+    ensure_private_dir(dir)?;
+    let dst = dir.join(file_name);
+    if let Ok(meta) = std::fs::symlink_metadata(&dst) {
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "target is a symlink"));
+        }
+    }
+    let mut rnd = [0u8; 8];
+    rand::rngs::OsRng.fill_bytes(&mut rnd);
+    let hex: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
+    let tmp = dir.join(format!(".{file_name}.{}-{hex}.tmp", std::process::id()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let res = (|| -> std::io::Result<()> {
+        let mut f = opts.open(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        f.write_all(data)?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, &dst) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(dst)
+}
+
+#[cfg(test)]
+fn stage_installer_in(updates_root: &std::path::Path, setup_name: &str, data: &[u8]) -> Result<PathBuf, String> {
+    if !is_safe_setup_name(setup_name) {
+        return Err("unsafe installer filename".into());
+    }
+    if let Some(parent) = updates_root.parent() {
+        ensure_private_dir(parent).map_err(|e| e.to_string())?;
+    }
+    write_atomic_private(updates_root, setup_name, data).map_err(|e| e.to_string())
+}
+
+fn sha256_regular_nofollow(path: &std::path::Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    #[cfg(unix)]
+    let lm = {
+        let m = std::fs::symlink_metadata(path).ok()?;
+        if m.file_type().is_symlink() || !m.is_file() {
+            return None;
+        }
+        m
+    };
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(0x0100); // O_NOFOLLOW on macOS (without adding libc crate)
+    }
+    let mut f = opts.open(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let fm = f.metadata().ok()?;
+        if !fm.is_file() || lm.dev() != fm.dev() || lm.ino() != fm.ino() {
+            return None;
+        }
+    }
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn verify_staged_setup_in(updates_root: &std::path::Path, setup: &std::path::Path, expected_sha256: &str) -> bool {
+    if !is_valid_sha256(expected_sha256) {
+        return false;
+    }
+    let Some(name) = setup.file_name().and_then(|n| n.to_str()) else { return false };
+    if !is_safe_setup_name(name) {
+        return false;
+    }
+    let Ok(dir_meta) = std::fs::symlink_metadata(updates_root) else { return false };
+    if !dir_meta.is_dir() || dir_meta.file_type().is_symlink() {
+        return false;
+    }
+    let Ok(file_meta) = std::fs::symlink_metadata(setup) else { return false };
+    if !file_meta.is_file() || file_meta.file_type().is_symlink() {
+        return false;
+    }
+    let (Ok(canon_root), Some(Ok(canon_parent))) = (updates_root.canonicalize(), setup.parent().map(|p| p.canonicalize())) else {
+        return false;
+    };
+    if canon_parent != canon_root {
+        return false;
+    }
+    let Some(got) = sha256_regular_nofollow(setup) else { return false };
+    if !ct_eq_hex(&got, expected_sha256) {
+        let _ = std::fs::remove_file(setup);
+        return false;
+    }
+    true
 }
 
 /// Delete everything in the update folder except files for `keep` (the
@@ -357,22 +571,6 @@ fn version_in(name: &str) -> Option<String> {
         .map(String::from)
 }
 
-fn sha256_file(path: &std::path::Path) -> Option<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    loop {
-        let n = f.read(&mut buf).ok()?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
-}
-
 #[derive(Deserialize)]
 struct ApiRelease {
     tag_name: String,
@@ -403,7 +601,14 @@ async fn latest() -> Result<Option<Release>, String> {
         return Ok(None);
     }
     // Windows: the setup; macOS: the disk image (opened from the release page).
-    let wanted = |n: &str| if cfg!(target_os = "macos") { n.starts_with("SteamInRust-") && n.ends_with("-macos.dmg") } else { n.starts_with("SteamInRust-Setup") && n.ends_with(".exe") };
+    let wanted = |n: &str| {
+        is_safe_setup_name(n)
+            && if cfg!(target_os = "macos") {
+                n.starts_with("SteamInRust-") && n.ends_with("-macos.dmg")
+            } else {
+                n.starts_with("SteamInRust-Setup") && n.ends_with(".exe")
+            }
+    };
     let sums = if cfg!(target_os = "macos") { "SHA256SUMS-macos.txt" } else { "SHA256SUMS.txt" };
     let Some(setup) = rel.assets.iter().find(|a| wanted(&a.name)) else { return Ok(None) };
     Ok(Some(Release {
@@ -417,10 +622,12 @@ async fn latest() -> Result<Option<Release>, String> {
 }
 
 /// Download the setup and check it against SHA256SUMS.txt. It's written to
-/// `<name>.part` as it arrives, so closing the app (or a dropped connection)
-/// doesn't lose it: the next try continues from there. A finished, checked
-/// file isn't downloaded again. Older installers are deleted.
-async fn fetch_setup(r: &Release, progress: impl Fn(f32)) -> Result<PathBuf, String> {
+/// `<name>.part` inside the private updates folder as it arrives, so closing
+/// the app (or a dropped connection) doesn't lose it. Older installers are deleted.
+async fn fetch_setup(r: &Release, progress: impl Fn(f32)) -> Result<(PathBuf, String), String> {
+    if !is_safe_setup_name(&r.setup_name) {
+        return Err("unsafe installer filename".into());
+    }
     let client = http();
     let sums_url = r.sums_url.as_ref().ok_or_else(|| t!("The release has no checksums; not installing it.").to_string())?;
     let sums = client.get(sums_url).send().await.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
@@ -430,20 +637,34 @@ async fn fetch_setup(r: &Release, progress: impl Fn(f32)) -> Result<PathBuf, Str
             let (hash, name) = l.split_once(char::is_whitespace)?;
             (name.trim().trim_start_matches('*') == r.setup_name).then(|| hash.to_lowercase())
         })
+        .filter(|h| is_valid_sha256(h))
         .ok_or_else(|| t!("The release has no checksums; not installing it.").to_string())?;
     let dir = update_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    if let Some(parent) = dir.parent() {
+        ensure_private_dir(parent).map_err(|e| e.to_string())?;
+    }
+    ensure_private_dir(&dir).map_err(|e| e.to_string())?;
     clean_update_dir(Some(&r.setup_name));
     let path = dir.join(&r.setup_name);
-    if path.exists() {
-        if sha256_file(&path).as_deref() == Some(want.as_str()) {
-            tracing::info!("update download: already downloaded and checked");
-            progress(1.0);
-            return Ok(path);
+    if let Ok(meta) = std::fs::symlink_metadata(&path) {
+        if meta.file_type().is_symlink() {
+            return Err("refusing symlink update path".into());
         }
-        let _ = std::fs::remove_file(&path);
+        if meta.is_file() {
+            if sha256_regular_nofollow(&path).is_some_and(|got| ct_eq_hex(&got, &want)) {
+                tracing::info!("update download: already downloaded and checked");
+                progress(1.0);
+                return Ok((path, want));
+            }
+            let _ = std::fs::remove_file(&path);
+        }
     }
     let part = dir.join(format!("{}.part", r.setup_name));
+    if let Ok(meta) = std::fs::symlink_metadata(&part) {
+        if meta.file_type().is_symlink() {
+            return Err("refusing symlink partial update path".into());
+        }
+    }
     let download = http_download();
     // A dropped connection resumes from what's on disk, a few times; after
     // that the error is shown and the .part file stays for the next try.
@@ -461,18 +682,26 @@ async fn fetch_setup(r: &Release, progress: impl Fn(f32)) -> Result<PathBuf, Str
             }
         }
     }
-    if sha256_file(&part).as_deref() != Some(want.as_str()) {
+    if !sha256_regular_nofollow(&part).is_some_and(|got| ct_eq_hex(&got, &want)) {
         let _ = std::fs::remove_file(&part);
         return Err(t!("The download was damaged (checksum mismatch). Try again later.").to_string());
     }
     std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
-    Ok(path)
+    Ok((path, want))
 }
 
 /// Download `url` into `part`, continuing after what's already there.
 async fn fetch_part(client: &reqwest::Client, url: &str, part: &std::path::Path, progress: &impl Fn(f32)) -> Result<(), String> {
     use std::io::Write;
-    let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
+    let have = match std::fs::symlink_metadata(part) {
+        Ok(m) if m.file_type().is_symlink() => return Err("refusing symlink partial update path".into()),
+        Ok(m) => m.len(),
+        Err(_) => 0,
+    };
+    if have > MAX_INSTALLER_BYTES {
+        let _ = std::fs::remove_file(part);
+        return Err("partial update exceeds maximum size".into());
+    }
     let mut req = client.get(url);
     if have > 0 {
         req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
@@ -482,12 +711,49 @@ async fn fetch_part(client: &reqwest::Client, url: &str, part: &std::path::Path,
     let resumed = resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
     let start = if resumed { have } else { 0 };
     tracing::info!("update download: {} at {} KB", if resumed { "continuing" } else { "starting" }, start / 1024);
-    let total = start + resp.content_length().unwrap_or(0);
-    let mut file = std::fs::OpenOptions::new().create(true).write(true).append(resumed).truncate(!resumed).open(part).map_err(|e| e.to_string())?;
+    let total = start.saturating_add(resp.content_length().unwrap_or(0));
+    if total > MAX_INSTALLER_BYTES {
+        return Err("update exceeds 512 MiB limit".into());
+    }
+    if !resumed {
+        if let Ok(m) = std::fs::symlink_metadata(part) {
+            if m.file_type().is_symlink() {
+                return Err("refusing symlink partial update path".into());
+            }
+            let _ = std::fs::remove_file(part);
+        }
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    if resumed {
+        opts.write(true).append(true);
+    } else {
+        opts.create_new(true).write(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+        #[cfg(target_os = "macos")]
+        opts.custom_flags(0x0100); // O_NOFOLLOW on macOS without adding libc dependency
+    }
+    let mut file = opts.open(part).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let lm = std::fs::symlink_metadata(part).map_err(|e| e.to_string())?;
+        let fm = file.metadata().map_err(|e| e.to_string())?;
+        if lm.file_type().is_symlink() || !fm.is_file() || lm.dev() != fm.dev() || lm.ino() != fm.ino() {
+            return Err("refusing non-regular or symlinked partial update path".into());
+        }
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
     let mut done = start;
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        done = done.saturating_add(chunk.len() as u64);
+        if done > MAX_INSTALLER_BYTES {
+            return Err("update exceeds 512 MiB limit".into());
+        }
         file.write_all(&chunk).map_err(|e| e.to_string())?;
-        done += chunk.len() as u64;
         progress(done as f32 / total.max(1) as f32);
     }
     file.flush().map_err(|e| e.to_string())?;
@@ -498,12 +764,12 @@ async fn fetch_part(client: &reqwest::Client, url: &str, part: &std::path::Path,
 }
 
 /// Close the app and let the setup replace it, then it starts again.
-fn restart_to_update(app: &mut SteamApp, ctx: &egui::Context, setup: &std::path::Path) {
+fn restart_to_update(app: &mut SteamApp, ctx: &egui::Context, setup: &std::path::Path, expected_sha256: &str) {
     if let Ok(mut g) = STATE.lock() {
         g.settings.pending = None;
         save(&g.settings);
     }
-    if run_setup(setup) {
+    if run_setup(setup, expected_sha256) {
         app.exiting = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
@@ -515,7 +781,7 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
     let status = STATE.lock().unwrap().status.clone();
     let (release, ready) = match &status {
         Status::Available(r) | Status::Downloading(r, _) | Status::DownloadFailed(r, _) => (r.clone(), None),
-        Status::Ready(r, p) => (r.clone(), Some(p.clone())),
+        Status::Ready(r, p, sha) => (r.clone(), Some((p.clone(), sha.clone()))),
         Status::Checking | Status::UpToDate | Status::Failed(_) => {
             // The answer to "Check for updates…".
             let mut close = false;
@@ -594,9 +860,9 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 match (&ready, &status) {
-                    (Some(setup), _) => {
+                    (Some((setup, sha)), _) => {
                         if w::button(ui, &t, Some(icons::REFRESH), t!("Restart and update"), w::Kind::Primary, w::Size::Md).clicked() {
-                            restart_to_update(app, ctx, setup);
+                            restart_to_update(app, ctx, setup, sha);
                             close = true;
                         }
                         if w::button(ui, &t, None, t!("On next start"), w::Kind::Ghost, w::Size::Md).on_hover_text(t!("It installs the next time you open SteamInRust")).clicked() {
@@ -714,7 +980,7 @@ pub fn settings_ui(ui: &mut Ui, t: &Theme) {
             Status::UpToDate => t!("You're up to date ({v})", v = env!("CARGO_PKG_VERSION")),
             Status::Available(r) => t!("Version {v} is available", v = r.version),
             Status::Downloading(r, f) => t!("Downloading {v}… {pct}%", v = r.version, pct = (f * 100.0) as u32),
-            Status::Ready(r, _) => t!("Version {v} is ready to install", v = r.version),
+            Status::Ready(r, _, _) => t!("Version {v} is ready to install", v = r.version),
             Status::Failed(e) => t!("Couldn't check for updates: {error}", error = e),
             Status::DownloadFailed(_, e) => t!("Couldn't download the update: {error}", error = e),
         };
@@ -768,6 +1034,79 @@ mod tests {
         assert!(!super::is_newer("v0.1.0", "0.1.0"));
         assert!(!super::is_newer("0.1.0-beta", "0.1.0"));
         assert!(super::is_newer("0.1.10", "0.1.9"));
+    }
+
+    #[test]
+    fn validates_setup_names_private_staging_and_sha256_before_exec() {
+        use sha2::{Digest, Sha256};
+
+        assert!(super::is_safe_setup_name("SteamInRust-Setup-0.10.0.exe"));
+        assert!(super::is_safe_setup_name("SteamInRust-0.10.0-macos.dmg"));
+        for bad in [
+            "",
+            ".exe",
+            "..",
+            "../SteamInRust-Setup.exe",
+            "..\\SteamInRust-Setup.exe",
+            "sub/SteamInRust-Setup.exe",
+            "sub\\SteamInRust-Setup.exe",
+            "C:SteamInRust-Setup.exe",
+            "SteamInRust-Setup.bat",
+            "SteamInRust-Setup.exe ",
+            " SteamInRust-Setup.exe",
+            "SteamInRust-Setup.exe.",
+            "SteamInRust\0Setup.exe",
+        ] {
+            assert!(!super::is_safe_setup_name(bad), "expected unsafe setup_name rejection for {bad:?}");
+        }
+
+        assert_eq!(super::update_dir(), client::store::config_dir().join("updates"));
+
+        let base = std::env::temp_dir().join(format!("sir-upd-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let updates = base.join("cfg").join("updates");
+
+        let payload = b"MZ-fake-steaminrust-installer-binary";
+        let want: String = Sha256::digest(payload).iter().map(|b| format!("{b:02x}")).collect();
+
+        assert!(super::stage_installer_in(&updates, "../evil.exe", payload).is_err());
+        let staged = super::stage_installer_in(&updates, "SteamInRust-Setup-0.10.0.exe", payload).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let d_mode = std::fs::metadata(&updates).unwrap().permissions().mode() & 0o777;
+            let f_mode = std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777;
+            assert_eq!(d_mode, 0o700, "updates staging dir must be 0700");
+            assert_eq!(f_mode, 0o600, "staged setup file must be 0600");
+        }
+
+        let s = super::Settings {
+            auto: true,
+            skipped: Some("0.9.0".into()),
+            pending: Some(super::PendingUpdate { version: "0.10.0".into(), path: staged.clone(), sha256: want.clone() }),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: super::Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.pending.as_ref().unwrap().sha256, want);
+
+        let legacy = r#"{"auto":false,"skipped":"0.9.0","pending":["0.10.0","/tmp/SteamInRust-Setup.exe"]}"#;
+        let legacy_parsed: super::Settings = serde_json::from_str(legacy).unwrap();
+        assert!(!legacy_parsed.auto);
+        assert_eq!(legacy_parsed.skipped.as_deref(), Some("0.9.0"));
+        assert!(legacy_parsed.pending.is_none(), "legacy pending without SHA-256 must be discarded");
+
+        assert!(super::verify_staged_setup_in(&updates, &staged, &want));
+
+        let outside = base.join("SteamInRust-Setup-0.10.0.exe");
+        std::fs::write(&outside, payload).unwrap();
+        assert!(!super::verify_staged_setup_in(&updates, &outside, &want));
+
+        std::fs::write(&staged, b"MZ-tampered-by-local-attacker").unwrap();
+        assert!(!super::verify_staged_setup_in(&updates, &staged, &want));
+        assert!(!staged.exists(), "tampered installer must be unlinked");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
 

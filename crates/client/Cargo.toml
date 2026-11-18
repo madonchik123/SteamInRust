@@ -23,6 +23,7 @@ thiserror.workspace = true
 tracing.workspace = true
 depot.workspace = true
 futures-util.workspace = true
+rand.workspace = true
 sha1 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 fs4 = "1"

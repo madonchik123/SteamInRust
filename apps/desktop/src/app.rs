@@ -541,6 +541,9 @@ impl SteamApp {
     fn handle_links(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         use crate::links::Link;
         while let Ok(l) = self.links.try_recv() {
+            if !crate::links::is_allowed_payload(&l) {
+                continue;
+            }
             // Starting a game only needs the small "Launching…" window.
             if !matches!(crate::links::parse(&l), Some(Link::Run(_))) {
                 self.show_window(ctx);

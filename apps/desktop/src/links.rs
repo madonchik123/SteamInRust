@@ -6,12 +6,16 @@
 //! - Only one copy runs: a second launch (e.g. from a link or shortcut)
 //!   forwards its link to the running window over localhost and exits.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::Duration;
 
 const PORT: u16 = 47_630;
+const LISTEN_TIMEOUT: Duration = Duration::from_millis(500);
+const FORWARD_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_LINE_BYTES: u64 = 2048;
 
 /// What a `steam://` link asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,24 +53,163 @@ pub fn parse(url: &str) -> Option<Link> {
     })
 }
 
-/// Try to hand `arg` to an already-running copy. Returns true if it did.
-pub fn forward_to_running(arg: &str) -> bool {
-    match TcpStream::connect(("127.0.0.1", PORT)) {
-        Ok(mut s) => s.write_all(format!("{arg}\n").as_bytes()).is_ok(),
-        Err(_) => false,
+fn token_path() -> PathBuf {
+    client::store::config_dir().join("links.token")
+}
+
+fn generate_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let mut out = String::with_capacity(64);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
+}
+
+fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true).mode(0o700);
+        b.create(dir)?;
+        let meta = std::fs::symlink_metadata(dir)?;
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "config dir is a symlink"));
+        }
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
     }
 }
 
-/// Listen for links from later launches. Each line received is a link
-/// (or "show" to just bring the window up).
+fn write_token_file(path: &Path, token: &str) -> std::io::Result<()> {
+    let Some(dir) = path.parent() else {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing token parent dir"));
+    };
+    ensure_private_dir(dir)?;
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "token path is a symlink"));
+        }
+    }
+    let tmp = dir.join(format!(".links-token-{}-{}.tmp", std::process::id(), &generate_token()[..16]));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let write_res = (|| -> std::io::Result<()> {
+        let mut f = opts.open(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        f.write_all(token.as_bytes())?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write_res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+fn read_token_file(path: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() || meta.file_type().is_symlink() {
+        return None;
+    }
+    let tok = std::fs::read_to_string(path).ok()?;
+    let tok = tok.trim();
+    (tok.len() >= 32 && tok.bytes().all(|b| b.is_ascii_hexdigit())).then(|| tok.to_string())
+}
+
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+pub(crate) fn is_allowed_payload(payload: &str) -> bool {
+    let p = payload.trim();
+    p == "show" || parse(p).is_some()
+}
+
+fn accept_one(mut stream: TcpStream, expected_token: &str) -> Option<String> {
+    if !stream.peer_addr().is_ok_and(|a| a.ip().is_loopback()) {
+        return None;
+    }
+    stream.set_read_timeout(Some(LISTEN_TIMEOUT)).ok()?;
+    stream.set_write_timeout(Some(LISTEN_TIMEOUT)).ok()?;
+    let mut line = String::new();
+    BufReader::new((&stream).take(MAX_LINE_BYTES)).read_line(&mut line).ok()?;
+    if !line.ends_with('\n') {
+        return None;
+    }
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let (got_token, payload) = trimmed.split_once(' ')?;
+    if expected_token.is_empty() || !ct_eq(got_token.as_bytes(), expected_token.as_bytes()) {
+        return None;
+    }
+    let payload = payload.trim();
+    if !is_allowed_payload(payload) {
+        return None;
+    }
+    let _ = stream.write_all(b"ok\n").and_then(|_| stream.flush());
+    Some(payload.to_string())
+}
+
+fn forward_with(addr: SocketAddr, token_file: &Path, arg: &str) -> bool {
+    let arg = arg.trim();
+    if arg.contains(['\r', '\n']) || !is_allowed_payload(arg) {
+        return false;
+    }
+    let Some(token) = read_token_file(token_file) else { return false };
+    let Ok(mut s) = TcpStream::connect_timeout(&addr, FORWARD_TIMEOUT) else { return false };
+    let _ = s.set_read_timeout(Some(FORWARD_TIMEOUT));
+    let _ = s.set_write_timeout(Some(FORWARD_TIMEOUT));
+    if s.write_all(format!("{token} {arg}\n").as_bytes()).and_then(|_| s.flush()).is_err() {
+        return false;
+    }
+    let mut ack = String::new();
+    BufReader::new(s.take(16)).read_line(&mut ack).is_ok() && ack.trim() == "ok"
+}
+
+/// Try to hand `arg` to an already-running copy. Returns true if it did.
+pub fn forward_to_running(arg: &str) -> bool {
+    forward_with(SocketAddr::from(([127, 0, 0, 1], PORT)), &token_path(), arg)
+}
+
+/// Listen for authenticated links from later launches. Each line received
+/// carries `<token> <link|show>`.
 pub fn listen(ctx: egui::Context) -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel();
     if let Ok(listener) = TcpListener::bind(("127.0.0.1", PORT)) {
+        let token = generate_token();
+        if let Err(e) = write_token_file(&token_path(), &token) {
+            tracing::warn!("links listener disabled: couldn't write instance token: {e}");
+            return rx;
+        }
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let mut line = String::new();
-                if BufReader::new(stream).read_line(&mut line).is_ok() {
-                    let _ = tx.send(line.trim().to_string());
+                if let Some(payload) = accept_one(stream, &token) {
+                    let _ = tx.send(payload);
                     ctx.request_repaint();
                 }
             }
@@ -413,5 +556,68 @@ mod tests {
         assert_eq!(parse("https://example.com"), None);
         assert!(shortcut_runs("[InternetShortcut]\r\nURL=steam://rungameid/570\r\n", 570));
         assert!(!shortcut_runs("[InternetShortcut]\r\nURL=steam://rungameid/5700\r\n", 570));
+    }
+
+    #[test]
+    fn authenticates_and_bounds_localhost_forwarding() {
+        let dir = std::env::temp_dir().join(format!("sir-links-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let tok_path = dir.join("cfg").join("links.token");
+        let token = generate_token();
+        write_token_file(&tok_path, &token).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let f_mode = std::fs::metadata(&tok_path).unwrap().permissions().mode() & 0o777;
+            let d_mode = std::fs::metadata(tok_path.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(f_mode, 0o600, "token file must be 0600");
+            assert_eq!(d_mode, 0o700, "token dir must be 0700");
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let tok_srv = token.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                if let Some(p) = accept_one(stream, &tok_srv) {
+                    let _ = tx.send(p);
+                }
+            }
+        });
+
+        {
+            let mut s = TcpStream::connect(addr).unwrap();
+            s.write_all(b"steam://rungameid/570\n").unwrap();
+        }
+        {
+            let mut s = TcpStream::connect(addr).unwrap();
+            let bad = "0".repeat(64);
+            s.write_all(format!("{bad} steam://rungameid/570\n").as_bytes()).unwrap();
+        }
+        {
+            let mut s = TcpStream::connect(addr).unwrap();
+            s.write_all(format!("{token} GET / HTTP/1.1\n").as_bytes()).unwrap();
+        }
+        {
+            let mut s = TcpStream::connect(addr).unwrap();
+            let big = format!("{token} steam://rungameid/{}\n", "9".repeat(2500));
+            let _ = s.write_all(big.as_bytes());
+        }
+        let idle = TcpStream::connect(addr).unwrap();
+        let t0 = std::time::Instant::now();
+
+        assert!(forward_with(addr, &tok_path, "show"));
+        assert!(t0.elapsed() < Duration::from_secs(3), "idle client hung listener!");
+        drop(idle);
+        assert!(forward_with(addr, &tok_path, "steam://rungameid/570"));
+        assert!(!forward_with(addr, &tok_path, "https://evil.example"));
+
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), "show");
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), "steam://rungameid/570");
+        assert!(rx.try_recv().is_err(), "no invalid/unauthenticated messages may pass");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
