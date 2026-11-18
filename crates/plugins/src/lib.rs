@@ -348,6 +348,18 @@ impl Host {
         }
     }
     fn push(&mut self, r: Request) -> Result<(), Box<EvalAltResult>> {
+        // Price lookups for one game join the request already queued (a page
+        // asking for each item's price would otherwise hit the limit).
+        if let Request::Prices(app, names) = &r {
+            if let Some(Request::Prices(_, queued)) = self.outbox.iter_mut().find(|q| matches!(q, Request::Prices(a, _) if a == app)) {
+                for n in names {
+                    if queued.len() < 500 && !queued.contains(n) {
+                        queued.push(n.clone());
+                    }
+                }
+                return Ok(());
+            }
+        }
         if self.hook_outbox >= MAX_OUTBOX || self.outbox.len() >= MAX_OUTBOX {
             return Err(format!("rate limit exceeded: max {MAX_OUTBOX} actions per hook").into());
         }
@@ -1508,5 +1520,16 @@ name = \"T\"
         p.start(&BTreeSet::from([Permission::Notifications]), Default::default());
         assert_eq!(p.drain().len(), MAX_OUTBOX);
         assert!(p.error.as_deref().unwrap_or("").contains("rate limit"));
+
+        // Many price lookups for one game are one request, not 100.
+        let mut q = plugin(
+            "id = \"prices\"\nname = \"P\"\npermissions = [\"inventory.read\"]\n",
+            "fn on_load() { for i in 0..100 { market_price(753, \"card \" + i); } market_price(730, \"case\"); }",
+        );
+        q.start(&BTreeSet::from([Permission::InventoryRead]), Default::default());
+        assert!(q.error.is_none(), "{:?}", q.error);
+        let reqs = q.drain();
+        assert_eq!(reqs.len(), 2);
+        assert!(reqs.iter().any(|r| matches!(r, Request::Prices(753, names) if names.len() == 100)));
     }
 }
