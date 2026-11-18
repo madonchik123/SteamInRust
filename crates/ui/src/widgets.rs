@@ -966,7 +966,10 @@ pub fn bar_search(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width:
 }
 
 fn search_sized(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width: f32, height: f32) -> Response {
-    let c = &t.components.input;
+    search_in(ui, t, &t.components.input, value, hint, width, height)
+}
+
+fn search_in(ui: &mut Ui, t: &Theme, c: &Component, value: &mut String, hint: &str, width: f32, height: f32) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(width.max(60.0), height), Sense::hover());
     let fid = t.font_of(c);
     let pad = t.padding_of(c).x;
@@ -1828,4 +1831,140 @@ pub fn main_cta_rtl(ui: &mut Ui, t: &Theme, label: &str, original: Option<&str>,
         price(ui, t, label, original, discount);
     }
     r
+}
+
+// ---------- community ----------
+
+/// A post in a feed (`post_card`; Figma `494:5547`).
+pub fn post_card(t: &Theme) -> Frame {
+    component_frame(t, &t.components.post_card)
+}
+
+/// The bar a feed's filters and sort sit in (`filter_bar`; Figma `489:5317`).
+pub fn filter_bar(t: &Theme) -> Frame {
+    component_frame(t, &t.components.filter_bar)
+}
+
+/// A small box under a post: an icon, an optional label before it and a
+/// count after it (`stat_chip`; Figma `494:5552`, "Yes 👍 374"). Clickable
+/// when the caller uses the response.
+pub fn stat_chip(ui: &mut Ui, t: &Theme, icon: &str, label: Option<&str>, count: Option<&str>) -> Response {
+    let c = &t.components.stat_chip;
+    let fid = t.font_of(c);
+    let pad = t.padding_of(c).x;
+    let gap = t.spacing.xs + 1.0;
+    let painter = ui.painter().clone();
+    let lg = label.map(|l| painter.layout_no_wrap(l.to_string(), fid.clone(), Color32::PLACEHOLDER));
+    let cg = count.map(|n| painter.layout_no_wrap(n.to_string(), fid.clone(), Color32::PLACEHOLDER));
+    let icon_w = (fid.size * 1.4).round();
+    let mut w = pad * 2.0 + icon_w;
+    for g in lg.iter().chain(cg.iter()) {
+        w += g.size().x + gap;
+    }
+    let h = t.height_of(c, 37.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let look = t.look(c, interact(ui, &resp, false));
+        paint_box(ui, t, rect, c, &look, 0.0);
+        let count_color = t.look(c, Interact { selected: true, ..Default::default() }).text;
+        let mut x = rect.left() + pad;
+        let y = rect.center().y;
+        if let Some(g) = lg {
+            let gw = g.size().x;
+            ui.painter().galley(pos2(x, y - g.size().y / 2.0), g, look.text);
+            x += gw + gap;
+        }
+        paint_icon(ui.painter(), pos2(x + icon_w / 2.0, y), icon, icon_w, look.icon);
+        x += icon_w + gap;
+        if let Some(g) = cg {
+            ui.painter().galley(pos2(x, y - g.size().y / 2.0), g, count_color);
+        }
+    }
+    resp
+}
+
+/// The big search box of a landing page (`search_large`; Figma `487:5333`),
+/// 55 px tall in the default theme.
+pub fn search_large(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width: f32) -> Response {
+    let c = &t.components.search_large;
+    let h = t.height_of(c, 55.0);
+    search_in(ui, t, c, value, hint, width, h)
+}
+
+
+/// Numbered paging (Figma `505:8934`): Prev, the first page, the pages
+/// around this one, "…", the last page, Next, in the `sort` style. Returns
+/// the page clicked.
+pub fn page_numbers(ui: &mut Ui, t: &Theme, page: u32, pages: u32) -> Option<u32> {
+    if pages <= 1 {
+        return None;
+    }
+    let page = page.clamp(1, pages);
+    let mut to = None;
+    // 1 … 4 5 [6] 7 8 … 20
+    let mut shown: Vec<u32> = vec![1, pages];
+    for p in page.saturating_sub(2).max(1)..=(page + 2).min(pages) {
+        shown.push(p);
+    }
+    if page <= 4 {
+        shown.extend(1..=5.min(pages));
+    }
+    shown.sort_unstable();
+    shown.dedup();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = t.spacing.xs;
+        ui.add_enabled_ui(page > 1, |ui| {
+            if sort_chip(ui, t, &i18n::t!("Prev"), false).clicked() {
+                to = Some(page - 1);
+            }
+        });
+        ui.add_space(t.spacing.md);
+        let mut last = 0;
+        for p in shown {
+            if p > last + 1 {
+                ui.label(styled("…", t.text_style(&t.components.sort.text), t.text_dim));
+            }
+            if sort_chip(ui, t, &p.to_string(), p == page).clicked() && p != page {
+                to = Some(p);
+            }
+            last = p;
+        }
+        ui.add_space(t.spacing.md);
+        ui.add_enabled_ui(page < pages, |ui| {
+            if sort_chip(ui, t, &i18n::t!("Next"), false).clicked() {
+                to = Some(page + 1);
+            }
+        });
+    });
+    to
+}
+
+/// A remote image covering `rect` (center-cropped), `opacity` strong at the
+/// top and fading out to nothing at the bottom: art softly behind a page,
+/// over whatever background the theme paints. False while loading.
+pub fn paint_cover_fading(ui: &Ui, rect: Rect, url: &str, opacity: f32) -> bool {
+    let (_, Some(texture)) = load(ui, url, rect.size(), true) else {
+        return false;
+    };
+    let tex = texture.size;
+    let (ta, ra) = (tex.x / tex.y, rect.width() / rect.height());
+    let uv = if ta > ra {
+        let w = ra / ta;
+        Rect::from_min_max(pos2((1.0 - w) / 2.0, 0.0), pos2((1.0 + w) / 2.0, 1.0))
+    } else {
+        let h = ta / ra;
+        Rect::from_min_max(pos2(0.0, (1.0 - h) / 2.0), pos2(1.0, (1.0 + h) / 2.0))
+    };
+    let top = Color32::WHITE.gamma_multiply(opacity.clamp(0.0, 1.0));
+    let mut mesh = egui::Mesh::with_texture(texture.id);
+    let v = |pos: egui::Pos2, uv: egui::Pos2, color: Color32| egui::epaint::Vertex { pos, uv, color };
+    mesh.vertices.extend([
+        v(rect.left_top(), uv.left_top(), top),
+        v(rect.right_top(), uv.right_top(), top),
+        v(rect.right_bottom(), uv.right_bottom(), Color32::TRANSPARENT),
+        v(rect.left_bottom(), uv.left_bottom(), Color32::TRANSPARENT),
+    ]);
+    mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+    ui.painter().add(egui::Shape::mesh(mesh));
+    true
 }

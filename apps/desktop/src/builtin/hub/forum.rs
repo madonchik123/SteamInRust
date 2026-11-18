@@ -1,13 +1,77 @@
-//! Discussions: a game's forums with their topics, and threads with pages.
-//! Reading only; replying and starting topics are left to Steam for now.
+//! Discussions: a game's forums with their topics (Figma `505:8934`,
+//! `505:9758`), and threads with pages (`504:7960`).
 
-use super::{HubView, Io, View, columns, error, pager, rich};
+use super::{HubView, Io, View, error, rich};
 use client::hub::{self, Request};
-use egui::{Align, Align2, CornerRadius, Layout, Sense, Ui, vec2};
+use egui::{Align, Align2, Layout, Sense, Ui, vec2};
 use i18n::t;
 use model::AppId;
 use ui::widgets::EditMenu;
 use ui::{Theme, icons, widgets as w};
+
+/// Width of the forums column.
+const SIDE: f32 = 285.0;
+
+/// The forums column and the main column beside it (stacked when narrow).
+fn side_by_side(ui: &mut Ui, t: &Theme, side: impl FnOnce(&mut Ui), main: impl FnOnce(&mut Ui)) {
+    let total = ui.available_width();
+    let gap = t.spacing.lg + 2.0;
+    if total < 820.0 {
+        main(ui);
+        ui.add_space(gap);
+        side(ui);
+        return;
+    }
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.allocate_ui_with_layout(vec2(SIDE, 0.0), Layout::top_down(Align::Min), |ui| {
+            ui.set_width(SIDE);
+            side(ui);
+        });
+        let rest = ui.available_width();
+        ui.allocate_ui_with_layout(vec2(rest, 0.0), Layout::top_down(Align::Min), |ui| {
+            ui.set_width(rest);
+            main(ui);
+        });
+    });
+}
+
+/// A list of forums with their thread counts; returns the one clicked.
+fn forum_list(ui: &mut Ui, t: &Theme, title: &str, count: &str, forums: &[hub::Forum], current: impl Fn(&hub::Forum) -> bool) -> Option<hub::Forum> {
+    let mut picked = None;
+    w::filter_bar(t).inner_margin(egui::Margin::same(t.spacing.lg as i8 - 2)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = t.spacing.xs;
+        ui.horizontal(|ui| {
+            ui.label(w::body_m(t, title, t.text_dim));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(w::body_m(t, count, t.text_dim));
+            });
+        });
+        ui.add_space(t.spacing.xs);
+        for f in forums {
+            let on = current(f);
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 45.0), Sense::click());
+            let c = &t.components.sort;
+            let look = t.look(c, w::interact(ui, &resp, on));
+            w::paint_box(ui, t, r, c, &look, if on { 1.0 } else { 0.0 });
+            let pad = t.spacing.md + 1.0;
+            let mut job = egui::text::LayoutJob::simple_singleline(f.name.clone(), t.typography.body_l.font(), t.text);
+            job.wrap.max_width = r.width() - pad * 2.0 - 70.0;
+            job.wrap.max_rows = 1;
+            job.wrap.overflow_character = Some('…');
+            let g = ui.painter().layout_job(job);
+            ui.painter().galley(egui::pos2(r.left() + pad, r.center().y - g.size().y / 2.0), g, t.text);
+            if f.threads > 0 {
+                ui.painter().text(egui::pos2(r.right() - pad, r.center().y), Align2::RIGHT_CENTER, super::files::group(f.threads), t.typography.body_m.font(), t.text_dim);
+            }
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !on {
+                picked = Some(f.clone());
+            }
+        }
+    });
+    picked
+}
 
 pub(super) fn forum(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId, forum: &str) {
     let page_key = format!("forum{app}/{forum}");
@@ -27,95 +91,95 @@ pub(super) fn forum(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: 
         }
         Some(Ok(d)) => d.clone(),
     };
-    let side = if io.overlay { 220.0 } else { 280.0 };
-    columns(
+    let mut go = None;
+    let mut picked = None;
+    side_by_side(
         ui,
-        side,
-        hv,
-        io,
-        |ui, hv, io| {
+        t,
+        |ui| {
+            let current = |f: &hub::Forum| f.name == data.forum || (forum.is_empty() && f.path == "discussions/0/") || f.path == forum;
+            if let Some(f) = forum_list(ui, t, &t!("Forums"), &t!("Threads"), &data.forums, current) {
+                picked = Some(View::Forum { app, forum: f.path });
+            }
+            ui.add_space(t.spacing.md);
+            ui.label(w::body_s(t, t!("Reading only for now: replying and starting topics happen on Steam."), t.text_faint));
+        },
+        |ui| {
             ui.horizontal(|ui| {
-                ui.label(w::text_bold(if data.forum.is_empty() { t!("Discussions").to_string() } else { data.forum.clone() }, 20.0, t.text));
+                ui.label(w::heading_s(t, if data.forum.is_empty() { t!("Discussions").to_string() } else { data.forum.clone() }, t.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let from = (page as u64 - 1) * data.page_size as u64 + 1;
                     let to = (from + data.topics.len() as u64).saturating_sub(1);
                     if data.total > 0 {
-                        ui.label(w::text(t!("Showing {from}–{to} of {total} topics", from = from, to = to, total = data.total), 12.0, t.text_faint));
+                        ui.label(w::body_s(t, t!("Showing {from}–{to} of {total} topics", from = from, to = to, total = data.total), t.text_dim));
                     }
                 });
             });
-            ui.add_space(6.0);
+            ui.add_space(t.spacing.sm);
             if data.topics.is_empty() {
                 w::empty(ui, t, icons::CHATS, t!("No discussions yet"), t!("Nobody has started a topic here."));
                 return;
             }
             for topic in &data.topics {
                 if topic_row(ui, t, topic) {
-                    io.go(View::Thread(topic.url.clone()));
+                    go = Some(View::Thread(topic.url.clone()));
                 }
             }
-            ui.add_space(10.0);
             let pages = (data.total.div_ceil(data.page_size.max(1) as u64) as u32).max(1);
-            if let Some(p) = pager(ui, t, page, pages) {
-                hv.pages.insert(page_key.clone(), p);
-            }
-        },
-        |ui, _hv, io| {
-            w::card(t).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(w::text_bold(t!("SUB FORUMS"), 11.0, t.text_faint));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(w::text_bold(t!("THREADS"), 11.0, t.text_faint));
-                    });
-                });
-                ui.add_space(4.0);
-                for f in &data.forums {
-                    let current = f.name == data.forum || (forum.is_empty() && f.path == "discussions/0/") || f.path == forum;
-                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
-                    if current || resp.hovered() {
-                        ui.painter().rect_filled(r, t.corner_small(), if current { t.accent.gamma_multiply(0.16) } else { t.surface_hover });
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                    if let Some(p) = w::page_numbers(ui, t, page, pages) {
+                        hv.pages.insert(page_key.clone(), p);
                     }
-                    let name = ui.painter().layout(f.name.clone(), w::font_medium(13.0), if current { t.accent } else { t.text }, r.width() - 70.0);
-                    ui.painter().galley(egui::pos2(r.left() + 8.0, r.center().y - name.size().y / 2.0), name, t.text);
-                    ui.painter().text(egui::pos2(r.right() - 8.0, r.center().y), Align2::RIGHT_CENTER, super::files::group(f.threads), w::font(12.0), t.text_faint);
-                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !current {
-                        io.go(View::Forum { app, forum: f.path.clone() });
-                    }
-                }
             });
-            ui.add_space(10.0);
-            ui.label(w::text(t!("Reading only for now: replying and starting topics happen on Steam."), 11.5, t.text_faint));
         },
     );
+    if let Some(v) = go.or(picked) {
+        io.go(v);
+    }
 }
 
-/// One topic in the list. True when clicked.
+/// One topic (Figma `505:8934`): its title and author, when it was last
+/// answered and how many replies. True when clicked.
 fn topic_row(ui: &mut Ui, t: &Theme, topic: &hub::Topic) -> bool {
-    let width = ui.available_width();
-    let (r, resp) = ui.allocate_exact_size(vec2(width, 54.0), Sense::click());
-    let hover = resp.hovered();
-    ui.painter().rect_filled(r, CornerRadius::same(3), if hover { t.surface_hover } else if topic.pinned { t.surface } else { t.bg });
-    let icon = if topic.locked { icons::LOCK_SIMPLE } else if topic.pinned { icons::PUSH_PIN } else { icons::CHAT };
-    ui.painter().text(egui::pos2(r.left() + 18.0, r.center().y), Align2::CENTER_CENTER, icon, w::font(16.0), if topic.pinned { t.accent } else { t.text_faint });
-    let right_w = 190.0;
-    let text_w = (width - 40.0 - right_w).max(80.0);
-    let mut title = topic.title.clone();
-    if topic.pinned {
-        title = format!("{}: {title}", t!("Pinned"));
+    let top = ui.cursor().top();
+    let pad = t.spacing.lg + 3.0;
+    w::post_card(t).inner_margin(egui::Margin::symmetric(pad as i8, t.spacing.lg as i8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
+        let right_w = 330.0f32.min(r.width() * 0.45);
+        let text_w = (r.width() - right_w).max(80.0);
+        let mut x = r.left();
+        if topic.pinned || topic.locked {
+            let icon = if topic.locked { icons::LOCK_SIMPLE } else { icons::PUSH_PIN };
+            w::icon_centered(ui.painter(), egui::pos2(x + 8.0, r.top() + 11.0), icon, 16.0, t.accent);
+            x += 24.0;
+        }
+        let mut job = egui::text::LayoutJob::simple_singleline(topic.title.clone(), w::font_bold(t.typography.body_l.size), t.text);
+        job.wrap.max_width = text_w - (x - r.left());
+        job.wrap.max_rows = 1;
+        job.wrap.overflow_character = Some('…');
+        let g = ui.painter().layout_job(job);
+        ui.painter().galley(egui::pos2(x, r.top()), g, t.text);
+        ui.painter().text(egui::pos2(r.left(), r.bottom()), Align2::LEFT_BOTTOM, &topic.author, t.typography.body_s.font(), t.accent);
+        // Replies, then when it was last answered, from the right.
+        let y = r.center().y;
+        let replies = super::files::group(topic.replies as u64);
+        let g = ui.painter().layout_no_wrap(replies, t.typography.body_l.font(), t.accent);
+        let rx = r.right() - g.size().x;
+        let gw = g.size().x;
+        ui.painter().galley(egui::pos2(rx, y - g.size().y / 2.0), g, t.accent);
+        w::icon_centered(ui.painter(), egui::pos2(rx - 14.0, y), icons::CHAT, 18.0, t.text_dim);
+        if topic.last_post > 0 {
+            ui.painter().text(egui::pos2(rx - 14.0 - 12.0 - 22.0, y), Align2::RIGHT_CENTER, ui::ago(topic.last_post), t.typography.body_l.font(), t.accent);
+        }
+        let _ = gw;
+    });
+    let rect = egui::Rect::from_min_max(egui::pos2(ui.min_rect().left(), top), egui::pos2(ui.max_rect().right(), ui.cursor().top()));
+    let resp = ui.interact(rect, ui.scope_id().with(("topic", topic.id, &topic.url)), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_stroke(rect, t.corner(), egui::Stroke::new(1.0, t.surface_hover), egui::StrokeKind::Inside);
     }
-    let g = ui.painter().layout_no_wrap(title, if topic.pinned { w::font_semibold(14.0) } else { w::font_medium(14.0) }, t.text);
-    let g = if g.size().x > text_w { ui.painter().layout(topic.title.clone(), w::font_medium(14.0), t.text, text_w) } else { g };
-    let clip = ui.painter().with_clip_rect(egui::Rect::from_min_size(egui::pos2(r.left() + 36.0, r.top()), vec2(text_w, r.height())));
-    clip.galley(egui::pos2(r.left() + 36.0, r.top() + 8.0), g, t.text);
-    clip.text(egui::pos2(r.left() + 36.0, r.bottom() - 12.0), Align2::LEFT_CENTER, &topic.author, w::font(12.0), t.text_faint);
-    // Replies and last post on the right.
-    let x = r.right() - 10.0;
-    ui.painter().text(egui::pos2(x - 110.0, r.center().y), Align2::RIGHT_CENTER, format!("{}  {}", icons::CHAT, topic.replies), w::font(12.5), t.text_dim);
-    if topic.last_post > 0 {
-        ui.painter().text(egui::pos2(x, r.center().y), Align2::RIGHT_CENTER, ui::ago(topic.last_post), w::font(12.0), t.text_faint);
-    }
-    ui.add_space(2.0);
+    ui.add_space(t.spacing.lg - ui.spacing().item_spacing.y);
     let resp = if topic.preview.is_empty() { resp } else { resp.on_hover_text(&topic.preview) };
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
@@ -128,6 +192,7 @@ pub(super) fn thread(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, url:
     let req = || Request::Thread { url: url.to_string(), page, language: lang.clone() };
     let have = io.state.hub.threads.contains_key(&key);
     hv.ask(io, key.clone(), have, req);
+    ui.add_space(if io.overlay { t.spacing.sm } else { t.spacing.xl + t.spacing.lg });
     let data = match io.state.hub.threads.get(&key) {
         None => return w::loading(ui, t, &t!("Loading…")),
         Some(Err(e)) => {
@@ -138,51 +203,101 @@ pub(super) fn thread(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, url:
         }
         Some(Ok(d)) => d.clone(),
     };
-    // Breadcrumb back to the forum.
-    ui.horizontal(|ui| {
-        if !data.forum.is_empty() && ui.link(w::text(format!("{}  {}", icons::CARET_LEFT, data.forum), 13.0, t.accent)).clicked() {
-            match super::route(&data.forum_url) {
-                Some(v) => io.go(v),
-                None => {
-                    if let Some(app) = url.split("/app/").nth(1).and_then(|s| s.split('/').next()).and_then(|s| s.parse().ok()) {
-                        io.go(View::Forum { app, forum: String::new() });
-                    }
-                }
+    let app = View::Thread(url.to_string()).app();
+    // Breadcrumb: Discussions > the game > the forum.
+    let forum_view = || match super::route(&data.forum_url) {
+        Some(v) => Some(v),
+        None => app.map(|app| View::Forum { app, forum: String::new() }),
+    };
+    let mut go = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = t.spacing.xs;
+        let crumb = |ui: &mut Ui, label: &str| ui.add(egui::Label::new(w::body_s(t, label, t.accent)).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+        if !io.overlay && crumb(ui, &t!("Discussions")) {
+            go = Some(View::Page(crate::builtin::community_home::PAGE.into(), Some("discussions".into())));
+        }
+        if let Some(app) = app {
+            ui.label(w::body_s(t, ">", t.text_dim));
+            let game = io.state.app_name(app).unwrap_or_default().to_string();
+            if crumb(ui, &game) {
+                go = Some(View::Forum { app, forum: String::new() });
             }
         }
+        if !data.forum.is_empty() {
+            ui.label(w::body_s(t, ">", t.text_dim));
+            if crumb(ui, &data.forum) {
+                go = forum_view();
+            }
+        }
+        ui.label(w::body_s(t, ">", t.text_dim));
+        ui.label(w::body_s(t, t!("Topic"), t.text_dim));
+    });
+    ui.add_space(t.spacing.xs);
+    ui.horizontal(|ui| {
+        ui.label(w::heading_m(t, if data.forum.is_empty() { t!("Discussions").to_string() } else { data.forum.clone() }, t.text));
         if data.locked {
-            ui.label(w::text(format!("{}  {}", icons::LOCK_SIMPLE, t!("Locked")), 12.5, t.text_faint));
+            ui.label(w::body_m(t, format!("{}  {}", icons::LOCK_SIMPLE, t!("Locked")), t.text_dim));
         }
     });
-    ui.add_space(4.0);
-    ui.add(egui::Label::new(w::text_bold(&data.title, if io.overlay { 19.0 } else { 24.0 }, t.text)).wrap());
-    ui.add_space(10.0);
-    if page == 1 {
-        post(hv, ui, t, io, &data.op, None, true);
-        ui.add_space(14.0);
-    }
+    ui.add_space(t.spacing.xl + t.spacing.lg);
+    // The game's other forums, when they were loaded.
+    let forums: Vec<hub::Forum> = app
+        .and_then(|a| io.state.hub.topics.iter().find(|(k, v)| k.starts_with(&format!("{a}/")) && v.is_ok()).and_then(|(_, v)| v.as_ref().ok()).map(|p| p.forums.clone()))
+        .unwrap_or_default();
     let pages = data.total.div_ceil(data.page_size.max(1)).max(1);
-    ui.horizontal(|ui| {
-        ui.label(w::text_bold(t!("{n} replies", n = data.total), 13.0, t.text_dim));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if let Some(p) = pager_compact(ui, t, page, pages) {
-                hv.pages.insert(url.to_string(), p);
-            }
-        });
-    });
-    ui.add_space(6.0);
-    let first = (page - 1) * data.page_size;
-    for (i, p) in data.posts.iter().enumerate() {
-        post(hv, ui, t, io, p, Some(first + i as u32 + 1), false);
-        ui.add_space(8.0);
+    let body = |ui: &mut Ui, hv: &mut HubView, io: &mut Io| {
+        if page == 1 {
+            post(hv, ui, t, io, &data.op, Some(&data.title));
+        }
+        let first = (page - 1) * data.page_size;
+        let shown = |ui: &mut Ui, hv: &mut HubView| {
+            ui.horizontal(|ui| {
+                if data.total > 0 {
+                    let to = (first + data.posts.len() as u32).max(first + 1);
+                    ui.label(w::body_l(t, t!("Showing {from}–{to} of {total} comments", from = first + 1, to = to, total = data.total), t.text_dim));
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if let Some(p) = w::page_numbers(ui, t, page, pages) {
+                            hv.pages.insert(url.to_string(), p);
+                        }
+                });
+            });
+            ui.add_space(t.spacing.lg);
+        };
+        shown(ui, hv);
+        for p in &data.posts {
+            post(hv, ui, t, io, p, None);
+        }
+        if pages > 1 {
+            shown(ui, hv);
+        }
+        if let Some(target) = &data.reply {
+            // The new reply lands on the last page.
+            let last = (data.total + 1).div_ceil(data.page_size.max(1)).max(1);
+            reply_box(hv, ui, t, io, url, target, last);
+        }
+    };
+    if forums.is_empty() || io.overlay {
+        body(ui, hv, io);
+    } else {
+        let mut picked = None;
+        side_by_side(
+            ui,
+            t,
+            |ui| {
+                let current = |f: &hub::Forum| f.name == data.forum;
+                picked = forum_list(ui, t, &t!("Forums"), &t!("Threads"), &forums, current);
+            },
+            |ui| {
+                body(ui, hv, io);
+            },
+        );
+        if let (Some(f), Some(app)) = (picked, app) {
+            go = Some(View::Forum { app, forum: f.path });
+        }
     }
-    if let Some(p) = pager(ui, t, page, pages) {
-        hv.pages.insert(url.to_string(), p);
-    }
-    if let Some(target) = &data.reply {
-        // The new reply lands on the last page.
-        let last = (data.total + 1).div_ceil(data.page_size.max(1)).max(1);
-        reply_box(hv, ui, t, io, url, target, last);
+    if let Some(v) = go {
+        io.go(v);
     }
 }
 
@@ -206,7 +321,7 @@ fn reply_answered(hv: &mut HubView, io: &Io, url: &str) {
 
 fn reply_box(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, url: &str, target: &hub::ReplyTarget, last: u32) {
     ui.add_space(16.0);
-    ui.label(w::text_bold(t!("Reply"), 14.0, t.text));
+    ui.label(w::heading_s(t, t!("Reply"), t.text));
     ui.add_space(6.0);
     let sending = hv.reply_sending.contains_key(url);
     let draft = hv.reply_text.entry(url.to_string()).or_default();
@@ -221,57 +336,39 @@ fn reply_box(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, url: &str, t
                 io.send(client::Command::Hub(Request::Reply { thread_url: url.to_string(), target: target.clone(), text }));
             }
         });
-        ui.label(w::text(t!("Everyone can see your reply."), 11.5, t.text_faint));
+        ui.label(w::body_s(t, t!("Everyone can see your reply."), t.text_faint));
     });
     if let Some((_, Err(e))) = io.state.hub.replied.get(url).filter(|_| !sending) {
-        ui.label(w::text(t!("Couldn't post your reply: {error}", error = i18n::tr_dyn(e)), 12.0, t.danger));
+        ui.label(w::body_s(t, t!("Couldn't post your reply: {error}", error = i18n::tr_dyn(e)), t.danger));
     }
 }
 
-fn pager_compact(ui: &mut Ui, t: &Theme, page: u32, pages: u32) -> Option<u32> {
-    if pages <= 1 {
-        return None;
-    }
-    let mut to = None;
-    ui.add_enabled_ui(page < pages, |ui| {
-        if w::icon_button(ui, t, icons::CARET_RIGHT, &t!("Next"), false, 0).clicked() {
-            to = Some(page + 1);
-        }
-    });
-    ui.label(w::text(format!("{page} / {pages}"), 12.5, t.text_dim));
-    ui.add_enabled_ui(page > 1, |ui| {
-        if w::icon_button(ui, t, icons::CARET_LEFT, &t!("Previous"), false, 0).clicked() {
-            to = Some(page - 1);
-        }
-    });
-    to
-}
-
-/// One post: author, time, number and the text.
-fn post(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, p: &hub::Post, number: Option<u32>, op: bool) {
-    let fill = if op { t.surface } else { t.surface.gamma_multiply(0.6) };
-    egui::Frame::new().fill(fill).corner_radius(t.corner_small()).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+/// One post (Figma `504:7960`): avatar, name, when; the topic's title on
+/// the opening post; the text.
+fn post(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, p: &hub::Post, title: Option<&str>) {
+    w::post_card(t).inner_margin(egui::Margin::same(t.spacing.lg as i8 + 3)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = t.spacing.md;
             let avatar = p.avatar.clone().unwrap_or_else(|| model::art::avatar(None));
-            let r = w::avatar(ui, t, &avatar, if op { 40.0 } else { 32.0 }, None);
-            let name = ui.add(egui::Label::new(w::text_semibold(&p.name, 14.0, if op { t.accent } else { t.text })).sense(Sense::click()));
+            let r = w::avatar(ui, t, &avatar, 40.0, None);
+            let name = ui.add(egui::Label::new(w::body_l(t, &p.name, t.accent)).sense(Sense::click()));
             if (r.clicked() || name.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()) && p.author != 0 {
                 io.go(View::Page("profile".into(), Some(p.author.to_string())));
             }
             if p.time > 0 {
-                ui.label(w::text(ui::ago(p.time), 12.0, t.text_faint)).on_hover_text(ui::date(p.time));
-            }
-            if let Some(n) = number {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(w::text(format!("#{n}"), 12.0, t.text_faint));
-                });
+                ui.label(w::body_s(t, t!("Posted on {date}", date = ui::date_time(p.time)), t.text_dim)).on_hover_text(ui::ago(p.time));
             }
         });
-        ui.add_space(6.0);
+        if let Some(title) = title {
+            ui.add_space(t.spacing.lg);
+            ui.add(egui::Label::new(w::heading_m(t, title, t.text)).wrap());
+        }
+        ui.add_space(t.spacing.lg);
         let doc = rich::parse(&p.html);
-        if let Some(click) = rich::show(ui, t, &doc, 14.0) {
+        if let Some(click) = rich::show(ui, t, &doc, t.typography.body_l.size) {
             hv.follow(io, click);
         }
     });
+    ui.add_space(t.spacing.lg);
 }

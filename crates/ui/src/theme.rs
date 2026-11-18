@@ -737,6 +737,16 @@ pub struct Components {
     pub library_shelf: Component,
     /// A game in the Downloads list.
     pub download_row: Component,
+    /// A post in a social feed (the Community home, a game's hub; Figma
+    /// `494:5547`).
+    pub post_card: Component,
+    /// The bar holding a feed's filters and sort (Figma "sorting" `489:5317`).
+    pub filter_bar: Component,
+    /// A small box with an icon and a count under a post (Figma `494:5552`):
+    /// `icon` for the icon, `text` for the label, `selected.text` for the count.
+    pub stat_chip: Component,
+    /// The big search box of a landing page (Figma `487:5333`).
+    pub search_large: Component,
 }
 
 // ---------- assets ----------
@@ -1172,6 +1182,10 @@ impl Components {
             ("game_row", &self.game_row),
             ("library_shelf", &self.library_shelf),
             ("download_row", &self.download_row),
+            ("post_card", &self.post_card),
+            ("filter_bar", &self.filter_bar),
+            ("stat_chip", &self.stat_chip),
+            ("search_large", &self.search_large),
         ]
     }
 }

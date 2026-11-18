@@ -83,6 +83,7 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
     events.extend(inventory(me, now));
     events.extend(crate::builtin::hub::demo::events());
     events.extend(crate::builtin::store::demo::events(now));
+    events.extend(crate::builtin::community_home::demo_events());
     events
 }
 

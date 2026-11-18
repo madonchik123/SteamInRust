@@ -176,6 +176,12 @@ dims when the `Ui` is disabled (`ui.add_enabled_ui(false, …)`).
 | Card (`card`) | `523:6593` and the other content boxes | `w::card(t).show(ui, …)` (flat and borderless in SteamInRust); `w::component_frame(t, &t.components.x)` for any component as a frame |
 | Chips (`chip`, `segmented`) | — | `w::chip`, `w::tinted_chip`, `w::toggle_chip`, `w::image_chip`, `w::segmented` |
 | Game card (`game_card`) | "game card" `363:5954` | `w::game_card(ui, t, cover_url, header_url, title, installed, width)` follows the theme's card style (cover or header); `w::game_tile` draws a given size |
+| Post card (`post_card`) | `494:5547` | `w::post_card(t).show(ui, …)`; a whole post: `builtin::hub::post::card`, two to a row: `post::masonry` |
+| Filter bar (`filter_bar`) | "sorting" `489:5317` | `w::filter_bar(t).show(ui, …)` with `w::sort_chip`s inside |
+| Count chip (`stat_chip`) | `494:5552` | `w::stat_chip(ui, t, icons::THUMBS_UP, Some("Yes"), Some("374"))` |
+| Large search (`search_large`) | `487:5333` | `w::search_large(ui, t, &mut text, hint, width)` (55 px) |
+| Page numbers (`sort`) | `505:8934` | `w::page_numbers(ui, t, page, pages)` returns the page clicked |
+| Art behind a page | `494:5450` | `w::paint_cover_fading(ui, rect, url, opacity)`: fades out to nothing over any background |
 
 `icons::PLAY` and `icons::PAUSE` are drawn as solid shapes in buttons (the
 icon font only has outlines); `w::paint_icon` draws any icon the same way.
@@ -323,7 +329,7 @@ friends list, at the design's width.
 
 | Frame | Node | Today |
 | --- | --- | --- |
-| community home | `487:5076` | nothing matching yet: `builtin/community.rs` is the friends and chat page |
+| community home | `487:5076` | `builtin/community_home.rs`: Friends activity (`client::feed`, Steam's hidden activity feed), Explore (the community-wide feed), Developers (news of your games, announcements of followed ones), the Discussions landing, and the Community page bar every Community page shares |
 | game community hub | `495:6863`, `801:10167` | `builtin/hub/mod.rs`, `hub/files.rs` |
 | game community hub discussions | `505:8934` | `builtin/hub/forum.rs` |
 | game community hub workshop, workshop 2 | `512:11944`, `517:14057` | `builtin/hub/files.rs` (Workshop items) |

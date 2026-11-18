@@ -396,3 +396,31 @@ selected = { fill = "surface_hover@0.6" }
 padding = [10, 10]
 radius = "large"
 normal = { fill = "chrome" }
+
+# ---- community ----
+
+[components.post_card]
+padding = [15, 15]
+radius = "large"
+normal = { fill = "chrome@0.5", text = "text" }
+
+[components.filter_bar]
+padding = [10, 10]
+radius = "large"
+normal = { fill = "chrome" }
+
+[components.stat_chip]
+height = 37
+padding = [10, 0]
+text = "body_s"
+normal = { fill = "chrome", text = "text", icon = "text_dim" }
+hover = { fill = "raised", icon = "text" }
+selected = { text = "accent" }
+
+[components.search_large]
+height = 55
+padding = [15, 0]
+border = 1
+text = "body_l"
+normal = { fill = "chrome", border = "surface_hover", text = "text", icon = "text_dim" }
+selected = { border = "accent@0.6" }

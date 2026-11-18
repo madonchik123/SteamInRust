@@ -275,3 +275,26 @@ hover = { fill = "surface_hover" }
 
 [components.download_row]
 normal = { fill = "surface" }
+
+# ---- community ----
+
+[components.post_card]
+padding = [16, 16]
+border = 1
+normal = { fill = "surface", border = "border", text = "text" }
+
+[components.filter_bar]
+padding = [8, 8]
+border = 1
+normal = { fill = "surface", border = "border" }
+
+[components.stat_chip]
+height = 30
+radius = "full"
+normal = { fill = "raised", text = "text_dim", icon = "text_dim" }
+hover = { fill = "surface_hover", text = "text", icon = "text" }
+
+[components.search_large]
+radius = "full"
+padding = [24, 0]
+normal = { fill = "raised", border = "border", text = "text", icon = "text_dim" }

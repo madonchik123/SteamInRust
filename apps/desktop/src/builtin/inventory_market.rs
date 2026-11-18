@@ -480,7 +480,7 @@ impl Inventory {
 
     /// Your Community Market history: what sold, what you bought, listings
     /// you made or took down. Newest first, 50 at a time.
-    fn history_page(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+    pub(super) fn history_page(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
         let lang = || i18n::language().steam_name().to_string();
         if !self.history.asked {
             self.history.asked = true;
@@ -590,23 +590,23 @@ fn econ(icon: &str) -> String {
 
 /// One item row: picture, name and a line under it, then `right`.
 fn row(ui: &mut Ui, t: &Theme, image: &str, name: &str, color: Option<&str>, sub: &str, right: impl FnOnce(&mut Ui)) {
-    egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
+    w::post_card(t).inner_margin(Margin::symmetric(t.spacing.md as i8 + 2, t.spacing.md as i8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
-            ui.painter().rect_filled(r, CornerRadius::same(4), t.raised);
+            let (r, _) = ui.allocate_exact_size(vec2(50.0, 50.0), Sense::hover());
+            ui.painter().rect_filled(r, t.corner_small(), t.raised);
             if !image.is_empty() {
                 w::paint_contain(ui, r.shrink(3.0), image, Align2::CENTER_CENTER);
             }
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
-                ui.add(egui::Label::new(w::text_semibold(name, 14.0, hex(color).unwrap_or(t.text))).truncate());
-                ui.label(w::text(sub, 12.0, t.text_dim));
+                ui.add(egui::Label::new(w::styled(name, ui::theme::TextStyle::new(t.typography.body_m.size, ui::theme::Weight::Bold), hex(color).unwrap_or(t.text))).truncate());
+                ui.label(w::body_s(t, sub, t.text_dim));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), right);
         });
     });
-    ui.add_space(6.0);
+    ui.add_space(t.spacing.md);
 }
 
 fn market_link(ui: &mut Ui, t: &Theme, app: AppId, hash: &str) {

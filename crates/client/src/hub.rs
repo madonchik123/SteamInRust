@@ -57,6 +57,11 @@ pub enum Request {
     /// A Steam group's page. `key` is its 64-bit id or its address name
     /// (steamcommunity.com/groups/<name>).
     Group { key: String },
+    /// Your friends' activity feed (`start` = 0 for the newest, else the
+    /// `next` time of the page before). Read-only.
+    Activity { start: u64, language: String },
+    /// Steam's community-wide feed of popular or recent posts.
+    Explore(crate::feed::ExploreQuery),
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +78,8 @@ pub enum Response {
     Favorited { file_id: u64, add: bool, result: Result<(), String> },
     Replied { thread_url: String, result: Result<(), String> },
     Group { key: String, result: Result<Group, String> },
+    Activity { start: u64, result: Result<crate::feed::Feed, String> },
+    Explore { key: String, result: Result<crate::feed::Feed, String> },
 }
 
 /// Kinds of shared files a game can have.
@@ -352,6 +359,10 @@ pub struct Cache {
     /// the last one.
     pub replied: HashMap<String, (u32, Result<(), String>)>,
     pub groups: HashMap<String, Result<Group, String>>,
+    /// Pages of your friends' activity by their start time.
+    pub activity: HashMap<u64, Result<crate::feed::Feed, String>>,
+    /// Pages of the community-wide feed by [`crate::feed::ExploreQuery::key`].
+    pub explore: HashMap<String, Result<crate::feed::Feed, String>>,
 }
 
 impl Cache {
@@ -411,6 +422,12 @@ impl Cache {
             }
             Response::Group { key, result } => {
                 self.groups.insert(key.clone(), result.clone());
+            }
+            Response::Activity { start, result } => {
+                self.activity.insert(*start, result.clone());
+            }
+            Response::Explore { key, result } => {
+                self.explore.insert(key.clone(), result.clone());
             }
             Response::Voted { .. } | Response::Favorited { .. } => {}
         }
@@ -584,6 +601,39 @@ pub(crate) async fn handle(conn: Connection, me: SteamId, web: Result<Arc<Web>, 
             }
             out(Response::Group { key, result });
         }
+        Request::Activity { start, language } => {
+            let result = match web {
+                Ok(w) => crate::feed::activity(&w, me, start, &language).await,
+                Err(e) => Err(e),
+            };
+            if let Ok(f) = &result {
+                want_personas(&conn, f.posts.iter().map(|p| p.author).collect());
+            }
+            out(Response::Activity { start, result });
+        }
+        Request::Explore(q) => {
+            let key = q.key();
+            let mut result = crate::feed::explore(&web_or_anon, &q).await;
+            // The page leaves most authors out: ask for the shared files'.
+            if let Ok(f) = &mut result {
+                let ids: Vec<u64> = f.posts.iter().filter(|p| p.author == 0 && p.file_id != 0).map(|p| p.file_id).collect();
+                if !ids.is_empty() {
+                    if let Ok(found) = details(&conn, ids, &q.language, false).await {
+                        for d in found.iter().filter(|d| d.result() == 1) {
+                            for p in f.posts.iter_mut().filter(|p| p.file_id == d.publishedfileid()) {
+                                p.author = d.creator();
+                                if p.title.is_empty() {
+                                    p.title = d.title().to_string();
+                                }
+                                p.time = d.time_created() as u64;
+                            }
+                        }
+                    }
+                }
+                want_personas(&conn, f.posts.iter().map(|p| p.author).collect());
+            }
+            out(Response::Explore { key, result });
+        }
     }
 }
 
@@ -671,7 +721,7 @@ async fn files(conn: &Connection, q: &FileQuery) -> Result<FilePage, String> {
     Ok(FilePage { total: r.total() as u64, items })
 }
 
-async fn details(conn: &Connection, ids: Vec<u64>, language: &str, full: bool) -> Result<Vec<PublishedFileDetails>, String> {
+pub(crate) async fn details(conn: &Connection, ids: Vec<u64>, language: &str, full: bool) -> Result<Vec<PublishedFileDetails>, String> {
     let req = CPublishedFileGetDetailsRequest {
         publishedfileids: ids,
         includetags: Some(true),
