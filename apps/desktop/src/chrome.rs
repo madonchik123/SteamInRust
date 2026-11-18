@@ -75,12 +75,17 @@ pub fn window_buttons(ui: &mut Ui, t: &Theme, height: f32, can_maximize: bool) {
 
 fn button(ui: &mut Ui, t: &Theme, icon: &str, height: f32, close: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(46.0, height), Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.08);
-    let bg = if close { t.danger } else { t.surface_hover };
-    if hover > 0.0 {
-        ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, bg.gamma_multiply(hover));
+    // The theme's icon button, square and full height; close turns red.
+    let c = &t.components.icon_button;
+    let s = w::interact(ui, &resp, false);
+    let look = t.look(c, s);
+    if close && s.hover > 0.0 {
+        let red = if s.pressed { w::mix(t.danger, Color32::BLACK, 0.15) } else { t.danger };
+        ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, red.gamma_multiply(s.hover));
+    } else if let ui::theme::ResolvedFill::Color(fill) = look.fill {
+        ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, fill);
     }
-    let fg = if close && hover > 0.5 { Color32::WHITE } else { w::mix(t.text_dim, t.text, hover) };
+    let fg = if close && s.hover > 0.5 { t.text_on(t.danger) } else { look.icon };
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, w::font(16.0), fg);
     resp
 }

@@ -2428,3 +2428,11 @@
 "started playing {game}" = "начал играть в {game}"
 "Messages and what your friends are up to show here." = "Здесь появятся сообщения и то, чем заняты ваши друзья."
 "Unblock" = "Разблокировать"
+
+# --- Redesign: the new look, offered once ---
+"A new look for SteamInRust" = "Новый облик SteamInRust"
+"SteamInRust has a fresh design. Want to try it? You can switch back any time in Settings → Appearance." = "У SteamInRust новый дизайн. Хотите попробовать? Вернуть прежний можно в любой момент в «Настройки → Внешний вид»."
+"New|look" = "Новый"
+"Current|look" = "Текущий"
+"Try the new look" = "Попробовать новый облик"
+"Keep my current look" = "Оставить текущий"

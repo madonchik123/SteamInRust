@@ -65,6 +65,9 @@ cargo run -p steam-rs -- --separate --demo --no-local --lang=en --page=gallery
   hover states and hover menus) and `--click=x,y` clicks once, 4 seconds in.
 - `--demo --no-local` shows a made-up account and library: use it for any
   screenshot you share.
+- `--new-look-prompt` shows the one-time "A new look for SteamInRust"
+  question that people who used the app before the redesign get (new
+  installs start on SteamInRust and are never asked).
 
 ## Theme tokens
 

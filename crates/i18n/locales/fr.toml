@@ -2428,3 +2428,11 @@
 "started playing {game}" = "a commencé à jouer à {game}"
 "Messages and what your friends are up to show here." = "Les messages et ce que font vos amis s'affichent ici."
 "Unblock" = "Débloquer"
+
+# --- Redesign: the new look, offered once ---
+"A new look for SteamInRust" = "Un nouveau look pour SteamInRust"
+"SteamInRust has a fresh design. Want to try it? You can switch back any time in Settings → Appearance." = "SteamInRust a un tout nouveau design. Tu veux l'essayer ? Tu pourras revenir en arrière à tout moment dans Paramètres → Apparence."
+"New|look" = "Nouveau"
+"Current|look" = "Actuel"
+"Try the new look" = "Essayer le nouveau look"
+"Keep my current look" = "Garder mon look actuel"

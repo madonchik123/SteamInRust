@@ -449,13 +449,18 @@ fn hover_popup<R>(ui: &mut Ui, id: egui::Id, anchor: &egui::Response, add: impl 
 
 /// The back and forward arrows at the far left of the top bar.
 fn nav_arrow(ui: &mut Ui, t: &Theme, icon: &str, tip: &str, enabled: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 34.0), Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() && enabled, 0.1);
-    if hover > 0.0 {
-        ui.painter().rect_filled(rect, t.corner_small(), t.raised.gamma_multiply(hover));
+    // The theme's icon button; dimmed while there's nowhere to go.
+    let c = &t.components.icon_button;
+    let (rect, resp) = ui.allocate_exact_size(vec2(t.dense(30.0), t.dense(34.0)), Sense::click());
+    let mut s = w::interact(ui, &resp, false);
+    s.disabled = !enabled;
+    if !enabled {
+        s.hover = 0.0;
+        s.pressed = false;
     }
-    let color = if enabled { w::mix(t.text_dim, t.text, 0.4 + 0.6 * hover) } else { t.text_faint.gamma_multiply(0.7) };
-    w::icon_centered(ui.painter(), rect.center(), icon, 17.0, color);
+    let look = t.look(c, s);
+    w::paint_box(ui, t, rect, c, &look, 0.0);
+    w::icon_centered(ui.painter(), rect.center(), icon, 17.0, look.icon);
     let resp = resp.on_hover_text(tip);
     if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
@@ -529,16 +534,13 @@ fn page_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action
 
 /// A menu in the top bar shown as dim text with a caret ("View ▾").
 fn text_menu_button(ui: &mut Ui, t: &Theme, label: &str, caret: bool) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(label.to_string(), w::font(sz(&t, 15.0)), t.text_dim);
-    let caret_w = if caret { 18.0 } else { 0.0 };
-    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + caret_w + 8.0, 32.0), Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
-    let color = w::mix(t.text_dim, t.text, hover);
-    ui.painter().galley(egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0), galley, color);
-    if caret {
-        ui.painter().text(egui::pos2(rect.right() - 12.0, rect.center().y + 1.0), Align2::CENTER_CENTER, icons::CARET_DOWN, w::font(sz(&t, 12.0)), color);
-    }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    // The theme's ghost button, small: dim text, a fill and brighter text
+    // under the pointer.
+    let mut c = t.components.button_ghost.clone();
+    c.padding[0] = 8.0;
+    let text = if caret { format!("{label} {}", icons::CARET_DOWN) } else { label.to_string() };
+    let font = egui::FontId::new(sz(t, 15.0), t.font_of(&c).family);
+    w::text_box(ui, t, &c, None, &text, false, t.dense(32.0), Some(font))
 }
 
 /// "View": other windows and places, like Steam's View menu.
@@ -858,8 +860,9 @@ fn wallet_section(ui: &mut Ui, t: &Theme, balance: i64, currency: i32, pending: 
 /// with no name beside it.
 fn app_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>) {
     let (rect, resp) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
-    ui.painter().rect_filled(rect, t.corner_small(), t.raised.gamma_multiply(hover));
+    // The theme's icon button look behind the logo.
+    let c = &t.components.icon_button;
+    w::paint_box(ui, t, rect, c, &t.look(c, w::interact(ui, &resp, false)), 0.0);
     let mut c = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_center_size(rect.center(), vec2(26.0, 26.0))));
     w::logo(&mut c, t, 26.0);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("SteamInRust");
@@ -1395,5 +1398,88 @@ pub fn friend_dialogs(app: &mut SteamApp, ctx: &egui::Context) {
         app.friend_dialog = None;
     } else if let Some((_, d)) = &mut app.friend_dialog {
         *d = keep;
+    }
+}
+
+/// Asked once of people who used the app before the redesign: try the new
+/// look, or keep the one they have. Either answer is remembered; the theme
+/// can be changed any time in Settings → Appearance.
+pub fn new_look_prompt(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    if !(app.prefs.wants_new_look_offer() || app.force_new_look_prompt) {
+        return;
+    }
+    let t = app.prefs.theme.clone();
+    let new = ui::themes::default_theme();
+    let mut answer: Option<bool> = None;
+    egui::Modal::new(egui::Id::unique("new-look")).show(ctx, |ui| {
+        ui.set_width(560.0);
+        ui.label(w::heading_m(&t, t!("A new look for SteamInRust"), t.text));
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(w::body_m(&t, t!("SteamInRust has a fresh design. Want to try it? You can switch back any time in Settings → Appearance."), t.text_dim)).wrap());
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            for (theme, label, pick) in [(&new, t!("New|look"), true), (&t, t!("Current|look"), false)] {
+                ui.vertical(|ui| {
+                    let (rect, resp) = ui.allocate_exact_size(vec2(264.0, 150.0), Sense::click());
+                    look_preview(ui, theme, rect);
+                    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+                    ui.painter().rect_stroke(rect, t.corner(), Stroke::new(1.0 + hover, w::mix(t.border, t.accent, hover)), egui::StrokeKind::Outside);
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        answer = Some(pick);
+                    }
+                    ui.label(w::body_s(&t, format!("{label} · {}", theme.name), t.text_dim));
+                });
+            }
+        });
+        ui.add_space(16.0);
+        ui.horizontal(|ui| {
+            if w::button(ui, &t, None, t!("Try the new look"), w::Kind::Primary, w::Size::Md).clicked() {
+                answer = Some(true);
+            }
+            if w::button(ui, &t, None, t!("Keep my current look"), w::Kind::Secondary, w::Size::Md).clicked() {
+                answer = Some(false);
+            }
+        });
+    });
+    if let Some(try_new) = answer {
+        app.prefs.new_look_offered = true;
+        app.force_new_look_prompt = false;
+        if try_new {
+            actions.push(Action::SetTheme(new));
+        }
+    }
+}
+
+/// A small picture of a theme: its top bar, page bar, page and cards,
+/// drawn from its own colors and corners.
+fn look_preview(ui: &Ui, t: &Theme, rect: Rect) {
+    let p = ui.painter_at(rect);
+    let r = t.corner();
+    p.rect_filled(rect, r, t.bg);
+    let page = rect.shrink(0.0);
+    w::paint_background(ui, t, Rect::from_min_max(page.min + vec2(0.0, 30.0), page.max), "library");
+    let top = Rect::from_min_size(rect.min, vec2(rect.width(), 16.0));
+    p.rect_filled(top, egui::CornerRadius { nw: r.nw, ne: r.ne, sw: 0, se: 0 }, t.chrome);
+    // Sections across the top bar, the open one in the accent.
+    for i in 0..4 {
+        let c = if i == 2 { t.accent } else { t.text_dim };
+        p.rect_filled(Rect::from_min_size(rect.min + vec2(30.0 + i as f32 * 26.0, 6.0), vec2(18.0, 4.0)), egui::CornerRadius::same(1), c);
+    }
+    let mut y = top.bottom();
+    if t.layout.page_bar {
+        let bar = Rect::from_min_size(egui::pos2(rect.left(), y), vec2(rect.width(), 14.0));
+        p.rect_filled(bar, egui::CornerRadius::ZERO, t.tertiary);
+        p.rect_filled(Rect::from_min_size(bar.min + vec2(6.0, 3.0), vec2(22.0, 8.0)), t.corner_small(), t.accent_2);
+        y = bar.bottom();
+    }
+    // A card with a Play button, and a row of game covers.
+    let card = Rect::from_min_size(egui::pos2(rect.left() + 10.0, y + 10.0), vec2(rect.width() - 20.0, 44.0));
+    p.rect_filled(card, t.corner(), t.surface);
+    p.rect_filled(Rect::from_min_size(card.min + vec2(10.0, 10.0), vec2(80.0, 6.0)), egui::CornerRadius::same(2), t.text);
+    p.rect_filled(Rect::from_min_size(card.min + vec2(10.0, 22.0), vec2(34.0, 14.0)), t.corner_small(), t.play);
+    for i in 0..5 {
+        let x = rect.left() + 10.0 + i as f32 * 49.0;
+        p.rect_filled(Rect::from_min_size(egui::pos2(x, card.bottom() + 10.0), vec2(42.0, 56.0)), t.corner_small(), w::mix(t.surface_hover, t.accent, 0.08 * i as f32));
     }
 }
