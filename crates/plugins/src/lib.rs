@@ -72,8 +72,8 @@
 //! `#{type: "image", url, width, height}` (Steam's image servers, or the plugin's hosts).
 
 use rhai::{AST, Array, Dynamic, Engine, EvalAltResult, ImmutableString, Map, Scope};
-use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -162,6 +162,19 @@ impl Permission {
     }
     fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.key() == s)
+    }
+}
+
+impl Serialize for Permission {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for Permission {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Self::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("unknown permission '{s}'")))
     }
 }
 
@@ -308,11 +321,15 @@ pub struct MenuItem {
     pub text: String,
 }
 
+const MAX_OUTBOX: usize = 32;
+const MAX_WIDGET_DEPTH: usize = 8;
+
 #[derive(Default)]
 struct Host {
     granted: HashSet<Permission>,
     snapshot: Snapshot,
     outbox: Vec<Request>,
+    hook_outbox: usize,
     storage: BTreeMap<String, String>,
     storage_dirty: bool,
     logs: VecDeque<String>,
@@ -329,6 +346,14 @@ impl Host {
         } else {
             Err(format!("permission denied: this plugin didn't request '{}'", p.key()).into())
         }
+    }
+    fn push(&mut self, r: Request) -> Result<(), Box<EvalAltResult>> {
+        if self.hook_outbox >= MAX_OUTBOX || self.outbox.len() >= MAX_OUTBOX {
+            return Err(format!("rate limit exceeded: max {MAX_OUTBOX} actions per hook").into());
+        }
+        self.hook_outbox += 1;
+        self.outbox.push(r);
+        Ok(())
     }
     fn log(&mut self, s: String) {
         self.logs.push_back(s);
@@ -364,6 +389,38 @@ pub struct Plugin {
 
 const MAX_OPERATIONS: u64 = 2_000_000;
 
+fn resolve_main_path(dir: &Path, main: &str) -> Result<(PathBuf, PathBuf), Error> {
+    if main.is_empty() || main.contains('\0') || main.contains(':') || main.starts_with('/') || main.starts_with('\\') {
+        return Err(Error::Manifest("invalid main script path".into()));
+    }
+    let mut parts = Vec::new();
+    for seg in main.split(['/', '\\']) {
+        if seg.is_empty() || seg == "." || seg == ".." {
+            return Err(Error::Manifest("invalid main script path".into()));
+        }
+        parts.push(seg);
+    }
+    for comp in Path::new(main).components() {
+        if !matches!(comp, std::path::Component::Normal(_)) {
+            return Err(Error::Manifest("invalid main script path".into()));
+        }
+    }
+    let canon_dir = std::fs::canonicalize(dir).map_err(|e| Error::Io(dir.to_path_buf(), e))?;
+    let mut cur = canon_dir.clone();
+    for seg in &parts {
+        cur.push(seg);
+        let meta = std::fs::symlink_metadata(&cur).map_err(|e| Error::Io(cur.clone(), e))?;
+        if meta.file_type().is_symlink() {
+            return Err(Error::Manifest("main script path must not use symlinks".into()));
+        }
+    }
+    let canon_file = std::fs::canonicalize(&cur).map_err(|e| Error::Io(cur, e))?;
+    if !canon_file.starts_with(&canon_dir) || canon_file == canon_dir || !canon_file.is_file() {
+        return Err(Error::Manifest("main script must be a file inside plugin folder".into()));
+    }
+    Ok((canon_dir, canon_file))
+}
+
 impl Plugin {
     pub fn load(dir: &Path) -> Result<Plugin, Error> {
         let manifest_path = dir.join("plugin.toml");
@@ -372,6 +429,7 @@ impl Plugin {
         if raw.id.is_empty() || !raw.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             return Err(Error::Manifest("id must be letters, digits, '-' or '_'".into()));
         }
+        let (canon_dir, _) = resolve_main_path(dir, &raw.main)?;
         let mut permissions = Vec::new();
         for p in &raw.permissions {
             permissions.push(Permission::parse(p).ok_or_else(|| Error::Manifest(format!("unknown permission '{p}'")))?);
@@ -392,18 +450,28 @@ impl Plugin {
         };
         let host = Arc::new(Mutex::new(Host::default()));
         let engine = sandboxed_engine(host.clone());
-        Ok(Plugin { manifest, dir: dir.to_path_buf(), engine, ast: None, scope: Scope::new(), host, running: false, error: None, last_tick: 0 })
+        Ok(Plugin { manifest, dir: canon_dir, engine, ast: None, scope: Scope::new(), host, running: false, error: None, last_tick: 0 })
     }
 
     pub fn is_running(&self) -> bool {
         self.running
     }
 
-    /// Compile and run the script with the given approved permissions.
-    /// `storage` is the plugin's saved data.
-    pub fn start(&mut self, storage: BTreeMap<String, String>) {
+    /// Compile and run the script only if every declared manifest permission is
+    /// in `approved`. `storage` is the plugin's saved data.
+    pub fn start(&mut self, approved: &BTreeSet<Permission>, storage: BTreeMap<String, String>) {
         self.stop();
-        let path = self.dir.join(&self.manifest.main);
+        if let Some(missing) = self.manifest.permissions.iter().find(|p| !approved.contains(p)) {
+            self.error = Some(format!("unapproved permission '{}'", missing.key()));
+            return;
+        }
+        let (_, path) = match resolve_main_path(&self.dir, &self.manifest.main) {
+            Ok(paths) => paths,
+            Err(e) => {
+                self.error = Some(e.to_string());
+                return;
+            }
+        };
         let src = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -413,16 +481,20 @@ impl Plugin {
         };
         {
             let mut h = self.host.lock().unwrap();
-            h.granted = self.manifest.permissions.iter().copied().collect();
+            h.granted = self.manifest.permissions.iter().copied().filter(|p| approved.contains(p)).collect();
             h.hosts = self.manifest.hosts.clone();
             h.storage = storage;
             h.storage_dirty = false;
+            h.outbox.clear();
+            h.hook_outbox = 0;
         }
         match self.engine.compile(&src) {
             Ok(ast) => {
                 self.scope = Scope::new();
+                self.host.lock().unwrap().hook_outbox = 0;
                 if let Err(e) = self.engine.run_ast_with_scope(&mut self.scope, &ast) {
                     self.error = Some(e.to_string());
+                    self.host.lock().unwrap().granted.clear();
                     return;
                 }
                 self.ast = Some(ast);
@@ -430,7 +502,10 @@ impl Plugin {
                 self.error = None;
                 self.call("on_load", ());
             }
-            Err(e) => self.error = Some(format!("{e}")),
+            Err(e) => {
+                self.host.lock().unwrap().granted.clear();
+                self.error = Some(format!("{e}"));
+            }
         }
     }
 
@@ -449,6 +524,7 @@ impl Plugin {
             return None;
         }
         let ast = self.ast.as_ref()?;
+        self.host.lock().unwrap().hook_outbox = 0;
         match self.engine.call_fn::<Dynamic>(&mut self.scope, ast, name, args) {
             Ok(v) => Some(v),
             Err(e) => {
@@ -508,7 +584,7 @@ impl Plugin {
     }
 
     pub fn page(&mut self) -> Vec<Widget> {
-        self.call("page", ()).map(|d| widgets(d)).unwrap_or_default()
+        self.call("page", ()).map(|d| widgets_bounded(d, 0, &mut 0)).unwrap_or_default()
     }
 
     pub fn click(&mut self, id: &str) {
@@ -604,9 +680,15 @@ fn menu_items(d: Dynamic) -> Vec<MenuItem> {
 
 /// Whether `url` may be reached: https, to one of the plugin's hosts.
 fn host_allowed(url: &str, hosts: &[String]) -> Result<(), String> {
+    if url.contains('\\') || url.chars().any(char::is_control) {
+        return Err("invalid URL".into());
+    }
     let rest = url.strip_prefix("https://").ok_or("only https:// addresses are allowed")?;
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = host.rsplit('@').next().unwrap_or(host).split(':').next().unwrap_or_default().to_ascii_lowercase();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err("userinfo not allowed in plugin URLs".into());
+    }
+    let host = authority.split(':').next().unwrap_or_default().to_ascii_lowercase();
     let ok = hosts.iter().any(|h| match h.strip_prefix("*.") {
         Some(base) => host == base || host.ends_with(&format!(".{base}")),
         None => host == *h,
@@ -711,15 +793,35 @@ fn map<const N: usize>(pairs: [(&str, Dynamic); N]) -> Map {
     pairs.into_iter().map(|(k, v)| (k.into(), v)).collect()
 }
 
-fn widgets(d: Dynamic) -> Vec<Widget> {
+fn widgets_bounded(d: Dynamic, depth: usize, budget: &mut usize) -> Vec<Widget> {
+    if depth >= MAX_WIDGET_DEPTH || *budget >= 500 {
+        return Vec::new();
+    }
     let Some(arr) = d.try_cast::<Array>() else { return Vec::new() };
-    arr.into_iter().filter_map(widget).take(500).collect()
+    let mut out = Vec::new();
+    for item in arr {
+        if *budget >= 500 {
+            break;
+        }
+        if let Some(w) = widget_bounded(item, depth, budget) {
+            out.push(w);
+        }
+    }
+    out
 }
 
-fn widget(d: Dynamic) -> Option<Widget> {
+fn widget_bounded(d: Dynamic, depth: usize, budget: &mut usize) -> Option<Widget> {
+    if *budget >= 500 {
+        return None;
+    }
     let m = d.try_cast::<Map>()?;
     let s = |k: &str| m.get(k).map(|v| v.to_string()).unwrap_or_default();
-    Some(match s("type").as_str() {
+    let ty = s("type");
+    if ty == "row" && depth + 1 >= MAX_WIDGET_DEPTH {
+        return None;
+    }
+    *budget += 1;
+    Some(match ty.as_str() {
         "heading" => Widget::Heading(s("text")),
         "text" => Widget::Text(s("text")),
         "muted" => Widget::Muted(s("text")),
@@ -728,7 +830,7 @@ fn widget(d: Dynamic) -> Option<Widget> {
         "separator" => Widget::Separator,
         "progress" => Widget::Progress(m.get("value").and_then(|v| v.as_float().ok()).unwrap_or(0.0).clamp(0.0, 1.0) as f32),
         "game" => Widget::Game(m.get("app_id").and_then(|v| v.as_int().ok()).unwrap_or(0) as u32),
-        "row" => Widget::Row(m.get("items").cloned().map(widgets).unwrap_or_default()),
+        "row" => Widget::Row(m.get("items").cloned().map(|v| widgets_bounded(v, depth + 1, budget)).unwrap_or_default()),
         "input" => Widget::Input { id: s("id"), value: s("value"), hint: s("hint") },
         "toggle" => Widget::Toggle { id: s("id"), text: s("text"), value: m.get("value").and_then(|v| v.as_bool().ok()).unwrap_or(false) },
         "link" => Widget::Link { text: s("text"), page: s("page"), arg: m.get("arg").filter(|v| !v.is_unit()).map(|v| v.to_string()) },
@@ -745,7 +847,10 @@ fn widget(d: Dynamic) -> Option<Widget> {
             width: m.get("width").and_then(|v| v.as_int().ok()).unwrap_or(240).clamp(16, 1200) as f32,
             height: m.get("height").and_then(|v| v.as_int().ok()).unwrap_or(135).clamp(16, 1200) as f32,
         },
-        _ => return None,
+        _ => {
+            *budget = budget.saturating_sub(1);
+            return None;
+        }
     })
 }
 
@@ -758,6 +863,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     e.set_max_array_size(20_000);
     e.set_max_map_size(5_000);
     e.disable_symbol("eval");
+    e.disable_symbol("import");
 
     let h = host.clone();
     e.on_print(move |s| h.lock().unwrap().log(s.to_string()));
@@ -774,8 +880,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     e.register_fn("notify", move |s: &str| -> Result<(), Box<EvalAltResult>> {
         let mut h = h.lock().unwrap();
         h.need(Permission::Notifications)?;
-        h.outbox.push(Request::Notify(s.chars().take(300).collect()));
-        Ok(())
+        h.push(Request::Notify(s.chars().take(300).collect()))
     });
 
     let h = host.clone();
@@ -839,8 +944,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
             "invisible" => model::PersonaState::Invisible,
             other => return Err(format!("unknown status '{other}'").into()),
         };
-        h.outbox.push(Request::SetStatus(st));
-        Ok(())
+        h.push(Request::SetStatus(st))
     });
 
     let h = host.clone();
@@ -851,8 +955,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         if !h.snapshot.friends.iter().any(|f| f.0 == id) {
             return Err("can only message people on your friends list".into());
         }
-        h.outbox.push(Request::SendMessage(id, text.chars().take(2000).collect()));
-        Ok(())
+        h.push(Request::SendMessage(id, text.chars().take(2000).collect()))
     });
 
     let h = host.clone();
@@ -874,11 +977,11 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         if h.request_times.len() >= 30 {
             return Err("too many requests: at most 30 a minute".into());
         }
-        h.request_times.push_back(now);
-        h.next_request += 1;
-        let id = h.next_request;
+        let id = h.next_request + 1;
         let headers = headers.into_iter().take(16).map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        h.outbox.push(Request::Http { id, method: method.to_ascii_uppercase(), url: url.to_string(), body: body.chars().take(256 * 1024).collect(), headers });
+        h.push(Request::Http { id, method: method.to_ascii_uppercase(), url: url.to_string(), body: body.chars().take(256 * 1024).collect(), headers })?;
+        h.next_request = id;
+        h.request_times.push_back(now);
         Ok(id.to_string())
     };
     let r = request.clone();
@@ -901,8 +1004,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         if !h.snapshot.library.iter().any(|g| g.0 == id && g.2) {
             return Err("that game isn't installed".into());
         }
-        h.outbox.push(Request::Launch(id));
-        Ok(())
+        h.push(Request::Launch(id))
     });
 
     let h = host.clone();
@@ -966,8 +1068,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     e.register_fn("refresh_trades", move || -> Result<(), Box<EvalAltResult>> {
         let mut h = h.lock().unwrap();
         h.need(Permission::TradesRead)?;
-        h.outbox.push(Request::LoadTrades);
-        Ok(())
+        h.push(Request::LoadTrades)
     });
 
     let h = host.clone();
@@ -978,8 +1079,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         if !h.snapshot.trades.iter().any(|(o, _)| o.id == id) {
             return Err("no such trade offer".into());
         }
-        h.outbox.push(Request::RespondTrade(id, action));
-        Ok(())
+        h.push(Request::RespondTrade(id, action))
     };
     let r = respond.clone();
     e.register_fn("decline_trade", move |id: &str| r(id, model::TradeAction::Decline));
@@ -991,8 +1091,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         let mut h = h.lock().unwrap();
         h.need(Permission::TradesWrite)?;
         let id: u64 = id.parse().map_err(|_| "id must be a trade offer id")?;
-        h.outbox.push(Request::ReviewTrade(id));
-        Ok(())
+        h.push(Request::ReviewTrade(id))
     });
 
     let h = host.clone();
@@ -1001,8 +1100,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         h.need(Permission::TradesWrite)?;
         let partner: u64 = partner.parse().map_err(|_| "partner must be a numeric steam_id")?;
         let (give, get) = (assets(give)?, assets(get)?);
-        h.outbox.push(Request::ProposeTrade { partner, give, get, message: message.chars().take(128).collect() });
-        Ok(())
+        h.push(Request::ProposeTrade { partner, give, get, message: message.chars().take(128).collect() })
     });
 
     let h = host.clone();
@@ -1016,7 +1114,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
                 Ok(Dynamic::from_array(list))
             }
             None => {
-                h.outbox.push(Request::LoadInventory(key.0, key.1));
+                h.push(Request::LoadInventory(key.0, key.1))?;
                 Ok(Dynamic::UNIT)
             }
         }
@@ -1029,7 +1127,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         match h.snapshot.prices.get(&(app_id as u32, hash_name.to_string())) {
             Some(p) => Ok(Dynamic::from(*p as i64)),
             None => {
-                h.outbox.push(Request::Prices(app_id as u32, vec![hash_name.to_string()]));
+                h.push(Request::Prices(app_id as u32, vec![hash_name.to_string()]))?;
                 Ok(Dynamic::UNIT)
             }
         }
@@ -1042,8 +1140,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     e.register_fn("copy", move |text: &str| -> Result<(), Box<EvalAltResult>> {
         let mut h = h.lock().unwrap();
         h.need(Permission::Clipboard)?;
-        h.outbox.push(Request::Copy(text.chars().take(64 * 1024).collect()));
-        Ok(())
+        h.push(Request::Copy(text.chars().take(64 * 1024).collect()))
     });
 
     let h = host.clone();
@@ -1053,8 +1150,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
             return Err(format!("unknown page '{page}'").into());
         }
         let arg = (!arg.is_unit()).then(|| arg.to_string());
-        h.lock().unwrap().outbox.push(Request::Navigate(page.to_string(), arg));
-        Ok(())
+        h.lock().unwrap().push(Request::Navigate(page.to_string(), arg))
     });
 
     let h = host.clone();
@@ -1084,14 +1180,34 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
 /// so the manager can show them.
 pub fn discover(dir: &Path) -> Vec<Result<Plugin, (PathBuf, Error)>> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut out: Vec<_> = entries
+    let loaded: Vec<(PathBuf, Result<Plugin, Error>)> = entries
         .flatten()
         .filter(|e| e.path().join("plugin.toml").is_file())
-        .map(|e| Plugin::load(&e.path()).map_err(|err| (e.path(), err)))
+        .map(|e| {
+            let p = e.path();
+            let res = Plugin::load(&p);
+            (p, res)
+        })
+        .collect();
+    let mut id_counts: HashMap<String, usize> = HashMap::new();
+    for (_, res) in &loaded {
+        if let Ok(p) = res {
+            *id_counts.entry(p.manifest.id.clone()).or_insert(0) += 1;
+        }
+    }
+    let mut out: Vec<Result<Plugin, (PathBuf, Error)>> = loaded
+        .into_iter()
+        .map(|(path, res)| match res {
+            Ok(p) if id_counts.get(&p.manifest.id).copied().unwrap_or(0) > 1 => {
+                Err((path, Error::Manifest(format!("duplicate plugin id '{}'", p.manifest.id))))
+            }
+            Ok(p) => Ok(p),
+            Err(err) => Err((path, err)),
+        })
         .collect();
     out.sort_by_key(|r| match r {
-        Ok(p) => p.manifest.name.to_lowercase(),
-        Err((p, _)) => p.display().to_string(),
+        Ok(p) => (0u8, p.manifest.name.to_lowercase()),
+        Err((p, _)) => (1u8, p.display().to_string()),
     });
     out
 }
@@ -1141,7 +1257,7 @@ mod tests {
     #[test]
     fn permission_is_enforced() {
         let mut p = plugin("id = \"t\"\nname = \"T\"\n", "fn on_load() { notify(\"hi\"); }");
-        p.start(Default::default());
+        p.start(&BTreeSet::new(), Default::default());
         assert!(p.drain().is_empty());
         assert!(p.error.as_deref().unwrap_or("").contains("permission denied"));
     }
@@ -1152,7 +1268,7 @@ mod tests {
             "id = \"t2\"\nname = \"T\"\npermissions = [\"notifications\"]\n[page]\ntitle = \"T\"\n",
             "fn on_load() { notify(\"hi\"); }\nfn page() { [#{type: \"heading\", text: \"Hello\"}, #{type: \"button\", id: \"b\", text: \"Go\"}] }",
         );
-        p.start(Default::default());
+        p.start(&BTreeSet::from([Permission::Notifications]), Default::default());
         assert!(matches!(p.drain().as_slice(), [Request::Notify(s)] if s == "hi"));
         assert_eq!(p.page(), vec![Widget::Heading("Hello".into()), Widget::Button { id: "b".into(), text: "Go".into() }]);
     }
@@ -1160,7 +1276,7 @@ mod tests {
     #[test]
     fn runaway_script_is_stopped() {
         let mut p = plugin("id = \"t3\"\nname = \"T\"\n", "fn on_load() { loop { } }");
-        p.start(Default::default());
+        p.start(&BTreeSet::new(), Default::default());
         assert!(p.error.is_some());
     }
 
@@ -1170,18 +1286,18 @@ mod tests {
             "id = \"n\"\nname = \"N\"\npermissions = [\"network\"]\nhosts = [\"api.example.com\", \"*.steampowered.com\"]\n",
             "fn on_load() { http_get(\"https://api.example.com/x?y=1\"); http_get(\"https://store.steampowered.com/api\"); }",
         );
-        p.start(Default::default());
+        p.start(&BTreeSet::from([Permission::Network]), Default::default());
         assert!(p.error.is_none(), "{:?}", p.error);
         let reqs = p.drain();
         assert_eq!(reqs.len(), 2);
         assert!(matches!(&reqs[0], Request::Http { id: 1, method, url, .. } if method == "GET" && url == "https://api.example.com/x?y=1"));
 
-        for bad in ["http://api.example.com/", "https://evil.com/", "https://api.example.com.evil.com/", "https://evil.com@api.example.com.x/"] {
+        for bad in ["http://api.example.com/", "https://evil.com/", "https://api.example.com.evil.com/", "https://evil.com@api.example.com.x/", "https://evil.com@api.example.com/"] {
             let mut p = plugin(
                 "id = \"n2\"\nname = \"N\"\npermissions = [\"network\"]\nhosts = [\"api.example.com\"]\n",
                 &format!("fn on_load() {{ http_get(\"{bad}\"); }}"),
             );
-            p.start(Default::default());
+            p.start(&BTreeSet::from([Permission::Network]), Default::default());
             assert!(p.error.is_some(), "{bad} should be refused");
             assert!(p.drain().is_empty());
         }
@@ -1201,7 +1317,7 @@ mod tests {
             fn json_round() { json_string(#{a: [1, true, ()]}) }
             "#,
         );
-        p.start(Default::default());
+        p.start(&BTreeSet::from([Permission::Storage]), Default::default());
         assert!(p.error.is_none(), "{:?}", p.error);
         p.http_done(7, 200, r#"{"name":"Ferris"}"#.into());
         assert_eq!(p.tick(1000), Some(1030));
@@ -1241,7 +1357,7 @@ name = \"T\"
 permissions = [\"trades.read\", \"trades.write\", \"storage\"]
 ", script);
         p.set_snapshot(snap());
-        p.start(Default::default());
+        p.start(&BTreeSet::from([Permission::TradesRead, Permission::TradesWrite, Permission::Storage]), Default::default());
         assert!(p.error.is_none(), "{:?}", p.error);
         let reqs = p.drain();
         assert_eq!(p.take_storage().unwrap().get("seen").map(String::as_str), Some("Pal active 12"));
@@ -1254,7 +1370,7 @@ permissions = [\"trades.read\", \"trades.write\", \"storage\"]
 name = \"T\"
 ", "fn on_load() { trade_offers(); }");
         q.set_snapshot(snap());
-        q.start(Default::default());
+        q.start(&BTreeSet::new(), Default::default());
         assert!(q.error.as_deref().is_some_and(|e| e.contains("trades.read")), "{:?}", q.error);
     }
 
@@ -1262,8 +1378,135 @@ name = \"T\"
     fn examples_parse() {
         for (id, manifest, script) in EXAMPLES {
             let mut p = plugin(manifest, script);
-            p.start(Default::default());
+            let approved: BTreeSet<Permission> = p.manifest.permissions.iter().copied().collect();
+            p.start(&approved, Default::default());
             assert!(p.error.is_none(), "{id}: {:?}", p.error);
         }
+    }
+
+    #[test]
+    fn unapproved_manifest_permissions_refuse_to_start() {
+        let mut p = plugin(
+            "id = \"esc\"\nname = \"Esc\"\npermissions = [\"notifications\", \"chat.write\"]\n",
+            "fn on_load() { notify(\"hi\"); }",
+        );
+        p.start(&BTreeSet::from([Permission::Notifications]), Default::default());
+        assert!(!p.is_running(), "plugin must not start with unapproved permission");
+        assert!(p.drain().is_empty());
+        assert!(p.error.as_deref().unwrap_or("").contains("chat.write"));
+
+        // Superset approval never grants undeclared permissions either.
+        let mut p2 = plugin("id = \"sub\"\nname = \"Sub\"\n", "fn on_load() { notify(\"hi\"); }");
+        p2.start(&BTreeSet::from([Permission::Notifications]), Default::default());
+        assert!(p2.drain().is_empty());
+        assert!(p2.error.as_deref().unwrap_or("").contains("permission denied"));
+    }
+
+    #[test]
+    fn import_is_rejected() {
+        let dir = std::env::temp_dir().join(format!("sir-plugin-import-{}", rand_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let outside = std::env::temp_dir().join(format!("sir-outside-{}", rand_id()));
+        std::fs::write(outside.with_extension("rhai"), "fn pwn() { 42 }").unwrap();
+        let outside_stem = outside.display().to_string();
+
+        let mut p1 = plugin("id = \"imp1\"\nname = \"Imp\"\n", &format!("import \"{outside_stem}\" as m;\nfn on_load() {{ log(\"\" + m::pwn()); }}"));
+        p1.start(&BTreeSet::new(), Default::default());
+        assert!(p1.error.is_some(), "static import should fail");
+        assert!(!p1.logs().iter().any(|l| l == "42"), "imported code must not run");
+
+        let mut p2 = plugin(
+            "id = \"imp2\"\nname = \"Imp2\"\n",
+            &format!("fn on_load() {{ let target = \"{outside_stem}\"; import target as m; log(\"\" + m::pwn()); }}"),
+        );
+        p2.start(&BTreeSet::new(), Default::default());
+        assert!(p2.error.is_some(), "dynamic import should fail");
+        assert!(!p2.logs().iter().any(|l| l == "42"), "dynamically imported code must not run");
+    }
+
+    #[test]
+    fn duplicate_manifest_ids_are_rejected() {
+        let root = std::env::temp_dir().join(format!("sir-plugin-dup-{}", rand_id()));
+        let a = root.join("aaa-evil");
+        let b = root.join("zzz-legit");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("plugin.toml"), "id = \"same\"\nname = \"AAA\"\n").unwrap();
+        std::fs::write(a.join("main.rhai"), "").unwrap();
+        std::fs::write(b.join("plugin.toml"), "id = \"same\"\nname = \"ZZZ\"\n").unwrap();
+        std::fs::write(b.join("main.rhai"), "").unwrap();
+
+        let found = discover(&root);
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|r| r.is_err()), "colliding plugin IDs must all fail");
+    }
+
+    #[test]
+    fn manifest_main_traversal_and_symlink_are_rejected() {
+        let base = std::env::temp_dir().join(format!("sir-plugin-main-{}", rand_id()));
+        let pdir = base.join("plug");
+        std::fs::create_dir_all(&pdir).unwrap();
+        let secret = base.join("secret.rhai");
+        std::fs::write(&secret, "fn on_load() { log(\"escaped\"); }").unwrap();
+
+        std::fs::write(pdir.join("plugin.toml"), "id = \"p\"\nname = \"P\"\nmain = \"../secret.rhai\"\n").unwrap();
+        std::fs::write(pdir.join("main.rhai"), "").unwrap();
+        assert!(Plugin::load(&pdir).is_err(), "../ traversal must fail");
+
+        std::fs::write(pdir.join("plugin.toml"), "id = \"p\"\nname = \"P\"\nmain = \"..\\\\secret.rhai\"\n").unwrap();
+        assert!(Plugin::load(&pdir).is_err(), "..\\ traversal must fail");
+
+        std::fs::write(pdir.join("plugin.toml"), format!("id = \"p\"\nname = \"P\"\nmain = \"{}\"\n", secret.display().to_string().replace('\\', "/"))).unwrap();
+        assert!(Plugin::load(&pdir).is_err(), "absolute main must fail");
+
+        #[cfg(unix)]
+        {
+            let sdir = base.join("symplug");
+            std::fs::create_dir_all(&sdir).unwrap();
+            std::fs::write(sdir.join("plugin.toml"), "id = \"s\"\nname = \"S\"\n").unwrap();
+            std::os::unix::fs::symlink(&secret, sdir.join("main.rhai")).unwrap();
+            assert!(Plugin::load(&sdir).is_err(), "symlink main.rhai must fail");
+
+            let tdir = base.join("toctou");
+            std::fs::create_dir_all(&tdir).unwrap();
+            std::fs::write(tdir.join("plugin.toml"), "id = \"tc\"\nname = \"TC\"\n").unwrap();
+            std::fs::write(tdir.join("main.rhai"), "fn on_load() { log(\"ok\"); }").unwrap();
+            let mut tp = Plugin::load(&tdir).unwrap();
+            std::fs::remove_file(tp.dir.join("main.rhai")).unwrap();
+            std::os::unix::fs::symlink(&secret, tp.dir.join("main.rhai")).unwrap();
+            tp.start(&BTreeSet::new(), Default::default());
+            assert!(!tp.is_running(), "TOCTOU symlink swap must fail");
+            assert!(!tp.logs().iter().any(|l| l == "escaped"));
+        }
+    }
+
+    #[test]
+    fn widget_row_depth_is_capped_at_8() {
+        let mut p = plugin(
+            "id = \"rowdepth\"\nname = \"R\"\n[page]\ntitle = \"R\"\n",
+            "fn page() { let w = #{type: \"text\", text: \"leaf\"}; for i in 0..12 { w = #{type: \"row\", items: [w]}; } [w] }",
+        );
+        p.start(&BTreeSet::new(), Default::default());
+        fn max_row_depth(ws: &[Widget]) -> usize {
+            ws.iter()
+                .map(|w| match w {
+                    Widget::Row(inner) => 1 + max_row_depth(inner),
+                    _ => 0,
+                })
+                .max()
+                .unwrap_or(0)
+        }
+        assert!(max_row_depth(&p.page()) < MAX_WIDGET_DEPTH);
+    }
+
+    #[test]
+    fn outbox_is_capped_per_hook() {
+        let mut p = plugin(
+            "id = \"spam\"\nname = \"Spam\"\npermissions = [\"notifications\"]\n",
+            "fn on_load() { for i in 0..100 { notify(\"n\" + i); } }",
+        );
+        p.start(&BTreeSet::from([Permission::Notifications]), Default::default());
+        assert_eq!(p.drain().len(), MAX_OUTBOX);
+        assert!(p.error.as_deref().unwrap_or("").contains("rate limit"));
     }
 }
