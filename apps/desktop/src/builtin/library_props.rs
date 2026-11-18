@@ -87,20 +87,39 @@ impl Library {
         let name = ctx.state.app_name(app_id).map(String::from).or_else(|| ctx.local.games.iter().find(|g| g.app_id == app_id).map(|g| g.name.clone())).unwrap_or_default();
         let installed = ctx.local.games.iter().find(|g| g.app_id == app_id).cloned();
         let owned = ctx.state.apps.as_ref().and_then(|a| a.get(&app_id)).cloned();
-        let builder = egui::ViewportBuilder::default().with_title(&name).with_inner_size([860.0, 620.0]).with_min_inner_size([700.0, 480.0]);
+        let mut builder = egui::ViewportBuilder::default().with_title(&name).with_inner_size([860.0, 620.0]).with_min_inner_size([700.0, 480.0]);
+        // A preview copy keeps it off the screen, shown once it's there;
+        // `--props-size=WxH` sets its size (to check narrow windows).
+        if crate::app::offscreen() {
+            builder = builder.with_position([crate::app::OFFSCREEN_POS[0] + 6000.0, crate::app::OFFSCREEN_POS[1]]).with_visible(false);
+            let size = std::env::args().find_map(|a| a.strip_prefix("--props-size=").and_then(|v| v.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))));
+            if let Some(size) = size {
+                builder = builder.with_inner_size(size).with_min_inner_size(size);
+            }
+        }
         let mut close = false;
         ui.ctx().show_viewport_immediate(egui::ViewportId::from_hash_of(("props", app_id)), builder, |ui, _| {
             if ui.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
                 close = true;
             }
+            if crate::app::offscreen() {
+                match ui.input(|i| i.viewport().outer_rect) {
+                    Some(r) if r.right() < -1000.0 => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(true)),
+                    _ => {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(crate::app::OFFSCREEN_POS[0] + 6000.0, crate::app::OFFSCREEN_POS[1])));
+                        ui.ctx().request_repaint();
+                    }
+                }
+            }
+            let nav = (ui.available_width() * 0.26).clamp(150.0, 210.0);
             egui::Panel::left("props-nav")
-                .exact_size(210.0)
+                .exact_size(nav)
                 .resizable(false)
                 .frame(egui::Frame::new().fill(t.chrome).inner_margin(Margin::same(14)))
                 .show(ui, |ui| {
                     let current = self.props.as_ref().map(|p| p.tab).unwrap_or_default();
                     for (tab, label) in TABS {
-                        let r = ui.add(egui::Button::selectable(current == tab, w::text_medium(i18n::tr_dyn(label), 14.0, t.text)).min_size(vec2(ui.available_width(), 34.0)));
+                        let r = ui.add(egui::Button::selectable(current == tab, w::body_m(t, i18n::tr_dyn(label), t.text)).min_size(vec2(ui.available_width(), 34.0)));
                         if r.clicked() {
                             if let Some(p) = &mut self.props {
                                 p.tab = tab;
@@ -111,7 +130,7 @@ impl Library {
             egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg).inner_margin(Margin::same(22))).show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let tab = self.props.as_ref().map(|p| p.tab).unwrap_or_default();
-                    ui.label(w::text_bold(i18n::tr_dyn(TABS.iter().find(|x| x.0 == tab).map(|x| x.1).unwrap_or("")), 24.0, t.text));
+                    ui.label(w::heading_m(t, i18n::tr_dyn(TABS.iter().find(|x| x.0 == tab).map(|x| x.1).unwrap_or("")), t.text));
                     ui.add_space(10.0);
                     match tab {
                         PropTab::General => {
@@ -152,20 +171,20 @@ impl Library {
         let report = ctx.state.cloud.get(&app).cloned();
         let syncing = ctx.state.cloud_syncing.contains(&app);
         let mut changed = false;
-        ui.label(w::text_semibold(t!("Cloud saves"), 16.0, t.text));
-        ui.label(w::text(t!("Steam Cloud keeps your game data the same on every PC."), 12.5, t.text_dim));
+        ui.label(w::body_m(t, t!("Cloud saves"), t.text));
+        ui.label(w::body_s(t, t!("Steam Cloud keeps your game data the same on every PC."), t.text_dim));
         ui.add_space(6.0);
         w::panel(t).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let s = self.games.entry(app).or_default();
                 let mut on = !s.cloud_off;
-                ui.add(egui::Label::new(w::text(t!("Keep saves for “{name}” in sync with Steam Cloud", name = name), 14.0, t.text)).wrap());
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(crate::builtin::settings::toggle(&mut on)).changed() {
-                        s.cloud_off = !on;
-                        changed = true;
-                    }
+                if w::toggle(ui, t, &mut on).changed() {
+                    s.cloud_off = !on;
+                    changed = true;
+                }
+                ui.with_layout(Layout::left_to_right(Align::Center).with_main_wrap(true), |ui| {
+                    ui.add(egui::Label::new(w::body_m(t, t!("Keep saves for “{name}” in sync with Steam Cloud", name = name), t.text)).wrap());
                 });
             });
         });
@@ -173,10 +192,10 @@ impl Library {
         let quota = report.as_ref().map(|r| r.quota_bytes).filter(|q| *q > 0).unwrap_or(cfg.quota);
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(w::text_semibold(t!("Available: {size}", size = ui::bytes(quota)), 12.5, t.accent));
-                ui.label(w::text("/", 12.5, t.text_faint));
+                ui.label(w::body_s(t, t!("Available: {size}", size = ui::bytes(quota)), t.accent));
+                ui.label(w::body_s(t, "/", t.text_faint));
                 let used = report.as_ref().map(|r| ui::bytes(r.cloud_bytes)).unwrap_or_else(|| "…".into());
-                ui.label(w::text(t!("Used: {size}", size = used), 12.5, t.text_dim));
+                ui.label(w::body_s(t, t!("Used: {size}", size = used), t.text_dim));
             });
         });
         ui.horizontal_wrapped(|ui| {
@@ -200,7 +219,7 @@ impl Library {
                 } else {
                     t!("{n} files in the cloud · checked {when}", n = r.cloud_files, when = ui::ago(r.finished))
                 };
-                ui.label(w::text(text, 12.5, if r.conflicts.is_empty() { t.text_faint } else { t.away }));
+                ui.label(w::body_s(t, text, if r.conflicts.is_empty() { t.text_faint } else { t.away }));
             }
         });
         if let (Some(r), Some(g)) = (&report, installed) {
@@ -226,16 +245,19 @@ impl Library {
     fn tab_dlc(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, app: AppId, installed: Option<&InstalledGame>, owned: Option<&OwnedApp>) {
         let mut dlc: Vec<OwnedApp> = ctx.state.apps.as_ref().map(|a| a.values().filter(|d| d.is_dlc() && d.parent == Some(app)).cloned().collect()).unwrap_or_default();
         dlc.sort_by_key(|d| d.name.to_lowercase());
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(t.spacing.sm, t.spacing.sm);
             if w::button(ui, t, Some(icons::STORE), t!("More in store"), w::Kind::Secondary, w::Size::Md).clicked() {
                 ctx.navigate("store", Some(format!("app:{app}")));
             }
+            let width = ui.available_width().min(260.0);
+            let width = if width < 140.0 { ui.max_rect().width().min(260.0) } else { width };
             let search = &mut self.props.as_mut().expect("open").dlc_search;
-            w::search(ui, t, search, &t!("Search…"), 260.0);
+            w::search(ui, t, search, &t!("Search…"), width);
         });
         ui.add_space(10.0);
         if dlc.is_empty() {
-            ui.label(w::text(t!("You don't own any DLC for this game."), 13.5, t.text_faint));
+            ui.label(w::body_m(t, t!("You don't own any DLC for this game."), t.text_faint));
             return;
         }
         let q = self.props.as_ref().map(|p| p.dlc_search.trim().to_lowercase()).unwrap_or_default();
@@ -251,9 +273,9 @@ impl Library {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
-                ui.add_sized(vec2(70.0, 30.0), egui::Label::new(w::text_bold(t!("INSTALL"), 11.0, t.text_faint)));
-                ui.add_sized(vec2((ui.available_width() - 110.0).max(0.0), 30.0), egui::Label::new(w::text_bold(t!("NAME"), 11.0, t.text_faint)));
-                ui.label(w::text_bold(t!("SIZE"), 11.0, t.text_faint));
+                ui.add_sized(vec2(70.0, 30.0), egui::Label::new(w::styled(t!("INSTALL"), t.typography.caption, t.text_faint)));
+                ui.add_sized(vec2((ui.available_width() - 110.0).max(0.0), 30.0), egui::Label::new(w::styled(t!("NAME"), t.typography.caption, t.text_faint)));
+                ui.label(w::styled(t!("SIZE"), t.typography.caption, t.text_faint));
             });
             for d in dlc.iter().filter(|d| q.is_empty() || d.name.to_lowercase().contains(&q)) {
                 ui.separator();
@@ -283,13 +305,13 @@ impl Library {
                     if !own {
                         w::image_or_skeleton(ui, t, r, &art::header(app), t.corner_small());
                         let badge = egui::Rect::from_min_size(r.min, vec2(28.0, 14.0));
-                        ui.painter().rect_filled(badge, egui::CornerRadius { nw: 4, se: 4, ne: 0, sw: 0 }, t.accent_2);
-                        ui.painter().text(badge.center(), egui::Align2::CENTER_CENTER, "DLC", w::font_bold(9.0), egui::Color32::WHITE);
+                        ui.painter().rect_filled(badge, egui::CornerRadius { nw: t.corner_small().nw, se: t.corner_small().se, ne: 0, sw: 0 }, t.accent_2);
+                        ui.painter().text(badge.center(), egui::Align2::CENTER_CENTER, "DLC", t.typography.caption.font(), t.text_on(t.accent_2));
                     }
                     ui.add_space(8.0);
-                    ui.add_sized(vec2((ui.available_width() - 100.0).max(0.0), 45.0), egui::Label::new(w::text_medium(&d.name, 13.5, t.text)).wrap());
+                    ui.add_sized(vec2((ui.available_width() - 100.0).max(0.0), 45.0), egui::Label::new(w::body_m(t, &d.name, t.text)).wrap());
                     let size = size_of(d.app_id);
-                    ui.label(w::text(if size > 0 { ui::bytes(size) } else { "—".into() }, 12.5, t.text_dim));
+                    ui.label(w::body_s(t, if size > 0 { ui::bytes(size) } else { "—".into() }, t.text_dim));
                 });
             }
             ui.add_space(6.0);
@@ -317,7 +339,7 @@ impl Library {
             ui.add(egui::TextEdit::singleline(&mut s.args).hint_text("-novid -fullscreen").desired_width(f32::INFINITY).margin(vec2(10.0, 8.0))).with_edit_menu();
         });
         section(ui, t, t!("In-game overlay"), t!("Open friends and chat with Shift+Tab while playing."), |ui| {
-            ui.add(crate::builtin::settings::toggle(&mut s.overlay_on));
+            w::toggle(ui, t, &mut s.overlay_on);
         });
         let langs: Vec<String> = {
             let mut v: Vec<String> = owned.map(|o| o.depots.iter().map(|d| d.language.clone()).filter(|l| !l.is_empty()).collect()).unwrap_or_default();
@@ -328,7 +350,7 @@ impl Library {
         if !langs.is_empty() {
             section(ui, t, t!("Language"), t!("Which language to download for this game."), |ui| {
                 let current = if s.language.is_empty() { t!("Same as SteamInRust").to_string() } else { s.language.clone() };
-                egui::ComboBox::from_id_salt(("game-lang", app)).selected_text(current).width(240.0).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt(("game-lang", app)).selected_text(current).width(ui.available_width().min(240.0)).show_ui(ui, |ui| {
                     ui.selectable_value(&mut s.language, String::new(), t!("Same as SteamInRust"));
                     for l in &langs {
                         ui.selectable_value(&mut s.language, l.clone(), l);
@@ -346,28 +368,28 @@ impl Library {
             w::panel(t).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 egui::Grid::new("upd-grid").num_columns(2).spacing(vec2(24.0, 6.0)).show(ui, |ui| {
-                    ui.label(w::text_bold(t!("INSTALLED BUILD"), 11.0, t.text_faint));
-                    ui.label(w::text(if build == 0 { "—".into() } else { build.to_string() }, 13.5, t.text));
+                    ui.label(w::styled(t!("INSTALLED BUILD"), t.typography.caption, t.text_faint));
+                    ui.label(w::body_m(t, if build == 0 { "—".into() } else { build.to_string() }, t.text));
                     ui.end_row();
                     if let Some((b, when)) = latest {
-                        ui.label(w::text_bold(t!("LATEST BUILD"), 11.0, t.text_faint));
-                        ui.label(w::text(format!("{b}  ·  {}", super::news::date(when)), 13.5, t.text));
+                        ui.label(w::styled(t!("LATEST BUILD"), t.typography.caption, t.text_faint));
+                        ui.label(w::body_m(t, format!("{b}  ·  {}", super::news::date(when)), t.text));
                         ui.end_row();
                     }
-                    ui.label(w::text_bold(t!("LAST UPDATED"), 11.0, t.text_faint));
-                    ui.label(w::text(g.last_updated.map(super::news::date).unwrap_or_else(|| "—".into()), 13.5, t.text));
+                    ui.label(w::styled(t!("LAST UPDATED"), t.typography.caption, t.text_faint));
+                    ui.label(w::body_m(t, g.last_updated.map(super::news::date).unwrap_or_else(|| "—".into()), t.text));
                     ui.end_row();
                 });
                 ui.add_space(8.0);
                 match latest {
                     Some((b, _)) if b != 0 && build != 0 && b != build => {
-                        ui.label(w::text(format!("{}  {}", icons::DOWNLOAD, t!("An update is available.")), 14.0, t.away));
+                        ui.label(w::body_m(t, format!("{}  {}", icons::DOWNLOAD, t!("An update is available.")), t.away));
                         if w::button(ui, t, Some(icons::DOWNLOAD), t!("Update now"), w::Kind::Primary, w::Size::Sm).clicked() {
                             self.queue_install(ctx, app, Some(g.library.clone()));
                         }
                     }
                     Some(_) => {
-                        ui.label(w::text(format!("{}  {}", icons::CHECK, t!("Up to date")), 14.0, t.play));
+                        ui.label(w::body_m(t, format!("{}  {}", icons::CHECK, t!("Up to date")), t.play));
                     }
                     None => {}
                 }
@@ -398,13 +420,13 @@ impl Library {
                     // The same measure as the Downloads page (what this download fetches).
                     let pct = d.fraction() as f64 * 100.0;
                     let label = if d.paused { t!("Download paused at {pct}%", pct = format!("{pct:.0}")) } else { t!("Installing… {pct}%", pct = format!("{pct:.0}")) };
-                    ui.label(w::text_semibold(label, 15.0, t.accent));
-                    ui.label(w::text(format!("{} / {}", ui::bytes(d.disk_done), ui::bytes(d.disk_total)), 12.5, t.text_dim));
+                    ui.label(w::body_m(t, label, t.accent));
+                    ui.label(w::body_s(t, format!("{} / {}", ui::bytes(d.disk_done), ui::bytes(d.disk_total)), t.text_dim));
                     w::progress(ui, t, (pct / 100.0) as f32, ui.available_width());
                     if let Some(dir) = &d.install_dir {
                         ui.add_space(6.0);
                         let path = dir.display().to_string();
-                        ui.add(egui::Label::new(w::text(&path, 12.5, t.text_dim).monospace()).truncate()).on_hover_text(&path);
+                        ui.add(egui::Label::new(w::body_s(t, &path, t.text_dim).monospace()).truncate()).on_hover_text(&path);
                     }
                     ui.add_space(8.0);
                     ui.horizontal_wrapped(|ui| {
@@ -430,7 +452,7 @@ impl Library {
                 return;
             }
             super::Setup::Queued if installed.is_none() => {
-                ui.label(w::text(t!("Waiting in the download queue."), 14.0, t.accent));
+                ui.label(w::body_m(t, t!("Waiting in the download queue."), t.accent));
                 if w::button(ui, t, Some(icons::X), t!("Remove from download queue"), w::Kind::Secondary, w::Size::Sm).clicked() {
                     ctx.send(Command::CancelDownload { app_id: app });
                 }
@@ -439,7 +461,7 @@ impl Library {
             _ => {}
         }
         let Some(g) = installed else {
-            ui.label(w::text(t!("This game isn't installed."), 14.0, t.text_dim));
+            ui.label(w::body_m(t, t!("This game isn't installed."), t.text_dim));
             if w::button(ui, t, Some(icons::DOWNLOAD), t!("Install"), w::Kind::Primary, w::Size::Md).clicked() {
                 self.install_dialog = Some(super::InstallDialog::new(app, ctx));
             }
@@ -447,9 +469,9 @@ impl Library {
         };
         w::panel(t).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(w::text_semibold(t!("Size of installation: {size}", size = ui::bytes(g.size_on_disk)), 15.0, t.text));
+            ui.label(w::body_m(t, t!("Size of installation: {size}", size = ui::bytes(g.size_on_disk)), t.text));
             let path = g.install_dir.display().to_string();
-            ui.add(egui::Label::new(w::text(&path, 12.5, t.text_dim).monospace()).truncate()).on_hover_text(&path);
+            ui.add(egui::Label::new(w::body_s(t, &path, t.text_dim).monospace()).truncate()).on_hover_text(&path);
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
@@ -466,13 +488,13 @@ impl Library {
         });
         if let Some(d) = ctx.state.downloads.get(&app).filter(|d| d.verifying()) {
             ui.add_space(8.0);
-            ui.label(w::text(t!("Verifying files…"), 13.5, t.text_dim));
+            ui.label(w::body_m(t, t!("Verifying files…"), t.text_dim));
             w::progress(ui, t, d.fraction(), ui.available_width());
         }
         if let Some(r) = self.reports.get(&app) {
             ui.add_space(10.0);
             let (icon, color) = if r.healthy() { (icons::CHECK, t.play) } else { (icons::WARNING, t.away) };
-            ui.label(w::text_semibold(format!("{icon}  {}", t!("Last check: {ok} of {total} files OK", ok = r.ok, total = r.files)), 14.0, color));
+            ui.label(w::body_m(t, format!("{icon}  {}", t!("Last check: {ok} of {total} files OK", ok = r.ok, total = r.files)), color));
             if !r.healthy() && w::button(ui, t, Some(icons::DOWNLOAD), t!("Repair now"), w::Kind::Primary, w::Size::Sm).clicked() {
                 self.queue_install(ctx, app, Some(g.library.clone()));
             }
@@ -487,10 +509,10 @@ impl Library {
     fn tab_betas(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, app: AppId, installed: Option<&InstalledGame>, owned: Option<&OwnedApp>) {
         let branches = owned.map(|o| o.branches.clone()).unwrap_or_default();
         let installed_branch = installed.map(|g| local::manage::installed_build(g).1).unwrap_or_else(|| "public".into());
-        ui.label(w::text(t!("Choose which version of the game to play. Older versions and betas are provided by the developer."), 13.5, t.text_dim));
+        ui.label(w::body_m(t, t!("Choose which version of the game to play. Older versions and betas are provided by the developer."), t.text_dim));
         ui.add_space(8.0);
         if branches.is_empty() {
-            ui.label(w::text(t!("Version information appears once your owned games are loaded from Steam."), 13.5, t.text_faint));
+            ui.label(w::body_m(t, t!("Version information appears once your owned games are loaded from Steam."), t.text_faint));
             return;
         }
         let mut chosen = self.games.get(&app).map(|g| g.branch.clone()).filter(|b| !b.is_empty()).unwrap_or(installed_branch.clone());
@@ -498,20 +520,19 @@ impl Library {
             let label = if b.name == "public" { t!("None (default version)").to_string() } else { b.name.clone() };
             let r = w::panel(t).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    w::radio_value(ui, t, &mut chosen, b.name.clone(), w::text_semibold(label, 14.0, t.text));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(t.spacing.sm, t.spacing.xs);
+                    w::radio_value(ui, t, &mut chosen, b.name.clone(), w::body_m(t, label, t.text));
                     if b.password {
                         w::pill(ui, t!("Needs a code"), t.away, t.away.gamma_multiply(0.15));
                     }
                     if b.name == installed_branch {
                         w::pill(ui, t!("Installed"), t.play, t.play.gamma_multiply(0.15));
                     }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(w::text(format!("{} {}  ·  {}", t!("build"), b.build_id, super::news::date(b.updated)), 12.0, t.text_faint));
-                    });
+                    ui.label(w::body_s(t, format!("{} {}  ·  {}", t!("build"), b.build_id, super::news::date(b.updated)), t.text_faint));
                 });
                 if !b.description.is_empty() {
-                    ui.label(w::text(&b.description, 12.5, t.text_dim));
+                    ui.label(w::body_s(t, &b.description, t.text_dim));
                 }
             });
             let _ = r;
@@ -521,19 +542,19 @@ impl Library {
         s.branch = chosen.clone();
         ui.add_space(8.0);
         section(ui, t, t!("Private beta code"), t!("Some betas need a code from the developer."), |ui| {
-            ui.add(egui::TextEdit::singleline(&mut s.beta_code).desired_width(260.0).margin(vec2(10.0, 8.0))).with_edit_menu();
+            ui.add(egui::TextEdit::singleline(&mut s.beta_code).desired_width(ui.available_width().min(260.0)).margin(vec2(10.0, 8.0))).with_edit_menu();
         });
         // Like Steam: an installed game downloads the other version on
         // request; one that isn't installed just remembers the choice.
         match installed {
             Some(g) if chosen != installed_branch => {
-                ui.label(w::text(t!("Switching versions downloads the files for that version."), 13.0, t.away));
+                ui.label(w::body_m(t, t!("Switching versions downloads the files for that version."), t.away));
                 if w::button(ui, t, Some(icons::DOWNLOAD), t!("Switch now"), w::Kind::Primary, w::Size::Sm).clicked() {
                     self.queue_install(ctx, app, Some(g.library.clone()));
                 }
             }
             None if chosen != "public" => {
-                ui.label(w::text(t!("This version installs when you install the game."), 13.0, t.text_dim));
+                ui.label(w::body_m(t, t!("This version installs when you install the game."), t.text_dim));
             }
             _ => {}
         }
@@ -550,29 +571,43 @@ impl Library {
 
     fn tab_workshop(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, app: AppId, installed: Option<&InstalledGame>) {
         let Some(g) = installed else {
-            ui.label(w::text(t!("This game isn't installed."), 14.0, t.text_dim));
+            ui.label(w::body_m(t, t!("This game isn't installed."), t.text_dim));
             return;
         };
         let items = local::manage::workshop_items(g);
         let total: u64 = items.iter().map(|i| i.size).sum();
-        ui.horizontal(|ui| {
-            ui.label(w::text_semibold(t!("{n} items · {size}", n = items.len(), size = ui::bytes(total)), 15.0, t.text));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if w::button(ui, t, Some(icons::STORE), t!("Browse the Workshop"), w::Kind::Secondary, w::Size::Sm).clicked() {
-                    ctx.act(Action::Navigate { page: "workshop".into(), arg: Some(app.to_string()) });
-                }
-                if w::button(ui, t, Some(icons::DOWNLOAD), t!("Download subscribed items"), w::Kind::Secondary, w::Size::Sm)
-                    .on_hover_text(t!("Downloads every item you subscribe to that's missing or out of date. This also happens before the game starts."))
-                    .clicked()
-                {
-                    ctx.send(Command::SyncWorkshop { app_id: app });
-                    ctx.toast(t!("Checking your Workshop subscriptions…"));
-                }
+        let summary = t!("{n} items · {size}", n = items.len(), size = ui::bytes(total));
+        let (browse, sync) = (t!("Browse the Workshop"), t!("Download subscribed items"));
+        let needed = text_w(ui, w::font_semibold(t.typography.body_l.size - 1.0), &summary) + button_w(ui, t, browse) + button_w(ui, t, sync) + t.spacing.xl;
+        let buttons = |ui: &mut Ui, ctx: &mut Ctx| {
+            if w::button(ui, t, Some(icons::DOWNLOAD), sync, w::Kind::Secondary, w::Size::Sm)
+                .on_hover_text(t!("Downloads every item you subscribe to that's missing or out of date. This also happens before the game starts."))
+                .clicked()
+            {
+                ctx.send(Command::SyncWorkshop { app_id: app });
+                ctx.toast(t!("Checking your Workshop subscriptions…"));
+            }
+            if w::button(ui, t, Some(icons::STORE), browse, w::Kind::Secondary, w::Size::Sm).clicked() {
+                ctx.act(Action::Navigate { page: "workshop".into(), arg: Some(app.to_string()) });
+            }
+        };
+        if ui.available_width() >= needed {
+            ui.horizontal(|ui| {
+                ui.label(w::body_m(t, &summary, t.text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| buttons(ui, ctx));
+                });
             });
-        });
+        } else {
+            ui.label(w::body_m(t, &summary, t.text));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(t.spacing.sm, t.spacing.sm);
+                buttons(ui, ctx)
+            });
+        }
         ui.add_space(8.0);
         if items.is_empty() {
-            ui.label(w::text(t!("You're not subscribed to any Workshop items for this game."), 13.5, t.text_faint));
+            ui.label(w::body_m(t, t!("You're not subscribed to any Workshop items for this game."), t.text_faint));
             return;
         }
         // Titles and previews from Steam (one request for all items).
@@ -597,16 +632,37 @@ impl Library {
         let title_of = |id: u64| remote.iter().find(|r| r.id == id).map(|r| r.title.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("#{id}"));
 
         // Toolbar: search, sort, select mode.
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-            w::search(ui, t, &mut props.ws_search, &t!("Search your items"), 220.0);
-            w::segmented(ui, t, &mut props.ws_sort, &[(WsSort::Updated, &t!("Recently updated")), (WsSort::Name, &t!("Name")), (WsSort::Size, &t!("Size"))]);
-            w::segmented(ui, t, &mut props.ws_size, &[(0u8, &t!("Any size")), (1, &t!("Under 100 MB")), (2, &t!("100 MB – 1 GB")), (3, &t!("Over 1 GB"))]);
+        let sorts = [(WsSort::Updated, t!("Recently updated")), (WsSort::Name, t!("Name")), (WsSort::Size, t!("Size"))];
+        let sizes = [(0u8, t!("Any size")), (1, t!("Under 100 MB")), (2, t!("100 MB – 1 GB")), (3, t!("Over 1 GB"))];
+        let gap = t.spacing.sm;
+        let (search_w, select_w) = (220.0, button_w(ui, t, t!("Select")) + 20.0);
+        let one_row = search_w + choices_w(ui, t, &sorts) + choices_w(ui, t, &sizes) + select_w + gap * 4.0 <= ui.available_width();
+        let mut select = |ui: &mut Ui| {
             let label = if props.ws_selecting { t!("Done") } else { t!("Select") };
             if w::toggle_chip(ui, t, label, &mut props.ws_selecting).changed() && !props.ws_selecting {
                 props.ws_selected.clear();
             }
-        });
+        };
+        if one_row {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                w::search(ui, t, &mut props.ws_search, &t!("Search your items"), search_w);
+                w::segmented(ui, t, &mut props.ws_sort, &sorts);
+                w::segmented(ui, t, &mut props.ws_size, &sizes);
+                select(ui);
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                let w_ = (ui.available_width() - select_w - gap).clamp(120.0, search_w);
+                w::search(ui, t, &mut props.ws_search, &t!("Search your items"), w_);
+                select(ui);
+            });
+            ui.add_space(gap);
+            choices(ui, t, &mut props.ws_sort, &sorts);
+            ui.add_space(gap);
+            choices(ui, t, &mut props.ws_size, &sizes);
+        }
         let q = props.ws_search.trim().to_lowercase();
         const MB: u64 = 1024 * 1024;
         let size_ok = |n: u64| match props.ws_size {
@@ -628,7 +684,8 @@ impl Library {
         // Batch bar.
         if props.ws_selecting {
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(t.spacing.sm, t.spacing.sm);
                 let all = !shown.is_empty() && shown.iter().all(|i| props.ws_selected.contains(&i.id));
                 let mut pick_all = all;
                 if w::check(ui, t, &mut pick_all, t!("Select all")).changed() {
@@ -640,13 +697,11 @@ impl Library {
                 }
                 let n = props.ws_selected.len();
                 let size: u64 = items.iter().filter(|i| props.ws_selected.contains(&i.id)).map(|i| i.size).sum();
-                ui.label(w::text(t!("{n} selected · {size}", n = n, size = ui::bytes(size)), 13.0, t.text_dim));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_enabled_ui(n > 0, |ui| {
-                        if w::button(ui, t, Some(icons::TRASH), &t!("Unsubscribe selected ({n})", n = n), w::Kind::Danger, w::Size::Sm).clicked() {
-                            props.ws_confirm = true;
-                        }
-                    });
+                ui.label(w::body_m(t, t!("{n} selected · {size}", n = n, size = ui::bytes(size)), t.text_dim));
+                ui.add_enabled_ui(n > 0, |ui| {
+                    if w::button(ui, t, Some(icons::TRASH), &t!("Unsubscribe selected ({n})", n = n), w::Kind::Danger, w::Size::Sm).clicked() {
+                        props.ws_confirm = true;
+                    }
                 });
             });
         }
@@ -674,13 +729,25 @@ impl Library {
                         Some(u) => w::image_or_skeleton(ui, t, r, u, t.corner_small()),
                         None => w::placeholder(ui, t, r, "", t.corner_small()),
                     }
-                    ui.vertical(|ui| {
-                        ui.add(egui::Label::new(w::text_semibold(title_of(item.id), 14.0, t.text)).truncate());
-                        ui.label(w::text(format!("{}  ·  {}", ui::bytes(item.size), t!("updated {when}", when = super::news::date(item.updated))), 12.5, t.text_faint));
+                    // Room for the buttons first; "Unsubscribe" is an icon when it's tight.
+                    let icon_w = t.height_of(&t.components.icon_button, 36.0) + ui.spacing().item_spacing.x;
+                    let wide = ui.available_width() > 420.0;
+                    let buttons_w = if props.ws_selecting { 0.0 } else { icon_w * 2.0 + if wide { button_w(ui, t, t!("Unsubscribe")) } else { icon_w } };
+                    let text_w = (ui.available_width() - buttons_w - t.spacing.sm).max(40.0);
+                    ui.allocate_ui_with_layout(vec2(text_w, 64.0), Layout::top_down(Align::Min), |ui| {
+                        ui.set_width(text_w);
+                        ui.add(egui::Label::new(w::body_m(t, title_of(item.id), t.text)).truncate());
+                        ui.add(egui::Label::new(w::body_s(t, format!("{}  ·  {}", ui::bytes(item.size), t!("updated {when}", when = super::news::date(item.updated))), t.text_faint)).truncate());
                     });
                     if !props.ws_selecting {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if w::button(ui, t, Some(icons::TRASH), t!("Unsubscribe"), w::Kind::Danger, w::Size::Sm).on_hover_text(t!("Remove it from this game and delete its files")).clicked() {
+                            let tip = t!("Remove it from this game and delete its files");
+                            let unsubscribe = if wide {
+                                w::button(ui, t, Some(icons::TRASH), t!("Unsubscribe"), w::Kind::Danger, w::Size::Sm).on_hover_text(tip)
+                            } else {
+                                w::icon_button(ui, t, icons::TRASH, &format!("{}: {tip}", t!("Unsubscribe")), false, 0)
+                            };
+                            if unsubscribe.clicked() {
                                 ctx.send(Command::UnsubscribeWorkshop { app_id: app, file_id: item.id });
                                 let _ = local::manage::delete_workshop_files(item);
                                 removed.push(item.id);
@@ -704,7 +771,7 @@ impl Library {
             ui.add_space(6.0);
         }
         if shown.is_empty() {
-            ui.label(w::text(t!("No items match your search."), 13.0, t.text_faint));
+            ui.label(w::body_m(t, t!("No items match your search."), t.text_faint));
         }
         // Confirm batch unsubscribe.
         if props.ws_confirm {
@@ -713,8 +780,8 @@ impl Library {
             let mut cancel = false;
             egui::Modal::new(egui::Id::unique(("ws-confirm", app))).show(ui.ctx(), |ui| {
                 ui.set_width(380.0);
-                ui.label(w::text_bold(t!("Unsubscribe from {n} items?", n = n), 17.0, t.text));
-                ui.add(egui::Label::new(w::text(t!("They'll be removed from this game and their files deleted. You can subscribe again later from the Workshop."), 13.0, t.text_dim)).wrap());
+                ui.label(w::heading_s(t, t!("Unsubscribe from {n} items?", n = n), t.text));
+                ui.add(egui::Label::new(w::body_m(t, t!("They'll be removed from this game and their files deleted. You can subscribe again later from the Workshop."), t.text_dim)).wrap());
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if w::button(ui, t, Some(icons::TRASH), t!("Unsubscribe"), w::Kind::Danger, w::Size::Md).clicked() {
@@ -748,7 +815,7 @@ impl Library {
     fn tab_privacy(&mut self, ui: &mut Ui, t: &Theme, app: AppId) {
         let mut hidden = self.hidden.contains(&app);
         section(ui, t, t!("Hide in library"), t!("Hidden games only show when you turn on “Show hidden games”."), |ui| {
-            if ui.add(crate::builtin::settings::toggle(&mut hidden)).changed() {
+            if w::toggle(ui, t, &mut hidden).changed() {
                 if hidden {
                     self.hidden.insert(app);
                 } else {
@@ -758,7 +825,7 @@ impl Library {
         });
         let s = self.settings_mut(app);
         section(ui, t, t!("Mark as private"), t!("Don't show this game as “now playing” in your status while you play."), |ui| {
-            ui.add(crate::builtin::settings::toggle(&mut s.private));
+            w::toggle(ui, t, &mut s.private);
         });
     }
 
@@ -781,8 +848,8 @@ impl Library {
                         w::placeholder(ui, t, r, "", t.corner_small());
                     }
                     ui.vertical(|ui| {
-                        ui.label(w::text_semibold(title, 15.0, t.text));
-                        ui.add(egui::Label::new(w::text(body, 12.5, t.text_dim)).wrap());
+                        ui.label(w::body_m(t, title, t.text));
+                        ui.add(egui::Label::new(w::body_s(t, body, t.text_dim)).wrap());
                         ui.horizontal(|ui| {
                             if w::button(ui, t, Some(icons::IMAGE), t!("Change"), w::Kind::Secondary, w::Size::Sm).clicked() {
                                 if let Some(src) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "webp"]).pick_file() {
@@ -813,12 +880,48 @@ impl Library {
     }
 }
 
+/// How wide a line of text is.
+fn text_w(ui: &Ui, font: egui::FontId, s: &str) -> f32 {
+    ui.painter().layout_no_wrap(s.to_string(), font, egui::Color32::PLACEHOLDER).size().x
+}
+
+/// About how wide a small button with an icon is.
+fn button_w(ui: &Ui, t: &Theme, label: &str) -> f32 {
+    let c = w::button_style(t, w::Kind::Secondary);
+    let fid = t.font_of(c);
+    let size = (fid.size - 2.0).max(10.0);
+    text_w(ui, egui::FontId::new(size, fid.family), label) + size * 1.1 + (size * 0.55).round() + t.padding_of(c).x * 1.4 + ui.spacing().item_spacing.x
+}
+
+/// How wide [`w::segmented`] draws these choices.
+fn choices_w<T>(ui: &Ui, t: &Theme, options: &[(T, &str)]) -> f32 {
+    let font = egui::FontId::new(t.typography.body_m.size - 1.0, t.font_of(&t.components.sort).family);
+    options.iter().map(|(_, l)| text_w(ui, font.clone(), l) + 22.0 + 2.0).sum::<f32>() + t.padding_of(&t.components.segmented).x * 2.0
+}
+
+/// Choices as one segmented block when the row has room, else as chips
+/// that wrap onto more lines.
+fn choices<T: PartialEq + Copy>(ui: &mut Ui, t: &Theme, value: &mut T, options: &[(T, &str)]) {
+    if choices_w(ui, t, options) <= ui.available_width() {
+        w::segmented(ui, t, value, options);
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(t.spacing.xs + 2.0, t.spacing.xs + 2.0);
+        for (v, label) in options {
+            if w::chip(ui, t, label, *value == *v).clicked() {
+                *value = *v;
+            }
+        }
+    });
+}
+
 /// Title + description + control block used throughout Properties.
 fn section(ui: &mut Ui, t: &Theme, title: &str, body: &str, add: impl FnOnce(&mut Ui)) {
     w::panel(t).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(w::text_semibold(title, 15.0, t.text));
-        ui.label(w::text(body, 12.5, t.text_dim));
+        ui.label(w::body_m(t, title, t.text));
+        ui.label(w::body_s(t, body, t.text_dim));
         ui.add_space(6.0);
         add(ui);
     });
