@@ -28,6 +28,16 @@ pub fn kind_color(t: &Theme, k: EventKind) -> Color32 {
     }
 }
 
+/// The icon beside a post of this kind.
+pub fn kind_icon(k: EventKind) -> &'static str {
+    match k {
+        EventKind::MajorUpdate => icons::SPARKLE,
+        EventKind::SmallUpdate | EventKind::Update => icons::GEAR,
+        EventKind::InGameEvent => icons::CALENDAR,
+        _ => icons::NOTE,
+    }
+}
+
 pub fn date(unix: u64) -> String {
     ui::date(unix)
 }
@@ -75,50 +85,62 @@ impl Library {
         *self.players[&id].1.lock().unwrap()
     }
 
-    /// The updates feed on a game's page.
-    pub(super) fn updates_feed(&mut self, ui: &mut Ui, t: &Theme, id: AppId) {
-        ui.label(w::text_bold(t!("UPDATES AND NEWS"), 12.0, t.text_faint));
-        ui.add_space(6.0);
-        let Some(events) = self.events(id) else {
-            for _ in 0..3 {
-                let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 150.0), Sense::hover());
-                w::skeleton(ui, t, r, t.corner());
-                ui.add_space(10.0);
+    /// A game's news (Figma "Activity" `523:6699`): posts by day, each with
+    /// its kind and title; a click opens the reader.
+    pub(super) fn activity(&mut self, ui: &mut Ui, t: &Theme, id: AppId) {
+        w::card(t).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(w::body_l(t, t!("Activity"), t.text_dim));
+            ui.add_space(t.spacing.sm);
+            let Some(events) = self.events(id) else {
+                for _ in 0..3 {
+                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 63.0), Sense::hover());
+                    w::skeleton(ui, t, r, t.corner());
+                    ui.add_space(t.spacing.md);
+                }
+                return;
+            };
+            if events.is_empty() {
+                ui.label(w::body_m(t, t!("No news for this game yet."), t.text_faint));
+                return;
             }
-            return;
-        };
-        if events.is_empty() {
-            ui.label(w::text(t!("No news for this game yet."), 13.5, t.text_faint));
-            return;
-        }
-        for (i, e) in events.iter().enumerate() {
-            ui.label(w::text_semibold(date(e.time).to_uppercase(), 12.0, t.text_dim));
-            ui.add_space(4.0);
-            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 160.0), Sense::click());
-            let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
-            ui.painter().rect_filled(rect, t.corner(), w::mix(t.surface, t.surface_hover, hover));
-            ui.painter().rect_stroke(rect, t.corner(), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-            let img = Rect::from_min_size(rect.min + vec2(12.0, 12.0), vec2(244.0, 136.0));
-            match e.capsule.as_deref().or(e.header.as_deref()) {
-                Some(u) => w::image_or_skeleton(ui, t, img, u, t.corner_small()),
-                None => w::placeholder(ui, t, img, "", t.corner_small()),
+            let mut day = String::new();
+            for (i, e) in events.iter().enumerate() {
+                let d = date(e.time);
+                if d != day {
+                    if !day.is_empty() {
+                        ui.add_space(t.spacing.md);
+                    }
+                    day = d;
+                    let r = ui.label(w::body_m(t, &day, t.accent)).rect;
+                    let y = r.bottom() + t.spacing.xs;
+                    let x = ui.max_rect().x_range();
+                    ui.painter().hline(x, y, Stroke::new(1.0, t.accent_2));
+                    ui.add_space(t.spacing.sm + 2.0);
+                }
+                let pad = t.spacing.sm + 2.0;
+                let title = egui::text::LayoutJob::simple(e.title.clone(), t.typography.body_m.font(), t.text, (ui.available_width() - pad * 3.0 - 40.0).max(40.0));
+                let galley = ui.painter().layout_job(title);
+                let kind_h = t.typography.body_l.size + 4.0;
+                let h = (pad * 2.0 + kind_h + t.spacing.xs + galley.size().y).max(63.0);
+                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
+                let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+                let p = ui.painter();
+                p.rect_filled(rect, t.corner(), w::mix(t.raised, t.surface_hover, hover));
+                // The stripe at the left in the post's color.
+                let stripe = Rect::from_min_size(rect.min, vec2(3.0, rect.height()));
+                p.rect_filled(stripe, egui::CornerRadius { nw: t.corner().nw, sw: t.corner().sw, ne: 0, se: 0 }, kind_color(t, e.kind));
+                let icon = Rect::from_min_size(rect.min + vec2(pad + 3.0, pad), vec2(40.0, 40.0));
+                w::icon_centered(p, icon.center(), kind_icon(e.kind), 30.0, t.text_dim);
+                let x = icon.right() + t.spacing.sm - 1.0;
+                p.text(egui::pos2(x, rect.top() + pad), Align2::LEFT_TOP, i18n::tr_dyn(e.kind.label()), t.typography.body_l.font(), t.text_dim);
+                p.galley(egui::pos2(x, rect.top() + pad + kind_h + t.spacing.xs), galley, t.text);
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    self.reader = Some(Reader { app: id, index: i });
+                }
+                ui.add_space(t.spacing.xs);
             }
-            let text = Rect::from_min_max(egui::pos2(img.right() + 16.0, rect.top() + 14.0), rect.max - vec2(14.0, 12.0));
-            let mut c = ui.new_child(egui::UiBuilder::new().max_rect(text).layout(Layout::top_down(Align::Min)));
-            c.label(w::text_bold(i18n::tr_dyn(e.kind.label()).to_uppercase(), 11.0, kind_color(t, e.kind)));
-            c.add(egui::Label::new(w::text_bold(&e.title, 17.0, t.text)).truncate());
-            c.add_space(2.0);
-            let summary: String = e.summary.chars().take(260).collect();
-            c.add(egui::Label::new(w::text(summary, 13.0, t.text_dim)).wrap());
-            let foot = Rect::from_min_max(egui::pos2(text.left(), rect.bottom() - 26.0), egui::pos2(text.right(), rect.bottom() - 8.0));
-            let mut f = ui.new_child(egui::UiBuilder::new().max_rect(foot).layout(Layout::right_to_left(Align::Center)));
-            f.label(w::text(format!("{}  {}", icons::THUMBS_UP, e.votes_up), 12.5, t.text_faint));
-            f.label(w::text(format!("{}  {}", icons::CHAT, e.comments), 12.5, t.text_faint));
-            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                self.reader = Some(Reader { app: id, index: i });
-            }
-            ui.add_space(14.0);
-        }
+        });
     }
 
     /// Full-window post reader with up/down navigation, like Steam's.
@@ -139,7 +161,7 @@ impl Library {
             .fixed_pos(screen.min)
             .show(ui.ctx(), |ui| {
                 let bg = ui.allocate_rect(screen, Sense::click());
-                ui.painter().rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(190));
+                ui.painter().rect_filled(screen, CornerRadius::ZERO, t.overlay_dark(3));
                 if bg.clicked() {
                     close = true;
                 }
@@ -151,11 +173,11 @@ impl Library {
                 egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::same(16)).show(&mut c, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        ui.label(w::text_bold(i18n::tr_dyn(e.kind.label()).to_uppercase(), 11.5, kind_color(t, e.kind)));
-                        ui.label(w::text_semibold(t!("PUBLISHED"), 11.5, t.text_dim));
-                        ui.label(w::text(date(e.time), 12.0, t.text_faint));
+                        ui.label(w::styled(i18n::tr_dyn(e.kind.label()).to_uppercase(), t.typography.caption, kind_color(t, e.kind)));
+                        ui.label(w::styled(t!("PUBLISHED"), t.typography.caption, t.text_dim));
+                        ui.label(w::body_s(t, date(e.time), t.text_faint));
                     });
-                    ui.add(egui::Label::new(w::text_bold(&e.title, 24.0, t.accent)).wrap());
+                    ui.add(egui::Label::new(w::heading_m(t, &e.title, t.accent)).wrap());
                 });
                 c.add_space(10.0);
                 egui::ScrollArea::vertical().id_salt(("reader", app, index)).auto_shrink([false, false]).show(&mut c, |ui| {

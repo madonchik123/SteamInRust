@@ -731,6 +731,12 @@ pub struct Components {
     /// Page dots under a carousel: `normal` a dot, `selected` the current
     /// page (filling up while it waits to move on; Figma `634:15220`).
     pub pager: Component,
+    /// Game rows in the library's list beside the page (`selected` is the open game).
+    pub game_row: Component,
+    /// The library's blocks: a collection's games, a sidebar group, a game in the list view.
+    pub library_shelf: Component,
+    /// A game in the Downloads list.
+    pub download_row: Component,
 }
 
 // ---------- assets ----------
@@ -1163,6 +1169,9 @@ impl Components {
             ("store_card", &self.store_card),
             ("shelf", &self.shelf),
             ("pager", &self.pager),
+            ("game_row", &self.game_row),
+            ("library_shelf", &self.library_shelf),
+            ("download_row", &self.download_row),
         ]
     }
 }

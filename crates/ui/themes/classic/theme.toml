@@ -260,3 +260,18 @@ normal = { fill = "transparent" }
 height = 4
 normal = { fill = "border" }
 selected = { fill = "accent" }
+
+[components.game_card]
+hover = { border = "accent" }
+
+[components.game_row]
+height = 34
+hover = { fill = "surface" }
+selected = { fill = "accent@0.16", text = "text" }
+
+[components.library_shelf]
+normal = { fill = "surface" }
+hover = { fill = "surface_hover" }
+
+[components.download_row]
+normal = { fill = "surface" }

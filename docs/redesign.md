@@ -309,6 +309,16 @@ code that draws the closest screen now.
 
 The game's Properties window (`library_props.rs`) has no frame in the design.
 
+Restyled (the library session): the page bar, the game list, the home,
+grid and list views, collections, a game's page and Downloads. Pieces other
+pages can use too: `w::game_card_info` / `w::game_tile_info` (the card's
+hover state from `363:5954`: title, Play or Install, last played and time
+played, given in `w::TileInfo`), `w::game_card_size`, and
+`w::paint_cover_fade` (a picture that fades into the page, for heroes).
+New components: `game_row` (the library's list), `shelf` (its blocks and list
+rows) and `download_row`. `--no-friends-panel` starts a preview without the
+friends list, at the design's width.
+
 ### Community session
 
 | Frame | Node | Today |

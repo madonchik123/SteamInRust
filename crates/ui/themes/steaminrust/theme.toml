@@ -335,7 +335,6 @@ selected = { fill = "accent" }
 [components.game_card]
 border = 1.5
 normal = { fill = "surface_hover" }
-hover = { border = "accent" }
 
 [components.price]
 radius = 2
@@ -375,3 +374,25 @@ radius = "full"
 normal = { fill = "chrome" }
 hover = { fill = "raised" }
 selected = { fill = "accent_2" }
+
+# ---- library and downloads ----
+
+[components.game_row]
+height = 33
+padding = [13, 0]
+text = "body_m"
+normal = { fill = "transparent", text = "text" }
+hover = { fill = "raised" }
+selected = { fill = "surface_hover", text = "text" }
+
+[components.library_shelf]
+padding = [20, 20]
+radius = "large"
+normal = { fill = "raised@0.4" }
+hover = { fill = "raised@0.7" }
+selected = { fill = "surface_hover@0.6" }
+
+[components.download_row]
+padding = [10, 10]
+radius = "large"
+normal = { fill = "chrome" }

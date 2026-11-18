@@ -371,7 +371,7 @@ then `pressed` while clicked and `disabled` when it can't be used.
 | `status_bar` | the bottom bar (`border` draws a line over it) |
 | `sidebar` | the left navigation column and the friends list |
 | `sidebar_item` | rows in the left navigation column |
-| `game_card` | game cards (`hover` `border` outlines the one under the pointer) |
+| `game_card` | game cards (`hover` `border` outlines the one under the pointer; the default theme has none and shows the title and Play instead) |
 | `price` | the discount box ("-34%") |
 | `wishlist` | the Wishlist button (`selected` is wishlisted) |
 | `progress` | progress bars: `normal` the track, `selected` the filled part |
@@ -379,6 +379,9 @@ then `pressed` while clicked and `disabled` when it can't be used.
 | `store_card` | the store's game cards and its pages' blocks (`padding` is the space inside) |
 | `shelf` | the see-through block behind a store shelf or carousel (`padding`: sides, top and bottom) |
 | `pager` | dots under a carousel: `normal` a dot, `selected` the current one (`height` is the dots') |
+| `game_row` | games in the library's list beside the page (`selected` is the open game) |
+| `library_shelf` | the library's blocks: a collection's games, a group in the list, a game in the list view (`hover` for rows you can click) |
+| `download_row` | a game in the Downloads list |
 
 ## What a theme can't change
 
