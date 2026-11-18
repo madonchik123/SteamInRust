@@ -2128,7 +2128,6 @@
 "{name}'s Discovery Feed" = "Лента рекомендаций: {name}"
 "Games Steam picked for you, from what you play and what you want." = "Игры, которые Steam подобрал для вас по тому, во что вы играете и что хотите."
 "New picks" = "Новая подборка"
-"Ask Steam for a new set of games" = "Попросить у Steam новую подборку игр"
 "One at a time" = "По одной"
 "Go through the queue game by game" = "Просмотреть очередь по одной игре"
 "Ignored" = "Скрыто"
@@ -2434,3 +2433,5 @@
 "Current|look" = "Текущий"
 "Try the new look" = "Попробовать новый облик"
 "Keep my current look" = "Оставить текущий"
+"Marks these games as seen and asks Steam for a new set" = "Отмечает эти игры как просмотренные и просит у Steam новую подборку"
+"Steam didn't send a queue. Try again in a moment." = "Steam не прислал очередь. Попробуйте ещё раз чуть позже."

@@ -2128,7 +2128,6 @@
 "{name}'s Discovery Feed" = "{name} 的探索推荐"
 "Games Steam picked for you, from what you play and what you want." = "Steam 根据你玩过和想要的游戏为你挑选的游戏。"
 "New picks" = "换一批"
-"Ask Steam for a new set of games" = "让 Steam 推荐一批新游戏"
 "One at a time" = "逐个浏览"
 "Go through the queue game by game" = "逐个浏览队列中的游戏"
 "Ignored" = "已忽略"
@@ -2434,3 +2433,5 @@
 "Current|look" = "当前"
 "Try the new look" = "试试新外观"
 "Keep my current look" = "保留当前外观"
+"Marks these games as seen and asks Steam for a new set" = "将这些游戏标记为已看过，并让 Steam 推荐一批新游戏"
+"Steam didn't send a queue. Try again in a moment." = "Steam 没有发送队列。请稍后再试。"

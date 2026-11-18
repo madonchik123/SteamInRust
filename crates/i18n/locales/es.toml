@@ -2128,7 +2128,6 @@
 "{name}'s Discovery Feed" = "Recomendaciones de {name}"
 "Games Steam picked for you, from what you play and what you want." = "Juegos que Steam eligió para ti según lo que juegas y lo que quieres."
 "New picks" = "Nuevas sugerencias"
-"Ask Steam for a new set of games" = "Pedir a Steam una nueva selección de juegos"
 "One at a time" = "De uno en uno"
 "Go through the queue game by game" = "Recorrer la cola juego a juego"
 "Ignored" = "Ignorado"
@@ -2434,3 +2433,5 @@
 "Current|look" = "Actual"
 "Try the new look" = "Probar el nuevo aspecto"
 "Keep my current look" = "Mantener mi aspecto actual"
+"Marks these games as seen and asks Steam for a new set" = "Marca estos juegos como vistos y pide a Steam una nueva selección"
+"Steam didn't send a queue. Try again in a moment." = "Steam no envió la cola. Vuelve a intentarlo en un momento."

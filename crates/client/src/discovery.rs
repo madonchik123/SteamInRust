@@ -7,6 +7,17 @@ use net::Connection;
 /// Your discovery queue (Steam keeps it until you've been through it; with
 /// `rebuild` you get a fresh one).
 pub async fn queue(conn: &Connection, country: &str, rebuild: bool) -> Result<Vec<AppId>, String> {
+    if rebuild {
+        // Like going through the queue on Steam: the games in it count as
+        // seen, so the new set doesn't hand the same ones back.
+        for app_id in fetch(conn, country, false).await.unwrap_or_default() {
+            let _ = skip(conn, app_id).await;
+        }
+    }
+    fetch(conn, country, rebuild).await
+}
+
+async fn fetch(conn: &Connection, country: &str, rebuild: bool) -> Result<Vec<AppId>, String> {
     let req = proto::CStoreGetDiscoveryQueueRequest {
         queue_type: Some(proto::EStoreDiscoveryQueueType::KEStoreDiscoveryQueueTypeNew as i32),
         country_code: (!country.is_empty()).then(|| country.to_string()),
