@@ -231,6 +231,7 @@ height = 32
 padding = [18, 0]
 normal = { fill = "transparent", text = "mix(text_dim, text, 0.6)", icon = "text_dim" }
 hover = { fill = "accent@0.16", text = "text", icon = "accent" }
+selected = { fill = "accent@0.16", text = "text", icon = "accent" }
 
 [components.top_bar]
 padding = [16, 0]

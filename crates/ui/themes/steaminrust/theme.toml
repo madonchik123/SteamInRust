@@ -305,9 +305,10 @@ padding = [20, 0]
 text = "menu"
 normal = { fill = "transparent", text = "text", icon = "text_dim" }
 hover = { fill = "surface_hover", icon = "text" }
+pressed = { fill = "darken(surface_hover, 0.15)" }
+selected = { fill = "surface_hover", icon = "text" }
 
 # ---- the shell ----
-pressed = { fill = "darken(surface_hover, 0.15)" }
 
 [components.top_bar]
 normal = { fill = "chrome" }

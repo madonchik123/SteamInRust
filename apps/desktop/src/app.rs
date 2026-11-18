@@ -175,6 +175,10 @@ pub struct SteamApp {
     pub overlay: crate::overlay::Overlay,
     pub demo: bool,
     pub search_open: bool,
+    /// The result row the arrow keys are on in the app-wide search.
+    pub search_sel: Option<usize>,
+    /// Enter was pressed in the app-wide search: open the selected row.
+    pub search_pick: Option<()>,
     pub activate: Option<Activate>,
     /// Set by "Exit" so closing really quits instead of hiding to the tray.
     pub exiting: bool,
@@ -324,6 +328,8 @@ impl SteamApp {
             overlay,
             demo,
             search_open: false,
+            search_sel: None,
+            search_pick: None,
             activate: None,
             exiting: false,
             cart_count: None,
@@ -354,6 +360,13 @@ impl SteamApp {
         let flag = |name: &str| std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from));
         if let Some(page) = flag("page") {
             app.go(page, flag("arg"));
+        }
+        // `--search=dota --search-select=0`: the app-wide search with that
+        // text and its results open, a row selected (previews).
+        if let Some(q) = flag("search") {
+            app.search = q;
+            app.search_open = true;
+            app.search_sel = flag("search-select").and_then(|n| n.parse().ok());
         }
         // `--theme=classic`: show a built-in theme (previews; not saved).
         if let Some(theme) = flag("theme").and_then(|n| ui::themes::builtins().into_iter().find(|p| p.id.eq_ignore_ascii_case(&n) || p.name.eq_ignore_ascii_case(&n))) {
@@ -829,7 +842,9 @@ impl eframe::App for SteamApp {
         };
         let time = raw_input.time.unwrap_or(0.0);
         raw_input.events.retain(|e| !matches!(e, egui::Event::PointerGone | egui::Event::PointerMoved(_)));
-        if let Some(p) = at("pointer") {
+        // Moved there once and then left still, so tooltips (which wait
+        // for the pointer to rest) show too.
+        if let Some(p) = at("pointer").filter(|p| ctx.input(|i| i.pointer.hover_pos()) != Some(*p)) {
             raw_input.events.push(egui::Event::PointerMoved(p));
         }
         if let Some(p) = at("click") {
