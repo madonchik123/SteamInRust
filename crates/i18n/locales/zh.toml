@@ -2053,3 +2053,16 @@
 "{free} free" = "可用 {free}"
 "Desktop shortcut: on" = "桌面快捷方式：开"
 "Desktop shortcut: off" = "桌面快捷方式：关"
+
+# --- Tray icon (Settings → Appearance) ---
+"Tray icon" = "托盘图标"
+"The logo SteamInRust shows in the system tray." = "SteamInRust 在系统托盘中显示的标志。"
+"Purple" = "紫色"
+"Classic" = "经典"
+"Black" = "黑色"
+"Outline" = "轮廓"
+"White outline" = "白色轮廓"
+"Black outline" = "黑色轮廓"
+"Cut-out" = "镂空"
+"White cut-out" = "白色镂空"
+"Black cut-out" = "黑色镂空"

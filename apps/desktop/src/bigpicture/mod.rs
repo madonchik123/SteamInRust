@@ -689,7 +689,7 @@ impl BigPicture {
         paint::glow(&p, screen.center(), screen.height() * (0.25 + 0.5 * e), t.accent.gamma_multiply(0.35 * fade));
         let size = 120.0 * s * (0.8 + 0.35 * focus::ease(e));
         let mut c = paint::faded(ui, Rect::from_center_size(screen.center(), vec2(size, size)), fade);
-        w::logo(&mut c, t, size);
+        w::logo_as(&mut c, ui::brand::Logo::OutlineWhite, size);
         p.text(screen.center() + vec2(0.0, size * 0.75 + 20.0 * s), Align2::CENTER_TOP, t!("Big Picture"), w::font_bold(30.0 * s), t.text.gamma_multiply(fade));
     }
 }

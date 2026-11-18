@@ -44,6 +44,8 @@ pub struct Prefs {
     pub bigpicture_scale: f32,
     /// Open in Big Picture at startup.
     pub bigpicture_start: bool,
+    /// Which version of the logo the tray icon shows.
+    pub tray_icon: ui::brand::Logo,
 }
 
 fn yes() -> bool {
@@ -73,6 +75,7 @@ impl Default for Prefs {
             favorite_friends: Vec::new(),
             bigpicture_scale: 1.0,
             bigpicture_start: false,
+            tray_icon: ui::brand::Logo::default(),
         }
     }
 }
@@ -135,6 +138,8 @@ pub struct SteamApp {
     hidden: bool,
     applied_theme: Option<Theme>,
     applied_zoom: f32,
+    /// Sharp window icons for the display's scaling (Windows).
+    window_icon: crate::window_icon::WindowIcon,
     /// Big Picture (fullscreen TV mode) and its controller input.
     pub bigpicture: crate::bigpicture::BigPicture,
     bigpicture_was_on: bool,
@@ -195,6 +200,7 @@ impl SteamApp {
             cloud: prefs.cloud,
             toast_messages: prefs.toast_messages,
             toast_notifications: prefs.toast_notifications,
+            tray_icon: prefs.tray_icon,
         }));
         let mut registry = crate::builtin::registry(rt.handle().clone(), cc.egui_ctx.clone(), flags.clone());
         for id in &prefs.disabled {
@@ -228,6 +234,7 @@ impl SteamApp {
         if prefs.bigpicture_start {
             bigpicture.active = true;
         }
+        let tray_icon = prefs.tray_icon;
         let mut app = Self {
             _rt: rt,
             client,
@@ -253,7 +260,7 @@ impl SteamApp {
             cart_count: None,
             confirm_exit: false,
             window_mode: None,
-            tray: crate::tray::Tray::new(&cc.egui_ctx),
+            tray: crate::tray::Tray::new(&cc.egui_ctx, tray_icon),
             flags,
             friends_window: Default::default(),
             links: crate::links::listen(cc.egui_ctx.clone()),
@@ -263,6 +270,7 @@ impl SteamApp {
             hidden: false,
             applied_theme: None,
             applied_zoom: 0.0,
+            window_icon: Default::default(),
             bigpicture,
             bigpicture_was_on: false,
             swipe: (egui::Vec2::ZERO, 0.0, false),
@@ -694,6 +702,7 @@ impl eframe::App for SteamApp {
         // The running download (not a file check) on the taskbar / Dock.
         let shown = self.state.downloads.values().find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed) && !d.verifying()).map(|d| (d.fraction(), d.paused));
         self.taskbar.show(frame, shown);
+        self.window_icon.show(frame);
         crate::image_cache::trim_decoded(&ctx);
         if self.applied_theme.as_ref() != Some(&self.prefs.theme) {
             self.prefs.theme.apply(&ctx);
@@ -716,6 +725,10 @@ impl eframe::App for SteamApp {
             self.prefs.auto_updates = f.auto_updates;
             self.prefs.toast_messages = f.toast_messages;
             self.prefs.toast_notifications = f.toast_notifications;
+            if self.prefs.tray_icon != f.tray_icon {
+                self.prefs.tray_icon = f.tray_icon;
+                self.tray.set_icon(f.tray_icon);
+            }
             if self.prefs.cloud != f.cloud {
                 self.prefs.cloud = f.cloud;
                 self.client.send(Command::CloudSettings { steam_root: Some(self.local.steam_root.clone()), disabled: if f.cloud { vec![] } else { self.state.apps.as_ref().map(|a| a.keys().copied().collect()).unwrap_or_default() } });

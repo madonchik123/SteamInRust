@@ -2053,3 +2053,16 @@
 "{free} free" = "{free} frei"
 "Desktop shortcut: on" = "Desktopverknüpfung: an"
 "Desktop shortcut: off" = "Desktopverknüpfung: aus"
+
+# --- Tray icon (Settings → Appearance) ---
+"Tray icon" = "Infobereichssymbol"
+"The logo SteamInRust shows in the system tray." = "Das Logo, das SteamInRust im Infobereich der Taskleiste zeigt."
+"Purple" = "Lila"
+"Classic" = "Klassisch"
+"Black" = "Schwarz"
+"Outline" = "Umriss"
+"White outline" = "Weißer Umriss"
+"Black outline" = "Schwarzer Umriss"
+"Cut-out" = "Ausgeschnitten"
+"White cut-out" = "Weiß ausgeschnitten"
+"Black cut-out" = "Schwarz ausgeschnitten"

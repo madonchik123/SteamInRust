@@ -794,10 +794,23 @@ pub fn progress(ui: &mut Ui, t: &Theme, value: f32, width: f32) {
     ui.painter().rect_filled(fill, CornerRadius::same(3), t.accent);
 }
 
-/// The app's logo (`crates/ui/assets/logo.svg`), drawn sharp at any size.
-pub fn logo(ui: &mut Ui, _t: &Theme, size: f32) -> Response {
+/// The app's mark for its own bars and menus: the cut-out logo in one color
+/// (white on dark themes, black on light ones), drawn sharp at any size.
+pub fn logo(ui: &mut Ui, t: &Theme, size: f32) -> Response {
+    use crate::brand::Logo;
+    logo_as(ui, if t.dark { Logo::CutoutWhite } else { Logo::CutoutBlack }, size)
+}
+
+/// The app icon (the violet logo), for where the app introduces itself
+/// (sign-in, About, updates).
+pub fn app_icon(ui: &mut Ui, size: f32) -> Response {
+    logo_as(ui, crate::brand::Logo::Purple, size)
+}
+
+/// One version of the logo, drawn sharp at any size.
+pub fn logo_as(ui: &mut Ui, logo: crate::brand::Logo, size: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    egui::Image::from_bytes(crate::brand::LOGO_URI, crate::brand::LOGO_SVG).paint_at(ui, rect);
+    logo.image().paint_at(ui, rect);
     resp
 }
 

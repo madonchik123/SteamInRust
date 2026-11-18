@@ -118,7 +118,7 @@ fn signing_in(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
                 ui.label(w::text_semibold(t!("Signing in as {name}", name = name), 15.0, t.text));
             }
             None => {
-                w::logo(ui, t, 48.0);
+                w::app_icon(ui, 48.0);
                 ui.add_space(8.0);
                 ui.label(w::text_semibold(t!("Signing in…"), 15.0, t.text));
             }

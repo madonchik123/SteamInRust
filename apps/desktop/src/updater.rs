@@ -803,7 +803,7 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
             egui::Modal::new(egui::Id::unique("update-check")).show(ctx, |ui| {
                 ui.set_width(360.0);
                 ui.horizontal(|ui| {
-                    w::logo(ui, &t, 28.0);
+                    w::app_icon(ui, 28.0);
                     ui.label(w::text_bold(t!("SteamInRust update"), 16.0, t.text));
                 });
                 ui.add_space(10.0);
@@ -835,7 +835,7 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
     egui::Modal::new(egui::Id::unique("update-window")).show(ctx, |ui| {
         ui.set_width(460.0);
         ui.horizontal(|ui| {
-            w::logo(ui, &t, 34.0);
+            w::app_icon(ui, 34.0);
             ui.vertical(|ui| {
                 ui.label(w::text_bold(t!("SteamInRust {v} is available", v = release.version), 17.0, t.text));
                 ui.label(w::text(t!("You have {v}", v = env!("CARGO_PKG_VERSION")), 12.5, t.text_dim));

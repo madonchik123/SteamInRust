@@ -21,6 +21,7 @@ mod shell;
 mod taskbar;
 mod tray;
 mod updater;
+mod window_icon;
 
 fn main() -> eframe::Result {
     // The elevated helper for a game's first-time setup (install scripts):

@@ -16,3 +16,4 @@ resvg = { version = "0.45", default-features = false }
 
 [dev-dependencies]
 image.workspace = true
+serde_json.workspace = true

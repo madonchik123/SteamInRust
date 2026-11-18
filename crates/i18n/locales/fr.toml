@@ -2053,3 +2053,16 @@
 "{free} free" = "{free} libres"
 "Desktop shortcut: on" = "Raccourci sur le bureau : oui"
 "Desktop shortcut: off" = "Raccourci sur le bureau : non"
+
+# --- Tray icon (Settings → Appearance) ---
+"Tray icon" = "Icône de la zone de notification"
+"The logo SteamInRust shows in the system tray." = "Le logo que SteamInRust affiche dans la zone de notification."
+"Purple" = "Violet"
+"Classic" = "Classique"
+"Black" = "Noir"
+"Outline" = "Contour"
+"White outline" = "Contour blanc"
+"Black outline" = "Contour noir"
+"Cut-out" = "Découpé"
+"White cut-out" = "Découpé blanc"
+"Black cut-out" = "Découpé noir"

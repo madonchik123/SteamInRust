@@ -60,12 +60,18 @@ pub struct Tray {
     created: bool,
 }
 
+/// `logo` drawn at the size the tray shows it at, so it isn't blurry.
+fn tray_picture(logo: ui::brand::Logo) -> Option<tray_icon::Icon> {
+    let size = crate::window_icon::tray_size();
+    tray_icon::Icon::from_rgba(logo.rgba(size), size, size).ok()
+}
+
 impl Tray {
-    pub fn new(ctx: &egui::Context) -> Self {
+    pub fn new(ctx: &egui::Context, logo: ui::brand::Logo) -> Self {
         let (tx, rx) = mpsc::channel();
         let icon = TrayIconBuilder::new()
             .with_tooltip("SteamInRust")
-            .with_icon(tray_icon::Icon::from_rgba(ui::brand::icon_rgba(32), 32, 32).expect("valid icon"))
+            .with_icon(tray_picture(logo).expect("valid icon"))
             .build()
             .map_err(|e| tracing::warn!("tray icon unavailable: {e}"))
             .ok();
@@ -84,6 +90,18 @@ impl Tray {
         }));
         let menu = MenuState { height: 400.0, ..Default::default() };
         Self { _icon: icon, rx, tx: Arc::new(Mutex::new(tx)), menu: Arc::new(Mutex::new(menu)), created: false }
+    }
+
+    /// Show another version of the logo (picked in Settings → Appearance).
+    pub fn set_icon(&self, logo: ui::brand::Logo) {
+        let (Some(tray), Some(icon)) = (&self._icon, tray_picture(logo)) else {
+            tracing::warn!("tray icon not updated: no tray icon");
+            return;
+        };
+        match tray.set_icon(Some(icon)) {
+            Ok(()) => tracing::info!("tray icon: {}", logo.key()),
+            Err(e) => tracing::warn!("tray icon not updated: {e}"),
+        }
     }
 
     /// Open the menu with its bottom-right corner at `at` (for previews).

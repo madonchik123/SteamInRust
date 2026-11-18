@@ -2053,3 +2053,16 @@
 "{free} free" = "свободно {free}"
 "Desktop shortcut: on" = "Ярлык на рабочем столе: вкл."
 "Desktop shortcut: off" = "Ярлык на рабочем столе: выкл."
+
+# --- Tray icon (Settings → Appearance) ---
+"Tray icon" = "Значок в трее"
+"The logo SteamInRust shows in the system tray." = "Логотип, который SteamInRust показывает в системном трее."
+"Purple" = "Фиолетовый"
+"Classic" = "Классический"
+"Black" = "Чёрный"
+"Outline" = "Контур"
+"White outline" = "Белый контур"
+"Black outline" = "Чёрный контур"
+"Cut-out" = "Вырез"
+"White cut-out" = "Белый вырез"
+"Black cut-out" = "Чёрный вырез"

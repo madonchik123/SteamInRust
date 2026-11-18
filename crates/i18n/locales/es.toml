@@ -2053,3 +2053,16 @@
 "{free} free" = "{free} libres"
 "Desktop shortcut: on" = "Acceso directo: sí"
 "Desktop shortcut: off" = "Acceso directo: no"
+
+# --- Tray icon (Settings → Appearance) ---
+"Tray icon" = "Icono de la bandeja"
+"The logo SteamInRust shows in the system tray." = "El logotipo que SteamInRust muestra en la bandeja del sistema."
+"Purple" = "Morado"
+"Classic" = "Clásico"
+"Black" = "Negro"
+"Outline" = "Contorno"
+"White outline" = "Contorno blanco"
+"Black outline" = "Contorno negro"
+"Cut-out" = "Recortado"
+"White cut-out" = "Recortado blanco"
+"Black cut-out" = "Recortado negro"

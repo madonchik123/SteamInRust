@@ -62,6 +62,8 @@ pub struct AppFlags {
     /// Pop-ups for new chat messages / Steam notifications.
     pub toast_messages: bool,
     pub toast_notifications: bool,
+    /// Which version of the logo the tray icon shows.
+    pub tray_icon: ui::brand::Logo,
 }
 
 pub type SharedFlags = std::sync::Arc<std::sync::Mutex<AppFlags>>;
@@ -153,7 +155,7 @@ impl Extension for Settings {
                     Section::Downloads => downloads(ui, &t, ctx, &self.flags),
                     Section::Cloud => cloud(ui, &t, &self.flags),
                     Section::Accessibility => accessibility(ui, &t, ctx),
-                    Section::Appearance => appearance(ui, &t, ctx),
+                    Section::Appearance => appearance(ui, &t, ctx, &self.flags),
                     Section::Plugins => {
                         w::page_title(ui, &t, t!("Plugins"), Some(t!("Scripts you install yourself. Each one runs in a sandbox and only gets the permissions you approve.")));
                         ctx.settings_for("plugins", ui);
@@ -402,7 +404,7 @@ fn accessibility(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
     });
 }
 
-fn appearance(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+fn appearance(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags) {
     w::page_title(ui, t, t!("Appearance"), None);
     ui.label(w::text_semibold(t!("Theme"), 15.0, t.text));
     ui.add_space(4.0);
@@ -451,6 +453,35 @@ fn appearance(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
     if &theme != t {
         ctx.act(Action::SetTheme(theme));
     }
+    ui.add_space(24.0);
+    tray_icon_picker(ui, t, flags);
+}
+
+/// The versions of the logo the tray icon can show, each on the top bar's
+/// color, like the theme tiles.
+fn tray_icon_picker(ui: &mut Ui, t: &Theme, flags: &SharedFlags) {
+    use ui::brand::Logo;
+    ui.label(w::text_semibold(t!("Tray icon"), 15.0, t.text));
+    ui.label(w::text(t!("The logo SteamInRust shows in the system tray."), 12.5, t.text_dim));
+    ui.add_space(8.0);
+    let mut current = flags.lock().unwrap().tray_icon;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
+        for logo in Logo::ALL {
+            let (rect, resp) = ui.allocate_exact_size(vec2(112.0, 104.0), Sense::click());
+            let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+            ui.painter().rect_filled(rect, t.corner(), w::mix(t.chrome, t.surface_hover, hover * 0.5));
+            let mark = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 38.0), vec2(48.0, 48.0));
+            logo.image().paint_at(ui, mark);
+            ui.painter().text(egui::pos2(rect.center().x, rect.bottom() - 16.0), egui::Align2::CENTER_CENTER, i18n::tr_dyn(logo.name()), w::font_medium(12.5), if logo == current { t.text } else { t.text_dim });
+            let stroke = if logo == current { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, t.border) };
+            ui.painter().rect_stroke(rect, t.corner(), stroke, egui::StrokeKind::Outside);
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                current = logo;
+            }
+        }
+    });
+    flags.lock().unwrap().tray_icon = current;
 }
 
 fn interface(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags, handler: &mut Option<bool>) {
@@ -607,7 +638,7 @@ fn about(ui: &mut Ui, t: &Theme) {
     w::card(t).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            w::logo(ui, t, 40.0);
+            w::app_icon(ui, 40.0);
             ui.vertical(|ui| {
                 ui.label(w::text_bold(format!("SteamInRust {}", env!("CARGO_PKG_VERSION")), 18.0, t.text));
                 ui.label(w::text(t!("A native Steam client written in Rust."), 13.5, t.text_dim));
