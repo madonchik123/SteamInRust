@@ -530,6 +530,29 @@ fn is_safe_connect_password(s: &str) -> bool {
         && !s.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '\\'))
 }
 
+/// "-connect=<host>" with optional "-port=<digits>" and "-password=<pw>"
+/// (Bohemia's engines: Arma, DayZ), each once and in any order.
+fn dash_connect_tokens(tokens: &[&str]) -> Result<Vec<String>, &'static str> {
+    let (mut host, mut port, mut password) = (None, None, None);
+    for t in tokens {
+        let (key, value) = t.split_once('=').ok_or("unsafe connect arguments")?;
+        let slot = match key {
+            "-connect" if is_safe_host_port(value) => &mut host,
+            "-port" if is_u64_digits(value) && value.parse::<u16>().is_ok() => &mut port,
+            "-password" if is_safe_connect_password(value) => &mut password,
+            _ => return Err("unsafe connect arguments"),
+        };
+        if slot.replace(value).is_some() {
+            return Err("unsafe connect arguments");
+        }
+    }
+    let host = host.ok_or("unsafe connect arguments")?;
+    let mut out = vec![format!("-connect={host}")];
+    out.extend(port.map(|p| format!("-port={p}")));
+    out.extend(password.map(|p| format!("-password={p}")));
+    Ok(out)
+}
+
 /// Validate an untrusted remote join/invite `connect` string into argv tokens.
 /// Empty or whitespace-only strings return `Ok(Vec::new())`.
 pub fn safe_connect_tokens(connect: &str) -> Result<Vec<String>, &'static str> {
@@ -548,6 +571,9 @@ pub fn safe_connect_tokens(connect: &str) -> Result<Vec<String>, &'static str> {
         ["+connect", addr, "+password", pw] if is_safe_host_port(addr) && is_safe_connect_password(pw) => {
             Ok(vec!["+connect".into(), (*addr).into(), "+password".into(), (*pw).into()])
         }
+        // Arma / DayZ style: "-connect=host [-port=N] [-password=pw]", each
+        // once, nothing else.
+        _ if tokens.iter().all(|t| t.starts_with('-')) => dash_connect_tokens(&tokens),
         _ => Err("unsafe connect arguments"),
     }
 }

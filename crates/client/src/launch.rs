@@ -1429,6 +1429,9 @@ mod tests {
             safe_connect_args("+connect [2001:db8::1]:27015 +password s3cr3t_pw").unwrap(),
             vec!["+connect", "[2001:db8::1]:27015", "+password", "s3cr3t_pw"]
         );
+        // Arma / DayZ.
+        assert_eq!(safe_connect_args("-connect=192.168.1.10 -port=2302 -password=pw1").unwrap(), vec!["-connect=192.168.1.10", "-port=2302", "-password=pw1"]);
+        assert_eq!(safe_connect_args("-port=2302 -connect=play.example.com").unwrap(), vec!["-connect=play.example.com", "-port=2302"]);
 
         for bad in [
             "--gpu-launcher=calc.exe",
@@ -1452,6 +1455,13 @@ mod tests {
             "+invite +123",
             "+invite 30095787509687845 -launchsource2",
             "+connect\t1.2.3.4:27015",
+            "-connect=1.2.3.4 -connect=5.6.7.8",
+            "-port=2302",
+            "-connect=1.2.3.4 -port=99999",
+            "-connect=1.2.3.4 -mod=@evil",
+            "-connect=1.2.3.4 -password=a;b",
+            "-connect=-evil",
+            "-connect",
         ] {
             assert!(safe_connect_args(bad).is_err(), "expected rejection for {bad:?}");
         }
