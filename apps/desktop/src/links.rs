@@ -13,6 +13,52 @@ use std::sync::mpsc;
 
 const PORT: u16 = 47_630;
 
+/// Validate an external web URL, allowing only `https://` and `http://` URLs
+/// with a non-empty host and no Windows backslash/UNC authority tricks.
+pub fn validate_http_url(raw: &str) -> Option<reqwest::Url> {
+    let s = raw.trim();
+    if s.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let rest = if s.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://")) {
+        &s[8..]
+    } else if s.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("http://")) {
+        &s[7..]
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('\\') {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(s).ok()?;
+    if !matches!(parsed.scheme(), "https" | "http") {
+        return None;
+    }
+    if parsed.host_str().is_none_or(|h| h.is_empty()) {
+        return None;
+    }
+    Some(parsed)
+}
+
+/// Open an external `https://` or `http://` URL in the user's browser.
+pub fn open_http(url: &str) -> bool {
+    let Some(parsed) = validate_http_url(url) else { return false };
+    open::that_detached(parsed.as_str()).is_ok()
+}
+
+/// Validate a YouTube video ID (`[A-Za-z0-9_-]+`).
+pub fn valid_youtube_id(id: &str) -> Option<&str> {
+    let id = id.trim();
+    (!id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')).then_some(id)
+}
+
+/// Open a validated YouTube video ID on `youtube.com`.
+pub fn open_youtube(id: &str) -> bool {
+    let Some(id) = valid_youtube_id(id) else { return false };
+    open_http(&format!("https://www.youtube.com/watch?v={id}"))
+}
+
 /// What a `steam://` link asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Link {
@@ -378,6 +424,49 @@ fn shortcut_runs(text: &str, app_id: u32) -> bool {
             u == format!("steam://rungameid/{app_id}") || u == format!("steam://run/{app_id}")
         })
     })
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+
+    #[test]
+    fn validates_http_urls_and_youtube_ids() {
+        assert!(validate_http_url("https://store.steampowered.com/app/440").is_some());
+        assert!(validate_http_url("http://example.com/path?q=1").is_some());
+        for bad in [
+            "",
+            "file:///etc/passwd",
+            "file://attacker/share/a.exe",
+            r"\\attacker\share\a.exe",
+            r"http:\\attacker\share",
+            "http:/attacker/share",
+            "https://",
+            "http://",
+            "javascript:alert(1)",
+            "ms-msdt:/id PCWDiagnostic",
+            "search-ms:query=calc",
+            "steam://run/440",
+            "https://example.com/\nfoo",
+        ] {
+            assert!(validate_http_url(bad).is_none(), "should reject {bad:?}");
+        }
+        assert_eq!(valid_youtube_id("dQw4w9WgXcQ"), Some("dQw4w9WgXcQ"));
+        assert_eq!(valid_youtube_id("ZF09w_v7-hw"), Some("ZF09w_v7-hw"));
+        for bad_yt in ["", "abc&list=evil", "../x", "a/b", "a?b=1", "a b"] {
+            assert!(valid_youtube_id(bad_yt).is_none(), "should reject yt id {bad_yt:?}");
+        }
+    }
+
+    #[test]
+    fn file_image_loader_is_disabled() {
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        for uri in ["file:///etc/passwd", "file://attacker/share/pwn.png", "https://example.com/a.svg"] {
+            let res = ctx.try_load_bytes(uri);
+            assert!(matches!(res, Err(egui::load::LoadError::NoMatchingBytesLoader)), "expected NoMatchingBytesLoader for {uri}, got {:?}", res.err());
+        }
+    }
 }
 
 /// Best icon for a game on macOS: the icon file inside its app bundle.

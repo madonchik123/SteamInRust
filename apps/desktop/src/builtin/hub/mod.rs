@@ -363,13 +363,20 @@ impl HubView {
 
     /// Open a link from content: our own page when we have one, the
     /// picture viewer for pictures, the browser for other websites.
-    fn follow(&mut self, io: &mut Io, url: &str) {
-        if let Some(img) = url.strip_prefix("image:") {
-            self.lightbox = Some(img.to_string());
-        } else if let Some(v) = route(url) {
-            io.go(v);
-        } else if url.starts_with("https://") || url.starts_with("http://") {
-            let _ = open::that_detached(url);
+    fn follow(&mut self, io: &mut Io, click: rich::Click) {
+        match click {
+            rich::Click::Image(img) => {
+                if crate::links::validate_http_url(&img).is_some() {
+                    self.lightbox = Some(img);
+                }
+            }
+            rich::Click::Link(url) => {
+                if let Some(v) = route(&url) {
+                    io.go(v);
+                } else {
+                    crate::links::open_http(&url);
+                }
+            }
         }
     }
 
@@ -423,6 +430,10 @@ impl HubView {
     /// A picture shown large over the page.
     fn show_lightbox(&mut self, ui: &mut Ui, t: &Theme) {
         let Some(url) = self.lightbox.clone() else { return };
+        if crate::links::validate_http_url(&url).is_none() {
+            self.lightbox = None;
+            return;
+        }
         let screen = ui.max_rect().expand(8.0);
         let mut close = false;
         egui::Area::new(egui::Id::unique(("hub-lightbox", ui.scope_id()))).order(egui::Order::Foreground).fixed_pos(screen.min).show(ui.ctx(), |ui| {
@@ -707,5 +718,19 @@ mod tests {
         }
         // Only Steam's own site can be a thread.
         assert_eq!(View::from_page("thread", Some("https://evil.example/x")), None);
+    }
+
+    #[test]
+    fn image_prefix_link_cannot_open_lightbox() {
+        let mut hv = HubView::default();
+        let state = client::State::default();
+        let local_state = local::LocalState::default();
+        let mut io = Io::new(&state, &local_state, false);
+        hv.follow(&mut io, rich::Click::Link("image:file://attacker/share/a.png".into()));
+        assert_eq!(hv.lightbox, None);
+        hv.follow(&mut io, rich::Click::Image("file://attacker/share/a.png".into()));
+        assert_eq!(hv.lightbox, None);
+        hv.follow(&mut io, rich::Click::Image("https://steamuserimages-a.akamaihd.net/x.png".into()));
+        assert_eq!(hv.lightbox.as_deref(), Some("https://steamuserimages-a.akamaihd.net/x.png"));
     }
 }

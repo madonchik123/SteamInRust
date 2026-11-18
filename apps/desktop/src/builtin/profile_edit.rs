@@ -390,7 +390,7 @@ fn item_grid(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, items: &[ProfileItemChoice],
     if items.is_empty() {
         ui.label(w::text(t!("You don't own any yet. They're in the Points Shop."), 13.0, t.text_faint));
         if ui.link(w::text(t!("Open the Points Shop"), 12.5, t.accent)).clicked() {
-            let _ = open::that_detached("https://store.steampowered.com/points/shop");
+            crate::links::open_http("https://store.steampowered.com/points/shop");
         }
         return;
     }

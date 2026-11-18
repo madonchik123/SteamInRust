@@ -494,15 +494,43 @@ pub(crate) async fn handle(conn: Connection, me: SteamId, web: Result<Arc<Web>, 
     }
 }
 
+fn valid_http_url(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let rest = if s.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://")) {
+        &s[8..]
+    } else if s.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("http://")) {
+        &s[7..]
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('\\') {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(s).ok()?;
+    if !matches!(parsed.scheme(), "https" | "http") || parsed.host_str().is_none_or(|h| h.is_empty()) {
+        return None;
+    }
+    Some(s.to_string())
+}
+
+fn valid_youtube_id(raw: &str) -> Option<String> {
+    let id = raw.trim();
+    (!id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')).then(|| id.to_string())
+}
+
 fn entry(d: &PublishedFileDetails) -> FileEntry {
     let votes = d.vote_data.as_ref();
-    let youtube = Some(d.youtubevideoid().to_string()).filter(|s| !s.is_empty());
+    let youtube = valid_youtube_id(d.youtubevideoid());
     FileEntry {
         id: d.publishedfileid(),
         app_id: d.consumer_appid(),
         title: d.title().to_string(),
-        preview: Some(d.preview_url().to_string()).filter(|p| !p.is_empty()),
-        image: Some(d.image_url().to_string()).filter(|p| !p.is_empty()).or_else(|| Some(d.file_url().to_string()).filter(|p| p.starts_with("http") && d.file_type() == 5)),
+        preview: valid_http_url(d.preview_url()),
+        image: valid_http_url(d.image_url()).or_else(|| (d.file_type() == 5).then(|| valid_http_url(d.file_url())).flatten()),
         youtube,
         description: d.short_description().to_string(),
         creator: d.creator(),
@@ -591,8 +619,8 @@ async fn item(conn: &Connection, me: SteamId, file_id: u64, language: &str) -> R
         it.previews.push(Preview { url: Some(p.clone()), youtube: None });
     }
     for p in previews {
-        let yt = Some(p.youtubevideoid().to_string()).filter(|s| !s.is_empty());
-        let url = Some(p.url().to_string()).filter(|s| !s.is_empty());
+        let yt = valid_youtube_id(p.youtubevideoid());
+        let url = valid_http_url(p.url());
         if yt.is_some() || url.is_some() {
             it.previews.push(Preview { url, youtube: yt });
         }
@@ -899,7 +927,7 @@ fn post(block: &str, author_class: &str, content_open: &str) -> Post {
         let rest = &block[i..];
         let link = rest.find("<a href=")?;
         let img = between(&rest[link..], "<img src=\"", "\"")?;
-        img.starts_with("http").then(|| img.to_string())
+        valid_http_url(img)
     });
     Post {
         id: 0,
@@ -1081,6 +1109,29 @@ mod tests {
         assert_eq!(stars(100, 0), Some(5));
         assert_eq!(stars(50, 50), Some(3));
         assert_eq!(stars(1, 99), Some(1));
+    }
+
+    #[test]
+    fn rejects_non_http_avatar_and_media_urls() {
+        let bad = post(
+            r#"<div class="Avatar"><a href="https://steamcommunity.com/profiles/1"><img src="http:file://attacker/share/a.png"></a></div>"#,
+            "commentthread_comment_author",
+            "<div class=\"commentthread_comment_text\"",
+        );
+        assert_eq!(bad.avatar, None);
+
+        let details = PublishedFileDetails {
+            preview_url: Some("file://attacker/share/a.png".into()),
+            image_url: Some("javascript:alert(1)".into()),
+            file_type: Some(5),
+            file_url: Some("http:file://attacker/share/b.png".into()),
+            youtubevideoid: Some("bad&list=evil".into()),
+            ..Default::default()
+        };
+        let e = entry(&details);
+        assert_eq!(e.preview, None);
+        assert_eq!(e.image, None);
+        assert_eq!(e.youtube, None);
     }
 }
 

@@ -127,7 +127,7 @@ impl Inventory {
             ui.horizontal_wrapped(|ui| {
                 for (label, link) in &item.actions {
                     if !label.is_empty() && !link.is_empty() && w::button(ui, t, Some(icons::EXTERNAL), label, w::Kind::Ghost, w::Size::Sm).clicked() {
-                        let _ = open::that_detached(link);
+                        crate::links::open_http(link);
                     }
                 }
                 if w::button(ui, t, Some(icons::COPY), t!("Copy item ID"), w::Kind::Ghost, w::Size::Sm).clicked() {
@@ -394,7 +394,7 @@ impl Inventory {
                     ctx.send(Command::LoadMyListings);
                 }
                 if w::button(ui, t, Some(icons::EXTERNAL), t!("Market history"), w::Kind::Ghost, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked() {
-                    let _ = open::that_detached("https://steamcommunity.com/market/#myhistory");
+                    crate::links::open_http("https://steamcommunity.com/market/#myhistory");
                 }
             });
         });
@@ -474,7 +474,7 @@ fn row(ui: &mut Ui, t: &Theme, icon: &str, name: &str, color: Option<&str>, sub:
 
 fn market_link(ui: &mut Ui, t: &Theme, app: AppId, hash: &str) {
     if ui.link(w::text(format!("{}  {}", icons::EXTERNAL, t!("Open the market page")), 12.5, t.accent)).on_hover_text(t!("Opens in your browser")).clicked() {
-        let _ = open::that_detached(client::market::listing_url(app, hash));
+        crate::links::open_http(&client::market::listing_url(app, hash));
     }
 }
 

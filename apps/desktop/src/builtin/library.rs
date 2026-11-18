@@ -1613,7 +1613,7 @@ impl Library {
                     }
                     // The Market has no native page yet.
                     if w::button(ui, t, Some(icons::EXTERNAL), t!("Market"), w::Kind::Ghost, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked() {
-                        let _ = open::that_detached(format!("https://steamcommunity.com/market/search?appid={id}"));
+                        crate::links::open_http(&format!("https://steamcommunity.com/market/search?appid={id}"));
                     }
                 });
             });

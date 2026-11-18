@@ -123,7 +123,7 @@ impl StoreClient {
             .map(|f| WorkshopItem {
                 id: f.publishedfileid.parse().unwrap_or(0),
                 title: f.title,
-                preview: f.preview_url.filter(|p| !p.is_empty()),
+                preview: f.preview_url.and_then(|p| crate::html::valid_http_url(&p)),
                 size: f.file_size.parse().unwrap_or(0),
                 time_updated: f.time_updated,
                 subscriptions: f.subscriptions,
@@ -250,7 +250,7 @@ pub fn parse_bbcode(src: &str) -> Vec<Block> {
                     rest = &rest[close + 6..];
                     Some(u)
                 });
-                if let Some(u) = url.filter(|u| u.starts_with("http")) {
+                if let Some(u) = url.and_then(|u| crate::html::valid_http_url(&u)) {
                     blocks.push(Block::Image(u));
                 }
             }
@@ -259,7 +259,7 @@ pub fn parse_bbcode(src: &str) -> Vec<Block> {
                 flush(&mut blocks, &mut runs, in_item);
                 if let Some(v) = tag.split('=').nth(1) {
                     let id = v.trim_matches('"').split(';').next().unwrap_or_default();
-                    if !id.is_empty() {
+                    if let Some(id) = crate::html::valid_youtube_id(id) {
                         blocks.push(Block::Video(id.to_string()));
                     }
                 }
@@ -377,5 +377,11 @@ mod tests {
         assert_eq!(b[3], Block::Bullet(vec![("Two".into(), false)]));
         assert_eq!(b[4], Block::Image("https://clan.akamai.steamstatic.com/images/1/a.png".into()));
         assert_eq!(b[5], Block::Video("ZF09w_v7Shw".into()));
+    }
+
+    #[test]
+    fn rejects_non_http_bbcode_images_and_bad_youtube_ids() {
+        let b = parse_bbcode(r#"[img]file://attacker/share/pwn.png[/img][img src="file:///etc/passwd"][/img][img]https://ok.example/a.png[/img][previewyoutube="bad&list=evil"][/previewyoutube]"#);
+        assert_eq!(b, vec![Block::Image("https://ok.example/a.png".into())]);
     }
 }

@@ -577,7 +577,7 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
         // Small links on their own row, so long labels (Russian) never overlap.
         ui.horizontal_wrapped(|ui| {
             if ui.link(w::text(t!("Release page"), 12.5, t.accent)).clicked() {
-                let _ = open::that_detached(&release.page);
+                crate::links::open_http(&release.page);
             }
             if let (None, Status::Available(r)) = (&ready, &status) {
                 ui.label(w::text("·", 12.5, t.text_faint));
@@ -620,7 +620,7 @@ fn window(app: &mut SteamApp, ctx: &egui::Context) {
                                 download(ctx.clone(), r.clone());
                             }
                         } else if w::button(ui, &t, Some(icons::DOWNLOAD), t!("Get the installer"), w::Kind::Primary, w::Size::Md).on_hover_text(t!("This copy wasn't installed with the setup, so it can't replace itself")).clicked() {
-                            let _ = open::that_detached(&r.page);
+                            crate::links::open_http(&r.page);
                         }
                         if w::button(ui, &t, None, t!("Later"), w::Kind::Ghost, w::Size::Md).clicked() {
                             close = true;

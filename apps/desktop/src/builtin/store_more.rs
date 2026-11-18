@@ -393,7 +393,7 @@ impl Store {
             let r = w::button(ui, t, Some(icons::CART), t!("Continue to checkout"), w::Kind::Primary, w::Size::Lg)
                 .on_hover_text(t!("Steam only takes payment on its website, so checkout opens in your browser."));
             if r.clicked() {
-                let _ = open::that_detached("https://store.steampowered.com/cart");
+                crate::links::open_http("https://store.steampowered.com/cart");
             }
             ui.label(w::text(t!("Payment happens on Steam's checkout page. Your cart is already there."), 12.5, t.text_faint));
         });
@@ -647,7 +647,7 @@ impl Store {
                     ui.horizontal(|ui| {
                         ui.label(w::text(t!("Price data:"), 12.0, t.text_faint));
                         if ui.link(w::text("IsThereAnyDeal", 12.0, t.accent)).clicked() {
-                            let _ = open::that_detached(h.url.clone().unwrap_or_else(|| "https://isthereanydeal.com".into()));
+                            crate::links::open_http(h.url.as_deref().unwrap_or("https://isthereanydeal.com"));
                         }
                     });
                 }

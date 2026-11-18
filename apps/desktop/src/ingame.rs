@@ -234,7 +234,11 @@ impl Session {
         for c in &out.platform_output.commands {
             match c {
                 egui::OutputCommand::CopyText(t) => main.copy_text(t.clone()),
-                egui::OutputCommand::OpenUrl(u) => main.open_url(u.clone()),
+                egui::OutputCommand::OpenUrl(u) => {
+                    if crate::links::validate_http_url(&u.url).is_some() {
+                        main.open_url(u.clone());
+                    }
+                }
                 _ => {}
             }
         }

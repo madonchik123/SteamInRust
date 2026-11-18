@@ -178,7 +178,12 @@ fn card(ui: &mut Ui, t: &Theme, io: &mut Io, kind: FileKind, e: &FileEntry, widt
         ui.spacing_mut().item_spacing.y = 4.0;
         let (img, resp) = ui.allocate_exact_size(vec2(width, width * 9.0 / 16.0), Sense::click());
         let radius = CornerRadius { nw: t.corner_small().nw, ne: t.corner_small().ne, sw: 0, se: 0 };
-        let url = e.preview.clone().or_else(|| e.image.clone()).or_else(|| e.youtube.as_ref().map(|y| format!("https://img.youtube.com/vi/{y}/hqdefault.jpg")));
+        let url = e
+            .preview
+            .as_deref()
+            .and_then(|u| crate::links::validate_http_url(u).map(|_| u.to_string()))
+            .or_else(|| e.image.as_deref().and_then(|u| crate::links::validate_http_url(u).map(|_| u.to_string())))
+            .or_else(|| e.youtube.as_deref().and_then(crate::links::valid_youtube_id).map(|y| format!("https://img.youtube.com/vi/{y}/hqdefault.jpg")));
         match &url {
             Some(u) => w::image_or_skeleton(ui, t, img, u, radius),
             None => w::placeholder(ui, t, img, &e.title, radius),
@@ -327,8 +332,8 @@ fn news(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId) {
             ui.add_space(6.0);
             let doc = rich::parse(&n.contents);
             if open {
-                if let Some(link) = rich::show(ui, t, &doc, 14.0) {
-                    hv.follow(io, &link);
+                if let Some(click) = rich::show(ui, t, &doc, 14.0) {
+                    hv.follow(io, click);
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -336,7 +341,7 @@ fn news(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId) {
                         hv.news_open = None;
                     }
                     if n.external && !n.url.is_empty() && w::button(ui, t, Some(icons::EXTERNAL), t!("Read on the original site"), w::Kind::Ghost, w::Size::Sm).clicked() {
-                        let _ = open::that_detached(&n.url);
+                        crate::links::open_http(&n.url);
                     }
                 });
             } else {
@@ -568,8 +573,8 @@ pub(super) fn item(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, id: u6
                 ui.label(w::text_bold(t!("DESCRIPTION"), 12.0, t.text_faint));
                 ui.add_space(4.0);
                 let doc = rich::parse(&it.description);
-                if let Some(link) = rich::show(ui, t, &doc, 14.0) {
-                    hv.follow(io, &link);
+                if let Some(click) = rich::show(ui, t, &doc, 14.0) {
+                    hv.follow(io, click);
                 }
             }
             if !it.change_notes.is_empty() {
@@ -611,18 +616,20 @@ fn media(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, it: &hub::Item) 
     let p = &previews[sel];
     match (&p.youtube, &p.url) {
         (Some(y), _) => {
-            w::paint_contain(ui, big, &format!("https://img.youtube.com/vi/{y}/hqdefault.jpg"), Align2::CENTER_CENTER);
-            ui.painter().circle_filled(big.center(), 34.0, if resp.hovered() { t.accent } else { Color32::from_black_alpha(170) });
-            ui.painter().text(big.center(), Align2::CENTER_CENTER, icons::PLAY, w::font(28.0), Color32::WHITE);
-            if resp.on_hover_text(t!("Watch on YouTube")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                let _ = open::that_detached(format!("https://www.youtube.com/watch?v={y}"));
+            if let Some(yt) = crate::links::valid_youtube_id(y) {
+                w::paint_contain(ui, big, &format!("https://img.youtube.com/vi/{yt}/hqdefault.jpg"), Align2::CENTER_CENTER);
+                ui.painter().circle_filled(big.center(), 34.0, if resp.hovered() { t.accent } else { Color32::from_black_alpha(170) });
+                ui.painter().text(big.center(), Align2::CENTER_CENTER, icons::PLAY, w::font(28.0), Color32::WHITE);
+                if resp.on_hover_text(t!("Watch on YouTube")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    crate::links::open_youtube(yt);
+                }
             }
         }
         (None, Some(u)) => {
             if !w::paint_contain(ui, big, u, Align2::CENTER_CENTER) {
                 w::skeleton(ui, t, big, t.corner_small());
             }
-            if resp.on_hover_cursor(egui::CursorIcon::ZoomIn).clicked() {
+            if resp.on_hover_cursor(egui::CursorIcon::ZoomIn).clicked() && crate::links::validate_http_url(u).is_some() {
                 hv.lightbox = Some(u.clone());
             }
         }
@@ -635,7 +642,13 @@ fn media(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, it: &hub::Item) 
                 ui.spacing_mut().item_spacing.x = 6.0;
                 for (i, p) in previews.iter().enumerate() {
                     let (r, resp) = ui.allocate_exact_size(vec2(112.0, 63.0), Sense::click());
-                    let thumb = p.youtube.as_ref().map(|y| format!("https://img.youtube.com/vi/{y}/default.jpg")).or(p.url.clone()).unwrap_or_default();
+                    let thumb = p
+                        .youtube
+                        .as_deref()
+                        .and_then(crate::links::valid_youtube_id)
+                        .map(|y| format!("https://img.youtube.com/vi/{y}/default.jpg"))
+                        .or_else(|| p.url.as_deref().and_then(|u| crate::links::validate_http_url(u).map(|_| u.to_string())))
+                        .unwrap_or_default();
                     w::image_or_skeleton(ui, t, r, &thumb, CornerRadius::same(3));
                     if p.youtube.is_some() {
                         ui.painter().text(r.center(), Align2::CENTER_CENTER, icons::PLAY, w::font(18.0), Color32::WHITE);
@@ -856,8 +869,8 @@ fn comments(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, id: u64, crea
                     ui.label(w::text(ui::ago(c.time), 11.5, t.text_faint));
                 });
                 let doc = rich::parse(&c.html);
-                if let Some(link) = rich::show(ui, t, &doc, 13.0) {
-                    hv.follow(io, &link);
+                if let Some(click) = rich::show(ui, t, &doc, 13.0) {
+                    hv.follow(io, click);
                 }
             });
         });
@@ -909,8 +922,8 @@ fn guide_body(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, it: &hub::I
                         stars(ui, t, it.entry.votes_up, it.entry.votes_down, 14.0);
                         let overview = guide.as_ref().map(|g| g.overview.clone()).filter(|o| !o.is_empty()).unwrap_or_else(|| it.description.clone());
                         let doc = rich::parse(&overview);
-                        if let Some(link) = rich::show(ui, t, &doc, 14.0) {
-                            hv.follow(io, &link);
+                        if let Some(click) = rich::show(ui, t, &doc, 14.0) {
+                            hv.follow(io, click);
                         }
                     });
                 });
@@ -930,8 +943,8 @@ fn guide_body(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, it: &hub::I
                         ui.add_space(6.0);
                     }
                     let doc = rich::parse(&s.html);
-                    if let Some(link) = rich::show(ui, t, &doc, 14.5) {
-                        hv.follow(io, &link);
+                    if let Some(click) = rich::show(ui, t, &doc, 14.5) {
+                        hv.follow(io, click);
                     }
                 });
                 if hv.scroll_to == Some(i) {

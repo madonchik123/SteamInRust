@@ -143,7 +143,7 @@ impl Support {
             ];
             for (icon, title, sub, path) in topics {
                 if option(ui, t, icon, title, sub, true) {
-                    let _ = open::that_detached(format!("{HELP}{path}"));
+                    crate::links::open_http(&format!("{HELP}{path}"));
                 }
                 ui.add_space(4.0);
             }
@@ -215,11 +215,11 @@ impl Support {
             ui.label(w::text(t!("Refunds, purchase problems and anything else about this game."), 12.5, t.text_dim));
             ui.add_space(8.0);
             if option(ui, t, icons::COINS, t!("Request a refund"), t!("Usually possible within 14 days of purchase and under 2 hours played"), true) {
-                let _ = open::that_detached(format!("{HELP}HelpWithGame/?appid={app}"));
+                crate::links::open_http(&format!("{HELP}HelpWithGame/?appid={app}"));
             }
             ui.add_space(4.0);
             if option(ui, t, icons::INFO, t!("Other problems with this game"), t!("Steam Support's help for this game"), true) {
-                let _ = open::that_detached(format!("{HELP}HelpWithGame/?appid={app}"));
+                crate::links::open_http(&format!("{HELP}HelpWithGame/?appid={app}"));
             }
         });
     }
@@ -280,7 +280,7 @@ impl Support {
             }
             ui.add_space(6.0);
             if ui.link(w::text(format!("{}  {}", icons::EXTERNAL, t!("All requests on Steam Support")), 12.5, t.accent)).clicked() {
-                let _ = open::that_detached(format!("{HELP}HelpRequests"));
+                crate::links::open_http(&format!("{HELP}HelpRequests"));
             }
         });
     }
@@ -304,7 +304,7 @@ impl Support {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let label = if tk.open { t!("Reply on Steam Support") } else { t!("Open on Steam Support") };
                     if w::button(ui, t, Some(icons::EXTERNAL), label, w::Kind::Secondary, w::Size::Sm).clicked() {
-                        let _ = open::that_detached(&tk.url);
+                        crate::links::open_http(&tk.url);
                     }
                 });
             }

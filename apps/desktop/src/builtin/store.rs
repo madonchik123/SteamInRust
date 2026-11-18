@@ -590,7 +590,7 @@ impl Extension for Store {
                 self.history.clear();
             }
             if ui.link(w::text(t!("Get a key"), 12.5, t.accent)).clicked() {
-                let _ = open::that_detached("https://isthereanydeal.com/apps/my/");
+                crate::links::open_http("https://isthereanydeal.com/apps/my/");
             }
         });
         true
@@ -1273,7 +1273,7 @@ impl Store {
                         if let Some(site) = &d.website {
                             ui.add_space(8.0);
                             if ui.link(w::text(format!("{}  {}", icons::GLOBE, t!("Official website")), 13.0, t.accent)).clicked() {
-                                let _ = open::that_detached(site);
+                                crate::links::open_http(site);
                             }
                         }
                     });
@@ -1538,6 +1538,7 @@ pub fn blocks(ui: &mut Ui, t: &Theme, blocks: &[Block], width: f32) {
                 ui.add_space(6.0);
             }
             Block::Video(id) => {
+                let Some(id) = crate::links::valid_youtube_id(id) else { continue };
                 ui.add_space(6.0);
                 let w_ = width.min(640.0);
                 let (r, resp) = ui.allocate_exact_size(vec2(w_, w_ * 0.5625), Sense::click());
@@ -1546,7 +1547,7 @@ pub fn blocks(ui: &mut Ui, t: &Theme, blocks: &[Block], width: f32) {
                 ui.painter().circle_filled(r.center(), 30.0, Color32::from_rgb(0xE5, 0x2D, 0x27));
                 w::icon_centered(ui.painter(), r.center(), icons::PLAY, 26.0, Color32::WHITE);
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Watch on YouTube")).clicked() {
-                    let _ = open::that_detached(format!("https://www.youtube.com/watch?v={id}"));
+                    crate::links::open_youtube(id);
                 }
                 ui.add_space(6.0);
             }

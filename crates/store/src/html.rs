@@ -52,6 +52,37 @@ fn attr(tag: &str, name: &str) -> Option<String> {
     Some(rest[..rest.find('"')?].to_string())
 }
 
+pub fn valid_http_url(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let rest = if s.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://")) {
+        &s[8..]
+    } else if s.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("http://")) {
+        &s[7..]
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('\\') {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(s).ok()?;
+    if !matches!(parsed.scheme(), "https" | "http") {
+        return None;
+    }
+    if parsed.host_str().is_none_or(|h| h.is_empty()) {
+        return None;
+    }
+    Some(s.to_string())
+}
+
+pub fn valid_youtube_id(raw: &str) -> Option<&str> {
+    let id = raw.trim();
+    (!id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')).then_some(id)
+}
+
 pub fn parse(html: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut runs: Vec<(String, bool)> = Vec::new();
@@ -128,7 +159,7 @@ pub fn parse(html: &str) -> Vec<Block> {
                 "img" => {
                     push_text(&mut runs, &mut buf, bold > 0);
                     flush(&mut blocks, &mut runs, in_li);
-                    if let Some(src) = attr(tag, "src") {
+                    if let Some(src) = attr(tag, "src").map(|s| decode(&s)).and_then(|s| valid_http_url(&s)) {
                         blocks.push(Block::Image(src));
                     }
                 }
@@ -155,5 +186,13 @@ mod tests {
         assert_eq!(b[1], Block::Paragraph(vec![("Fight".into(), false), ("gods".into(), true), ("& more.".into(), false)]));
         assert_eq!(b[2], Block::Image("https://a/b.gif".into()));
         assert_eq!(b[3], Block::Bullet(vec![("OS:".into(), true), ("Windows 10".into(), false)]));
+    }
+
+    #[test]
+    fn rejects_non_http_img_sources() {
+        let b = parse(
+            r#"<img src="file://attacker/share/pwn.png" /><img src="file:///etc/passwd" /><img src="javascript:alert(1)" /><img src="//attacker/p.png" /><img src="https://" /><img src="http:\\attacker\share\a.png" /><img src="http://ok.example/a.png" />"#,
+        );
+        assert_eq!(b, vec![Block::Image("http://ok.example/a.png".into())]);
     }
 }
