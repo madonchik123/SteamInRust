@@ -97,6 +97,7 @@ impl Store {
             let open_big = ui.interact(big, ui.scope_id().with(("feed-art", id)), Sense::click());
             let shots = &d.screenshots;
             w::image_or_skeleton(ui, t, big, shots.first().map(|s| s.full.as_str()).unwrap_or(&d.header), t.corner_small());
+            super::more::hover_wash(ui, t, big, &open_big);
             let mut x = big.right() + gap;
             if width > t.dense(900.0) {
                 for (i, s) in shots.iter().skip(1).take(3).enumerate() {

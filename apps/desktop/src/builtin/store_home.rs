@@ -227,6 +227,7 @@ impl Store {
         let gap = t.dense(17.0);
         let img = Rect::from_min_size(inner.min, vec2((inner.width() * 0.612).round(), inner.height()));
         w::image_or_skeleton(ui, t, img, item.large.as_deref().unwrap_or(&item.header), t.corner_small());
+        super::more::hover_wash(ui, t, img, &resp);
         let owned = self.owned.contains(&item.app_id);
         if owned {
             super::in_library_badge(ui, t, img);
@@ -514,6 +515,7 @@ pub(super) fn store_card(ui: &mut Ui, t: &Theme, item: &Item, width: f32, owned:
     let look = t.look(c, w::interact(ui, &resp, false));
     w::paint_box(ui, t, rect, c, &look, 0.0);
     w::image_or_skeleton(ui, t, img, &item.header, t.corner_small());
+    super::more::hover_wash(ui, t, img, &resp);
     if owned {
         super::in_library_badge(ui, t, img);
     }
@@ -571,6 +573,7 @@ pub(super) fn row_card(ui: &mut Ui, t: &Theme, item: &Item, width: f32, owned: b
     let look = t.look(c, w::interact(ui, &resp, false));
     w::paint_box(ui, t, rect, c, &look, 0.0);
     w::image_or_skeleton(ui, t, img, &item.header, t.corner_small());
+    super::more::hover_wash(ui, t, img, &resp);
     let body = Rect::from_min_max(pos2(img.right() + t.dense(14.0), rect.top() + pad), rect.max - vec2(pad, pad));
     let mut b = ui.new_child(UiBuilder::new().max_rect(body).layout(Layout::top_down(Align::Min)));
     b.add(egui::Label::new(w::heading_s(t, &item.name, look.text)).truncate().selectable(false));

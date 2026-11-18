@@ -31,6 +31,9 @@ pub struct ReviewPage {
     pub reviews: Vec<Review>,
     /// There may be more on the next page.
     pub more: bool,
+    /// Where the next page is (Steam's "more content" form, with its
+    /// cursor): asking for `p=2` just repeats the first page.
+    pub next: Option<String>,
 }
 
 /// Which reviews: Steam's "Most helpful", the newest first, or the funniest.
@@ -154,8 +157,27 @@ pub(crate) fn parse(body: &str) -> ReviewPage {
             })
         })
         .collect();
-    let more = reviews.len() >= 10;
-    ReviewPage { reviews, more }
+    let next = next_page(body);
+    let more = !reviews.is_empty() && next.is_some();
+    ReviewPage { reviews, more, next }
+}
+
+/// The address of the next page: the hub's hidden "MoreContentForm" (its
+/// action and every field, the cursor among them).
+fn next_page(body: &str) -> Option<String> {
+    let start = body.find("id=\"MoreContentForm")?;
+    let form = &body[start..];
+    let form = &form[..form.find("</form>")?];
+    let action = between(form, "action=\"", "\"")?;
+    let mut url = reqwest::Url::parse(&action.replace("&amp;", "&")).ok()?;
+    {
+        let mut q = url.query_pairs_mut();
+        for input in form.split("<input").skip(1) {
+            let (Some(name), Some(value)) = (between(input, "name=\"", "\""), between(input, "value=\"", "\"")) else { continue };
+            q.append_pair(name, &value.replace("&amp;", "&"));
+        }
+    }
+    url.query_pairs().any(|(k, _)| k == "userreviewscursor").then(|| url.to_string())
 }
 
 impl StoreClient {
@@ -170,6 +192,12 @@ impl StoreClient {
             .append_pair("p", &page.max(1).to_string())
             .append_pair("appHubSubSection", "10");
         let body = self.http.get(url).send().await?.error_for_status()?.text().await?;
+        Ok(parse(&body))
+    }
+
+    /// The page after one already loaded (its [`ReviewPage::next`]).
+    pub async fn reviews_next(&self, next: &str) -> Result<ReviewPage> {
+        let body = self.http.get(next).send().await?.error_for_status()?.text().await?;
         Ok(parse(&body))
     }
 }
@@ -238,5 +266,16 @@ mod histogram_tests {
         let v: serde_json::Value = serde_json::from_str(r#"{"success":1,"results":{"recent":[{"date":1,"recommendations_up":427,"recommendations_down":219},{"date":2,"recommendations_up":3,"recommendations_down":1}]}}"#).unwrap();
         assert_eq!(super::sum_recent(&v), (430, 220));
         assert_eq!(super::sum_recent(&serde_json::Value::Null), (0, 0));
+    }
+
+    #[test]
+    fn finds_the_next_page() {
+        let body = r#"<form method="GET" id="MoreContentForm1" name="MoreContentForm1" action="https://steamcommunity.com/app/570/homecontent/">
+            <input type="hidden" name="userreviewscursor" value="AoIIP3XT">
+            <input type="hidden" name="p" value="2"><input type="hidden" name="browsefilter" value="toprated"></form>"#;
+        let next = super::next_page(body).expect("a next page");
+        assert!(next.starts_with("https://steamcommunity.com/app/570/homecontent/?"));
+        assert!(next.contains("userreviewscursor=AoIIP3XT") && next.contains("p=2") && next.contains("browsefilter=toprated"));
+        assert_eq!(super::next_page("<div>no form</div>"), None);
     }
 }

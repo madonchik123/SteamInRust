@@ -327,6 +327,7 @@ fn reward_card(ui: &mut Ui, t: &Theme, it: &RewardItem, width: f32) -> egui::Res
             w::skeleton(ui, t, pic, egui::CornerRadius::ZERO);
         }
     }
+    super::more::hover_wash(ui, t, pic, &resp);
     let body = Rect::from_min_max(pos2(pic.left() + 2.0, pic.bottom() + t.dense(12.0)), pos2(pic.right(), rect.bottom() - pad));
     let mut b = ui.new_child(UiBuilder::new().max_rect(body).layout(Layout::top_down(Align::Min)));
     b.spacing_mut().item_spacing.y = t.dense(9.0);
