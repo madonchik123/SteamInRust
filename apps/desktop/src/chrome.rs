@@ -76,7 +76,7 @@ pub fn window_buttons(ui: &mut Ui, t: &Theme, height: f32, can_maximize: bool) {
 fn button(ui: &mut Ui, t: &Theme, icon: &str, height: f32, close: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(46.0, height), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.08);
-    let bg = if close { Color32::from_rgb(0xC4, 0x2B, 0x1C) } else { t.surface_hover };
+    let bg = if close { t.danger } else { t.surface_hover };
     if hover > 0.0 {
         ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, bg.gamma_multiply(hover));
     }

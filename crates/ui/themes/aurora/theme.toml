@@ -1,0 +1,22 @@
+# Aurora: the Classic theme in deep teal with a mint-to-cyan accent.
+format = 1
+id = "aurora"
+name = "Aurora"
+author = "SteamInRust"
+version = "1.0.0"
+extends = "classic"
+
+[tokens]
+bg = "#081112"
+chrome = "#0B1718"
+surface = "#0F1E20"
+surface_hover = "#15292B"
+raised = "#172D30"
+tertiary = "#0D1A1C"
+border = "#1B3336"
+text_dim = "#93AFAE"
+text_faint = "#58716F"
+accent = "#2DD4BF"
+accent_2 = "#38BDF8"
+on_accent = "#04201C"
+price_old = "#58716F"

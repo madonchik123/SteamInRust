@@ -1,0 +1,33 @@
+# Daylight: the Classic theme, light.
+format = 1
+id = "daylight"
+name = "Daylight"
+author = "SteamInRust"
+version = "1.0.0"
+extends = "classic"
+
+[tokens]
+dark = false
+bg = "#F3F5F8"
+chrome = "#FFFFFF"
+surface = "#FFFFFF"
+surface_hover = "#EEF2F7"
+raised = "#F7F9FB"
+tertiary = "#E8EDF3"
+border = "#DEE3EA"
+text = "#121A24"
+text_dim = "#546273"
+text_faint = "#8A97A6"
+accent = "#2563EB"
+accent_2 = "#7C3AED"
+on_accent = "#FFFFFF"
+play = "#16A34A"
+online = "#0284C7"
+in_game = "#4D7C0F"
+away = "#B45309"
+danger = "#DC2626"
+price = "#121A24"
+price_new = "#121A24"
+price_old = "#8A97A6"
+discount = "#4D7C0F"
+discount_text = "#FFFFFF"

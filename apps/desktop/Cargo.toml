@@ -54,3 +54,7 @@ raw-window-handle = "0.6"
 
 [build-dependencies]
 winresource = "0.1"
+
+[dev-dependencies]
+# Reads settings the way eframe saves them (tests).
+ron = "0.12"

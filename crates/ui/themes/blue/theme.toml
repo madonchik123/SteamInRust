@@ -1,0 +1,28 @@
+# Blue: the Classic theme in familiar dark blues.
+format = 1
+id = "blue"
+name = "Blue"
+author = "SteamInRust"
+version = "1.0.0"
+extends = "classic"
+
+[tokens]
+bg = "#1B2838"
+chrome = "#171A21"
+surface = "#213045"
+surface_hover = "#2A3F5A"
+raised = "#2A3B4F"
+tertiary = "#1F2C3D"
+border = "#2E4058"
+text = "#DCDEDF"
+text_dim = "#8F98A0"
+text_faint = "#5F6A75"
+accent = "#66C0F4"
+accent_2 = "#417A9B"
+on_accent = "#0E1C2A"
+play = "#5C7E10"
+price = "#DCDEDF"
+price_new = "#DCDEDF"
+price_old = "#5F6A75"
+radius = 4
+radius_small = 3

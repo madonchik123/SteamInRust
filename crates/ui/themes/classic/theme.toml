@@ -1,0 +1,247 @@
+# Classic: SteamInRust's look before the redesign (the "Midnight" colors),
+# as a theme. Anything not here comes from the default theme.
+
+format = 1
+id = "classic"
+name = "Classic"
+author = "SteamInRust"
+version = "1.0.0"
+
+[tokens]
+dark = true
+bg = "#0A0D12"
+chrome = "#0E1218"
+surface = "#131922"
+surface_hover = "#1A222D"
+raised = "#1C2530"
+tertiary = "#111720"
+border = "#202935"
+text = "#EEF2F7"
+text_dim = "#9AA5B4"
+text_faint = "#5F6B7A"
+accent = "#4F8CFF"
+accent_2 = "#8B5CF6"
+on_accent = "#FFFFFF"
+play = "#2FB36B"
+online = "#4FC3F7"
+in_game = "#9CCC4B"
+away = "#F2B84B"
+danger = "#F0544F"
+price = "#EEF2F7"
+price_new = "#EEF2F7"
+price_old = "#5F6B7A"
+discount = "#4C6B22"
+discount_text = "#BEEE11"
+radius = 12
+radius_small = 8
+
+[backgrounds]
+page = "bg"
+store = "bg"
+library = "bg"
+community = "bg"
+profile = "bg"
+
+[typography]
+heading_m = { size = 24, weight = "semibold" }
+button = { size = 14, weight = "semibold" }
+button_large = { size = 16, weight = "semibold" }
+section = { size = 13, weight = "bold" }
+tab = { size = 13.5, weight = "medium" }
+menu = { size = 13.5, weight = "medium" }
+price = { size = 14, weight = "semibold" }
+
+[spacing]
+card = 18
+
+[layout]
+top_bar_height = 60
+page_bar = false
+search = "top_bar"
+status_bar = true
+
+[components.button_primary]
+height = 38
+padding = [16, 0]
+text = "button"
+shadow = { offset = [0, 2], blur = 4, color = "accent@0.3" }
+normal = { fill = "accent", text = "on_accent" }
+hover = { fill = "lighten(accent, 0.14)" }
+pressed = { fill = "darken(accent, 0.12)" }
+disabled = { fill = "accent@0.45", text = "on_accent@0.6" }
+
+[components.button_secondary]
+height = 38
+padding = [16, 0]
+text = "button"
+border = 1
+normal = { fill = "raised", text = "text", border = "border" }
+hover = { fill = "surface_hover" }
+pressed = { fill = "darken(surface_hover, 0.12)" }
+disabled = { fill = "raised@0.45", text = "text@0.6" }
+
+[components.button_tertiary]
+height = 38
+padding = [16, 0]
+text = "button"
+normal = { fill = "transparent", text = "text", border = "border" }
+hover = { fill = "surface_hover", border = "border" }
+
+[components.button_ghost]
+height = 38
+padding = [16, 0]
+text = "button"
+
+[components.button_play]
+height = 38
+padding = [16, 0]
+text = "button"
+shadow = { offset = [0, 2], blur = 4, color = "play@0.3" }
+normal = { fill = "play", text = "#FFFFFF" }
+hover = { fill = "lighten(play, 0.14)" }
+pressed = { fill = "darken(play, 0.12)" }
+disabled = { fill = "play@0.45", text = "#FFFFFF99" }
+
+[components.button_install]
+height = 38
+padding = [16, 0]
+text = "button"
+normal = { fill = "accent", text = "on_accent" }
+hover = { fill = "lighten(accent, 0.14)", text = "on_accent" }
+pressed = { fill = "darken(accent, 0.12)" }
+disabled = { fill = "accent@0.45", text = "on_accent@0.6" }
+
+[components.button_pause]
+height = 38
+padding = [16, 0]
+text = "button"
+border = 1
+normal = { fill = "raised", text = "text", border = "border" }
+hover = { fill = "surface_hover" }
+
+[components.button_danger]
+height = 38
+padding = [16, 0]
+
+[components.button_cta]
+height = 40
+padding = [20, 0]
+text = "button"
+shadow = { offset = [0, 2], blur = 4, color = "accent@0.3" }
+normal = { fill = "accent", text = "on_accent" }
+hover = { fill = "lighten(accent, 0.14)" }
+pressed = { fill = "darken(accent, 0.12)" }
+disabled = { fill = "accent@0.45", text = "on_accent@0.6" }
+
+[components.bar_button]
+height = 36
+padding = [9, 0]
+normal = { fill = "transparent", text = "text_dim" }
+hover = { fill = "surface_hover", text = "text" }
+
+[components.badge]
+normal = { fill = "danger", text = "#FFFFFF" }
+
+[components.section_tab]
+padding = [12, 0]
+indicator = "underline"
+normal = { fill = "transparent", text = "text_dim" }
+hover = { fill = "surface_hover@0.8", text = "text" }
+selected = { text = "text", border = "accent" }
+
+[components.page_tab]
+height = 32
+padding = [12, 0]
+normal = { fill = "transparent", text = "text_dim" }
+hover = { fill = "surface_hover" }
+selected = { fill = "accent@0.22", text = "text" }
+
+[components.nav_tab]
+indicator = "underline"
+selected = { text = "text", border = "accent" }
+
+[components.chip]
+radius = "full"
+padding = [12, 0]
+text = { size = 13, weight = "medium" }
+border = 1
+normal = { fill = "raised", text = "text_dim", border = "border" }
+hover = { fill = "surface_hover", text = "text" }
+selected = { fill = "accent@0.2", text = "accent", border = "accent@0.8" }
+
+[components.tag]
+radius = "full"
+padding = [12, 0]
+border = 1
+normal = { fill = "raised", text = "text_dim", border = "border" }
+hover = { fill = "surface_hover", text = "text" }
+selected = { fill = "accent@0.2", text = "accent", border = "accent@0.8" }
+
+[components.sort]
+height = 30
+padding = [12, 0]
+text = { size = 13, weight = "medium" }
+normal = { fill = "raised", text = "text_faint" }
+hover = { fill = "raised", text = "text_dim" }
+selected = { fill = "surface_hover", text = "text" }
+
+[components.segmented]
+border = 1
+normal = { fill = "raised", border = "border" }
+
+[components.card]
+padding = [18, 18]
+border = 1
+normal = { fill = "surface", border = "border" }
+
+[components.input]
+radius = "full"
+padding = [30, 0]
+border = 1
+normal = { fill = "raised", text = "text", icon = "text_faint", border = "border" }
+selected = { border = "accent@0.8" }
+
+[components.toggle]
+normal = { fill = "raised", text = "text_dim" }
+selected = { fill = "accent", text = "#FFFFFF" }
+
+[components.check]
+border = 1.6
+normal = { fill = "raised", border = "text_faint", text = "on_accent" }
+hover = { border = "text_dim" }
+selected = { fill = "accent", border = "transparent" }
+
+[components.menu]
+padding = [8, 8]
+border = 1
+shadow = { offset = [0, 8], blur = 24, color = "#00000078" }
+normal = { fill = "raised", border = "border" }
+
+[components.menu_item]
+height = 32
+padding = [18, 0]
+normal = { fill = "transparent", text = "mix(text_dim, text, 0.6)", icon = "text_dim" }
+hover = { fill = "accent@0.16", text = "text", icon = "accent" }
+
+[components.top_bar]
+padding = [16, 0]
+normal = { fill = "chrome", border = "border" }
+
+[components.status_bar]
+normal = { fill = "chrome", border = "border" }
+
+[components.toast]
+border = 1
+normal = { fill = "raised", text = "text", border = "border" }
+
+[components.price]
+radius = 3
+
+[components.wishlist]
+height = 38
+padding = [14, 0]
+border = 1
+normal = { fill = "raised", text = "text", border = "border" }
+
+[components.progress]
+normal = { fill = "raised" }

@@ -410,8 +410,8 @@ fn appearance(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags) {
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
-        for preset in ui::Theme::presets() {
-            let selected = preset.name == t.name;
+        for preset in ui::themes::builtins() {
+            let selected = preset.id == t.id;
             let (rect, resp) = ui.allocate_exact_size(vec2(150.0, 104.0), Sense::click());
             let p = ui.painter();
             p.rect_filled(rect, t.corner(), preset.bg);

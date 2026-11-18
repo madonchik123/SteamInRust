@@ -7,42 +7,72 @@ use client::Command;
 use egui::{Align, Align2, Layout, Margin, Rect, Sense, Stroke, Ui, vec2};
 use extensions::{Action, Env, Placement};
 use model::{Persona, PersonaState, art};
+use ui::theme::{NavPosition, SearchPlace, Side};
 use ui::{Theme, icons, widgets as w};
 
-/// The main window: the top bar (sections, friends, notifications,
-/// account, window buttons), the page's own bar under it, the friends
-/// drawer, and the page. `docs/redesign.md` describes the layout.
+/// The main window, laid out by the theme ([`ui::theme::Layout`]): the top
+/// bar (sections, friends, notifications, account, window buttons), the
+/// page's own bar, an optional left navigation column and status bar, the
+/// friends list on either side, and the page. `docs/themes.md` lists the
+/// options; `docs/redesign.md` describes the default layout.
 pub fn show(app: &mut SteamApp, ui: &mut Ui, actions: &mut Vec<Action>) {
     let t = app.prefs.theme.clone();
+    let lay = t.layout.clone();
 
     egui::Panel::top("topbar")
-        .exact_size(w::TOP_BAR_HEIGHT)
+        .exact_size(lay.top_bar_height)
         .resizable(false)
-        .frame(egui::Frame::new().fill(t.chrome))
-        .show(ui, |ui| top_bar(app, ui, &t, actions));
+        .frame(egui::Frame::new())
+        .show(ui, |ui| {
+            bar_background(ui, &t, &t.components.top_bar, false);
+            top_bar(app, ui, &t, actions)
+        });
 
-    egui::Panel::top("pagebar")
-        .exact_size(w::PAGE_BAR_HEIGHT)
-        .resizable(false)
-        .frame(egui::Frame::new().fill(t.tertiary).inner_margin(Margin::symmetric(10, 0)))
-        .show(ui, |ui| page_bar(app, ui, &t, actions));
+    if lay.status_bar {
+        let c = &t.components.status_bar;
+        egui::Panel::bottom("statusbar")
+            .exact_size(lay.status_bar_height)
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(Margin::symmetric(t.padding_of(c).x as i8, 0)))
+            .show(ui, |ui| {
+                bar_background(ui, &t, c, true);
+                status_bar(app, ui, &t)
+            });
+    }
+
+    if lay.nav == NavPosition::Left {
+        egui::Panel::left("nav")
+            .exact_size(lay.nav_width)
+            .resizable(false)
+            .frame(w::component_frame(&t, &t.components.sidebar).corner_radius(egui::CornerRadius::ZERO))
+            .show(ui, |ui| nav_column(app, ui, &t, actions));
+    }
+
+    if lay.page_bar {
+        let c = &t.components.page_bar;
+        egui::Panel::top("pagebar")
+            .exact_size(lay.page_bar_height)
+            .resizable(false)
+            .frame(egui::Frame::new().inner_margin(Margin::symmetric(t.padding_of(c).x as i8, 0)))
+            .show(ui, |ui| {
+                bar_background(ui, &t, c, false);
+                page_bar(app, ui, &t, actions)
+            });
+    }
 
     if app.prefs.friends_open && app.prefs.page != "community" {
-        egui::Panel::right("friends")
-            .exact_size(290.0)
-            .resizable(false)
-            .frame(egui::Frame::new().fill(t.chrome).inner_margin(Margin { left: 14, right: 10, top: 16, bottom: 8 }))
-            .show(ui, |ui| friends_drawer(app, ui, &t, actions));
+        let frame = w::component_frame(&t, &t.components.sidebar).corner_radius(egui::CornerRadius::ZERO).inner_margin(Margin { left: 14, right: 10, top: 16, bottom: 8 });
+        let panel = match lay.friends_side {
+            Side::Left => egui::Panel::left("friends"),
+            Side::Right => egui::Panel::right("friends"),
+        };
+        panel.exact_size(lay.friends_width).resizable(false).frame(frame).show(ui, |ui| friends_drawer(app, ui, &t, actions));
     }
 
     egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg)).show(ui, |ui| {
         let page = app.prefs.page.clone();
-        // The section's background from the style guide; pages draw on top.
-        match section_of(&page) {
-            "store" => t.paint_store_background(ui.painter(), ui.max_rect()),
-            "library" => t.paint_library_background(ui.painter(), ui.max_rect()),
-            _ => {}
-        }
+        // The area's background from the theme; pages draw on top.
+        w::paint_background(ui, &t, ui.max_rect(), section_of(&page));
         // Offline: pages that need Steam say so instead.
         if crate::offline_ui::page(app, ui, &page) {
             return;
@@ -62,6 +92,102 @@ pub fn show(app: &mut SteamApp, ui: &mut Ui, actions: &mut Vec<Action>) {
             w::empty(ui, &t, icons::WARNING, "Page not found", &page);
         }
     });
+}
+
+/// A bar's fill from its component style, with its `border` color as a
+/// line along the edge that meets the page (`top` for a bar at the bottom).
+fn bar_background(ui: &Ui, t: &Theme, c: &ui::theme::Component, top: bool) {
+    let rect = ui.max_rect().expand2(vec2(t.padding_of(c).x, 0.0));
+    let look = t.look(c, Default::default());
+    w::paint_fill(ui, t, rect, egui::CornerRadius::ZERO, &look.fill);
+    if look.border.a() > 0 {
+        let y = if top { rect.top() + 0.5 } else { rect.bottom() - 0.5 };
+        ui.painter().hline(rect.x_range(), y, Stroke::new(1.0, look.border));
+    }
+}
+
+/// Font sizes in the shell follow the theme's body text size.
+fn sz(t: &Theme, px: f32) -> f32 {
+    (px * t.typography.body_m.size / 14.0 * 2.0).round() / 2.0
+}
+
+/// The main sections, in the design's order: Store, Community, you,
+/// Library, Downloads; then pages extensions add as main pages.
+/// (id, label, icon)
+fn nav_items(app: &SteamApp) -> Vec<(String, String, String)> {
+    let pages = app.registry.pages();
+    let name = if app.state.persona_name.is_empty() { app.state.account.clone() } else { app.state.persona_name.clone() };
+    let mut tabs = Vec::new();
+    let order = ["store", "community", "profile", "library"];
+    for id in order {
+        if let Some(p) = pages.iter().find(|p| p.id == id && p.placement == Placement::Main) {
+            let label = if id == "profile" && !name.is_empty() { name.clone() } else { i18n::tr_dyn(&p.title) };
+            tabs.push((p.id.clone(), label, p.icon.clone()));
+        }
+    }
+    if pages.iter().any(|p| p.id == "downloads") {
+        tabs.push(("downloads".into(), t!("Downloads").to_string(), icons::DOWNLOAD.to_string()));
+    }
+    for p in pages.iter().filter(|p| p.placement == Placement::Main && !order.contains(&p.id.as_str())) {
+        tabs.push((p.id.clone(), i18n::tr_dyn(&p.title), p.icon.clone()));
+    }
+    tabs
+}
+
+/// The left navigation column (`nav = "left"`): the sections as rows with
+/// icons, then extension pages.
+fn nav_column(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>) {
+    let current = section_of(&app.prefs.page).to_string();
+    let c = &t.components.sidebar_item;
+    let fid = t.font_of(c);
+    let pad = t.padding_of(c).x;
+    let row = |ui: &mut Ui, icon: &str, label: &str, selected: bool| -> egui::Response {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), t.height_of(c, 40.0)), Sense::click());
+        let look = t.look(c, w::interact(ui, &resp, selected));
+        w::paint_box(ui, t, rect, c, &look, if selected { 1.0 } else { 0.0 });
+        w::icon_centered(ui.painter(), egui::pos2(rect.left() + pad + 9.0, rect.center().y), icon, fid.size + 3.0, look.icon);
+        ui.painter().text(egui::pos2(rect.left() + pad + 30.0, rect.center().y), Align2::LEFT_CENTER, label, fid.clone(), look.text);
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    };
+    ui.spacing_mut().item_spacing.y = t.spacing.xs;
+    for (id, label, icon) in nav_items(app) {
+        let r = row(ui, &icon, &label, current == id);
+        if id == "downloads" {
+            if let Some((_, fraction, _)) = active_download(app) {
+                w::progress_ring(ui.painter(), t, egui::pos2(r.rect.right() - pad - 8.0, r.rect.center().y), 7.5, fraction);
+            }
+        }
+        if r.clicked() {
+            actions.push(Action::Navigate { page: id, arg: None });
+        }
+    }
+    let plugin_pages: Vec<_> = app.registry.pages().into_iter().filter(|p| p.placement == Placement::Apps).collect();
+    if !plugin_pages.is_empty() {
+        ui.add_space(t.spacing.md);
+        w::caption(ui, t, t!("Plugins"));
+        for p in plugin_pages {
+            if row(ui, &p.icon, &p.title, app.prefs.page == p.id).clicked() {
+                actions.push(Action::Navigate { page: p.id.clone(), arg: None });
+            }
+        }
+    }
+}
+
+/// The app-wide search box (your games, your friends, the store), in the
+/// page bar or the top bar as the theme says.
+fn global_search(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>, width: f32, tall: bool) {
+    let r = if tall { w::bar_search(ui, t, &mut app.search, t!("Search"), width) } else { w::search(ui, t, &mut app.search, t!("Search"), width) };
+    if r.has_focus() {
+        app.search_open = true;
+    }
+    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if enter && !app.search.trim().is_empty() {
+        actions.push(Action::Navigate { page: "store".into(), arg: Some(format!("search:{}", app.search.trim())) });
+        app.search_open = false;
+    }
+    if app.search_open && !app.search.trim().is_empty() {
+        search_results(app, ui.ctx(), r.rect, t, actions);
+    }
 }
 
 /// Which top-bar section a page belongs to, so the right one lights up
@@ -93,7 +219,7 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
     {
         let ui = &mut right;
         ui.spacing_mut().item_spacing.x = 10.0;
-        crate::chrome::window_buttons(ui, t, w::TOP_BAR_HEIGHT, true);
+        crate::chrome::window_buttons(ui, t, t.layout.top_bar_height, true);
         if !crate::chrome::SYSTEM_FRAME {
             ui.add_space(4.0);
         }
@@ -115,6 +241,15 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
         }
         friends_hover(app, ui, t, &fr, actions);
         crate::offline_ui::badge(app, ui, t);
+        if t.layout.search == SearchPlace::TopBar {
+            ui.add_space(t.spacing.sm);
+            let room = ui.available_width() - 420.0;
+            if room >= 160.0 {
+                global_search(app, ui, t, actions, room.min(300.0), false);
+            } else if w::icon_button(ui, t, icons::SEARCH, t!("Search"), false, 0).clicked() {
+                actions.push(Action::Navigate { page: "store".into(), arg: None });
+            }
+        }
     }
     let right_edge = right.min_rect().left() - 16.0;
 
@@ -128,7 +263,7 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
     let ui = &mut left;
     ui.set_clip_rect(left_rect.intersect(ui.clip_rect()));
     ui.spacing_mut().item_spacing.x = 0.0;
-    ui.add_space(14.0);
+    ui.add_space(t.padding_of(&t.components.top_bar).x.max(14.0));
     crate::chrome::traffic_light_space(ui);
     let back = !app.back.is_empty();
     if nav_arrow(ui, t, icons::CARET_LEFT, t!("Back"), back).clicked() && back {
@@ -141,33 +276,26 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
     ui.add_space(14.0);
     app_menu(app, ui, t, actions);
 
-    // The sections, in the design's order: Store, Community, you, Library,
-    // Downloads; then pages from extensions, then the plugins menu.
+    // The sections across the bar, unless the theme puts them in a column
+    // on the left.
+    if t.layout.nav == NavPosition::Left {
+        return;
+    }
     let pages = app.registry.pages();
     let current = section_of(&app.prefs.page).to_string();
-    let name = if app.state.persona_name.is_empty() { app.state.account.clone() } else { app.state.persona_name.clone() };
-    let mut tabs: Vec<(String, String)> = Vec::new();
-    let order = ["store", "community", "profile", "library"];
-    for id in order {
-        if let Some(p) = pages.iter().find(|p| p.id == id && p.placement == Placement::Main) {
-            let label = if id == "profile" && !name.is_empty() { name.clone() } else { i18n::tr_dyn(&p.title) };
-            tabs.push((p.id.clone(), label));
-        }
-    }
-    if pages.iter().any(|p| p.id == "downloads") {
-        tabs.push(("downloads".into(), t!("Downloads").to_string()));
-    }
-    for p in pages.iter().filter(|p| p.placement == Placement::Main && !order.contains(&p.id.as_str())) {
-        tabs.push((p.id.clone(), i18n::tr_dyn(&p.title)));
-    }
+    let mut tabs: Vec<(String, String)> = nav_items(app).into_iter().map(|(id, label, _)| (id, label)).collect();
     let plugin_pages: Vec<_> = pages.iter().filter(|p| p.placement == Placement::Apps).collect();
     let plugins_label = format!("{} {}", t!("Plugins"), icons::CARET_DOWN);
 
     // Spread the sections out: 66 px apart in the design, closer (and a
     // size smaller) when the window is narrow.
     let room = ui.available_width() - 8.0;
+    let section = &t.components.section_tab;
+    let family = t.font_of(section).family;
+    let pad = t.padding_of(section).x * 2.0;
     let measure = |tabs: &[(String, String)], size: f32| -> f32 {
-        let width = |l: &str| ui.painter().layout_no_wrap(l.to_uppercase(), w::font_bold(size), t.text).size().x;
+        let caps = |l: &str| if section.uppercase { l.to_uppercase() } else { l.to_string() };
+        let width = |l: &str| ui.painter().layout_no_wrap(caps(l), egui::FontId::new(size, family.clone()), t.text).size().x + pad;
         let mut sum: f32 = tabs.iter().map(|(_, l)| width(l)).sum();
         if tabs.iter().any(|(id, _)| id == "downloads") {
             sum += downloads_extra(app);
@@ -178,10 +306,11 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
         sum
     };
     let count = |tabs: &[(String, String)]| (tabs.len() + usize::from(!plugin_pages.is_empty())) as f32;
-    let mut size = 17.0;
+    let full_size = t.font_of(section).size;
+    let mut size = full_size;
     let mut used = measure(&tabs, size);
     if room - used < count(&tabs) * 22.0 {
-        size = 14.0;
+        size = (full_size * 0.82).round();
         used = measure(&tabs, size);
     }
     // Still too narrow: your profile and Downloads are also in the account
@@ -203,7 +332,7 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
             break;
         }
         ui.add_space(gap);
-        let r = if size == 17.0 { w::section_tab(ui, t, label, current == *id, w::TOP_BAR_HEIGHT) } else { small_section_tab(ui, t, label, current == *id) };
+        let r = w::section_tab_sized(ui, t, label, current == *id, t.layout.top_bar_height, size);
         let r = if id == "downloads" { downloads_status(app, ui, t, r) } else { r };
         if r.clicked() {
             actions.push(Action::Navigate { page: id.clone(), arg: None });
@@ -213,7 +342,7 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
     if !plugin_pages.is_empty() && ui.available_width() >= gap + 40.0 {
         ui.add_space(gap);
         let active = plugin_pages.iter().any(|p| p.id == app.prefs.page);
-        let resp = if size == 17.0 { w::section_tab(ui, t, &plugins_label, active, w::TOP_BAR_HEIGHT) } else { small_section_tab(ui, t, &plugins_label, active) };
+        let resp = w::section_tab_sized(ui, t, &plugins_label, active, t.layout.top_bar_height, size);
         egui::Popup::menu(&resp).width(220.0).show(|ui| {
             for p in &plugin_pages {
                 if w::menu_item(ui, t, &p.icon, &p.title).clicked() {
@@ -320,10 +449,6 @@ fn hover_popup<R>(ui: &mut Ui, id: egui::Id, anchor: &egui::Response, add: impl 
     Some(area.inner)
 }
 
-fn small_section_tab(ui: &mut Ui, t: &Theme, label: &str, selected: bool) -> egui::Response {
-    w::section_tab_sized(ui, t, label, selected, w::TOP_BAR_HEIGHT, 14.0)
-}
-
 /// The back and forward arrows at the far left of the top bar.
 fn nav_arrow(ui: &mut Ui, t: &Theme, icon: &str, tip: &str, enabled: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 34.0), Sense::click());
@@ -358,11 +483,11 @@ fn downloads_status(app: &SteamApp, ui: &mut Ui, t: &Theme, tab: egui::Response)
     let Some((id, fraction, paused)) = active_download(app) else {
         return if waiting > 0 { tab.on_hover_text(t!("{n} queued", n = waiting)) } else { tab };
     };
-    let (rect, resp) = ui.allocate_exact_size(vec2(56.0, w::TOP_BAR_HEIGHT), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(56.0, t.layout.top_bar_height), Sense::click());
     let c = egui::pos2(rect.left() + 4.0 + 7.5, rect.center().y);
     w::progress_ring(ui.painter(), t, c, 7.5, fraction);
     let pct = format!("{:.0}%", fraction * 100.0);
-    ui.painter().text(egui::pos2(c.x + 7.5 + 4.0, c.y), Align2::LEFT_CENTER, pct, w::font_bold(13.0), if paused { t.text_dim } else { t.accent });
+    ui.painter().text(egui::pos2(c.x + 7.5 + 4.0, c.y), Align2::LEFT_CENTER, pct, w::font_bold(sz(&t, 13.0)), if paused { t.text_dim } else { t.accent });
     let name = app.state.app_name(id).unwrap_or("").to_string();
     let pct = format!("{:.0}", fraction * 100.0);
     let mut tip = if paused { t!("{game}: paused at {pct}%", game = name, pct = pct) } else { t!("{game}: {pct}%", game = name, pct = pct) };
@@ -394,35 +519,26 @@ fn page_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action
         return;
     }
     // One search box for everything: your games, your friends, the store.
-    let ui = &mut bar;
-    let width = (ui.available_width() - 10.0).min(374.0);
-    if width < 120.0 {
+    if t.layout.search != SearchPlace::PageBar {
         return;
     }
-    let r = w::bar_search(ui, t, &mut app.search, t!("Search"), width);
-    if r.has_focus() {
-        app.search_open = true;
-    }
-    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-    if enter && !app.search.trim().is_empty() {
-        actions.push(Action::Navigate { page: "store".into(), arg: Some(format!("search:{}", app.search.trim())) });
-        app.search_open = false;
-    }
-    if app.search_open && !app.search.trim().is_empty() {
-        search_results(app, ui.ctx(), r.rect, t, actions);
+    let ui = &mut bar;
+    let width = (ui.available_width() - 10.0).min(374.0);
+    if width >= 120.0 {
+        global_search(app, ui, t, actions, width, true);
     }
 }
 
 /// A menu in the top bar shown as dim text with a caret ("View ▾").
 fn text_menu_button(ui: &mut Ui, t: &Theme, label: &str, caret: bool) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(label.to_string(), w::font(15.0), t.text_dim);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), w::font(sz(&t, 15.0)), t.text_dim);
     let caret_w = if caret { 18.0 } else { 0.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + caret_w + 8.0, 32.0), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
     let color = w::mix(t.text_dim, t.text, hover);
     ui.painter().galley(egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0), galley, color);
     if caret {
-        ui.painter().text(egui::pos2(rect.right() - 12.0, rect.center().y + 1.0), Align2::CENTER_CENTER, icons::CARET_DOWN, w::font(12.0), color);
+        ui.painter().text(egui::pos2(rect.right() - 12.0, rect.center().y + 1.0), Align2::CENTER_CENTER, icons::CARET_DOWN, w::font(sz(&t, 12.0)), color);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -508,18 +624,13 @@ fn friends_hover(app: &mut SteamApp, ui: &mut Ui, t: &Theme, button: &egui::Resp
     }
     let pos = egui::pos2(button.rect.right() - 300.0, button.rect.bottom() + 6.0);
     let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
-        egui::Frame::new()
-            .fill(t.chrome)
-            .stroke(Stroke::new(1.0, t.border))
-            .corner_radius(t.corner())
-            .shadow(egui::Shadow { offset: [0, 10], blur: 30, spread: 0, color: egui::Color32::from_black_alpha(140) })
-            .inner_margin(Margin::same(10))
+        w::component_frame(t, &t.components.menu)
             .show(ui, |ui| {
                 ui.set_width(300.0);
                 let friends = app.state.friend_list();
                 let online: Vec<_> = friends.iter().filter(|p| p.state != PersonaState::Offline).cloned().collect();
                 ui.horizontal(|ui| {
-                    ui.label(w::text_bold(t!("Friends"), 15.0, t.text));
+                    ui.label(w::text_bold(t!("Friends"), sz(&t, 15.0), t.text));
                     ui.label(w::text(t!("{n} online", n = online.len()), 12.5, t.online));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if w::icon_button(ui, t, icons::EXTERNAL, t!("Open Friends & Chat"), false, 0).clicked() {
@@ -530,7 +641,7 @@ fn friends_hover(app: &mut SteamApp, ui: &mut Ui, t: &Theme, button: &egui::Resp
                 ui.add_space(4.0);
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                     if online.is_empty() {
-                        ui.label(w::text(t!("No friends online"), 13.0, t.text_faint));
+                        ui.label(w::text(t!("No friends online"), sz(&t, 13.0), t.text_faint));
                     }
                     for p in &online {
                         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::click());
@@ -543,13 +654,13 @@ fn friends_hover(app: &mut SteamApp, ui: &mut Ui, t: &Theme, button: &egui::Resp
                         }
                         let color = status_color(t, p);
                         ui.painter().circle_filled(av.right_bottom() - vec2(1.0, 1.0), 4.5, color);
-                        ui.painter().text(egui::pos2(av.right() + 10.0, r.top() + 14.0), Align2::LEFT_CENTER, &p.name, w::font_semibold(13.0), if p.in_game() { t.in_game } else { t.text });
-                        ui.painter().text(egui::pos2(av.right() + 10.0, r.top() + 30.0), Align2::LEFT_CENTER, status_text(&app.state, p), w::font(11.5), color);
+                        ui.painter().text(egui::pos2(av.right() + 10.0, r.top() + 14.0), Align2::LEFT_CENTER, &p.name, w::font_semibold(sz(&t, 13.0)), if p.in_game() { t.in_game } else { t.text });
+                        ui.painter().text(egui::pos2(av.right() + 10.0, r.top() + 30.0), Align2::LEFT_CENTER, status_text(&app.state, p), w::font(sz(&t, 11.5)), color);
                         let unread = app.state.unread.get(&p.steam_id).copied().unwrap_or(0);
                         if unread > 0 {
                             let c = egui::pos2(r.right() - 12.0, r.center().y);
                             ui.painter().circle_filled(c, 8.0, t.accent);
-                            ui.painter().text(c, Align2::CENTER_CENTER, unread.to_string(), w::font_bold(10.0), egui::Color32::WHITE);
+                            ui.painter().text(c, Align2::CENTER_CENTER, unread.to_string(), w::font_bold(sz(&t, 10.0)), egui::Color32::WHITE);
                         }
                         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Send a message")).clicked() {
                             // Chat in the undocked window, like Steam.
@@ -678,14 +789,14 @@ fn notification_picture(ui: &Ui, t: &Theme, state: &client::State, n: &model::No
     let p = ui.painter();
     if !drawn {
         p.rect_filled(rect, radius, t.raised);
-        p.text(rect.center(), Align2::CENTER_CENTER, icon, w::font(20.0), if n.read { t.text_dim } else { t.accent });
+        p.text(rect.center(), Align2::CENTER_CENTER, icon, w::font(sz(&t, 20.0)), if n.read { t.text_dim } else { t.accent });
         return;
     }
     // Kind badge in the corner.
     let c = rect.right_bottom() - vec2(3.0, 3.0);
     p.circle_filled(c, 10.0, t.chrome);
     p.circle_filled(c, 8.5, if n.read { t.raised } else { t.accent });
-    p.text(c, Align2::CENTER_CENTER, icon, w::font(10.5), if n.read { t.text_dim } else { t.on_accent });
+    p.text(c, Align2::CENTER_CENTER, icon, w::font(sz(&t, 10.5)), if n.read { t.text_dim } else { t.on_accent });
 }
 
 /// The bell: Steam notifications with an unread badge.
@@ -698,9 +809,9 @@ fn notifications_button(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mu
     egui::Popup::from_toggle_button_response(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(380.0).show(|ui| {
         ui.with_layout(Layout::top_down(Align::Min), |ui| {
             ui.horizontal(|ui| {
-                ui.label(w::text_bold(t!("Notifications"), 16.0, t.text));
+                ui.label(w::text_bold(t!("Notifications"), sz(&t, 16.0), t.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if data.unread > 0 && ui.link(w::text(t!("Mark all as read"), 12.5, t.accent)).clicked() {
+                    if data.unread > 0 && ui.link(w::text(t!("Mark all as read"), sz(&t, 12.5), t.accent)).clicked() {
                         app.client.send(Command::MarkNotificationsRead { ids: vec![] });
                     }
                 });
@@ -717,21 +828,21 @@ fn notifications_button(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mu
                 summary.push((icons::SHIELD, t!("{n} confirmations waiting in the Steam Mobile app", n = data.confirmations), 26));
             }
             for (icon, text, kind) in summary {
-                if ui.add(egui::Button::new(w::text_semibold(format!("{icon}  {text}"), 13.0, t.accent)).frame(false)).clicked() {
+                if ui.add(egui::Button::new(w::text_semibold(format!("{icon}  {text}"), sz(&t, 13.0), t.accent)).frame(false)).clicked() {
                     let row = model::Notification { kind, ..Default::default() };
                     open_notification(&app.state, &row, actions);
                 }
             }
             ui.separator();
             if data.items.is_empty() {
-                ui.label(w::text(t!("You're all caught up."), 13.0, t.text_faint));
+                ui.label(w::text(t!("You're all caught up."), sz(&t, 13.0), t.text_faint));
                 return;
             }
             egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
                 for n in data.items.iter().take(40) {
                     let (icon, text) = notification_text(&app.state, n);
                     // Up to two lines of text, then the time.
-                    let mut job = egui::text::LayoutJob::simple(text.clone(), w::font_medium(13.0), if n.read { t.text_dim } else { t.text }, ui.available_width() - 86.0);
+                    let mut job = egui::text::LayoutJob::simple(text.clone(), w::font_medium(sz(&t, 13.0)), if n.read { t.text_dim } else { t.text }, ui.available_width() - 86.0);
                     job.wrap.max_rows = 2;
                     job.wrap.overflow_character = Some('…');
                     let galley = ui.painter().layout_job(job);
@@ -745,7 +856,7 @@ fn notifications_button(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mu
                     let p = ui.painter();
                     let text_h = galley.size().y;
                     p.galley(egui::pos2(rect.left() + 60.0, rect.top() + 9.0), galley, color);
-                    p.text(egui::pos2(rect.left() + 60.0, rect.top() + 14.0 + text_h), Align2::LEFT_TOP, ui::ago(n.time), w::font(11.5), t.text_faint);
+                    p.text(egui::pos2(rect.left() + 60.0, rect.top() + 14.0 + text_h), Align2::LEFT_TOP, ui::ago(n.time), w::font(sz(&t, 11.5)), t.text_faint);
                     if !n.read {
                         p.circle_filled(egui::pos2(rect.right() - 12.0, rect.center().y), 4.0, t.accent);
                     }
@@ -770,7 +881,7 @@ fn wallet_section(ui: &mut Ui, t: &Theme, balance: i64, currency: i32, pending: 
         ui.add_space(2.0);
         ui.label(w::caption_text(t, t!("Steam Wallet")));
         ui.horizontal(|ui| {
-            ui.label(w::text_bold(model::format_money(balance, currency), 20.0, t.text)).on_hover_text(t!("Available to spend"));
+            ui.label(w::text_bold(model::format_money(balance, currency), sz(&t, 20.0), t.text)).on_hover_text(t!("Available to spend"));
             if pending > 0 {
                 // What "pending" means, on hover: the menu stays short.
                 let note = t!("Money from recent Market sales or refunds that Steam hasn't released yet. It's added to your balance automatically.");
@@ -842,16 +953,11 @@ fn search_results(app: &mut SteamApp, ctx: &egui::Context, anchor: Rect, t: &The
         .order(egui::Order::Foreground)
         .fixed_pos(anchor.left_bottom() + vec2(0.0, 6.0))
         .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(t.raised)
-                .stroke(Stroke::new(1.0, t.border))
-                .corner_radius(t.corner())
-                .shadow(egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: egui::Color32::from_black_alpha(140) })
-                .inner_margin(Margin::same(8))
+            w::component_frame(t, &t.components.menu)
                 .show(ui, |ui| {
                     ui.set_width(anchor.width().max(320.0));
                     let row = |ui: &mut Ui, icon: &str, text: &str| {
-                        ui.add(egui::Button::new(w::text_medium(format!("{icon}   {text}"), 13.5, t.text)).frame(false).min_size(vec2(ui.available_width(), 32.0))).clicked()
+                        ui.add(egui::Button::new(w::text_medium(format!("{icon}   {text}"), sz(&t, 13.5), t.text)).frame(false).min_size(vec2(ui.available_width(), 32.0))).clicked()
                     };
                     if !games.is_empty() {
                         w::caption(ui, t, t!("Your games"));
@@ -895,20 +1001,20 @@ pub fn activate_dialog(app: &mut SteamApp, ctx: &egui::Context) {
     let mut close = false;
     egui::Modal::new(egui::Id::unique("activate")).show(ctx, |ui| {
         ui.set_width(460.0);
-        ui.label(w::text(icons::KEY, 28.0, t.accent));
-        ui.label(w::text_bold(t!("Activate a product on Steam"), 20.0, t.text));
+        ui.label(w::text(icons::KEY, sz(&t, 28.0), t.accent));
+        ui.label(w::text_bold(t!("Activate a product on Steam"), sz(&t, 20.0), t.text));
         ui.add_space(4.0);
-        ui.label(w::text(t!("Enter a product key from a retail box, a bundle or a gift email."), 13.5, t.text_dim));
+        ui.label(w::text(t!("Enter a product key from a retail box, a bundle or a gift email."), sz(&t, 13.5), t.text_dim));
         ui.add_space(10.0);
         ui.add_enabled(
             !dlg.busy,
-            egui::TextEdit::singleline(&mut dlg.key).hint_text("XXXXX-XXXXX-XXXXX").font(w::font_semibold(18.0)).desired_width(f32::INFINITY).margin(vec2(12.0, 10.0)),
+            egui::TextEdit::singleline(&mut dlg.key).hint_text("XXXXX-XXXXX-XXXXX").font(w::font_semibold(sz(&t, 18.0))).desired_width(f32::INFINITY).margin(vec2(12.0, 10.0)),
         ).with_edit_menu();
         match &dlg.result {
             Some(Ok(items)) => {
                 ui.label(w::text(format!("{}  {}", icons::CHECK, t!("Activated!")), 14.0, t.play));
                 for i in items {
-                    ui.label(w::text(format!("•  {i}"), 13.5, t.text));
+                    ui.label(w::text(format!("•  {i}"), sz(&t, 13.5), t.text));
                 }
             }
             Some(Err(e)) => {
@@ -947,12 +1053,14 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
     let color = status_color(t, &me);
     let wallet = app.state.wallet.map(|(b, c)| model::format_money(b, c)).filter(|_| wide);
     // Painted as one fixed-size widget so it behaves inside right-to-left layouts.
-    let name_g = ui.painter().layout_no_wrap(short, w::font(14.0), t.text);
-    let wallet_g = wallet.map(|s| ui.painter().layout_no_wrap(s, w::font(14.0), t.text_dim));
+    let name_g = ui.painter().layout_no_wrap(short, w::font(sz(&t, 14.0)), t.text);
+    let wallet_g = wallet.map(|s| ui.painter().layout_no_wrap(s, w::font(sz(&t, 14.0)), t.text_dim));
     let wallet_w = wallet_g.as_ref().map(|g| g.size().x + 8.0).unwrap_or(0.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(3.0 + 31.0 + 8.0 + name_g.size().x + 8.0 + wallet_w + 24.0, 39.0), Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
-    ui.painter().rect_filled(rect, t.corner_small(), w::mix(t.raised, t.surface_hover, hover));
+    // The bar buttons' style (Bg / Highlight in the default theme).
+    let style = &t.components.bar_button;
+    let look = t.look(style, w::interact(ui, &resp, false));
+    w::paint_box(ui, t, rect, style, &look, 0.0);
     let av = Rect::from_min_size(rect.min + vec2(3.0, 4.0), vec2(31.0, 31.0));
     if !w::paint_cover(ui, av, &art::avatar(me.avatar_hash.as_deref()), egui::CornerRadius::same(2)) {
         ui.painter().rect_filled(av, egui::CornerRadius::same(2), t.surface_hover);
@@ -969,7 +1077,7 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
     if let Some(g) = wallet_g {
         p.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g, t.text_dim);
     }
-    p.text(rect.right_center() - vec2(13.0, 0.0), Align2::CENTER_CENTER, icons::CARET_DOWN, w::font(13.0), t.text_dim);
+    p.text(rect.right_center() - vec2(13.0, 0.0), Align2::CENTER_CENTER, icons::CARET_DOWN, w::font(sz(&t, 13.0)), look.icon);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     egui::Popup::menu(&resp).width(280.0).show(|ui| {
         crate::offline_ui::account_items(app, ui, t);
@@ -984,9 +1092,9 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
             let probe = model::Persona { state: s, ..Default::default() };
             let dot = egui::pos2(r.left() + 20.0, r.center().y);
             status_mark(ui.painter(), dot, 5.0, s, status_color(t, &probe));
-            ui.painter().text(egui::pos2(r.left() + 40.0, r.center().y), Align2::LEFT_CENTER, i18n::tr_dyn(s.label()), w::font(14.5), t.text);
+            ui.painter().text(egui::pos2(r.left() + 40.0, r.center().y), Align2::LEFT_CENTER, i18n::tr_dyn(s.label()), w::font(sz(&t, 14.5)), t.text);
             if on {
-                ui.painter().text(egui::pos2(r.right() - 12.0, r.center().y), Align2::RIGHT_CENTER, icons::CHECK, w::font(13.0), t.accent);
+                ui.painter().text(egui::pos2(r.right() - 12.0, r.center().y), Align2::RIGHT_CENTER, icons::CHECK, w::font(sz(&t, 13.0)), t.accent);
             }
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 app.client.send(Command::SetPersonaState(s));
@@ -1009,6 +1117,56 @@ fn account_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Ac
         if w::menu_item_tinted(ui, t, icons::POWER, t!("Exit SteamInRust"), Some(t.danger)).clicked() {
             app.request_exit(ui.ctx());
         }
+    });
+}
+
+/// The bottom bar (`layout.status_bar`): what's downloading, what you're
+/// playing, and Friends & Chat.
+fn status_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
+    ui.horizontal_centered(|ui| {
+        let dl = ui.add(egui::Label::new(w::text(format!("{}  {}", icons::DOWNLOAD, t!("Downloads")), 12.5, t.text_dim)).sense(Sense::click()));
+        if dl.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            app.navigate("downloads".into(), None);
+        }
+        // Same state as the Downloads page: what's downloading and what's waiting.
+        let active = app.state.downloads.values().find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).cloned();
+        let waiting = app.state.download_queue.iter().filter(|id| active.as_ref().is_none_or(|d| d.app_id != **id)).count();
+        match &active {
+            Some(d) => {
+                let name = app.state.app_name(d.app_id).unwrap_or("").to_string();
+                // The same measure as the Downloads page (what this download fetches).
+                let pct = d.fraction() as f64 * 100.0;
+                let text = if d.paused { t!("{game}: paused at {pct}%", game = name, pct = format!("{pct:.0}")) } else { t!("{game}: {pct}%", game = name, pct = format!("{pct:.0}")) };
+                ui.label(w::text(text, sz(&t, 12.5), t.accent));
+                w::progress(ui, t, (pct / 100.0) as f32, 90.0);
+                if waiting > 0 {
+                    ui.label(w::text(t!("+{n} queued", n = waiting), sz(&t, 12.5), t.text_faint));
+                }
+            }
+            None if waiting > 0 => {
+                ui.label(w::text(t!("{n} queued", n = waiting), sz(&t, 12.5), t.text_faint));
+            }
+            None => {
+                ui.label(w::text(t!("Nothing in the queue"), sz(&t, 12.5), t.text_faint));
+            }
+        }
+        if !app.state.online() {
+            ui.label(w::text(t!("· paused while offline"), sz(&t, 12.5), t.away));
+        }
+        if let Some(id) = app.state.playing {
+            ui.add_space(16.0);
+            let name = app.state.app_name(id).unwrap_or("").to_string();
+            ui.label(w::text(format!("{}  {}", icons::CONTROLLER, t!("Playing {game}", game = name)), 12.5, t.in_game));
+            ui.label(w::text(t!("· Shift+Tab opens the overlay"), sz(&t, 12.5), t.text_faint));
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let online = app.state.friend_list().iter().filter(|p| p.state != PersonaState::Offline).count();
+            let label = format!("{}  {}  ·  {}", icons::CHATS, t!("Friends & Chat"), t!("{n} online", n = online));
+            let r = ui.add(egui::Label::new(w::text_medium(label, sz(&t, 12.5), t.text_dim)).sense(Sense::click()));
+            if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                app.friends_window.open = !app.friends_window.open;
+            }
+        });
     });
 }
 
@@ -1123,8 +1281,8 @@ fn friends_drawer(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<
     let list = app.state.friend_list();
     let online = list.iter().filter(|p| p.state != PersonaState::Offline).count();
     ui.horizontal(|ui| {
-        ui.label(w::text_bold(t!("Friends"), 17.0, t.text));
-        ui.label(w::text(t!("{n} online", n = online), 13.0, t.text_dim));
+        ui.label(w::text_bold(t!("Friends"), sz(&t, 17.0), t.text));
+        ui.label(w::text(t!("{n} online", n = online), sz(&t, 13.0), t.text_dim));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if w::icon_button(ui, t, icons::X, t!("Close"), false, 0).clicked() {
                 app.prefs.friends_open = false;
@@ -1154,7 +1312,7 @@ pub fn friend_list(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec
 
     egui::ScrollArea::vertical().id_salt("friend-list").auto_shrink([false, false]).show(ui, |ui| {
         if list.is_empty() {
-            ui.label(w::text(t!("Loading friends…"), 13.0, t.text_faint));
+            ui.label(w::text(t!("Loading friends…"), sz(&t, 13.0), t.text_faint));
         }
         for (title, group) in [(t!("Favorites"), &favorites), (t!("In game"), &in_game), (t!("Online"), &online), (t!("Offline"), &offline)] {
             if group.is_empty() {
@@ -1224,15 +1382,15 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
     if unread > 0 {
         let c = rect.right_center() - vec2(16.0, 0.0);
         ui.painter().circle_filled(c, 9.0, t.accent);
-        ui.painter().text(c, Align2::CENTER_CENTER, unread.min(99).to_string(), w::font_bold(10.0), t.on_accent);
+        ui.painter().text(c, Align2::CENTER_CENTER, unread.min(99).to_string(), w::font_bold(sz(&t, 10.0)), t.on_accent);
     }
 
     let persona = p.clone();
     let vp = ui.ctx().viewport_id();
     resp.context_menu(|ui| {
-        ui.label(w::text_semibold(&name, 14.0, t.text));
+        ui.label(w::text_semibold(&name, sz(&t, 14.0), t.text));
         if persona.nickname.is_some() && !persona.name.is_empty() {
-            ui.label(w::text(&persona.name, 12.0, t.text_dim));
+            ui.label(w::text(&persona.name, sz(&t, 12.0), t.text_dim));
         }
         ui.separator();
         if ui.button(format!("{}  {}", icons::CHAT, t!("Send a message"))).clicked() {
@@ -1309,11 +1467,11 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
                 crate::builtin::steam_id_menu(ui, &t, persona.steam_id);
             });
             ui.separator();
-            if ui.button(w::text(t!("Remove friend…"), 13.5, t.danger)).clicked() {
+            if ui.button(w::text(t!("Remove friend…"), sz(&t, 13.5), t.danger)).clicked() {
                 app.friend_dialog = Some((vp, FriendDialog::Remove { id: persona.steam_id, name: persona.display_name() }));
                 ui.close();
             }
-            if ui.button(w::text(t!("Block all communication…"), 13.5, t.danger)).clicked() {
+            if ui.button(w::text(t!("Block all communication…"), sz(&t, 13.5), t.danger)).clicked() {
                 app.friend_dialog = Some((vp, FriendDialog::Block { id: persona.steam_id, name: persona.display_name() }));
                 ui.close();
             }
@@ -1338,28 +1496,27 @@ pub fn toasts(app: &mut SteamApp, ctx: &egui::Context) {
         return;
     }
     let t = &app.prefs.theme;
+    let above = if t.layout.status_bar { t.layout.status_bar_height + 14.0 } else { 20.0 };
     egui::Area::new(egui::Id::unique("toasts"))
-        .anchor(Align2::RIGHT_BOTTOM, vec2(-20.0, -20.0))
+        .anchor(Align2::RIGHT_BOTTOM, vec2(-20.0, -above))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             for toast in app.toasts.iter().rev().take(4) {
-                let card = egui::Frame::new()
-                    .fill(t.raised)
-                    .stroke(Stroke::new(1.0, t.border))
-                    .corner_radius(t.corner())
-                    .shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: egui::Color32::from_black_alpha(120) })
-                    .inner_margin(Margin { left: 22, right: 16, top: 12, bottom: 12 })
+                let card = w::component_frame(t, &t.components.toast)
                     .show(ui, |ui| {
                         ui.set_width(320.0);
-                        ui.label(w::text_semibold(&toast.title, 14.0, t.text));
+                        ui.label(w::text_semibold(&toast.title, sz(&t, 14.0), t.text));
                         if !toast.body.is_empty() {
-                            ui.add(egui::Label::new(w::text(&toast.body, 13.0, t.text_dim)).wrap());
+                            ui.add(egui::Label::new(w::text(&toast.body, sz(&t, 13.0), t.text_dim)).wrap());
                         }
                     });
                 // Accent bar inside the card, sized to it once the text is laid out.
                 let r = card.response.rect;
                 let bar = Rect::from_min_max(egui::pos2(r.left() + 9.0, r.top() + 10.0), egui::pos2(r.left() + 12.0, r.bottom() - 10.0));
-                ui.painter().rect_filled(bar, egui::CornerRadius::same(2), t.accent);
+                let mark = t.look(&t.components.toast, ui::theme::Interact { selected: true, ..Default::default() });
+                if let ui::theme::ResolvedFill::Color(c) = mark.fill {
+                    ui.painter().rect_filled(bar, egui::CornerRadius::same(2), c);
+                }
                 ui.add_space(8.0);
             }
         });
@@ -1390,8 +1547,8 @@ pub fn friend_dialogs(app: &mut SteamApp, ctx: &egui::Context) {
         ui.set_width(width);
         match &mut keep {
             FriendDialog::Nickname { id, text } => {
-                ui.label(w::text_bold(t!("Add a nickname"), 17.0, t.text));
-                ui.label(w::text(t!("Only you see it. Steam keeps it on all your devices."), 12.5, t.text_dim));
+                ui.label(w::text_bold(t!("Add a nickname"), sz(&t, 17.0), t.text));
+                ui.label(w::text(t!("Only you see it. Steam keeps it on all your devices."), sz(&t, 12.5), t.text_dim));
                 ui.add_space(8.0);
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).hint_text(t!("Nickname"))).with_edit_menu();
                 r.request_focus();
@@ -1410,15 +1567,15 @@ pub fn friend_dialogs(app: &mut SteamApp, ctx: &egui::Context) {
             }
             FriendDialog::Server { name, game, addr } => {
                 let game_name = app.state.app_name(*game).unwrap_or_default().to_string();
-                ui.add(egui::Label::new(w::text_bold(t!("{name}'s server", name = name), 17.0, t.text)).wrap());
-                ui.label(w::text(&game_name, 12.5, t.text_dim));
+                ui.add(egui::Label::new(w::text_bold(t!("{name}'s server", name = name), sz(&t, 17.0), t.text)).wrap());
+                ui.label(w::text(&game_name, sz(&t, 12.5), t.text_dim));
                 ui.add_space(8.0);
                 match app.state.servers.get(addr.as_str()) {
                     None => {
-                        ui.label(w::text(t!("Asking the server…"), 13.0, t.text_dim));
+                        ui.label(w::text(t!("Asking the server…"), sz(&t, 13.0), t.text_dim));
                     }
                     Some(Err(e)) => {
-                        ui.label(w::text(e, 13.0, t.text_dim));
+                        ui.label(w::text(e, sz(&t, 13.0), t.text_dim));
                     }
                     Some(Ok(s)) => {
                         egui::Grid::new("server-info").num_columns(2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
@@ -1430,8 +1587,8 @@ pub fn friend_dialogs(app: &mut SteamApp, ctx: &egui::Context) {
                                 (t!("Anti-cheat"), if s.vac { "VAC".to_string() } else { "—".to_string() }),
                                 (t!("Password"), if s.password { t!("Yes").to_string() } else { t!("No").to_string() }),
                             ] {
-                                ui.label(w::text_bold(k.to_uppercase(), 10.5, t.text_faint));
-                                ui.add(egui::Label::new(w::text(v, 13.0, t.text)).truncate());
+                                ui.label(w::text_bold(k.to_uppercase(), sz(&t, 10.5), t.text_faint));
+                                ui.add(egui::Label::new(w::text(v, sz(&t, 13.0), t.text)).truncate());
                                 ui.end_row();
                             }
                         });
@@ -1439,7 +1596,7 @@ pub fn friend_dialogs(app: &mut SteamApp, ctx: &egui::Context) {
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label(w::text(addr.as_str(), 12.5, t.text_dim));
+                    ui.label(w::text(addr.as_str(), sz(&t, 12.5), t.text_dim));
                     if ui.small_button(t!("Copy")).clicked() {
                         ui.ctx().copy_text(addr.clone());
                     }
@@ -1461,7 +1618,7 @@ pub fn friend_dialogs(app: &mut SteamApp, ctx: &egui::Context) {
                 });
             }
             FriendDialog::Remove { id, name } => {
-                ui.add(egui::Label::new(w::text_bold(t!("Remove {name} from your friends?", name = name), 17.0, t.text)).wrap());
+                ui.add(egui::Label::new(w::text_bold(t!("Remove {name} from your friends?", name = name), sz(&t, 17.0), t.text)).wrap());
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if w::button(ui, &t, None, t!("Remove friend"), w::Kind::Danger, w::Size::Sm).clicked() {
@@ -1474,8 +1631,8 @@ pub fn friend_dialogs(app: &mut SteamApp, ctx: &egui::Context) {
                 });
             }
             FriendDialog::Block { id, name } => {
-                ui.add(egui::Label::new(w::text_bold(t!("Block all communication with {name}?", name = name), 17.0, t.text)).wrap());
-                ui.add(egui::Label::new(w::text(t!("They'll be removed from your friends and can't message you or invite you."), 12.5, t.text_dim)).wrap());
+                ui.add(egui::Label::new(w::text_bold(t!("Block all communication with {name}?", name = name), sz(&t, 17.0), t.text)).wrap());
+                ui.add(egui::Label::new(w::text(t!("They'll be removed from your friends and can't message you or invite you."), sz(&t, 12.5), t.text_dim)).wrap());
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if w::button(ui, &t, None, t!("Block"), w::Kind::Danger, w::Size::Sm).clicked() {

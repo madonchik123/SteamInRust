@@ -5070,6 +5070,7 @@ dependencies = [
  "raw-window-handle",
  "reqwest",
  "rfd",
+ "ron",
  "serde",
  "serde_json",
  "sha2",
@@ -5761,6 +5762,8 @@ dependencies = [
  "resvg",
  "serde",
  "serde_json",
+ "toml 1.2.1+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]

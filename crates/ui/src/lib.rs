@@ -2,11 +2,14 @@
 //! [`Theme`] and build with [`widgets`], so a theme change restyles everything.
 
 pub mod brand;
+pub mod gallery;
 pub mod icons;
 pub mod theme;
+pub mod themes;
 pub mod widgets;
 
 pub use theme::{Theme, install_fonts};
+pub use themes::ThemeChoice;
 
 use i18n::t;
 

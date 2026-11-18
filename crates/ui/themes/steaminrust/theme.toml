@@ -1,0 +1,357 @@
+# SteamInRust: the default theme, from the "Steam Redesign" style guide.
+# Every other theme falls back to the values here. docs/themes.md explains
+# each field.
+
+format = 1
+id = "steaminrust"
+name = "SteamInRust"
+author = "SteamInRust"
+version = "1.0.0"
+
+[tokens]
+dark = true
+bg = "#181D24"
+chrome = "#0E141B"          # Bg / Main
+surface = "#262C35"
+surface_hover = "#313843"   # Bg / Hover
+raised = "#1E2329"          # Bg / Highlight
+tertiary = "#212B45"        # Bg / Tertiary
+border = "#2A313B"
+text = "#F3F3F3"            # Text / Main
+text_dim = "#76808C"        # Text / Dim
+text_faint = "#525B66"
+accent = "#66C0F4"          # Color / Primary
+accent_2 = "#4B619B"        # Color / Secondary
+on_accent = "#0E141B"
+play = "#A1CD44"            # Accent / Green
+online = "#66C0F4"
+in_game = "#A1CD44"
+away = "#C1B15F"            # Accent / Yellow
+danger = "#CD5444"          # Accent / Red
+price = "#F3F3F3"
+price_new = "#A1CD44"
+price_old = "#76808C"
+discount = "#A1CD44"
+discount_text = "#0E141B"
+radius = 5
+radius_small = 3
+
+[backgrounds]
+page = "bg"
+store = { linear = ["#2A475E", "#1B2838"], end = 0.8 }
+library = { radial = ["#3D4450", "#23262E"], center = [40, 40], end = 0.8 }
+community = "bg"
+profile = "bg"
+
+[overlays]
+light = ["#EBF6FF1A", "#EBF6FF33", "#EBF6FF4D", "#EBF6FF66", "#EBF6FF80"]
+dark = ["#0E141B33", "#0E141B66", "#0E141B99", "#0E141BCC"]
+
+[spacing]
+xs = 4
+sm = 8
+md = 12
+lg = 16
+xl = 24
+item = 8
+card = 22
+
+[typography]
+heading_l = { size = 26, weight = "bold" }
+heading_m = { size = 22, weight = "bold" }
+heading_s = { size = 18, weight = "bold" }
+body_l = { size = 16, weight = "regular" }
+body_m = { size = 14, weight = "regular" }
+body_s = { size = 12, weight = "regular" }
+button = { size = 15, weight = "medium" }
+button_large = { size = 18, weight = "bold" }
+section = { size = 17, weight = "bold" }
+tab = { size = 16, weight = "regular" }
+caption = { size = 11, weight = "bold" }
+menu = { size = 14.5, weight = "regular" }
+price = { size = 18, weight = "bold" }
+
+[fonts]
+
+[images]
+
+[icons]
+
+[layout]
+top_bar_height = 59
+page_bar = true
+page_bar_height = 57
+nav = "top"
+nav_width = 220
+search = "page_bar"
+friends_side = "right"
+friends_width = 290
+status_bar = false
+status_bar_height = 34
+game_card = "cover"
+density = "comfortable"
+corners = "rounded"
+
+# ---- buttons ----
+
+[components.button_primary]
+height = 40
+padding = [20, 0]
+text = { size = 15, weight = "bold" }
+normal = { fill = "accent_2", text = "text_on(accent_2)" }
+hover = { fill = "accent" }
+pressed = { fill = "darken(accent, 0.14)" }
+disabled = { fill = "accent_2@0.45", text = "text_on(accent_2)@0.55" }
+
+[components.button_secondary]
+height = 40
+padding = [20, 0]
+text = "button"
+normal = { fill = "raised", text = "text" }
+hover = { fill = "surface_hover" }
+pressed = { fill = "darken(surface_hover, 0.14)" }
+disabled = { fill = "raised@0.45", text = "text@0.55" }
+
+[components.button_tertiary]
+height = 40
+padding = [20, 0]
+text = "button"
+border = 1
+normal = { fill = "transparent", text = "text", border = "text_dim@0.2" }
+hover = { border = "text_dim@0.4" }
+pressed = { fill = "raised" }
+disabled = { text = "text@0.55", border = "text_dim@0.1" }
+
+[components.button_ghost]
+height = 40
+padding = [20, 0]
+text = "button"
+normal = { fill = "transparent", text = "text_dim" }
+hover = { fill = "surface_hover", text = "text" }
+pressed = { fill = "raised", text = "text" }
+disabled = { text = "text_dim@0.55" }
+
+[components.button_play]
+height = 40
+padding = [20, 0]
+text = { size = 15, weight = "bold" }
+normal = { fill = "play", text = "text_on(play)" }
+hover = { fill = "lighten(play, 0.1)" }
+pressed = { fill = "darken(play, 0.14)" }
+disabled = { fill = "play@0.45", text = "text_on(play)@0.55" }
+
+[components.button_install]
+height = 40
+padding = [20, 0]
+text = { size = 15, weight = "bold" }
+normal = { fill = "accent", text = "text_on(accent)" }
+hover = { fill = "lighten(accent, 0.1)", text = "#F3F3F3" }
+pressed = { fill = "darken(accent, 0.14)" }
+disabled = { fill = "accent@0.45", text = "text_on(accent)@0.55" }
+
+[components.button_pause]
+height = 40
+padding = [20, 0]
+text = { size = 15, weight = "bold" }
+normal = { fill = "surface_hover", text = "text" }
+hover = { fill = "lighten(tertiary, 0.1)" }
+pressed = { fill = "darken(surface_hover, 0.14)" }
+disabled = { fill = "surface_hover@0.45", text = "text@0.55" }
+
+[components.button_danger]
+height = 40
+padding = [20, 0]
+text = "button"
+border = 1
+normal = { fill = "danger@0.18", text = "danger", border = "danger@0.4" }
+hover = { fill = "danger@0.3", border = "danger@0.6" }
+pressed = { fill = "danger@0.4" }
+disabled = { fill = "danger@0.08", text = "danger@0.55" }
+
+[components.button_cta]
+height = 44
+padding = [26, 0]
+text = "button_large"
+normal = { fill = "accent_2", text = "text_on(accent_2)" }
+hover = { fill = "accent" }
+pressed = { fill = "darken(accent, 0.14)" }
+disabled = { fill = "accent_2@0.45", text = "text_on(accent_2)@0.55" }
+
+[components.icon_button]
+height = 36
+normal = { fill = "transparent", text = "text_dim" }
+hover = { fill = "surface_hover", text = "text" }
+selected = { fill = "surface_hover", text = "text" }
+disabled = { text = "text_dim@0.45" }
+
+[components.bar_button]
+height = 37
+padding = [16, 0]
+normal = { fill = "raised", text = "text_dim" }
+hover = { fill = "surface_hover", text = "text" }
+selected = { fill = "surface_hover", text = "text" }
+
+[components.icon_box]
+height = 40
+normal = { fill = "text_dim@0.05", text = "text_dim" }
+hover = { fill = "text_dim@0.12", text = "text" }
+selected = { fill = "text_dim@0.16", text = "text" }
+
+[components.badge]
+height = 16
+padding = [4, 0]
+radius = "full"
+text = { size = 11, weight = "semibold" }
+normal = { fill = "accent", text = "text_on(accent)" }
+
+# ---- tabs ----
+
+[components.section_tab]
+text = "section"
+uppercase = true
+normal = { fill = "transparent", text = "mix(text, text_dim, 0.12)" }
+hover = { text = "text" }
+selected = { text = "accent" }
+
+[components.page_tab]
+height = 45
+padding = [29, 0]
+text = "tab"
+normal = { fill = "transparent", text = "text" }
+hover = { fill = "white@0.1" }
+selected = { fill = "accent_2", text = "text_on(accent_2)" }
+
+[components.nav_tab]
+padding = [12, 0]
+text = { size = 13, weight = "bold" }
+uppercase = true
+normal = { fill = "transparent", text = "text_dim" }
+hover = { text = "text" }
+selected = { text = "accent" }
+
+# ---- chips, tags, sorting ----
+
+[components.chip]
+height = 30
+padding = [13, 0]
+text = { size = 13, weight = "regular" }
+normal = { fill = "raised", text = "text_dim" }
+hover = { fill = "mix(raised, surface_hover, 0.6)", text = "text" }
+selected = { fill = "surface_hover", text = "text" }
+
+[components.tag]
+height = 30
+padding = [13, 0]
+text = "body_s"
+normal = { fill = "raised", text = "text_dim" }
+hover = { fill = "surface_hover", text = "text" }
+selected = { fill = "surface_hover", text = "text" }
+
+[components.sort]
+height = 39
+padding = [20, 0]
+text = "body_l"
+normal = { fill = "chrome", text = "text_dim" }
+hover = { fill = "raised" }
+selected = { fill = "surface_hover", text = "text" }
+
+[components.segmented]
+padding = [3, 3]
+normal = { fill = "chrome" }
+
+# ---- containers and inputs ----
+
+[components.card]
+padding = [22, 22]
+radius = "large"
+normal = { fill = "surface" }
+
+[components.input]
+height = 34
+padding = [16, 0]
+text = "body_m"
+normal = { fill = "mix(tertiary, chrome, 0.2)", text = "text", icon = "mix(accent_2, text_dim, 0.25)" }
+selected = { border = "accent@0.6" }
+
+[components.toggle]
+height = 30
+radius = "full"
+normal = { fill = "raised", text = "surface_hover" }
+selected = { fill = "tertiary", text = "accent" }
+
+[components.check]
+border = 2
+normal = { fill = "transparent", border = "surface_hover", text = "chrome" }
+hover = { border = "text_dim" }
+selected = { fill = "text_dim", border = "transparent" }
+
+[components.menu]
+padding = [6, 6]
+border = 0
+shadow = { offset = [0, 4], blur = 12, color = "#00000064" }
+normal = { fill = "raised" }
+
+[components.menu_item]
+height = 38
+padding = [20, 0]
+text = "menu"
+normal = { fill = "transparent", text = "text", icon = "text_dim" }
+hover = { fill = "surface_hover", icon = "text" }
+
+# ---- the shell ----
+
+[components.top_bar]
+normal = { fill = "chrome" }
+
+[components.page_bar]
+padding = [10, 0]
+normal = { fill = "tertiary" }
+
+[components.status_bar]
+padding = [16, 0]
+normal = { fill = "chrome", border = "border" }
+
+[components.sidebar]
+padding = [14, 16]
+normal = { fill = "chrome" }
+
+[components.sidebar_item]
+height = 40
+padding = [16, 0]
+text = "body_l"
+normal = { fill = "transparent", text = "text_dim" }
+hover = { fill = "raised", text = "text" }
+selected = { fill = "surface_hover", text = "accent" }
+
+[components.toast]
+padding = [22, 12]
+radius = "large"
+shadow = { offset = [0, 8], blur = 24, color = "#00000078" }
+normal = { fill = "raised", text = "text" }
+selected = { fill = "accent" }
+
+# ---- games and prices ----
+
+[components.game_card]
+border = 1.5
+normal = { fill = "surface_hover" }
+hover = { border = "accent" }
+
+[components.price]
+radius = 2
+text = "price"
+normal = { fill = "discount", text = "discount_text" }
+
+[components.wishlist]
+height = 53
+padding = [19, 0]
+text = "body_l"
+normal = { fill = "raised", text = "text" }
+hover = { fill = "surface_hover" }
+selected = { fill = "surface_hover", text = "text" }
+
+[components.progress]
+height = 6
+radius = "full"
+normal = { fill = "surface_hover" }
+selected = { fill = "accent" }

@@ -7,8 +7,10 @@ license.workspace = true
 
 [dependencies]
 egui = { workspace = true, features = ["serde"] }
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 i18n.workspace = true
+toml.workspace = true
+tracing.workspace = true
 memmap2 = "0.9"
 # Draws the SVG logo into window, tray and installer icons (the same resvg
 # egui_extras uses for the logo inside the app).

@@ -18,9 +18,33 @@ from a shared style (`styleIdForFill`); the style's color wins over the
 node's own cached fill, so read both. The Play button's master, for example,
 caches a blue fill but uses the "Accent / Green" style, and renders green.
 
-Never use Steam's logo, the word "STEAM" or other Valve branding: the top
-bar shows SteamInRust's own logo (`ui::brand`), and only the logo (no name
-beside it).
+## The one rule: everything comes from the theme
+
+The app's look is a theme package (`docs/themes.md`). The redesign is the
+default theme, **SteamInRust**; **Classic** is the look from before. Users
+will be able to make their own. So a page must never hard-code its look:
+
+- No color values in a page (no `Color32::from_rgb`, no hex). Use a token
+  (`t.accent`, `t.text_dim`, `t.surface`…), `t.overlay_dark(i)` /
+  `t.overlay_light(i)` over pictures, or `t.color(&"accent@0.5".into())`.
+- No font sizes or weights of your own: text helpers (`w::heading_s(t, …)`,
+  `w::body_m(t, …)`) or `t.typography.*` (`w::styled(text, style, color)`).
+- No radii, paddings or spacing numbers where a token exists:
+  `t.corner()`, `t.corner_small()`, `t.spacing.*`, `t.dense(x)` for sizes
+  (it shrinks them in the compact density).
+- Draw with the shared widgets. If a page needs a control the widgets don't
+  have, add it to `ui::widgets` with a component style in
+  `ui::theme::Components` (and in `crates/ui/themes/steaminrust/theme.toml`,
+  plus Classic if it should differ), so themes can style it too.
+- Backgrounds: `w::paint_background(ui, t, rect, "store")`, or leave it to
+  the shell, which paints each area's background behind the page.
+- Layout choices a theme makes are in `t.layout` (top bar and page bar
+  heights, navigation on top or left, friends list side, game card style,
+  density, corners): read them rather than assuming the default.
+- Never use Steam's logo, the word "STEAM" or other Valve branding.
+
+Check a page with `--theme=classic` and with the example theme
+(`--theme-dir docs/examples/minimal-theme`) as well as the default.
 
 ## Seeing your work
 
@@ -29,10 +53,11 @@ cargo run -p steam-rs -- --separate --demo --no-local --lang=en --page=gallery
 ```
 
 - `--page=gallery` opens the design gallery: every shared control in each of
-  its states, plus a sample page bar (`apps/desktop/src/builtin/gallery.rs`).
-  It's only there when asked for.
-- `--theme=Slate` (or `Midnight`, `Classic`…) shows a built-in theme without
-  touching your saved one. `--window-size=1920x1080` sets the window size.
+  its states, plus a sample page bar (`crates/ui/src/gallery.rs`). It's only
+  there when asked for.
+- `--theme=classic` (any built-in theme's id or name) shows that theme;
+  `--theme-dir <folder>` loads a theme package from a folder. Neither is
+  saved. `--window-size=1920x1080` sets the window size.
 - `--offscreen` opens the window far off the screen, for screenshots of a test
   copy that never shows on the desktop. Capture it with `PrintWindow` and the
   `PW_RENDERFULLCONTENT` flag. Windows ignores real mouse messages for an
@@ -43,103 +68,102 @@ cargo run -p steam-rs -- --separate --demo --no-local --lang=en --page=gallery
 
 ## Theme tokens
 
-`ui::Theme` (`crates/ui/src/theme.rs`). The default theme for new users is
-**Slate**, the style guide's colors (frame `11:103`, "colors"). The older
-themes (Midnight, Aurora, Classic, OLED, Daylight) are still there, and the
-accent color and roundness settings still apply. Always take colors from the
-theme, never write a hex value in a page, so every theme works.
+`ui::Theme` (`crates/ui/src/theme.rs`), read straight off the theme
+(`t.accent`). The values below are the SteamInRust theme's, from the style
+guide's "colors" frame (`11:103`); `docs/themes.md` has the full format.
 
-| Token | Slate | Style guide name | Use it for |
+| Token | SteamInRust | Style guide name | Use it for |
 | --- | --- | --- | --- |
-| `chrome` | `#0E141B` | Bg / Main | The top bar; the darkest fills (sort chips, dropdowns, search fields) |
-| `bg` | `#181D24` | — | Page background where no section gradient applies |
+| `chrome` | `#0E141B` | Bg / Main | The top bar; the darkest fills |
+| `bg` | `#181D24` | — | Page background where no area background applies |
 | `raised` | `#1E2329` | Bg / Highlight | Menus, secondary buttons, tags, the top bar's buttons |
 | `surface` | `#262C35` | (`#313843` at 50%) | Content cards ("Friends who play", "Activity") |
-| `surface_hover` | `#313843` | Bg / Hover | Hover fills, selected chips and tags, pause button |
-| `tertiary` | `#212B45` | Bg / Tertiary | The page bar under the top bar; the toggle's track when on |
-| `secondary` | `#4B619B` | Color / Secondary | Primary buttons, the selected tab in a page bar |
-| `accent` | `#66C0F4` | Color / Primary | Links, the open section, the primary button on hover, Install, badges, the toggle's knob |
-| `accent_2` | `#4B619B` | Color / Secondary | Second accent stop (gradients, Big Picture) |
+| `surface_hover` | `#313843` | Bg / Hover | Hover fills, selected chips and tags |
+| `tertiary` | `#212B45` | Bg / Tertiary | The page bar under the top bar |
+| `accent` | `#66C0F4` | Color / Primary | Links, the open section, focus (the user can change it) |
+| `accent_2` | `#4B619B` | Color / Secondary | Primary buttons, the selected page-bar tab (the user can change it) |
+| `on_accent` | `#0E141B` | — | Text on `accent` fills |
 | `text` | `#F3F3F3` | Text / Main | Main text |
 | `text_dim` | `#76808C` | Text / Dim | Secondary text, icons, labels |
 | `text_faint` | `#525B66` | — | Hints, disabled text, captions |
-| `play` | `#A1CD44` | Accent / Green | The Play button, in-game friends |
-| `discount` | `#A1CD44` | Accent / Green | The discount block, discounted prices |
-| `danger` | `#CD5444` | Accent / Red | Removing, errors, negative reviews |
-| `away` | `#C1B15F` | Accent / Yellow | Away status, pending money, warnings |
+| `play` | `#A1CD44` | Accent / Green | Positive: Play, in-game |
 | `online` | `#66C0F4` | — | Online friends |
 | `in_game` | `#A1CD44` | — | Friends in a game |
-| `on_accent` | `#0E141B` | — | Text on `accent` fills |
+| `away` | `#C1B15F` | Accent / Yellow | Warnings, away, pending money |
+| `danger` | `#CD5444` | Accent / Red | Removing, errors, negative reviews |
+| `price` | `#F3F3F3` | — | A full price |
+| `price_new` | `#A1CD44` | Accent / Green | A price after a discount |
+| `price_old` | `#76808C` | Text / Dim | The struck-through old price |
+| `discount` | `#A1CD44` | Accent / Green | The discount box |
+| `discount_text` | `#0E141B` | Bg / Main | Text in the discount box |
 | `border` | `#2A313B` | — | The rare line or outline (the design uses almost none) |
-| `radius` | `5` | — | `t.corner()` is 5 (cards), `t.corner_small()` is 3 (buttons, tags, menus) |
+| `radius` | `5` | — | `t.corner()`: cards, panels |
+| `radius_small` | `3` | — | `t.corner_small()`: buttons, tags, menus, inputs |
 
-Helpers:
+Beyond the colors:
 
-- `t.text_on(fill)` gives near-black or near-white text, whichever reads on
-  `fill` (the Play button's green and Install's blue take dark text).
-- `t.paint_store_background(painter, rect)` paints the store gradient
-  (`--gpGradient-StoreBackground`: `#2A475E` to `#1B2838`, reached 80% down).
-- `t.paint_library_background(painter, rect)` paints the library gradient
-  (`--gpGradient-LibraryBackground`: a radial glow from `#3D4450` 40 px in
-  from the top-left corner to `#23262E`).
-- The shell already paints these behind the Store and Library pages; a page
-  that fills its own background covers them.
-- `ui::widgets::radial_gradient` and `ui::widgets::gradient` draw any radial
-  or two-color gradient.
-- The style guide's other values (`--gpSystem…` greys, `--gpStore…` blue
-  greys, `--gpColor-Blue #1A9FFF`, the translucent `--gpBackground-…` fills)
-  are Valve's own client variables, copied onto the guide for reference. The
-  screens use the "colors" frame above, so they aren't tokens. If a page needs
-  one, add a token rather than a hex value in the page.
-
-Themes saved before these tokens existed get them filled in by
-`Theme::upgrade` (`rev` 0 → 1), so a user's own theme keeps its look.
+- `t.backgrounds` per area: the store's is the style guide's
+  `--gpGradient-StoreBackground` (`#2A475E` to `#1B2838`, reached 80% down),
+  the library's `--gpGradient-LibraryBackground` (a radial glow from
+  `#3D4450` 40 px in from the top-left to `#23262E`). Paint one with
+  `w::paint_background`.
+- `t.overlay_light(0..5)` and `t.overlay_dark(0..4)`: the guide's
+  translucent `--gpBackground-…` washes, softest first.
+- `t.spacing` (`xs` 4, `sm` 8, `md` 12, `lg` 16, `xl` 24, `item`, `card`).
+- `t.text_on(fill)` gives near-black or near-white text for any fill.
+- `t.components.*`: each widget's style; `t.look(component, state)` resolves
+  its colors for a state, `w::paint_box` draws it.
+- The guide's other values (`--gpSystem…` greys, `--gpStore…` blue greys,
+  `--gpColor-Blue #1A9FFF`) are Valve's own client variables, copied onto the
+  guide for reference. The screens use the "colors" frame, so they aren't
+  tokens. If a page needs one, add a token rather than a hex value.
 
 ## Type
 
 The design is set in Motiva Sans, which is Valve's and can't be shipped.
-Inter (bundled in `crates/ui/assets/fonts`) stands in at the same sizes and
-weights; it runs a little wider. The scale is in `ui::theme::type_scale`,
-with text helpers in `ui::widgets`:
+Inter stands in at the same sizes and weights (a theme can bring its own
+fonts). The styles are `t.typography.*`, with text helpers in `ui::widgets`:
 
-| Style guide | Size, weight | Helper |
+| Style guide | SteamInRust | Helper |
 | --- | --- | --- |
-| Heading Large | 26, bold | `w::heading_l(text, color)` |
-| Heading Medium | 22, bold | `w::heading_m` (also egui's `Heading` style) |
-| Heading Small | 18, bold | `w::heading_s` (big buttons, the top bar's sections at 17) |
-| Body Large | 16, regular | `w::body_l` (page-bar tabs, secondary buttons) |
-| Body Medium | 14, regular | `w::body_m` (egui's `Body` style) |
-| Body Small | 12, regular | `w::body_s` (tags, review bars, small notes) |
+| Heading Large | 26, bold | `w::heading_l(t, text, color)` |
+| Heading Medium | 22, bold | `w::heading_m(t, …)` (also egui's `Heading` style) |
+| Heading Small | 18, bold | `w::heading_s(t, …)` |
+| Body Large | 16, regular | `w::body_l(t, …)` |
+| Body Medium | 14, regular | `w::body_m(t, …)` (egui's `Body` style) |
+| Body Small | 12, regular | `w::body_s(t, …)` |
 
-`w::text`, `w::text_medium`, `w::text_semibold` and `w::text_bold` still take
-any size.
+Also `button`, `button_large`, `section`, `tab`, `caption`, `menu` and
+`price` styles; `w::styled(text, t.typography.caption, color)` for any of
+them.
 
 ## Shared controls
 
 All in `crates/ui/src/widgets.rs` (`use ui::widgets as w`). Every one takes
-`&Theme`, has hover and pressed states, and dims when the `Ui` is disabled
-(`ui.add_enabled_ui(false, …)`). Existing calls kept their signatures.
+`&Theme` and draws from its component style (named in brackets below; see
+`docs/themes.md`), with hover, pressed, selected and disabled states; it
+dims when the `Ui` is disabled (`ui.add_enabled_ui(false, …)`).
 
 | Control | Figma | Call |
 | --- | --- | --- |
-| Primary button | "primary button" `84:791` | `w::button(ui, t, icon, "Add to Cart", w::Kind::Primary, w::Size::Lg)` |
-| Secondary button | "secondary button" `84:787` | `Kind::Secondary` |
-| Tertiary button | "tertiary button 2" `400:13118` (outline at 20%, 40% on hover); `324:1431` is the same with a Bg / Highlight outline | `Kind::Tertiary` |
-| Play | "Play button" `335:1183` | `w::play_button(ui, t, "Play")` or `Kind::Play` |
-| Install | "install button" `375:4453` | `w::install_button(ui, t, "Install")` or `Kind::Install` |
-| Pause | "pause button" `379:8204` | `w::pause_button(ui, t, "Pause")` or `Kind::Pause` |
-| Other buttons | — | `Kind::Ghost` (no fill until hovered), `Kind::Danger` |
-| Button sizes | 53 px in the guide | `Size::Lg` 53, `Size::Md` 40, `Size::Sm` 32; any height with `w::button_sized` |
-| Main CTA | "main-cta" `426:4355` | `w::main_cta(ui, t, "$23.09", Some("$34.99"), 34, Some("Until October 19"), "Add to Cart")` returns the button's response |
-| Price | "price" `426:4419` | `w::price(ui, t, label, original, discount)` (44 px); `w::price_tag` is the same at 36 px for cards and rows |
-| Tag | "tag" `280:203` | `w::tag(ui, t, "Souls-like", Some("5,000"), w::TagState::Checked)`; states `Plain`, `Unchecked`, `Checked`, `Current`, `Filtered` |
+| Primary button (`button_primary`) | "primary button" `84:791` | `w::button(ui, t, icon, "Add to Cart", w::Kind::Primary, w::Size::Lg)` |
+| Secondary button (`button_secondary`) | "secondary button" `84:787` | `Kind::Secondary` |
+| Tertiary button (`button_tertiary`) | "tertiary button 2" `400:13118` (outline at 20%, 40% on hover); `324:1431` is the same with a Bg / Highlight outline | `Kind::Tertiary` |
+| Play (`button_play`) | "Play button" `335:1183` | `w::play_button(ui, t, "Play")` or `Kind::Play` |
+| Install (`button_install`) | "install button" `375:4453` | `w::install_button(ui, t, "Install")` or `Kind::Install` |
+| Pause (`button_pause`) | "pause button" `379:8204` | `w::pause_button(ui, t, "Pause")` or `Kind::Pause` |
+| Other buttons (`button_ghost`, `button_danger`) | — | `Kind::Ghost` (no fill until hovered), `Kind::Danger` |
+| Button sizes | 53 px in the guide | `Size::Md` is the component's height (40), `Size::Lg` a third taller (53), `Size::Sm` 80% (32); any height with `w::button_sized` |
+| Main CTA (`button_cta`) | "main-cta" `426:4355` | `w::main_cta(ui, t, "$23.09", Some("$34.99"), 34, Some("Until October 19"), "Add to Cart")` returns the button's response |
+| Price (`price`, the `price…` tokens) | "price" `426:4419` | `w::price(ui, t, label, original, discount)`; `w::price_tag` is smaller, for cards and rows |
+| Tag (`tag`) | "tag" `280:203` | `w::tag(ui, t, "Souls-like", Some("5,000"), w::TagState::Checked)`; states `Plain`, `Unchecked`, `Checked`, `Current`, `Filtered` |
 | Toggle | "toggle" `477:7301` | `w::toggle(ui, t, &mut on)`; `w::toggle_row(ui, t, &mut on, label)` puts a label before it |
 | Check box | "Check box" `757:10005` | `w::check(ui, t, &mut on, "label")`; `w::checkbox(ui, t, &mut on, 30.0)` without a label |
 | Sort filter | "sort filter" `296:579`, "sorting" `457:12113` | `w::sort_chip(ui, t, label, selected)`; `w::sort_by(ui, t, &mut value, &[(v, "New and Trending"), …])` adds "Sort by" before the chips |
 | Dropdown | "sort filter" with its caret, "menu dropdown" `18:273` | `let r = w::dropdown(ui, t, label, min_width); egui::Popup::menu(&r).show(\|ui\| …)` |
 | Menu | "menu dropdown" `18:273` | egui popups and context menus already take the theme's menu look (Bg / Highlight, soft shadow) |
 | Menu item | "Menu items" `18:248` | `w::menu_item(ui, t, icon, label)`, `w::menu_item_tinted` (e.g. red), `w::submenu_item` |
-| Wishlist | "wishlist" `280:345`, "wishlist page" `302:1745` | `w::wishlist_button(ui, t, wishlisted, Some("Wishlist"))`; `None` for the square heart. Wishlisted turns red on hover (a click removes it) |
+| Wishlist | "wishlist" `280:345`, "wishlist page" `302:1745` | `w::wishlist_button(ui, t, wishlisted, Some("Wishlist"))`; `None` for the square heart |
 | Reviews | "reviews" `289:270` | `w::review_bar(ui, t, positive_percent, 138.0)` |
 | Page-bar tab | "menu" `82:322` | `w::sub_tab(ui, t, "Home", selected)` |
 | Top-bar section | "store menu" `18:294` | `w::section_tab(ui, t, label, selected, height)` (the shell draws these) |
@@ -149,8 +173,9 @@ All in `crates/ui/src/widgets.rs` (`use ui::widgets as w`). Every one takes
 | Top-bar buttons | "friends" `447:3849`, "notifications" `766:10160` | `w::bar_button(ui, t, icon, tooltip, active, badge)` |
 | Badge | the blue count circle `447:3845` | `w::badge(painter, t, center, n)`; `w::icon_button` shows one too |
 | Download ring | "download status" `383:10133` | `w::progress_ring(painter, t, center, 7.5, fraction)` |
-| Card | `523:6593` and the other content boxes | `w::card(t).show(ui, …)`: flat, rounded 5, no border |
-| Chips | — | `w::chip`, `w::tinted_chip`, `w::toggle_chip`, `w::image_chip`, `w::segmented` now share the tag's shape and colors |
+| Card (`card`) | `523:6593` and the other content boxes | `w::card(t).show(ui, …)` (flat and borderless in SteamInRust); `w::component_frame(t, &t.components.x)` for any component as a frame |
+| Chips (`chip`, `segmented`) | — | `w::chip`, `w::tinted_chip`, `w::toggle_chip`, `w::image_chip`, `w::segmented` |
+| Game card (`game_card`) | "game card" `363:5954` | `w::game_card(ui, t, cover_url, header_url, title, installed, width)` follows the theme's card style (cover or header); `w::game_tile` draws a given size |
 
 `icons::PLAY` and `icons::PAUSE` are drawn as solid shapes in buttons (the
 icon font only has outlines); `w::paint_icon` draws any icon the same way.
@@ -162,7 +187,9 @@ Not matched exactly, on purpose:
   16–18 px text: the app's right-click menus are long, and 49 px rows made
   them run off the screen. The colors and padding are the guide's.
 - The Wishlist button is 53 px tall like the other large buttons (the guide
-  draws it 58 px), so it lines up next to "Add to Cart".
+  draws it 58 px), so it lines up next to "Add to Cart". The guide's red
+  "remove" look on hover isn't there: a component has no "selected and
+  hovered" state.
 - The guide's primary button keeps white text on its light-blue hover; so
   does ours. Install turns its text white on hover, as the guide shows.
 - The check box when on is filled in Text / Dim with a dark check, as the
@@ -171,7 +198,11 @@ Not matched exactly, on purpose:
 ## The app shell
 
 `apps/desktop/src/shell.rs` draws the window; `chrome.rs` the window buttons
-and resize edges.
+and resize edges. Its look and parts of its layout come from the theme
+(`t.layout` and the `top_bar`, `page_bar`, `status_bar`, `sidebar` and
+`sidebar_item` components): Classic puts the search in the top bar, has no
+page bar and keeps a status bar; a theme can move the sections into a left
+column or the friends list to the left. This is the default theme's layout:
 
 ```
 ┌ top bar, 59 px, chrome ───────────────────────────────────────────────────────┐
@@ -179,7 +210,7 @@ and resize edges.
 ├ page bar, 57 px, tertiary ────────────────────────────────────────────────────┤
 │ [Home] Collections  News …    [Search…        🔍] [⧩][◷][▷]     View [≡][▦][▢]  Activate a Product … │
 ├───────────────────────────────────────────────────────────┬ friends drawer, 290 px ┤
-│ the page (store / library gradient behind it)             │                         │
+│ the page (the area's background behind it)               │                         │
 └───────────────────────────────────────────────────────────┴─────────────────────────┘
 ```
 
@@ -198,7 +229,8 @@ Top bar (Figma `333:2433` "client", top 59 px; `header.png`):
 - While something downloads, Downloads shows a ring and a percentage, with
   the details on hover (this replaces the old status bar at the bottom, which
   the design doesn't have).
-- On the right: the offline badge (when offline), Friends (opens the friends
+- On the right: the offline badge (when offline), the search (when the
+  theme puts it in the top bar), Friends (opens the friends
   drawer; rest the pointer on it for the quick list), Notifications, the
   account button (avatar, name and wallet; its menu has your status, profile,
   settings, the wallet with its actions, and sign-out), Help (Support,
@@ -228,8 +260,11 @@ fn page_bar(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) -> bool {
 ```
 
 `page_bar` runs before `page` in the same frame; the `Ui` is laid out left to
-right, centered vertically, with 10 px in from each end. Return `false` (the
-default) and the bar shows the app-wide search (games, friends, the store).
+right, centered vertically, with the `page_bar` component's padding in from
+each end. A theme can turn the bar off (`t.layout.page_bar`), so a page's
+main navigation shouldn't live only there. Return `false` (the default) and
+the bar shows the app-wide search (games, friends, the store) when the theme
+puts the search there.
 A page that takes the bar over should have its own search there. The sample
 in `builtin/gallery.rs` matches the library's bar.
 

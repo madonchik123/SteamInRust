@@ -1,0 +1,34 @@
+# A small theme: warm accents on the default theme, a textured background
+# for community pages, rounder buttons, and the friends list on the left.
+# Try it with:  steam-rs --theme-dir docs/examples/minimal-theme --demo --no-local
+# docs/themes.md explains every field.
+
+format = 1
+id = "ember"
+name = "Ember"
+author = "SteamInRust"
+version = "1.0.0"
+
+[tokens]
+accent = "#FF8A4C"
+accent_2 = "#B4532A"
+on_accent = "#1A0E08"
+tertiary = "#2A1E1A"
+radius = 8
+radius_small = 6
+
+[backgrounds]
+library = { radial = ["#3A2A24", "#16110F"], center = [40, 40], end = 0.8 }
+community = { image = "images/dots.svg", fit = "tile", tint = "#16110FCC" }
+
+[layout]
+friends_side = "left"
+
+[components.button_play]
+radius = "full"
+hover = { fill = "lighten(play, 0.15)" }
+
+[components.section_tab]
+indicator = "underline"
+border = 2
+selected = { text = "text", border = "accent" }

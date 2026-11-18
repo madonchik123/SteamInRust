@@ -11,7 +11,15 @@ use ui::Theme;
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
+    /// The theme in use (from `skin`; not saved itself).
+    #[serde(skip)]
     pub theme: Theme,
+    /// Which theme the user picked, with their accent and roundness.
+    pub skin: ui::ThemeChoice,
+    /// The whole theme, as app versions before theme packages saved it:
+    /// read once to pick the matching theme package, never written.
+    #[serde(rename = "theme", skip_serializing)]
+    legacy_theme: ui::themes::LegacyTheme,
     pub zoom: f32,
     pub disabled: Vec<String>,
     pub ext_data: HashMap<String, String>,
@@ -64,6 +72,18 @@ fn window_size_flag() -> Option<[f32; 2]> {
     Some([w.parse().ok()?, h.parse().ok()?])
 }
 
+impl Prefs {
+    /// Pick the theme: the saved choice; or, for settings from before theme
+    /// packages, the package matching the saved theme; or the default.
+    pub fn settle_theme(&mut self) {
+        let old = std::mem::take(&mut self.legacy_theme);
+        if self.skin.id.is_empty() {
+            self.skin = if old.is_set() { old.to_choice() } else { ui::ThemeChoice { id: ui::themes::DEFAULT_ID.into(), ..Default::default() } };
+        }
+        self.theme = ui::themes::resolve(&self.skin);
+    }
+}
+
 fn yes() -> bool {
     true
 }
@@ -72,6 +92,9 @@ impl Default for Prefs {
     fn default() -> Self {
         Self {
             theme: Theme::default(),
+            // Empty: filled in at startup (from older settings, or the default).
+            skin: ui::ThemeChoice::default(),
+            legacy_theme: Default::default(),
             zoom: 1.0,
             disabled: Vec::new(),
             ext_data: HashMap::new(),
@@ -174,8 +197,8 @@ impl SteamApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         ui::install_fonts(&cc.egui_ctx);
         let mut prefs: Prefs = cc.storage.and_then(|s| eframe::get_value(s, "prefs")).unwrap_or_default();
-        // A theme saved before the redesign tokens: fill them in.
-        prefs.theme.upgrade();
+        // Settings from before theme packages: the matching package.
+        prefs.settle_theme();
         // `--lang=en` / `--lang=ru` overrides the saved choice (screenshots, testing).
         let lang_flag = std::env::args().find_map(|a| a.strip_prefix("--lang=").map(String::from));
         // The language picked in setup counts until one is chosen in the app.
@@ -301,9 +324,17 @@ impl SteamApp {
         if let Some(page) = flag("page") {
             app.go(page, flag("arg"));
         }
-        // `--theme=Slate`: show one of the built-in themes (previews).
-        if let Some(theme) = flag("theme").and_then(|n| Theme::presets().into_iter().find(|p| p.name.eq_ignore_ascii_case(&n))) {
+        // `--theme=classic`: show a built-in theme (previews; not saved).
+        if let Some(theme) = flag("theme").and_then(|n| ui::themes::builtins().into_iter().find(|p| p.id.eq_ignore_ascii_case(&n) || p.name.eq_ignore_ascii_case(&n))) {
             app.prefs.theme = theme;
+        }
+        // `--theme-dir <folder>`: try a theme package from a folder (for
+        // theme authors; not saved). A theme that can't be read falls back
+        // to the default, with the reason in the log.
+        let args: Vec<String> = std::env::args().collect();
+        let dir = args.iter().position(|a| a == "--theme-dir").and_then(|i| args.get(i + 1).cloned()).or_else(|| flag("theme-dir"));
+        if let Some(dir) = dir {
+            app.prefs.theme = ui::themes::load_dir_or_default(std::path::Path::new(&dir));
         }
         app.login.signing_in = auto_account;
         // `--overlay` opens the Shift+Tab overlay right away (for previews).
@@ -499,10 +530,15 @@ impl SteamApp {
             match a {
                 Action::Navigate { page, arg } => self.navigate(page, arg),
                 Action::Toast(text) => self.toast(now, text, ""),
-                Action::SetTheme(mut t) => {
-                    // Plugins may hand over a theme without the newer tokens.
-                    t.upgrade();
-                    self.prefs.theme = t;
+                Action::SetTheme(t) => {
+                    // A built-in theme with the user's changes: remember the
+                    // choice (the small radius follows the large one).
+                    if ui::themes::builtin(&t.id).is_some() {
+                        self.prefs.skin = ui::themes::choice_for(&t);
+                        self.prefs.theme = ui::themes::resolve(&self.prefs.skin);
+                    } else {
+                        self.prefs.theme = t;
+                    }
                 }
                 Action::SetZoom(z) => self.prefs.zoom = z.clamp(0.7, 2.0),
                 Action::SetEnabled { id, enabled } => {
@@ -930,4 +966,61 @@ enum WindowMode {
     Splash,
     SignIn,
     Main,
+}
+
+#[cfg(test)]
+mod prefs_tests {
+    use super::Prefs;
+    use egui::Color32;
+
+    /// Settings saved before theme packages kept the whole theme; they load
+    /// as the matching theme package with the user's accent, and nothing
+    /// else is lost.
+    #[test]
+    fn settings_from_before_theme_packages_still_load() {
+        #[derive(serde::Serialize)]
+        struct OldTheme {
+            name: String,
+            dark: bool,
+            bg: Color32,
+            accent: Color32,
+            accent_2: Color32,
+            radius: u8,
+        }
+        #[derive(serde::Serialize)]
+        struct OldPrefs {
+            theme: OldTheme,
+            zoom: f32,
+            page: String,
+        }
+        let old = OldPrefs {
+            theme: OldTheme { name: "Aurora".into(), dark: true, bg: Color32::from_rgb(8, 17, 18), accent: Color32::from_rgb(200, 10, 10), accent_2: Color32::from_rgb(56, 189, 248), radius: 12 },
+            zoom: 1.25,
+            page: "store".into(),
+        };
+        let text = ron::ser::to_string(&old).unwrap();
+        let mut prefs: Prefs = ron::from_str(&text).unwrap();
+        assert_eq!(prefs.zoom, 1.25);
+        assert_eq!(prefs.page, "store");
+        let old = prefs.legacy_theme.clone();
+        assert!(old.is_set(), "the old theme is read");
+        let choice = old.to_choice();
+        assert_eq!(choice.id, "aurora");
+        assert_eq!(choice.accent, Some(Color32::from_rgb(200, 10, 10)));
+        // At startup: the matching package, not the new default.
+        prefs.settle_theme();
+        assert_eq!(prefs.theme.id, "aurora");
+        assert_eq!(prefs.theme.accent, Color32::from_rgb(200, 10, 10));
+        // New users get the default theme.
+        let mut fresh = Prefs::default();
+        fresh.settle_theme();
+        assert_eq!(fresh.theme.id, ui::themes::DEFAULT_ID);
+        // A saved choice comes back as it was.
+        let back: Prefs = ron::from_str(&ron::ser::to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(back.skin, prefs.skin);
+        // And new settings don't write the old theme back.
+        let again = ron::ser::to_string(&prefs).unwrap();
+        assert!(!again.contains("legacy"), "{again}");
+        assert!(again.contains("skin"));
+    }
 }
