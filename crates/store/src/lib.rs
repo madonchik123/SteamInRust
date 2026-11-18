@@ -11,6 +11,7 @@ pub mod itad;
 pub mod query;
 pub mod html;
 pub mod reviews;
+pub mod points;
 
 use model::AppId;
 use serde::Deserialize;

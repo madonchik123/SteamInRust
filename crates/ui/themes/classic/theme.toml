@@ -245,3 +245,18 @@ normal = { fill = "raised", text = "text", border = "border" }
 
 [components.progress]
 normal = { fill = "raised" }
+
+[components.store_card]
+padding = [12, 12]
+border = 1
+normal = { fill = "surface", border = "border" }
+hover = { fill = "surface_hover", border = "border" }
+
+[components.shelf]
+padding = [0, 0]
+normal = { fill = "transparent" }
+
+[components.pager]
+height = 4
+normal = { fill = "border" }
+selected = { fill = "accent" }

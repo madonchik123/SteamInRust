@@ -740,8 +740,13 @@ pub fn heart_button(ui: &mut Ui, t: &Theme, on: bool, tooltip: &str) -> Response
 /// The Wishlist button (`wishlist`; Figma `280:345`, `302:1745`): an
 /// outlined heart, solid once wishlisted. `label` adds text after it.
 pub fn wishlist_button(ui: &mut Ui, t: &Theme, wishlisted: bool, label: Option<&str>) -> Response {
+    wishlist_button_sized(ui, t, wishlisted, label, None)
+}
+
+/// [`wishlist_button`] at another height (the store's cards use 44 px).
+pub fn wishlist_button_sized(ui: &mut Ui, t: &Theme, wishlisted: bool, label: Option<&str>, height: Option<f32>) -> Response {
     let c = &t.components.wishlist;
-    let h = t.height_of(c, 53.0);
+    let h = height.unwrap_or_else(|| t.height_of(c, 53.0));
     let fid = t.font_of(c);
     let pad = t.padding_of(c).x;
     let heart = (h * 0.42).round();
@@ -1660,4 +1665,46 @@ impl EditMenu for Response {
         });
         self
     }
+}
+
+// ---------- the store ----------
+
+/// Page dots under a carousel (`pager`; Figma `634:15220`): `n` dots
+/// `width` wide, the current one filling up as `fill` goes from 0 to 1 (how
+/// long until it moves on; 1 when it doesn't). Returns a dot that was clicked.
+pub fn pager(ui: &mut Ui, t: &Theme, n: usize, current: usize, fill: f32, width: f32) -> Option<usize> {
+    let c = &t.components.pager;
+    let h = t.height_of(c, 8.0);
+    let gap = t.spacing.sm + 2.0;
+    let total = n as f32 * width + n.saturating_sub(1) as f32 * gap;
+    let (rect, base) = ui.allocate_exact_size(vec2(ui.available_width().max(total), h.max(14.0)), Sense::hover());
+    let mut picked = None;
+    let left = rect.center().x - total / 2.0;
+    for i in 0..n {
+        let dot = Rect::from_min_size(pos2(left + i as f32 * (width + gap), rect.center().y - h / 2.0), vec2(width, h));
+        let resp = ui.interact(dot.expand2(vec2(gap / 2.0, 4.0)), base.id.with(("pager", i)), Sense::click());
+        let look = t.look(c, interact(ui, &resp, false));
+        paint_box(ui, t, dot, c, &look, 0.0);
+        if i == current {
+            let on = t.look(c, Interact { selected: true, ..Default::default() });
+            // Starts as a round dot and grows to the full width.
+            let w = h + (width - h) * fill.clamp(0.0, 1.0);
+            paint_box(ui, t, Rect::from_min_size(dot.min, vec2(w, h)), c, &on, 0.0);
+        }
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            picked = Some(i);
+        }
+    }
+    picked
+}
+
+/// [`main_cta`] for a right-to-left row (the button is added first, so it
+/// stays on the right): the price block, then the `button_cta` button.
+pub fn main_cta_rtl(ui: &mut Ui, t: &Theme, label: &str, original: Option<&str>, discount: u8, button_label: &str) -> Response {
+    let r = text_box(ui, t, &t.components.button_cta, None, button_label, false, 0.0, None);
+    ui.add_space(t.spacing.md + 1.0 - ui.spacing().item_spacing.x);
+    if !label.is_empty() {
+        price(ui, t, label, original, discount);
+    }
+    r
 }

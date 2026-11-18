@@ -376,6 +376,9 @@ then `pressed` while clicked and `disabled` when it can't be used.
 | `wishlist` | the Wishlist button (`selected` is wishlisted) |
 | `progress` | progress bars: `normal` the track, `selected` the filled part |
 | `toast` | pop-up messages (`selected` `fill` is the bar at their side) |
+| `store_card` | the store's game cards and its pages' blocks (`padding` is the space inside) |
+| `shelf` | the see-through block behind a store shelf or carousel (`padding`: sides, top and bottom) |
+| `pager` | dots under a carousel: `normal` a dot, `selected` the current one (`height` is the dots') |
 
 ## What a theme can't change
 
