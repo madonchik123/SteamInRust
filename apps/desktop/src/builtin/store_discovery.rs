@@ -1,16 +1,184 @@
-//! Store: the discovery queue. Like Steam's, a dozen games picked for you,
-//! each shown as its store page under a bar with "Not interested",
-//! "Wishlist" and "Next in queue".
+//! Store: the discovery queue. Like Steam's, a dozen games picked for you:
+//! as a feed of cards (Figma "discover" `306:2010`), or one at a time, each
+//! shown as its store page under a bar with "Not interested", "Wishlist"
+//! and "Next in queue".
 
-use super::{Store, View};
+use super::{Store, View, store_page::block};
 use client::Command;
-use egui::{Align, Layout, Margin, Ui};
+use egui::{Align, Layout, Margin, Rect, Sense, Ui, UiBuilder, pos2, vec2};
 use extensions::Ctx;
 use i18n::t;
 use model::AppId;
 use ui::{Theme, icons, widgets as w};
 
 impl Store {
+    /// The queue, asked for once; `None` while it loads (or failed: shown).
+    fn queue(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) -> Option<Vec<AppId>> {
+        if ctx.state.discovery.is_none() && !self.discovery_wait {
+            self.discovery_wait = true;
+            ctx.send(Command::LoadDiscoveryQueue { rebuild: false });
+        }
+        let state = if self.discovery_wait { None } else { ctx.state.discovery.clone() };
+        match state {
+            Some(Ok(q)) => Some(q),
+            Some(Err(e)) => {
+                w::empty(ui, t, icons::WARNING, t!("Couldn't load your discovery queue"), &e);
+                ui.add_space(t.spacing.sm);
+                if w::button(ui, t, Some(icons::REFRESH), t!("Try again"), w::Kind::Primary, w::Size::Md).clicked() {
+                    self.discovery_wait = true;
+                    ctx.send(Command::LoadDiscoveryQueue { rebuild: false });
+                }
+                None
+            }
+            None => {
+                w::loading(ui, t, t!("Loading your discovery queue…"));
+                None
+            }
+        }
+    }
+
+    /// The discovery feed (Figma "discover" `306:2010`): every game in the
+    /// queue as a card.
+    pub(super) fn discover_page(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        let me = ctx.state.persona(ctx.state.steam_id).name;
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = t.spacing.sm;
+                let title = if me.is_empty() { t!("Your discovery feed").to_string() } else { t!("{name}'s Discovery Feed", name = me) };
+                ui.label(w::heading_l(t, title, t.text));
+                ui.label(w::body_m(t, t!("Games Steam picked for you, from what you play and what you want."), t.text));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = t.dense(10.0);
+                if w::button(ui, t, Some(icons::REFRESH), t!("New picks"), w::Kind::Tertiary, w::Size::Md).on_hover_text(t!("Ask Steam for a new set of games")).clicked() {
+                    self.discovery_wait = true;
+                    ctx.send(Command::LoadDiscoveryQueue { rebuild: true });
+                }
+                if w::button(ui, t, Some(icons::STACK), t!("One at a time"), w::Kind::Secondary, w::Size::Md).on_hover_text(t!("Go through the queue game by game")).clicked() {
+                    self.open(View::Discovery(0));
+                }
+            });
+        });
+        ui.add_space(t.dense(60.0));
+        let Some(queue) = self.queue(ui, t, ctx) else { return };
+        if queue.is_empty() {
+            w::empty(ui, t, icons::STACK, t!("Your discovery queue is empty"), t!("Steam picks a new set of games for you each time."));
+            return;
+        }
+        for id in queue {
+            self.feed_card(ui, t, ctx, id);
+            ui.add_space(t.dense(40.0));
+        }
+    }
+
+    /// One game in the feed: a big picture and three more, then its name,
+    /// tags, systems, release date and reviews, with Ignore, Wishlist,
+    /// "Find more like this", the price and "Visit Store Page".
+    fn feed_card(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId) {
+        if self.safe(id) == Some(false) {
+            return;
+        }
+        let d = self.details(id);
+        let info = self.browse_info(id);
+        block(t).inner_margin(Margin::same(t.dense(15.0) as i8)).show(ui, |ui| {
+            let width = ui.available_width();
+            ui.set_width(width);
+            let gap = t.dense(8.0);
+            let big_w = (width * 520.0 / 1531.0).round().max(t.dense(260.0));
+            let h = (big_w * 0.5625).round();
+            let small_h = ((h - 2.0 * gap) / 3.0).floor();
+            let small_w = (small_h / 0.5625).round();
+            let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
+            let big = Rect::from_min_size(rect.min, vec2(big_w, h));
+            let Some(d) = d else {
+                w::skeleton(ui, t, rect, t.corner_small());
+                return;
+            };
+            let open_big = ui.interact(big, ui.scope_id().with(("feed-art", id)), Sense::click());
+            let shots = &d.screenshots;
+            w::image_or_skeleton(ui, t, big, shots.first().map(|s| s.full.as_str()).unwrap_or(&d.header), t.corner_small());
+            let mut x = big.right() + gap;
+            if width > t.dense(900.0) {
+                for (i, s) in shots.iter().skip(1).take(3).enumerate() {
+                    let r = Rect::from_min_size(pos2(x, rect.top() + i as f32 * (small_h + gap)), vec2(small_w, small_h));
+                    w::image_or_skeleton(ui, t, r, &s.thumb, t.corner_small());
+                }
+                x += small_w + gap;
+            }
+            let info_r = Rect::from_min_max(pos2(x + t.dense(9.0), rect.top()), rect.max);
+            // Top right: Ignore and Wishlist.
+            let wished = ctx.state.wishlist.as_ref().is_some_and(|l| l.iter().any(|(a, _)| *a == id));
+            let ignored = ctx.state.ignored.contains(&id);
+            let owned = self.owned.contains(&id);
+            let mut top = ui.new_child(UiBuilder::new().max_rect(info_r).layout(Layout::right_to_left(Align::Min)));
+            top.spacing_mut().item_spacing.x = t.dense(10.0);
+            if !owned && w::button(&mut top, t, if wished { Some(icons::CHECK) } else { None }, t!("Wishlist"), w::Kind::Secondary, w::Size::Md).clicked() {
+                ctx.send(if wished { Command::WishlistRemove { app_id: id } } else { Command::WishlistAdd { app_id: id } });
+            }
+            let label = if ignored { t!("Ignored") } else { t!("Ignore") };
+            if w::button(&mut top, t, None, label, w::Kind::Secondary, w::Size::Md).on_hover_text(t!("Hide it from your recommendations")).clicked() {
+                ctx.send(Command::IgnoreApp { app_id: id, ignore: !ignored });
+            }
+            let buttons_w = info_r.right() - top.min_rect().left() + t.dense(10.0);
+            // Name, tags, systems and date, reviews.
+            let text_r = Rect::from_min_max(info_r.min, pos2((info_r.right() - buttons_w).max(info_r.left() + 10.0), info_r.bottom() - t.dense(50.0)));
+            let mut c = ui.new_child(UiBuilder::new().max_rect(text_r).layout(Layout::top_down(Align::Min)));
+            c.set_clip_rect(text_r.intersect(ui.clip_rect()));
+            c.spacing_mut().item_spacing.y = t.dense(10.0);
+            c.add(egui::Label::new(w::heading_m(t, &d.name, t.text)).truncate().selectable(false));
+            let tags = self.top_tags(id, &d.genres, 4);
+            let mut picked = None;
+            c.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = t.spacing.xs;
+                for (tag, name) in &tags {
+                    if w::tag(ui, t, name, None, w::TagState::Plain).clicked() {
+                        picked = *tag;
+                    }
+                }
+            });
+            c.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = t.dense(10.0);
+                let (win, mac, lin) = d.platforms;
+                let systems: String = [(win, icons::WINDOWS), (mac, icons::APPLE), (lin, icons::LINUX)].iter().filter(|x| x.0).map(|x| x.1).collect::<Vec<_>>().join("  ");
+                ui.label(w::body_l(t, systems, t.text_dim));
+                ui.label(w::body_m(t, &d.release_date, t.text_dim));
+            });
+            if let Some(r) = info.as_ref().and_then(|i| i.reviews.clone()) {
+                c.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.dense(10.0);
+                    w::review_bar(ui, t, r.percent_positive.min(100) as u8, t.dense(138.0));
+                    ui.label(w::body_s(t, t!("{count} user reviews", count = super::thousands(r.count as u64)), t.accent));
+                });
+            }
+            // Bottom: "Find more like this" on the left; price and the store page on the right.
+            let bottom = Rect::from_min_max(pos2(info_r.left(), info_r.bottom() - t.dense(44.0)), info_r.max);
+            let mut b = ui.new_child(UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)));
+            if let Some(tag) = tags.iter().find_map(|(id, _)| *id) {
+                if w::button(&mut b, t, None, t!("Find more like this"), w::Kind::Secondary, w::Size::Md).clicked() {
+                    picked = Some(tag);
+                }
+            }
+            let mut open = open_big.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+            b.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = t.dense(13.0);
+                open |= w::button(ui, t, None, t!("Visit Store Page"), w::Kind::Secondary, w::Size::Md).clicked();
+                if owned {
+                    ui.label(w::body_l(t, t!("In library"), t.play));
+                } else if let Some(p) = &d.price {
+                    w::price(ui, t, &p.label(), p.original_label().as_deref(), p.discount);
+                } else if d.is_free {
+                    ui.label(w::styled(t!("Free"), t.typography.price, t.text_dim));
+                }
+            });
+            if let Some(tag) = picked {
+                self.open_tag(tag);
+            }
+            if open {
+                self.open(View::App(id));
+            }
+        });
+    }
+
     /// The queue at `pos` (one past the end: the "you're done" card).
     pub(super) fn discovery_page(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pos: usize) {
         if ctx.state.discovery.is_none() && !self.discovery_wait {
@@ -42,7 +210,7 @@ impl Store {
         };
 
         // The queue bar, then the game's store page.
-        egui::Frame::new().fill(t.surface).inner_margin(Margin::symmetric(28, 12)).show(ui, |ui| {
+        w::component_frame(t, &t.components.store_card).corner_radius(0).inner_margin(Margin::symmetric(28, 12)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(w::text(icons::STACK, 18.0, t.accent));
@@ -77,6 +245,9 @@ impl Store {
                     }
                     if pos > 0 && w::button(ui, t, Some(icons::ARROW_LEFT), t!("Previous"), w::Kind::Ghost, w::Size::Md).clicked() {
                         self.open(View::Discovery(pos - 1));
+                    }
+                    if w::button(ui, t, Some(icons::LIST), t!("See them all"), w::Kind::Ghost, w::Size::Md).on_hover_text(t!("The whole queue as a list")).clicked() {
+                        self.open(View::Discover);
                     }
                 });
             });

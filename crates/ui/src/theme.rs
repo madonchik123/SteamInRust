@@ -724,6 +724,13 @@ pub struct Components {
     pub progress: Component,
     /// Toast messages.
     pub toast: Component,
+    /// A game card on the store's shelves and carousel (Figma `426:4456`).
+    pub store_card: Component,
+    /// The block behind a store shelf or carousel (Figma `634:15211`).
+    pub shelf: Component,
+    /// Page dots under a carousel: `normal` a dot, `selected` the current
+    /// page (filling up while it waits to move on; Figma `634:15220`).
+    pub pager: Component,
 }
 
 // ---------- assets ----------
@@ -1153,6 +1160,9 @@ impl Components {
             ("wishlist", &self.wishlist),
             ("progress", &self.progress),
             ("toast", &self.toast),
+            ("store_card", &self.store_card),
+            ("shelf", &self.shelf),
+            ("pager", &self.pager),
         ]
     }
 }

@@ -355,3 +355,23 @@ height = 6
 radius = "full"
 normal = { fill = "surface_hover" }
 selected = { fill = "accent" }
+
+# ---- the store ----
+
+[components.store_card]
+padding = [15, 15]
+radius = "large"
+normal = { fill = "chrome" }
+hover = { fill = "mix(chrome, surface, 0.5)" }
+
+[components.shelf]
+padding = [15, 20]
+radius = "large"
+normal = { fill = "chrome@0.2" }
+
+[components.pager]
+height = 8
+radius = "full"
+normal = { fill = "chrome" }
+hover = { fill = "raised" }
+selected = { fill = "accent_2" }
