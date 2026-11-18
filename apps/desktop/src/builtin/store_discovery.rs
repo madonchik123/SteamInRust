@@ -11,22 +11,53 @@ use i18n::t;
 use model::AppId;
 use ui::{Theme, icons, widgets as w};
 
+/// How long to wait for Steam to send a queue before saying so.
+const QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl Store {
+    /// Ask Steam for the queue; `rebuild` asks for a new set of games
+    /// (Steam's "Start another queue").
+    fn ask_queue(&mut self, ctx: &mut Ctx, rebuild: bool) {
+        self.discovery_wait = true;
+        self.discovery_late = false;
+        self.discovery_asked = Some(std::time::Instant::now());
+        ctx.send(Command::LoadDiscoveryQueue { rebuild });
+    }
+
+    /// The queue as it stands: asked for once, `None` while Steam answers,
+    /// an error if it didn't answer in time.
+    fn queue_state(&mut self, ctx: &mut Ctx) -> Option<Result<Vec<AppId>, String>> {
+        if ctx.state.discovery.is_none() && !self.discovery_wait && !self.discovery_late {
+            self.ask_queue(ctx, false);
+        }
+        if self.discovery_wait {
+            let asked = self.discovery_asked.get_or_insert_with(std::time::Instant::now);
+            if asked.elapsed() < QUEUE_WAIT {
+                self.egui.request_repaint_after(std::time::Duration::from_secs(1));
+                return None;
+            }
+            self.discovery_wait = false;
+            self.discovery_asked = None;
+            self.discovery_late = true;
+        }
+        // Stays until asked again (not the old queue behind it).
+        if self.discovery_late {
+            return Some(Err(t!("Steam didn't send a queue. Try again in a moment.").to_string()));
+        }
+        ctx.state.discovery.clone()
+    }
+
     /// The queue, asked for once; `None` while it loads (or failed: shown).
     fn queue(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) -> Option<Vec<AppId>> {
-        if ctx.state.discovery.is_none() && !self.discovery_wait {
-            self.discovery_wait = true;
-            ctx.send(Command::LoadDiscoveryQueue { rebuild: false });
-        }
-        let state = if self.discovery_wait { None } else { ctx.state.discovery.clone() };
+        let state = self.queue_state(ctx);
         match state {
             Some(Ok(q)) => Some(q),
             Some(Err(e)) => {
                 w::empty(ui, t, icons::WARNING, t!("Couldn't load your discovery queue"), &e);
                 ui.add_space(t.spacing.sm);
-                if w::button(ui, t, Some(icons::REFRESH), t!("Try again"), w::Kind::Primary, w::Size::Md).clicked() {
-                    self.discovery_wait = true;
-                    ctx.send(Command::LoadDiscoveryQueue { rebuild: false });
+                let again = ui.vertical_centered(|ui| w::button(ui, t, Some(icons::REFRESH), t!("Try again"), w::Kind::Primary, w::Size::Md).clicked()).inner;
+                if again {
+                    self.ask_queue(ctx, false);
                 }
                 None
             }
@@ -50,9 +81,10 @@ impl Store {
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = t.dense(10.0);
-                if w::button(ui, t, Some(icons::REFRESH), t!("New picks"), w::Kind::Tertiary, w::Size::Md).on_hover_text(t!("Ask Steam for a new set of games")).clicked() {
-                    self.discovery_wait = true;
-                    ctx.send(Command::LoadDiscoveryQueue { rebuild: true });
+                let waiting = self.discovery_wait;
+                let r = ui.add_enabled_ui(!waiting, |ui| w::button(ui, t, Some(icons::REFRESH), t!("New picks"), w::Kind::Tertiary, w::Size::Md)).inner;
+                if r.on_hover_text(t!("Marks these games as seen and asks Steam for a new set")).clicked() {
+                    self.ask_queue(ctx, true);
                 }
                 if w::button(ui, t, Some(icons::STACK), t!("One at a time"), w::Kind::Secondary, w::Size::Md).on_hover_text(t!("Go through the queue game by game")).clicked() {
                     self.open(View::Discovery(0));
@@ -97,6 +129,7 @@ impl Store {
             let open_big = ui.interact(big, ui.scope_id().with(("feed-art", id)), Sense::click());
             let shots = &d.screenshots;
             w::image_or_skeleton(ui, t, big, shots.first().map(|s| s.full.as_str()).unwrap_or(&d.header), t.corner_small());
+            super::more::hover_wash(ui, t, big, &open_big);
             let mut x = big.right() + gap;
             if width > t.dense(900.0) {
                 for (i, s) in shots.iter().skip(1).take(3).enumerate() {
@@ -181,11 +214,7 @@ impl Store {
 
     /// The queue at `pos` (one past the end: the "you're done" card).
     pub(super) fn discovery_page(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pos: usize) {
-        if ctx.state.discovery.is_none() && !self.discovery_wait {
-            self.discovery_wait = true;
-            ctx.send(Command::LoadDiscoveryQueue { rebuild: false });
-        }
-        let state = if self.discovery_wait { None } else { ctx.state.discovery.clone() };
+        let state = self.queue_state(ctx);
         let queue: Vec<AppId> = match state {
             Some(Ok(q)) => q,
             Some(Err(e)) => {
@@ -193,8 +222,7 @@ impl Store {
                     w::empty(ui, t, icons::WARNING, t!("Couldn't load your discovery queue"), &e);
                     ui.add_space(8.0);
                     if w::button(ui, t, Some(icons::REFRESH), t!("Try again"), w::Kind::Primary, w::Size::Md).clicked() {
-                        self.discovery_wait = true;
-                        ctx.send(Command::LoadDiscoveryQueue { rebuild: false });
+                        self.ask_queue(ctx, false);
                     }
                 });
                 return;
@@ -278,8 +306,7 @@ impl Store {
                         // Centered pair of buttons.
                         ui.add_space((ui.available_width() - 360.0).max(0.0) / 2.0);
                         if w::button(ui, t, Some(icons::REFRESH), t!("Start another queue"), w::Kind::Primary, w::Size::Md).clicked() {
-                            self.discovery_wait = true;
-                            ctx.send(Command::LoadDiscoveryQueue { rebuild: true });
+                            self.ask_queue(ctx, true);
                             self.open(View::Discovery(0));
                         }
                         if w::button(ui, t, Some(icons::ARROW_LEFT), t!("Back to the store"), w::Kind::Ghost, w::Size::Md).clicked() {

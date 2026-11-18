@@ -129,6 +129,10 @@ pub struct Store {
     tv_search: Option<(String, Shared<Vec<Item>>)>,
     /// A discovery queue was asked for and hasn't arrived yet.
     discovery_wait: bool,
+    /// When the queue was asked for (to stop waiting if Steam never answers).
+    discovery_asked: Option<std::time::Instant>,
+    /// Steam didn't send the queue in time: say so until asked again.
+    discovery_late: bool,
     /// Writing your review of a game you own.
     review: review::ReviewBox,
     /// The clip playing on the card under the pointer.
@@ -192,6 +196,8 @@ impl Store {
             lists_requested: false,
             tv_search: None,
             discovery_wait: false,
+            discovery_asked: None,
+            discovery_late: false,
             review: Default::default(),
             micro: Default::default(),
             reviews_list: Default::default(),
@@ -484,6 +490,8 @@ impl Extension for Store {
     fn on_event(&mut self, event: &client::Event, ctx: &mut Ctx) {
         if let client::Event::DiscoveryQueue(_) = event {
             self.discovery_wait = false;
+            self.discovery_asked = None;
+            self.discovery_late = false;
         }
         self.review.on_event(event, ctx);
         if let client::Event::FreeLicense { app_id, result } = event {

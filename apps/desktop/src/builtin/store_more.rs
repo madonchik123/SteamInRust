@@ -147,8 +147,10 @@ fn filter_group(ui: &mut Ui, t: &Theme, id: &str, title: &str, add: impl FnOnce(
     let key = ui.scope_id().with(("filter-group", id));
     let mut open = ui.data_mut(|d| *d.get_temp_mut_or(key, true));
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), t.dense(36.0)), Sense::click());
-    ui.painter().text(r.left_center(), Align2::LEFT_CENTER, title, t.typography.body_l.font(), t.text);
-    ui.painter().text(r.right_center() - vec2(4.0, 0.0), Align2::RIGHT_CENTER, if open { icons::CARET_DOWN } else { icons::CARET_RIGHT }, t.typography.body_m.font(), t.text);
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    let color = w::mix(t.text, t.accent, hover);
+    ui.painter().text(r.left_center(), Align2::LEFT_CENTER, title, t.typography.body_l.font(), color);
+    ui.painter().text(r.right_center() - vec2(4.0, 0.0), Align2::RIGHT_CENTER, if open { icons::CARET_DOWN } else { icons::CARET_RIGHT }, t.typography.body_m.font(), color);
     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         open = !open;
         ui.data_mut(|d| d.insert_temp(key, open));
@@ -438,6 +440,7 @@ impl Store {
         let img_h = h - pad * 2.0 - if compact { t.dense(20.0) } else { 0.0 };
         let img = Rect::from_min_size(pos2(left, rect.center().y - img_h / 2.0), vec2((img_h * 460.0 / 215.0).round(), img_h));
         w::image_or_skeleton(ui, t, img, &it.header, t.corner_small());
+        hover_wash(ui, t, img, &resp);
         let owned = ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(&it.app_id));
         let wished = ctx.state.wishlist.as_ref().is_some_and(|l| l.iter().any(|(a, _)| *a == it.app_id));
         let right_w = if compact { t.dense(230.0) } else { t.dense(330.0) };
@@ -797,14 +800,8 @@ impl Store {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = t.dense(9.0);
                     let tip = t!("Steam only takes payment on its website, so checkout opens in your browser.");
-                    if w::button(ui, t, None, t!("Purchase for myself"), w::Kind::Primary, w::Size::Lg).on_hover_text(tip).clicked() {
-                        crate::links::open_http("https://store.steampowered.com/cart");
-                    }
-                    let gift_tip = t!("Makes every copy a gift, then opens checkout in your browser, where you pick who gets them.");
-                    if w::button(ui, t, None, t!("Purchase as a gift"), w::Kind::Primary, w::Size::Lg).on_hover_text(gift_tip).clicked() {
-                        for l in lines.iter().filter(|l| !l.is_gift) {
-                            ctx.send(Command::CartModify { line_item_id: l.line_item_id, gift: true, gift_to: None });
-                        }
+                    // Gifts are picked per copy above; Steam takes the payment on its own page.
+                    if w::button(ui, t, None, t!("Checkout"), w::Kind::Primary, w::Size::Lg).on_hover_text(tip).clicked() {
                         crate::links::open_http("https://store.steampowered.com/cart");
                     }
                 });
@@ -900,10 +897,14 @@ impl Store {
         }
         let mut close = false;
         let mut acts = Vec::new();
+        // Centered, and never wider or taller than the window allows.
+        let screen = ui.ctx().content_rect();
+        let width = (screen.width() - 2.0 * t.dense(48.0)).clamp(320.0, t.dense(720.0));
+        let list_h = (screen.height() - t.dense(300.0)).clamp(120.0, t.dense(420.0));
         egui::Modal::new(egui::Id::unique("cart-popup")).show(ui.ctx(), |ui| {
-            ui.set_width(620.0);
+            ui.set_width(width);
             ui.horizontal(|ui| {
-                ui.label(w::text_bold(t!("Added to your cart!"), 20.0, t.text));
+                ui.label(w::heading_m(t, t!("Added to your cart!"), t.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if w::icon_button(ui, t, icons::X, t!("Close"), false, 0).clicked() {
                         close = true;
@@ -914,13 +915,18 @@ impl Store {
             if lines.is_empty() {
                 w::loading(ui, t, t!("Adding…"));
             }
-            egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = t.dense(8.0);
                 for l in &lines {
                     let art = model::art::header(pop.app);
-                    if let (Some(a), _) = cart_row(ui, t, ctx, l, &lines, &pop.name, &art, pop.price.as_ref(), pop.owned) {
+                    let (act, open) = cart_row(ui, t, ctx, l, &lines, &pop.name, &art, pop.price.as_ref(), pop.owned);
+                    if let Some(a) = act {
                         acts.push(a);
                     }
-                    ui.add_space(6.0);
+                    if open {
+                        close = true;
+                        self.open(View::App(pop.app));
+                    }
                 }
             });
             ui.add_space(10.0);
@@ -1060,22 +1066,16 @@ impl Store {
         }
     }
 
+    /// The price history block: only with an IsThereAnyDeal key (Settings
+    /// → Store preferences); without one the page doesn't show it.
     pub(super) fn price_history(&mut self, ui: &mut Ui, t: &Theme, id: AppId) {
+        if self.itad_key.trim().is_empty() {
+            return;
+        }
         super::store_page::block(t).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(w::heading_s(t, t!("Price history"), t.text_dim));
             ui.add_space(t.spacing.sm);
-            if self.itad_key.trim().is_empty() {
-                let local = self.price_log.get(&id).cloned().unwrap_or_default();
-                if local.len() >= 2 {
-                    let pts: Vec<(u64, f64)> = local.iter().map(|(t, c)| (*t, *c as f64 / 100.0)).collect();
-                    chart(ui, t, &pts, "");
-                    ui.label(w::text(t!("Prices you've seen in SteamInRust."), 12.0, t.text_faint));
-                } else {
-                    ui.label(w::text(t!("Add a free IsThereAnyDeal API key in Settings → Store preferences to see this game's full price history and all-time low."), 13.0, t.text_dim));
-                }
-                return;
-            }
             if !self.history.contains_key(&id) {
                 let (api, key) = (self.api.clone(), self.itad_key.clone());
                 let slot = self.fetch(async move { api.price_history(&key, id).await });
@@ -1183,10 +1183,13 @@ pub enum CartAct {
     ChooseFriend(u64, Option<SteamId>),
 }
 
-/// One cart line (Figma "cart" `397:11087`'s rows): art, name, systems,
-/// "For my account" / "This is a gift" (and who it's for), the price, then
-/// Add another copy and Remove. `same` = every line of this package.
-/// Returns what was asked for, and whether the game was clicked.
+/// One cart line (Figma "cart" `397:11087`'s rows), laid out in fixed
+/// areas so nothing runs into anything at any width: the picture; the name
+/// on its own line with "For my account" / "This is a gift" under it (and,
+/// for a gift, who it's for on the line after); then a column on the right
+/// with room kept for the price, Add another copy and Remove. `same` = every
+/// line of this package. Returns what was asked for, and whether the game
+/// was clicked.
 #[allow(clippy::too_many_arguments)]
 fn cart_row(ui: &mut Ui, t: &Theme, ctx: &Ctx, l: &model::CartLine, same: &[model::CartLine], name: &str, art: &str, price: Option<&(String, Option<String>, u8)>, owned: bool) -> (Option<CartAct>, bool) {
     let mut act = None;
@@ -1195,72 +1198,101 @@ fn cart_row(ui: &mut Ui, t: &Theme, ctx: &Ctx, l: &model::CartLine, same: &[mode
     // for the account, and not for a game already owned.
     let mine_elsewhere = same.iter().any(|x| x.line_item_id != l.line_item_id && !x.is_gift);
     let can_be_mine = !owned && !mine_elsewhere;
-    let pad = t.dense(13.0) as i8;
-    w::component_frame(t, &t.components.store_card).inner_margin(egui::Margin::same(pad)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = t.dense(24.0);
-            let (r, resp) = ui.allocate_exact_size(vec2(t.dense(160.0), t.dense(75.0)), Sense::click());
-            w::image_or_skeleton(ui, t, r, art, t.corner_small());
-            open |= resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = t.dense(4.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = t.dense(18.0);
-                    open |= ui.add(egui::Label::new(w::heading_s(t, name, t.text)).truncate().sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
-                    ui.label(w::body_l(t, icons::WINDOWS, t.text_dim));
-                });
-                ui.horizontal(|ui| {
-                    let current = if l.is_gift { t!("This is a gift") } else { t!("For my account") };
-                    let r = w::dropdown(ui, t, current, t.dense(150.0));
-                    egui::Popup::menu(&r).show(|ui| {
-                        let mine = ui.add_enabled_ui(can_be_mine || !l.is_gift, |ui| w::menu_item(ui, t, if l.is_gift { "" } else { icons::CHECK }, t!("For my account"))).inner;
-                        let mine = if owned { mine.on_disabled_hover_text(t!("You already own this game")) } else { mine.on_disabled_hover_text(t!("Another copy is already for your account")) };
-                        if mine.clicked() && l.is_gift {
-                            act = Some(CartAct::SetGift(l.line_item_id, false));
-                        }
-                        if w::menu_item(ui, t, if l.is_gift { icons::CHECK } else { "" }, t!("This is a gift")).clicked() && !l.is_gift {
-                            act = Some(CartAct::SetGift(l.line_item_id, true));
-                        }
-                    });
-                    if l.is_gift {
-                        let base = ctx.state.steam_id & 0xFFFF_FFFF_0000_0000;
-                        let to = l.gift_to.map(|acc| base | acc as u64);
-                        match to {
-                            Some(id) => {
-                                ui.label(w::body_s(t, format!("{}  {}", icons::USER, t!("For {name}", name = ctx.state.persona(id).name)), t.accent));
-                                if ui.link(w::body_s(t, t!("Change"), t.text_dim)).clicked() {
-                                    act = Some(CartAct::ChooseFriend(l.line_item_id, to));
-                                }
-                            }
-                            None => {
-                                if ui.link(w::body_s(t, format!("{}  {}", icons::USER, t!("Choose a friend…")), t.accent)).on_hover_text(t!("Or pick who gets it on Steam's checkout page")).clicked() {
-                                    act = Some(CartAct::ChooseFriend(l.line_item_id, None));
-                                }
-                            }
-                        }
-                    }
-                });
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = t.dense(12.0);
-                if w::icon_box(ui, t, icons::TRASH, t!("Remove"), false).clicked() {
-                    act = Some(CartAct::Remove(l.line_item_id));
-                }
-                if w::icon_box(ui, t, icons::PLUS, t!("Another copy, as a gift"), false).clicked() {
-                    act = Some(CartAct::AddCopy);
-                }
-                ui.add_space(t.dense(30.0));
-                match price {
-                    Some((label, original, discount)) => w::price_tag(ui, t, label, original.as_deref(), *discount),
-                    None => {
-                        ui.label(w::styled(&l.price, t.typography.price, t.price));
-                    }
-                }
-            });
-        });
+    let c = &t.components.store_card;
+    let pad = t.dense(13.0);
+    let gap = t.dense(16.0);
+    let width = ui.available_width();
+    let narrow = width < t.dense(720.0);
+    let art_size = if narrow { vec2(t.dense(120.0), t.dense(56.0)) } else { vec2(t.dense(160.0), t.dense(75.0)) };
+    // The middle column: name, the dropdown, and a gift's recipient.
+    let name_h = (t.typography.heading_s.size * 1.35).round();
+    let drop_h = t.height_of(&t.components.sort, 39.0);
+    let line_h = (t.typography.body_s.size * 1.5).round();
+    let spacing = t.dense(6.0);
+    let mid_h = name_h + spacing + drop_h + if l.is_gift { spacing + line_h } else { 0.0 };
+    let h = pad * 2.0 + art_size.y.max(mid_h);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return (None, false);
+    }
+    w::paint_box(ui, t, rect, c, &t.look(c, Default::default()), 0.0);
+    let inner = rect.shrink(pad);
+    // The picture, opening the game's page.
+    let art_r = Rect::from_min_size(pos2(inner.left(), inner.center().y - art_size.y / 2.0), art_size);
+    let art_resp = ui.interact(art_r, ui.scope_id().with(("cart-art", l.line_item_id)), Sense::click());
+    w::image_or_skeleton(ui, t, art_r, art, t.corner_small());
+    hover_wash(ui, t, art_r, &art_resp);
+    open |= art_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    // The right column: price, then Add and Remove, with room kept for them.
+    let icon_w = t.height_of(&t.components.icon_box, 34.0);
+    let right_w = (t.dense(150.0) + 2.0 * icon_w + t.dense(24.0)).min(inner.width() * 0.45);
+    let right = Rect::from_min_max(pos2(inner.right() - right_w, inner.top()), inner.max);
+    let mut r = ui.new_child(egui::UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)));
+    r.spacing_mut().item_spacing.x = t.dense(8.0);
+    if w::icon_box(&mut r, t, icons::TRASH, t!("Remove"), false).clicked() {
+        act = Some(CartAct::Remove(l.line_item_id));
+    }
+    if w::icon_box(&mut r, t, icons::PLUS, t!("Another copy, as a gift"), false).clicked() {
+        act = Some(CartAct::AddCopy);
+    }
+    r.add_space(t.dense(8.0));
+    match price {
+        Some((label, original, discount)) => w::price_tag(&mut r, t, label, original.as_deref(), *discount),
+        None => {
+            r.label(w::styled(&l.price, t.typography.price, t.price));
+        }
+    }
+    // The middle: everything stays inside its own area.
+    let mid = Rect::from_min_max(pos2(art_r.right() + gap, inner.top()), pos2(right.left() - gap, inner.bottom()));
+    let mid = Rect::from_center_size(pos2(mid.center().x, inner.center().y), vec2(mid.width().max(10.0), mid_h.min(inner.height())));
+    let mut m = ui.new_child(egui::UiBuilder::new().max_rect(mid).layout(Layout::top_down(Align::Min)));
+    m.set_clip_rect(mid.expand(2.0).intersect(ui.clip_rect()));
+    m.spacing_mut().item_spacing.y = spacing;
+    let name_r = m.add(egui::Label::new(w::heading_s(t, name, t.text)).truncate().sense(Sense::click()).selectable(false));
+    if name_r.hovered() {
+        m.painter().hline(name_r.rect.x_range(), name_r.rect.bottom(), Stroke::new(1.0, t.text));
+    }
+    open |= name_r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    let current = if l.is_gift { t!("This is a gift") } else { t!("For my account") };
+    let dd = w::dropdown(&mut m, t, current, t.dense(150.0).min(mid.width()));
+    egui::Popup::menu(&dd).show(|ui| {
+        let mine = ui.add_enabled_ui(can_be_mine || !l.is_gift, |ui| w::menu_item(ui, t, if l.is_gift { "" } else { icons::CHECK }, t!("For my account"))).inner;
+        let mine = if owned { mine.on_disabled_hover_text(t!("You already own this game")) } else { mine.on_disabled_hover_text(t!("Another copy is already for your account")) };
+        if mine.clicked() && l.is_gift {
+            act = Some(CartAct::SetGift(l.line_item_id, false));
+        }
+        if w::menu_item(ui, t, if l.is_gift { icons::CHECK } else { "" }, t!("This is a gift")).clicked() && !l.is_gift {
+            act = Some(CartAct::SetGift(l.line_item_id, true));
+        }
     });
+    if l.is_gift {
+        let base = ctx.state.steam_id & 0xFFFF_FFFF_0000_0000;
+        let to = l.gift_to.map(|acc| base | acc as u64);
+        let (text, color, tip) = match to {
+            Some(id) => (format!("{}  {} · {}", icons::USER, t!("For {name}", name = ctx.state.persona(id).name), t!("Change")), t.accent, None),
+            None => (format!("{}  {}", icons::USER, t!("Choose a friend…")), t.accent, Some(t!("Or pick who gets it on Steam's checkout page"))),
+        };
+        let r = m.add(egui::Label::new(w::body_s(t, text, color)).truncate().sense(Sense::click()).selectable(false));
+        if r.hovered() {
+            m.painter().hline(r.rect.x_range(), r.rect.bottom(), Stroke::new(1.0, color));
+        }
+        let r = match tip {
+            Some(tip) => r.on_hover_text(tip),
+            None => r,
+        };
+        if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            act = Some(CartAct::ChooseFriend(l.line_item_id, to));
+        }
+    }
     (act, open)
+}
+
+/// A light wash over a picture while the pointer is on it (clickable art).
+pub(super) fn hover_wash(ui: &Ui, t: &Theme, rect: Rect, resp: &egui::Response) {
+    let hover = ui.ctx().animate_bool_with_time(resp.id.with("wash"), resp.hovered(), 0.12);
+    if hover > 0.0 {
+        ui.painter().rect_filled(rect, t.corner_small(), t.overlay_light(0).gamma_multiply(hover));
+    }
 }
 
 /// Add up prices as Steam wrote them ("$14.99", "1 299,00₽"…), in the

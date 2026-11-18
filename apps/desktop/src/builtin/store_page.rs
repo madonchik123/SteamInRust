@@ -392,12 +392,14 @@ impl Store {
                     if !w::paint_cover(ui, r, &it.image, t.corner_small()) {
                         w::skeleton(ui, t, r, t.corner_small());
                     }
+                    super::more::hover_wash(ui, t, r, &resp);
                     open |= resp.on_hover_text(&it.name).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
                 }
                 let more = page.total.saturating_sub(4);
                 if more > 0 {
                     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
-                    ui.painter().rect_filled(r, t.corner_small(), row_fill(t));
+                    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+                    ui.painter().rect_filled(r, t.corner_small(), w::mix(row_fill(t), t.surface_hover, hover));
                     ui.painter().text(r.center(), Align2::CENTER_CENTER, format!("+{more}"), t.typography.body_l.font(), t.text);
                     open |= resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
                 }
@@ -498,7 +500,8 @@ impl Store {
                 w::image_or_skeleton(ui, t, main, &s.thumb, t.corner_small());
             }
         }
-        if resp.clicked() && self.shot >= n_tr {
+        // A screenshot moves on to the next when clicked.
+        if self.shot >= n_tr && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             self.step_shot(1, total);
         }
         ui.add_space(t.dense(20.0) - ui.spacing().item_spacing.y);

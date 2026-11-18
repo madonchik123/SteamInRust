@@ -68,10 +68,10 @@ impl Store {
             .collect()
     }
 
-    fn more(&mut self, id: AppId, order: Order, next: u32) {
+    fn more(&mut self, id: AppId, order: Order, next: String) {
         let filter = self.reviews_list.filter;
         let api = self.api.clone();
-        let page = self.fetch(async move { api.reviews(id, order, filter, next).await });
+        let page = self.fetch(async move { api.reviews_next(&next).await });
         self.reviews_list.pages.get_mut(&(id, order, filter)).expect("loaded").push(page);
     }
 
@@ -214,8 +214,10 @@ impl Store {
         } else if seen.is_empty() {
             let none = if self.reviews_list.filter.all_languages { t!("No reviews match these filters.") } else { t!("No reviews in your language match these filters.") };
             ui.label(w::text(none, 13.0, t.text_faint));
-        } else if pages.last().and_then(|p| p.as_ref()).is_some_and(|p| p.more) && w::button(ui, t, Some(icons::CARET_DOWN), t!("Show more reviews"), w::Kind::Secondary, w::Size::Sm).clicked() {
-            self.more(id, order, pages.len() as u32 + 1);
+        } else if let Some(next) = pages.last().and_then(|p| p.as_ref()).filter(|p| p.more).and_then(|p| p.next.clone()) {
+            if w::button(ui, t, Some(icons::CARET_DOWN), t!("Show more reviews"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                self.more(id, order, next);
+            }
         }
     }
 
