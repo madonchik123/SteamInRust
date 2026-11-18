@@ -376,6 +376,10 @@ then `pressed` while clicked and `disabled` when it can't be used.
 | `wishlist` | the Wishlist button (`selected` is wishlisted) |
 | `progress` | progress bars: `normal` the track, `selected` the filled part |
 | `toast` | pop-up messages (`selected` `fill` is the bar at their side) |
+| `post_card` | a post in a feed (the Community home, a game's hub), topics, Market rows |
+| `filter_bar` | the bar holding a feed's filters and sort; side columns of filters |
+| `stat_chip` | the small boxes with a count under a post: `icon` the icon, `text` the label, `selected` `text` the count |
+| `search_large` | the big search box of a landing page (the Community home) |
 
 ## What a theme can't change
 

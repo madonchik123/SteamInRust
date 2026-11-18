@@ -82,6 +82,7 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
     events.push(Event::Message(ChatMessage { friend: BASE + 101, from: BASE + 101, text: "gg! one more?".into(), time: now - 30, invite: None }));
     events.extend(inventory(me, now));
     events.extend(crate::builtin::hub::demo::events());
+    events.extend(crate::builtin::community_home::demo_events());
     events
 }
 

@@ -118,7 +118,9 @@ fn nav_items(app: &SteamApp) -> Vec<(String, String, String)> {
     let pages = app.registry.pages();
     let name = if app.state.persona_name.is_empty() { app.state.account.clone() } else { app.state.persona_name.clone() };
     let mut tabs = Vec::new();
-    let order = ["store", "community", "profile", "library"];
+    // Community is the Community home; the friends page ("community") is
+    // reached from the Friends button, not as a section.
+    let order = ["store", crate::builtin::community_home::PAGE, "profile", "library"];
     for id in order {
         if let Some(p) = pages.iter().find(|p| p.id == id && p.placement == Placement::Main) {
             let label = if id == "profile" && !name.is_empty() { name.clone() } else { i18n::tr_dyn(&p.title) };
@@ -128,7 +130,7 @@ fn nav_items(app: &SteamApp) -> Vec<(String, String, String)> {
     if pages.iter().any(|p| p.id == "downloads") {
         tabs.push(("downloads".into(), t!("Downloads").to_string(), icons::DOWNLOAD.to_string()));
     }
-    for p in pages.iter().filter(|p| p.placement == Placement::Main && !order.contains(&p.id.as_str())) {
+    for p in pages.iter().filter(|p| p.placement == Placement::Main && !order.contains(&p.id.as_str()) && p.id != "community") {
         tabs.push((p.id.clone(), i18n::tr_dyn(&p.title), p.icon.clone()));
     }
     tabs
@@ -137,7 +139,7 @@ fn nav_items(app: &SteamApp) -> Vec<(String, String, String)> {
 /// The left navigation column (`nav = "left"`): the sections as rows with
 /// icons, then extension pages.
 fn nav_column(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>) {
-    let current = section_of(&app.prefs.page).to_string();
+    let current = current_section(app);
     let c = &t.components.sidebar_item;
     let fid = t.font_of(c);
     let pad = t.padding_of(c).x;
@@ -151,7 +153,7 @@ fn nav_column(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Acti
     };
     ui.spacing_mut().item_spacing.y = t.spacing.xs;
     for (id, label, icon) in nav_items(app) {
-        let r = row(ui, &icon, &label, current == id);
+        let r = row(ui, &icon, &label, current == section_of(&id));
         if id == "downloads" {
             if let Some((_, fraction, _)) = active_download(app) {
                 w::progress_ring(ui.painter(), t, egui::pos2(r.rect.right() - pad - 8.0, r.rect.center().y), 7.5, fraction);
@@ -198,10 +200,19 @@ pub fn section_of(page: &str) -> &str {
         "library" => "library",
         "downloads" => "downloads",
         "profile" | "inventory" => "profile",
-        "community" | "workshop" => "community",
+        "community" | "workshop" | crate::builtin::community_home::PAGE => "community",
         p if crate::builtin::hub::PAGES.contains(&p) => "community",
         p => p,
     }
+}
+
+/// The open page's section; the Market (part of the inventory page) is
+/// Community's.
+fn current_section(app: &SteamApp) -> String {
+    if app.prefs.page == "inventory" && app.current_arg.as_deref().is_some_and(|a| a.starts_with("market")) {
+        return "community".into();
+    }
+    section_of(&app.prefs.page).to_string()
 }
 
 /// The top bar (Figma `333:2433` "client", the first 59 px): back and
@@ -282,7 +293,7 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
         return;
     }
     let pages = app.registry.pages();
-    let current = section_of(&app.prefs.page).to_string();
+    let current = current_section(app);
     let mut tabs: Vec<(String, String)> = nav_items(app).into_iter().map(|(id, label, _)| (id, label)).collect();
     let plugin_pages: Vec<_> = pages.iter().filter(|p| p.placement == Placement::Apps).collect();
     let plugins_label = format!("{} {}", t!("Plugins"), icons::CARET_DOWN);
@@ -332,7 +343,7 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
             break;
         }
         ui.add_space(gap);
-        let r = w::section_tab_sized(ui, t, label, current == *id, t.layout.top_bar_height, size);
+        let r = w::section_tab_sized(ui, t, label, current == section_of(id), t.layout.top_bar_height, size);
         let r = if id == "downloads" { downloads_status(app, ui, t, r) } else { r };
         if r.clicked() {
             actions.push(Action::Navigate { page: id.clone(), arg: None });
@@ -365,11 +376,13 @@ fn section_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, section: &str, tab: 
             (icons::HEART, t!("Wishlist").into(), "store", Some("wishlist")),
             (icons::CART, t!("Cart").into(), "store", Some("cart")),
         ],
-        "community" => vec![
-            (icons::USERS, t!("Friends").into(), "community", None),
-            (icons::CHATS, t!("Group chats").into(), "community", Some("groups")),
+        "community" | crate::builtin::community_home::PAGE => vec![
+            (icons::HOUSE, t!("Home").into(), crate::builtin::community_home::PAGE, None),
+            (icons::USERS, t!("Friends activity").into(), crate::builtin::community_home::PAGE, Some("friends")),
+            (icons::CHATS, t!("Discussions").into(), crate::builtin::community_home::PAGE, Some("discussions")),
             (icons::CUBE, t!("Workshop").into(), "workshop", None),
-            (icons::STOREFRONT, t!("My market listings").into(), "inventory", Some("listings")),
+            (icons::STOREFRONT, t!("Market").into(), "inventory", Some("market")),
+            (icons::MONITOR, t!("Broadcasts").into(), crate::builtin::community_home::PAGE, Some("broadcasts")),
         ],
         "profile" => vec![
             (icons::USER_CIRCLE, t!("Profile").into(), "profile", None),
@@ -555,7 +568,7 @@ fn view_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Actio
         for (icon, label, page) in [
             (icons::STORE, t!("Store"), "store"),
             (icons::BOOKS, t!("Library"), "library"),
-            (icons::USERS, t!("Community"), "community"),
+            (icons::USERS, t!("Community"), crate::builtin::community_home::PAGE),
             (icons::DOWNLOAD, t!("Downloads"), "downloads"),
             (icons::BACKPACK, t!("Inventory"), "inventory"),
         ] {

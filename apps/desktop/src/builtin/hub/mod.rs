@@ -12,6 +12,7 @@ pub mod demo;
 mod files;
 mod forum;
 mod group;
+pub mod post;
 pub mod rich;
 
 use client::hub::{self, FileKind, FileQuery, Request};
@@ -42,10 +43,13 @@ pub enum HubTab {
     Workshop,
     News,
     Guides,
+    Broadcasts,
+    Reviews,
 }
 
 impl HubTab {
-    const ALL: [HubTab; 8] = [HubTab::All, HubTab::Discussions, HubTab::Screenshots, HubTab::Artwork, HubTab::Videos, HubTab::Workshop, HubTab::News, HubTab::Guides];
+    /// In the design's order (Figma `495:6863`).
+    const ALL: [HubTab; 10] = [HubTab::All, HubTab::Discussions, HubTab::Screenshots, HubTab::Artwork, HubTab::Workshop, HubTab::Broadcasts, HubTab::Videos, HubTab::News, HubTab::Guides, HubTab::Reviews];
 
     fn label(self) -> String {
         match self {
@@ -57,6 +61,8 @@ impl HubTab {
             HubTab::Workshop => t!("Workshop"),
             HubTab::News => t!("News"),
             HubTab::Guides => t!("Guides"),
+            HubTab::Broadcasts => t!("Broadcasts"),
+            HubTab::Reviews => t!("Reviews"),
         }
         .to_string()
     }
@@ -71,6 +77,8 @@ impl HubTab {
             HubTab::Workshop => "workshop",
             HubTab::News => "news",
             HubTab::Guides => "guides",
+            HubTab::Broadcasts => "broadcasts",
+            HubTab::Reviews => "reviews",
         }
     }
 
@@ -161,7 +169,7 @@ impl View {
     }
 
     /// The game this page belongs to, if known without loading.
-    fn app(&self) -> Option<AppId> {
+    pub(super) fn app(&self) -> Option<AppId> {
         match self {
             View::Hub { app, .. } | View::Guides(app) | View::Forum { app, .. } | View::Achievements { app, .. } => Some(*app),
             View::Thread(url) => url.split("/app/").nth(1)?.split('/').next()?.parse().ok(),
@@ -217,6 +225,8 @@ pub fn route(url: &str) -> Option<View> {
                     ["images", ..] => View::Hub { app, tab: HubTab::Artwork },
                     ["videos", ..] => View::Hub { app, tab: HubTab::Videos },
                     ["allnews" | "news", ..] => View::Hub { app, tab: HubTab::News },
+                    ["broadcasts", ..] => View::Hub { app, tab: HubTab::Broadcasts },
+                    ["reviews", ..] => View::Hub { app, tab: HubTab::Reviews },
                     ["workshop", ..] => View::Page("workshop".into(), Some(app.to_string())),
                     ["achievements", ..] => View::Achievements { app, friend: None },
                     [forum @ ("discussions" | "tradingforum" | "eventcomments"), tail @ ..] => {
@@ -354,6 +364,44 @@ pub struct HubView {
     reply_sending: HashMap<String, u32>,
     /// How many reply answers per thread were already handled.
     reply_seen: HashMap<String, u32>,
+    /// A hub feed shows the most recent posts instead of the most popular.
+    feed_recent: HashMap<AppId, bool>,
+    /// Pages of a hub feed shown.
+    feed_pages: HashMap<(AppId, HubTab), u32>,
+    /// Search in a hub feed: (typed, submitted).
+    feed_search: HashMap<AppId, (String, String)>,
+    /// The game's store info for the hub (main window only).
+    pub store: Option<StoreInfo>,
+}
+
+/// Loads a game's store details for the hub's info card.
+pub struct StoreInfo {
+    pub rt: tokio::runtime::Handle,
+    pub ctx: egui::Context,
+    slots: HashMap<AppId, std::sync::Arc<Mutex<Option<Option<store::Details>>>>>,
+}
+
+impl StoreInfo {
+    pub fn new(rt: tokio::runtime::Handle, ctx: egui::Context) -> Self {
+        Self { rt, ctx, slots: HashMap::new() }
+    }
+
+    /// The details once loaded (`Some(None)`: Steam had none).
+    fn get(&mut self, app: AppId, state: &State) -> Option<Option<store::Details>> {
+        let slot = self.slots.entry(app).or_insert_with(|| {
+            let slot = std::sync::Arc::new(Mutex::new(None));
+            let country = model::store_country(state.wallet.map(|w| w.1), &state.country).unwrap_or_else(|| "us".into());
+            let api = store::StoreClient::new(&country, i18n::language().steam_name());
+            let (out, ctx) = (slot.clone(), self.ctx.clone());
+            self.rt.spawn(async move {
+                let d = api.details(app).await.ok();
+                *out.lock().unwrap() = Some(d);
+                ctx.request_repaint();
+            });
+            slot
+        });
+        slot.lock().unwrap().clone()
+    }
 }
 
 impl HubView {
@@ -422,24 +470,31 @@ impl HubView {
             let pad = if io.overlay { 4.0 } else { 24.0 };
             match &view {
                 View::Hub { app, tab } => {
-                    self.hub_header(ui, t, io, *app, *tab);
-                    w::centered(ui, 1240.0, pad, |ui| files::hub_tab(self, ui, t, io, *app, *tab));
+                    backdrop(ui, *app);
+                    w::centered(ui, 1564.0, pad, |ui| {
+                        self.hub_header(ui, t, io, *app, *tab);
+                        if *tab == HubTab::All && !io.overlay {
+                            self.store_card(ui, t, io, *app);
+                        }
+                        files::hub_tab(self, ui, t, io, *app, *tab)
+                    });
                 }
                 View::Guides(app) => {
-                    self.hub_header(ui, t, io, *app, HubTab::Guides);
-                    w::centered(ui, 1240.0, pad, |ui| files::guides(self, ui, t, io, *app));
+                    backdrop(ui, *app);
+                    w::centered(ui, 1564.0, pad, |ui| {
+                        self.hub_header(ui, t, io, *app, HubTab::Guides);
+                        files::guides(self, ui, t, io, *app)
+                    });
                 }
                 View::Item(id) => w::centered(ui, 1240.0, pad, |ui| files::item(self, ui, t, io, *id)),
                 View::Forum { app, forum } => {
-                    self.hub_header(ui, t, io, *app, HubTab::Discussions);
-                    w::centered(ui, 1240.0, pad, |ui| forum::forum(self, ui, t, io, *app, forum));
+                    backdrop(ui, *app);
+                    w::centered(ui, 1564.0, pad, |ui| {
+                        self.hub_header(ui, t, io, *app, HubTab::Discussions);
+                        forum::forum(self, ui, t, io, *app, forum)
+                    });
                 }
-                View::Thread(url) => {
-                    if let Some(app) = view.app() {
-                        self.hub_header(ui, t, io, app, HubTab::Discussions);
-                    }
-                    w::centered(ui, 1240.0, pad, |ui| forum::thread(self, ui, t, io, url));
-                }
+                View::Thread(url) => w::centered(ui, 1564.0, pad, |ui| forum::thread(self, ui, t, io, url)),
                 View::Achievements { app, friend } => w::centered(ui, 1100.0, pad, |ui| achievements::show(self, ui, t, io, *app, *friend)),
                 View::UserFiles { user, kind } => w::centered(ui, 1240.0, pad, |ui| files::user_files(self, ui, t, io, *user, *kind)),
                 View::Group(key) => w::centered(ui, 1240.0, pad, |ui| group::show(self, ui, t, io, key)),
@@ -475,50 +530,204 @@ impl HubView {
         }
     }
 
-    /// The hub's banner and tab row, shared by the hub, guides and discussions.
+    /// The hub's header card (Figma `495:6863`), shared by the hub, guides
+    /// and discussions.
     fn hub_header(&mut self, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId, active: HubTab) {
-        let name = io.state.app_name(app).map(String::from).unwrap_or_default();
-        let full = ui.available_width();
-        let h = if io.overlay { 92.0 } else { 150.0 };
-        let (banner, _) = ui.allocate_exact_size(vec2(full, h), Sense::hover());
-        if !w::paint_cover(ui, banner, &art::hero(app), CornerRadius::ZERO) {
-            w::gradient(ui.painter(), banner, t.accent.gamma_multiply(0.3), t.accent_2.gamma_multiply(0.2), true);
+        if let Some(v) = header(ui, t, io.state, app, active, io.overlay) {
+            io.go(v);
         }
-        w::fade_down(ui, banner, t.bg, 0.0);
-        let pad = if io.overlay { 12.0 } else { 32.0 };
-        let cap_h = if io.overlay { 44.0 } else { 62.0 };
-        let cap = Rect::from_min_size(egui::pos2(banner.left() + pad, banner.bottom() - cap_h - 12.0), vec2(cap_h * 460.0 / 215.0, cap_h));
-        w::image_or_title(ui, t, cap, &art::header(app), &name, CornerRadius::same(4));
-        let x = cap.right() + 14.0;
-        ui.painter().text(egui::pos2(x, cap.top() + 4.0), Align2::LEFT_TOP, &name, w::font_bold(if io.overlay { 18.0 } else { 26.0 }), Color32::WHITE);
-        ui.painter().text(egui::pos2(x, cap.bottom()), Align2::LEFT_BOTTOM, t!("Community hub"), w::font_medium(13.0), t.text_dim);
-        // Store page and Workshop on the right, like Steam's hub header.
-        let right = Rect::from_min_max(egui::pos2(banner.right() - 360.0, cap.top()), egui::pos2(banner.right() - pad, cap.bottom()));
-        let mut r = ui.new_child(egui::UiBuilder::new().max_rect(right).layout(Layout::right_to_left(Align::Center)));
-        if w::button(&mut r, t, Some(icons::STOREFRONT), t!("Store page"), w::Kind::Secondary, w::Size::Sm).clicked() {
-            io.go(View::Page("store".into(), Some(format!("app:{app}"))));
-        }
-        ui.add_space(6.0);
-        // Tabs.
-        let side = if io.overlay { 4.0 } else { 24.0 };
-        w::centered(ui, 1240.0, side, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
-                for tab in HubTab::ALL {
-                    if w::nav_tab(ui, t, &tab.label(), tab == active, 34.0).clicked() && tab != active {
-                        io.go(match tab {
-                            HubTab::Discussions => View::Forum { app, forum: String::new() },
-                            HubTab::Guides => View::Guides(app),
-                            HubTab::Workshop => View::Page("workshop".into(), Some(app.to_string())),
-                            tab => View::Hub { app, tab },
-                        });
+    }
+
+    /// The game's store info under the header: picture, blurb, genres,
+    /// price and a way to the store (Figma `495:6863`).
+    fn store_card(&mut self, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId) {
+        let Some(info) = self.store.as_mut() else { return };
+        let Some(Some(d)) = info.get(app, io.state) else { return };
+        let owned = io.state.apps.as_ref().is_some_and(|a| a.contains_key(&app));
+        w::post_card(t).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = t.spacing.md;
+                let (img, _) = ui.allocate_exact_size(vec2(278.0, 130.0), Sense::hover());
+                let url = if d.header.is_empty() { art::header(app) } else { d.header.clone() };
+                w::image_or_title(ui, t, img, &url, &d.name, t.corner_small());
+                let right = 260.0f32.min(ui.available_width() * 0.3);
+                ui.allocate_ui_with_layout(vec2((ui.available_width() - right).max(120.0), 130.0), Layout::top_down(Align::Min), |ui| {
+                    ui.add(egui::Label::new(w::body_m(t, &d.short_description, t.text)).wrap());
+                    ui.add_space(t.spacing.sm);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(t.spacing.xs, t.spacing.xs);
+                        for g in d.genres.iter().take(5) {
+                            w::tag(ui, t, g, None, w::TagState::Plain);
+                        }
+                    });
+                });
+                ui.allocate_ui_with_layout(vec2(ui.available_width(), 130.0), Layout::right_to_left(Align::Max), |ui| {
+                    ui.spacing_mut().item_spacing.x = t.spacing.md;
+                    let label = if owned { t!("Store page") } else if d.is_free { t!("Play for free") } else { t!("Buy now") };
+                    if w::button(ui, t, None, label, w::Kind::Primary, w::Size::Md).clicked() {
+                        io.go(View::Page("store".into(), Some(format!("app:{app}"))));
                     }
+                    if owned {
+                        ui.label(w::body_m(t, t!("In your library"), t.text_dim));
+                    } else if let Some(p) = &d.price {
+                        if let Some(f) = p.final_ {
+                            let old = p.initial.filter(|i| *i > f).map(|i| store::Price::format(i, &p.currency));
+                            w::price_tag(ui, t, &store::Price::format(f, &p.currency), old.as_deref(), p.discount);
+                        }
+                    }
+                });
+            });
+        });
+        ui.add_space(t.spacing.xl - t.spacing.xs);
+    }
+}
+
+/// A game's art behind the top of its hub pages, softened into the page.
+pub fn backdrop(ui: &Ui, app: AppId) {
+    let top = ui.cursor().top();
+    let rect = Rect::from_min_size(egui::pos2(ui.max_rect().left(), top), vec2(ui.max_rect().width(), 520.0));
+    w::paint_cover_fading(ui, rect, &art::hero(app), 0.16);
+}
+
+/// A game hub's header card (Figma `495:6863`): the game's name, View
+/// stats and Store page, and the hub's tabs. Returns the page to open.
+pub fn header(ui: &mut Ui, t: &Theme, state: &State, app: AppId, active: HubTab, overlay: bool) -> Option<View> {
+    let name = state.app_name(app).map(String::from).unwrap_or_default();
+    let mut go = None;
+    ui.add_space(if overlay { t.spacing.sm } else { t.spacing.xl + t.spacing.lg });
+    let size = if overlay { w::Size::Sm } else { w::Size::Md };
+    w::filter_bar(t).inner_margin(egui::Margin::symmetric(t.spacing.xl as i8, t.spacing.lg as i8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let title = if overlay { w::heading_s(t, &name, t.text) } else { w::heading_l(t, &name, t.text) };
+            ui.add(egui::Label::new(title).truncate());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = t.spacing.sm + 2.0;
+                if w::button(ui, t, None, t!("Store page"), w::Kind::Secondary, size).clicked() {
+                    go = Some(View::Page("store".into(), Some(format!("app:{app}"))));
+                }
+                if w::button(ui, t, None, t!("View stats"), w::Kind::Tertiary, size).clicked() {
+                    go = Some(View::Achievements { app, friend: None });
                 }
             });
-            let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-            ui.painter().rect_filled(line, CornerRadius::ZERO, t.border);
         });
-        ui.add_space(12.0);
+        ui.add_space(t.spacing.md);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(t.spacing.xs + 1.0, t.spacing.xs + 1.0);
+            for tab in HubTab::ALL {
+                if w::sort_chip(ui, t, &tab.label(), tab == active).clicked() && tab != active {
+                    go = Some(match tab {
+                        HubTab::Discussions => View::Forum { app, forum: String::new() },
+                        HubTab::Guides => View::Guides(app),
+                        HubTab::Workshop => View::Page("workshop".into(), Some(app.to_string())),
+                        tab => View::Hub { app, tab },
+                    });
+                }
+            }
+        });
+    });
+    ui.add_space(t.spacing.xl - t.spacing.xs);
+    go
+}
+
+/// A game hub's feed (All, Reviews, Broadcasts): "Sort by" and a search in
+/// the filter bar, then posts in two columns, like the Community home.
+fn feed_tab(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId, tab: HubTab) {
+    let section = match tab {
+        HubTab::Reviews => client::feed::Section::Reviews,
+        HubTab::Broadcasts => client::feed::Section::Broadcasts,
+        _ => client::feed::Section::All,
+    };
+    let mut recent = hv.feed_recent.get(&app).copied().unwrap_or(false);
+    let (mut typed, mut submitted) = hv.feed_search.get(&app).cloned().unwrap_or_default();
+    let mut changed = false;
+    w::filter_bar(t).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let popular = t!("Most Popular").to_string();
+            let newest = t!("Most Recent").to_string();
+            changed |= w::sort_by(ui, t, &mut recent, &[(false, popular.as_str()), (true, newest.as_str())]);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let width = 374.0f32.min(ui.available_width() - 8.0).max(120.0);
+                let r = w::search(ui, t, &mut typed, t!("Search…"), width);
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && typed.trim() != submitted {
+                    submitted = typed.trim().to_string();
+                    changed = true;
+                }
+                if typed.is_empty() && !submitted.is_empty() {
+                    submitted.clear();
+                    changed = true;
+                }
+            });
+        });
+    });
+    ui.add_space(t.spacing.xl - t.spacing.xs);
+    hv.feed_recent.insert(app, recent);
+    hv.feed_search.insert(app, (typed, submitted.clone()));
+    if changed {
+        hv.feed_pages.insert((app, tab), 1);
+    }
+    let pages = hv.feed_pages.get(&(app, tab)).copied().unwrap_or(1);
+    let lang = io.lang();
+    let mut posts: Vec<&client::feed::Post> = Vec::new();
+    let mut loading = false;
+    let mut failed = None;
+    let mut last_full = false;
+    let state = io.state;
+    for page in 1..=pages {
+        let q = client::feed::ExploreQuery { section, recent, page, language: lang.clone(), app, search: submitted.clone() };
+        let key = q.key();
+        match state.hub.explore.get(&key) {
+            None => {
+                hv.ask(io, format!("feed:{key}"), false, || Request::Explore(q));
+                loading = true;
+                break;
+            }
+            Some(Err(e)) => {
+                failed = Some((e.clone(), q));
+                break;
+            }
+            Some(Ok(f)) => {
+                last_full = !f.posts.is_empty();
+                for p in &f.posts {
+                    if !posts.iter().any(|x| x.url == p.url && x.file_id == p.file_id) {
+                        posts.push(p);
+                    }
+                }
+            }
+        }
+    }
+    if posts.is_empty() {
+        if let Some((e, q)) = failed {
+            if error(ui, t, &e) {
+                hv.retry(io, Request::Explore(q));
+            }
+        } else if loading {
+            w::loading(ui, t, &t!("Loading…"));
+        } else if tab == HubTab::Broadcasts {
+            w::empty(ui, t, icons::MONITOR, t!("No one is broadcasting right now"), t!("Check back later."));
+        } else {
+            w::empty(ui, t, icons::USERS, t!("Nothing here yet"), t!("This game's community hasn't shared anything yet."));
+        }
+        return;
+    }
+    if let Some(c) = post::masonry(ui, t, state, &posts, &format!("hub-{app}-{tab:?}"), false) {
+        match c {
+            post::Click::Open(url) => hv.follow(io, rich::Click::Link(url)),
+            post::Click::Hub(a) => io.go(View::Hub { app: a, tab: HubTab::All }),
+            post::Click::Store(a) => io.go(View::Page("store".into(), Some(format!("app:{a}")))),
+            post::Click::Profile(id) => io.go(View::Page("profile".into(), Some(id.to_string()))),
+        }
+    }
+    if loading {
+        w::loading(ui, t, &t!("Loading…"));
+    } else if failed.is_none() && last_full && pages < 10 {
+        ui.vertical_centered(|ui| {
+            if w::button(ui, t, Some(icons::CARET_DOWN), t!("See more"), w::Kind::Secondary, w::Size::Md).clicked() {
+                hv.feed_pages.insert((app, tab), pages + 1);
+            }
+        });
     }
 }
 
@@ -544,26 +753,9 @@ fn columns<'a>(ui: &mut Ui, side: f32, hv: &mut HubView, io: &mut Io<'a>, main: 
     }
 }
 
-/// Paging row: Previous · Page x of y · Next. Returns the new page.
+/// Numbered paging (Figma `505:8934`). Returns the new page.
 fn pager(ui: &mut Ui, t: &Theme, page: u32, pages: u32) -> Option<u32> {
-    let mut to = None;
-    if pages <= 1 {
-        return None;
-    }
-    ui.horizontal(|ui| {
-        ui.add_enabled_ui(page > 1, |ui| {
-            if w::button(ui, t, Some(icons::CARET_LEFT), t!("Previous"), w::Kind::Secondary, w::Size::Sm).clicked() {
-                to = Some(page - 1);
-            }
-        });
-        ui.label(w::text(t!("Page {page} of {pages}", page = page, pages = pages), 13.0, t.text_dim));
-        ui.add_enabled_ui(page < pages, |ui| {
-            if w::button(ui, t, Some(icons::CARET_RIGHT), t!("Next"), w::Kind::Secondary, w::Size::Sm).clicked() {
-                to = Some(page + 1);
-            }
-        });
-    });
-    to
+    w::page_numbers(ui, t, page, pages)
 }
 
 /// Steam's 0–5 stars, or "Not enough ratings".
@@ -615,6 +807,15 @@ fn author(ui: &mut Ui, t: &Theme, io: &mut Io, id: SteamId, fallback: &str, size
 #[derive(Default)]
 pub struct Hub {
     view: HubView,
+    bar_search: String,
+}
+
+impl Hub {
+    pub fn new(rt: tokio::runtime::Handle, ctx: egui::Context) -> Self {
+        let mut hub = Hub::default();
+        hub.view.store = Some(StoreInfo::new(rt, ctx));
+        hub
+    }
 }
 
 impl Extension for Hub {
@@ -624,6 +825,16 @@ impl Extension for Hub {
 
     fn pages(&self) -> Vec<PageSpec> {
         PAGES.iter().map(|p| PageSpec::new(*p, *p, icons::USERS).hidden().order(960)).collect()
+    }
+
+    fn page_bar(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) -> bool {
+        use crate::builtin::community_home::{BarTab, page_bar};
+        let tab = match self.view.current() {
+            Some(View::Forum { .. } | View::Thread(_)) => BarTab::Discussions,
+            _ => BarTab::Other,
+        };
+        page_bar(ui, ctx, tab, &mut self.bar_search);
+        true
     }
 
     fn on_navigate(&mut self, page: &str, arg: Option<&str>) {

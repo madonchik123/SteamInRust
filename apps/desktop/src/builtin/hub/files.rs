@@ -101,56 +101,13 @@ fn load_pages(hv: &mut HubView, io: &mut Io, app: AppId, kind: FileKind, l: &Lis
 
 pub(super) fn hub_tab(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId, tab: HubTab) {
     match tab {
-        HubTab::All => all(hv, ui, t, io, app),
+        HubTab::All | HubTab::Reviews | HubTab::Broadcasts => super::feed_tab(hv, ui, t, io, app, tab),
         HubTab::News => news(hv, ui, t, io, app),
         HubTab::Screenshots | HubTab::Artwork | HubTab::Videos => media_tab(hv, ui, t, io, app, tab),
         // These have their own pages.
         HubTab::Guides => guides(hv, ui, t, io, app),
         HubTab::Discussions | HubTab::Workshop => {}
     }
-}
-
-/// The hub's front: this week's most popular of everything, mixed like Steam's.
-fn all(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId) {
-    let l = ListState::default();
-    let sets = [(FileKind::Screenshots, 12), (FileKind::Art, 8), (FileKind::Guides, 4), (FileKind::Videos, 4), (FileKind::Items, 4)];
-    let mut lists: Vec<(FileKind, Vec<FileEntry>)> = Vec::new();
-    let mut loading = false;
-    for (kind, n) in sets {
-        let (items, _, busy, _) = load_pages(hv, io, app, kind, &l, n, 1);
-        loading |= busy;
-        lists.push((kind, items));
-    }
-    // Interleave: two screenshots, then one of the others, and so on.
-    let mut mixed: Vec<(FileKind, FileEntry)> = Vec::new();
-    let mut idx = vec![0usize; lists.len()];
-    loop {
-        let before = mixed.len();
-        for (i, take) in [(0, 2), (1, 1), (2, 1), (0, 1), (3, 1), (1, 1), (4, 1)] {
-            for _ in 0..take {
-                if let Some(e) = lists[i].1.get(idx[i]) {
-                    mixed.push((lists[i].0, e.clone()));
-                    idx[i] += 1;
-                }
-            }
-        }
-        if mixed.len() == before {
-            break;
-        }
-    }
-    ui.horizontal(|ui| {
-        ui.label(w::text_bold(t!("MOST POPULAR THIS WEEK"), 12.0, t.text_faint));
-    });
-    ui.add_space(4.0);
-    if mixed.is_empty() {
-        if loading {
-            w::loading(ui, t, &t!("Loading…"));
-        } else {
-            w::empty(ui, t, icons::USERS, t!("Nothing here yet"), t!("This game's community hasn't shared anything yet."));
-        }
-        return;
-    }
-    grid(hv, ui, t, io, &mixed, 300.0);
 }
 
 fn grid(_hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, items: &[(FileKind, FileEntry)], card_w: f32) {

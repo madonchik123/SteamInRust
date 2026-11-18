@@ -91,6 +91,7 @@ pub struct Inventory {
     history: market::HistoryState,
     market: search::MarketSearch,
     trades: trades::Trades,
+    bar_search: String,
 }
 
 impl Extension for Inventory {
@@ -100,6 +101,16 @@ impl Extension for Inventory {
 
     fn pages(&self) -> Vec<PageSpec> {
         vec![PageSpec::new("inventory", "Inventory", icons::BACKPACK).hidden().order(960)]
+    }
+
+    /// On the Market, the Community page bar.
+    fn page_bar(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) -> bool {
+        if self.view != View::Market {
+            return false;
+        }
+        use crate::builtin::community_home::{BarTab, page_bar};
+        page_bar(ui, ctx, BarTab::Market, &mut self.bar_search);
+        true
     }
 
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
