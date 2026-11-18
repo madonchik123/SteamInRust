@@ -186,6 +186,13 @@ impl FriendsWindow {
     }
 }
 
+/// `--friends-size=WxH` (previews): the window's size, e.g. its narrowest.
+fn size_flag() -> Option<[f32; 2]> {
+    let v = std::env::args().find_map(|a| a.strip_prefix("--friends-size=").map(String::from))?;
+    let (w, h) = v.split_once('x')?;
+    Some([w.parse().ok()?, h.parse().ok()?])
+}
+
 /// How wide the conversation side opens.
 const PANE_WIDTH: f32 = 560.0;
 
@@ -203,13 +210,15 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
     // Our own title bar, like the main window (no Windows frame).
     let mut builder = egui::ViewportBuilder::default()
         .with_title(t!("Friends & Chat"))
-        .with_inner_size([width, 720.0])
+        .with_inner_size(size_flag().unwrap_or([width, 720.0]))
         .with_min_inner_size([if has_pane { list_w + t.dense(360.0) } else { list_w }, 420.0])
         .with_decorations(crate::chrome::SYSTEM_FRAME)
         .with_icon(std::sync::Arc::new(egui::IconData { rgba: ui::brand::icon_rgba(64), width: 64, height: 64 }));
     // A preview copy keeps it off the screen too, beside the main window.
     if crate::app::offscreen() {
-        builder = builder.with_position([crate::app::OFFSCREEN_POS[0] + 4000.0, crate::app::OFFSCREEN_POS[1]]);
+        // Created hidden: Windows can put a new window at its default spot
+        // for a moment before it moves; it's shown once it's off the screen.
+        builder = builder.with_position([crate::app::OFFSCREEN_POS[0] + 4000.0, crate::app::OFFSCREEN_POS[1]]).with_visible(false);
     }
     if !app.can_open_window(ctx, id) {
         return;
@@ -218,6 +227,15 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
     }
     ctx.show_viewport_immediate(id, builder, |ui, _| {
+        if crate::app::offscreen() {
+            match ui.input(|i| i.viewport().outer_rect) {
+                Some(r) if r.right() < -1000.0 => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(true)),
+                _ => {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(crate::app::OFFSCREEN_POS[0] + 4000.0, crate::app::OFFSCREEN_POS[1])));
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
         if ui.input(|i| i.viewport().close_requested()) {
             app.friends_window.open = false;
         }
@@ -238,6 +256,9 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         };
         panel.exact_size(list_w).resizable(false).frame(egui::Frame::new()).show(ui, |ui| list(app, ui, &t, actions));
         egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg)).show(ui, |ui| {
+            // Nothing on the chat side may draw over the friends list.
+            let clip = ui.max_rect().intersect(ui.clip_rect());
+            ui.set_clip_rect(clip);
             if has_pane {
                 // The window buttons sit over the tabs when the conversation
                 // side is the right one.
@@ -302,6 +323,7 @@ fn pane(app: &mut SteamApp, ui: &mut Ui, actions: &mut Vec<Action>, reserve: f32
 fn list(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>) {
     let panel = &t.components.friends_panel;
     let full = ui.max_rect();
+    ui.set_clip_rect(full.intersect(ui.clip_rect()));
     w::paint_box(ui, t, full, panel, &t.look(panel, Default::default()), 0.0);
     // The top strip moves the window (the window buttons sit in it).
     let strip = Rect::from_min_size(full.min, vec2(full.width(), 30.0));
@@ -365,7 +387,8 @@ fn header(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
             }
             ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
                 let color = status_color(t, &me);
-                if w::presence_avatar(ui, t, &art::avatar(me.avatar_hash.as_deref()), size, Some(color)).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("View profile")).clicked() {
+                let av = w::presence_avatar(ui, t, &art::avatar(me.avatar_hash.as_deref()), size, Some(color));
+                if crate::builtin::friends::hover_ring(ui, t, av).on_hover_text(t!("View profile")).clicked() {
                     app.navigate("profile".into(), None);
                 }
                 ui.vertical(|ui| {
@@ -387,9 +410,12 @@ fn status_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, me: &Persona) {
     let dot = t.dense(11.0);
     let caret = t.dense(12.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(dot + t.spacing.sm + g.size().x + t.spacing.sm + caret, g.size().y.max(dot)), Sense::click());
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+    let ghost = &t.components.button_ghost;
+    let look = t.look(ghost, w::interact(ui, &resp, open));
+    w::paint_box(ui, t, rect.expand2(vec2(t.spacing.xs + 2.0, 2.0)), ghost, &look, 0.0);
     crate::shell::status_mark(ui.painter(), pos2(rect.left() + dot / 2.0, rect.center().y), dot / 2.0, me.state, color);
     ui.painter().galley(pos2(rect.left() + dot + t.spacing.sm, rect.center().y - g.size().y / 2.0), g, color);
-    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
     ui.painter().text(pos2(rect.right() - caret / 2.0, rect.center().y), Align2::CENTER_CENTER, if open { icons::CARET_UP } else { icons::CARET_DOWN }, w::font(caret), t.text_dim);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Change your status"));
     egui::Popup::menu(&resp).width(t.dense(200.0)).show(|ui| {
@@ -640,7 +666,12 @@ fn group_chats(app: &mut SteamApp, ui: &mut Ui, t: &Theme, filter: &str) {
         return;
     }
     let hidden = app.friends_window.groups_hidden;
-    let title = ui.add(egui::Label::new(w::body_m(t, format!("{} {} ({})", if hidden { icons::CARET_RIGHT } else { icons::CARET_DOWN }, t!("Group chats"), shown.len()), t.text_dim)).sense(Sense::click()));
+    let text = format!("{} {} ({})", if hidden { icons::CARET_RIGHT } else { icons::CARET_DOWN }, t!("Group chats"), shown.len());
+    // Lit while the pointer is on it (where it was drawn last frame).
+    let id = egui::Id::unique("fw-group-title");
+    let lit = ui.data(|d| d.get_temp::<Rect>(id)).is_some_and(|r| ui.rect_contains_pointer(r));
+    let title = ui.add(egui::Label::new(w::body_m(t, text, if lit { t.text } else { t.text_dim })).sense(Sense::click()));
+    ui.data_mut(|d| d.insert_temp(id, title.rect));
     if title.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         app.friends_window.groups_hidden = !hidden;
     }
