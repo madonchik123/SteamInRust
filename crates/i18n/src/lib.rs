@@ -147,16 +147,14 @@ macro_rules! t {
 mod tests {
     use super::*;
 
-    #[test]
-    fn context_after_a_bar_is_hidden() {
-        set_language(Lang::English);
-        assert_eq!(tr("Recommended|review"), "Recommended");
-    }
-
+    // The language is global: only this test changes it (tests run in
+    // parallel, so a second one switching it made this one fail at random).
     #[test]
     fn falls_back_and_formats() {
         set_language(Lang::English);
         assert_eq!(t!("Sign in"), "Sign in");
+        // A context after "|" is never shown.
+        assert_eq!(tr("Recommended|review"), "Recommended");
         assert_eq!(t!("Playing {game}", game = "Dota 2"), "Playing Dota 2");
         set_language(Lang::Russian);
         assert_eq!(t!("Sign in"), "Войти");
