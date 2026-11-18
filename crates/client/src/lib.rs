@@ -143,6 +143,10 @@ pub enum Command {
     /// frame, 3 animated avatar); `id` 0 takes it off.
     EquipProfileItem { kind: u8, id: u64 },
     SetProfileTheme(String),
+    /// Show the equipped background full screen or at its own size.
+    SetBackgroundFullScreen { id: u64, full: bool },
+    /// The badge featured on your profile (a community badge id; 0 = none).
+    SetFavoriteBadge { badge: u32 },
     /// Countries, a country's states, or a state's cities.
     LoadLocations { country: Option<String>, state: Option<String> },
     /// Fetch names and avatars of people who aren't your friends.
@@ -329,6 +333,8 @@ impl std::fmt::Debug for Command {
             Command::UploadAvatar { path } => f.debug_struct("UploadAvatar").field("path", path).finish(),
             Command::EquipProfileItem { kind, id } => f.debug_struct("EquipProfileItem").field("kind", kind).field("id", id).finish(),
             Command::SetProfileTheme(s) => f.debug_tuple("SetProfileTheme").field(s).finish(),
+            Command::SetBackgroundFullScreen { id, full } => f.debug_struct("SetBackgroundFullScreen").field("id", id).field("full", full).finish(),
+            Command::SetFavoriteBadge { badge } => f.debug_struct("SetFavoriteBadge").field("badge", badge).finish(),
             Command::LoadLocations { country, state } => f.debug_struct("LoadLocations").field("country", country).field("state", state).finish(),
             Command::LoadPersonas { ids } => f.debug_struct("LoadPersonas").field("ids", ids).finish(),
             Command::LoadTradeOffers { language } => f.debug_struct("LoadTradeOffers").field("language", language).finish(),

@@ -78,6 +78,7 @@ pub async fn load(web: &Web, conn: &Connection, language: &str) -> Result<Profil
     let owned: Result<CPlayerGetProfileItemsOwnedResponse, _> =
         conn.call("Player.GetProfileItemsOwned#1", &CPlayerGetProfileItemsOwnedRequest { language: Some(language.to_string()), ..Default::default() }).await;
     if let Ok(o) = owned {
+        let full = |s: &str| if s.is_empty() { String::new() } else { model::art::community_item(s) };
         let list = |l: &[ProfileItem]| -> Vec<ProfileItemChoice> {
             l.iter()
                 .map(|i| ProfileItemChoice {
@@ -85,6 +86,9 @@ pub async fn load(web: &Web, conn: &Connection, language: &str) -> Result<Profil
                     name: Some(i.item_title().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| i.name().to_string()),
                     image: Some(i.image_small()).filter(|s| !s.is_empty()).or(Some(i.image_large())).map(model::art::community_item).unwrap_or_default(),
                     app_id: i.appid(),
+                    large: full(i.image_large()),
+                    movie: full(i.movie_mp4()),
+                    app_name: String::new(),
                 })
                 .collect()
         };
@@ -92,12 +96,27 @@ pub async fn load(web: &Web, conn: &Connection, language: &str) -> Result<Profil
         e.mini_backgrounds = list(&o.mini_profile_backgrounds);
         e.frames = list(&o.avatar_frames);
         e.animated_avatars = list(&o.animated_avatars);
+        // Which game each item comes from, by name.
+        let mut apps: Vec<u32> = e.backgrounds.iter().chain(&e.mini_backgrounds).chain(&e.frames).chain(&e.animated_avatars).map(|i| i.app_id).filter(|a| *a != 0).collect();
+        apps.sort_unstable();
+        apps.dedup();
+        if let Ok(names) = crate::pics::names(conn, &apps).await {
+            let names: std::collections::HashMap<u32, String> = names.into_iter().collect();
+            for i in e.backgrounds.iter_mut().chain(e.mini_backgrounds.iter_mut()).chain(e.frames.iter_mut()).chain(e.animated_avatars.iter_mut()) {
+                i.app_name = names.get(&i.app_id).cloned().unwrap_or_default();
+            }
+        }
     }
     let equipped: Result<CPlayerGetProfileItemsEquippedResponse, _> =
         conn.call("Player.GetProfileItemsEquipped#1", &CPlayerGetProfileItemsEquippedRequest { steamid: Some(web.me), language: Some(language.to_string()) }).await;
     if let Ok(q) = equipped {
         let id = |i: &Option<ProfileItem>| i.as_ref().map(|i| i.communityitemid()).unwrap_or(0);
         e.equipped = [id(&q.profile_background), id(&q.mini_profile_background), id(&q.avatar_frame), id(&q.animated_avatar)];
+        e.background_full = q.profile_background.as_ref().is_some_and(|i| i.equipped_flags() & 1 != 0);
+    }
+    let badge: Result<CPlayerGetFavoriteBadgeResponse, _> = conn.call("Player.GetFavoriteBadge#1", &CPlayerGetFavoriteBadgeRequest { steamid: Some(web.me) }).await;
+    if let Ok(b) = badge {
+        e.favorite_badge = if b.has_favorite_badge() { b.badgeid() } else { 0 };
     }
     Ok(e)
 }
@@ -219,6 +238,22 @@ pub async fn equip(conn: &Connection, kind: u8, id: u64) -> Result<(), String> {
         _ => conn.call::<_, CPlayerSetAnimatedAvatarResponse>("Player.SetAnimatedAvatar#1", &CPlayerSetAnimatedAvatarRequest { communityitemid: item }).await.map(|_| ()),
     };
     r.map_err(|e| e.to_string())
+}
+
+/// Steam's "Full Screen" (flag 1) or "Original Size" for a background.
+pub async fn set_background_full(conn: &Connection, id: u64, full: bool) -> Result<(), String> {
+    conn.call::<_, CPlayerSetEquippedProfileItemFlagsResponse>("Player.SetEquippedProfileItemFlags#1", &CPlayerSetEquippedProfileItemFlagsRequest { communityitemid: Some(id), flags: Some(full as u32) })
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Feature a community badge on your profile (0 takes it off).
+pub async fn set_favorite_badge(conn: &Connection, badge: u32) -> Result<(), String> {
+    conn.call::<_, CPlayerSetFavoriteBadgeResponse>("Player.SetFavoriteBadge#1", &CPlayerSetFavoriteBadgeRequest { badgeid: Some(badge), communityitemid: None })
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 pub async fn set_theme(conn: &Connection, theme: &str) -> Result<(), String> {

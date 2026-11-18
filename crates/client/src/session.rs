@@ -881,6 +881,20 @@ async fn online(
                         sink(Event::ProfileSaved { what: model::ProfileSave::Theme, result });
                     });
                 }
+                Some(Command::SetBackgroundFullScreen { id, full }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        let result = crate::profile_edit::set_background_full(&conn, id, full).await;
+                        sink(Event::ProfileSaved { what: model::ProfileSave::Item, result });
+                    });
+                }
+                Some(Command::SetFavoriteBadge { badge }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        let result = crate::profile_edit::set_favorite_badge(&conn, badge).await;
+                        sink(Event::ProfileSaved { what: model::ProfileSave::Item, result });
+                    });
+                }
                 Some(Command::LoadLocations { country, state }) => st.with_web(sink, move |web, sink| async move {
                     let result = match web {
                         Ok(w) => crate::profile_edit::locations(&w, country.as_deref(), state.as_deref()).await,
@@ -2139,7 +2153,21 @@ impl Online {
                 let url = |i: &Option<ProfileItem>| {
                     i.as_ref().map(|i| i.image_large()).filter(|s| !s.is_empty()).map(model::art::community_item)
                 };
+                let movie = |i: &Option<ProfileItem>| {
+                    i.as_ref().map(|i| i.movie_mp4()).filter(|s| !s.is_empty()).map(model::art::community_item)
+                };
                 info.background = url(&items.profile_background);
+                info.background_video = movie(&items.profile_background);
+                // Steam's "Full Screen" flag on the equipped background.
+                info.background_full = items.profile_background.as_ref().is_some_and(|i| i.equipped_flags() & 1 != 0);
+                info.mini_background = url(&items.mini_profile_background);
+                info.mini_background_video = movie(&items.mini_profile_background);
+                info.animated_avatar = items
+                    .animated_avatar
+                    .as_ref()
+                    .map(|i| i.image_small())
+                    .filter(|s| !s.is_empty())
+                    .map(model::art::community_item);
                 info.avatar_frame = items
                     .avatar_frame
                     .as_ref()

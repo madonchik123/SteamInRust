@@ -26,6 +26,7 @@ pub fn registry(rt: tokio::runtime::Handle, ctx: egui::Context, flags: settings:
     r.register(library::Library::new(rt.clone(), ctx.clone(), flags.clone()));
     r.register(community_home::CommunityHome::default());
     r.register(friends::Friends::default());
+    profile::set_runtime(rt.clone());
     r.register(profile::Profile::default());
     r.register(downloads::Downloads::new(flags.clone()));
     r.register(workshop::Workshop::default());

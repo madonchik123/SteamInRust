@@ -294,26 +294,53 @@ fn label_w(ui: &Ui) -> f32 {
 /// One setting: its name (with an "i" explaining it), its value, then
 /// buttons or notes. `value` and `rest` draw left to right.
 pub(crate) fn row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: impl FnOnce(&mut Ui), rest: impl FnOnce(&mut Ui)) {
+    row_sized(ui, t, label, tip, 0.0, value, rest);
+}
+
+/// A row's name in its column, `lw` wide: it wraps rather than being cut,
+/// with the "i" (when there's a tip) after it.
+fn row_label(ui: &mut Ui, t: &Theme, label: &str, tip: &str, lw: f32) {
+    ui.allocate_ui_with_layout(vec2(lw, t.dense(44.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_width(lw);
+        ui.spacing_mut().item_spacing.x = t.spacing.xs + 1.0;
+        let tip_w = if tip.is_empty() { 0.0 } else { t.typography.body_m.size + t.spacing.sm };
+        ui.scope(|ui| {
+            ui.set_max_width((lw - tip_w).max(40.0));
+            ui.add(egui::Label::new(w::heading_s(t, label, t.text)).wrap());
+        });
+        if !tip.is_empty() {
+            w::info_tip(ui, t, tip);
+        }
+    });
+}
+
+/// [`row`] whose value wants `wanted` points: it gets them, past the
+/// design's column, out of the room the buttons leave (they're measured
+/// the frame before). What still doesn't fit wraps.
+pub(crate) fn row_sized(ui: &mut Ui, t: &Theme, label: &str, tip: &str, wanted: f32, value: impl FnOnce(&mut Ui), rest: impl FnOnce(&mut Ui)) {
     let lw = label_w(ui);
+    let rest_id = ui.scope_id().with(("settings-row-rest", label));
+    let rest_w = ui.ctx().data(|d| d.get_temp::<f32>(rest_id)).unwrap_or(0.0);
     // A soft highlight behind the row under the pointer (`settings_group`'s hover).
     let bg = ui.painter().add(egui::Shape::Noop);
     let r = ui.horizontal(|ui| {
         ui.set_min_height(t.dense(44.0));
         ui.spacing_mut().item_spacing.x = t.spacing.sm + 2.0;
-        ui.allocate_ui_with_layout(vec2(lw, t.dense(44.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.set_width(lw);
-            ui.spacing_mut().item_spacing.x = t.spacing.xs + 1.0;
-            ui.add(egui::Label::new(w::heading_s(t, label, t.text)).truncate());
-            if !tip.is_empty() {
-                w::info_tip(ui, t, tip);
-            }
-        });
-        let vw = (ui.available_width() * 0.35).clamp(120.0, 312.0);
+        row_label(ui, t, label, tip, lw);
+        let gap = ui.spacing().item_spacing.x;
+        let design = (ui.available_width() * 0.35).clamp(120.0, 312.0);
+        let room = (ui.available_width() - rest_w - gap).max(design);
+        let vw = wanted.clamp(design, room);
         ui.allocate_ui_with_layout(vec2(vw, t.dense(44.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.set_width(vw);
             value(ui);
         });
-        rest(ui);
+        let r = ui.horizontal(|ui| rest(ui)).response;
+        let w = if r.rect.width() > 1.0 { r.rect.width() } else { 0.0 };
+        if (w - rest_w).abs() > 0.5 {
+            ui.ctx().data_mut(|d| d.insert_temp(rest_id, w));
+            ui.ctx().request_repaint();
+        }
     });
     let rect = egui::Rect::from_min_max(r.response.rect.min, egui::pos2(ui.max_rect().right(), r.response.rect.max.y)).expand2(vec2(t.spacing.sm, 2.0));
     let hover = ui.ctx().animate_bool_with_time(r.response.id.with("row-hover"), ui.rect_contains_pointer(rect), 0.1);
@@ -329,13 +356,15 @@ pub(crate) fn row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: impl Fn
 /// button; true when the button is pressed.
 pub(crate) fn text_row(ui: &mut Ui, t: &Theme, label: &str, tip: &str, value: &str, color: egui::Color32, button: Option<&str>) -> bool {
     let mut clicked = false;
-    row(
+    let wanted = ui.painter().layout_no_wrap(value.to_string(), t.typography.body_l.font(), color).size().x + 2.0;
+    row_sized(
         ui,
         t,
         label,
         tip,
+        wanted,
         |ui| {
-            ui.add(egui::Label::new(w::body_l(t, value, color)).truncate());
+            ui.add(egui::Label::new(w::body_l(t, value, color)).wrap());
         },
         |ui| {
             if let Some(b) = button {
@@ -392,28 +421,46 @@ fn levels(max: u8) -> Vec<(u8, String)> {
     [(3u8, t!("Public")), (2, t!("Friends only")), (1, t!("Private"))].into_iter().filter(|(v, _)| *v <= max).map(|(v, l)| (v, l.to_string())).collect()
 }
 
-/// Who can see your profile and each of its parts (Figma "privacy
-/// settings" `477:7327`). True when something changed.
+/// Steam's privacy settings, as its own page lays them out: your basic
+/// details (always public), then your profile and, under it, game details
+/// (with "keep my playtime private"), friends list, inventory (with "keep
+/// gifts private") and comments, each explained. True when one changed.
 pub(crate) fn privacy_rows(ui: &mut Ui, t: &Theme, p: &mut ProfilePrivacy) -> bool {
     let before = *p;
-    let select_w = (ui.available_width() * 0.2).clamp(150.0, 181.0);
+    let select_w = (ui.available_width() * 0.22).clamp(150.0, 200.0);
     let indent = t.spacing.xl + t.spacing.md;
-    let line = |ui: &mut Ui, label: &str, tip: &str, sub: bool, draw: &mut dyn FnMut(&mut Ui)| {
-        ui.horizontal(|ui| {
+    // One setting: its name and what it means on the left, the choice on
+    // the right; `sub` ones sit under "My profile".
+    let setting = |ui: &mut Ui, label: &str, note: &str, sub: bool, draw: &mut dyn FnMut(&mut Ui)| {
+        ui.add_space(t.spacing.xs);
+        ui.horizontal_top(|ui| {
             if sub {
                 ui.add_space(indent);
             }
-            let lw = label_w(ui) + if sub { 0.0 } else { indent };
-            ui.allocate_ui_with_layout(vec2(lw, t.dense(44.0)), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.set_width(lw);
-                ui.spacing_mut().item_spacing.x = t.spacing.xs + 1.0;
-                ui.add(egui::Label::new(w::heading_s(t, label, t.text)).truncate());
-                w::info_tip(ui, t, tip);
+            let text_w = (ui.available_width() - select_w - t.spacing.xl).max(120.0);
+            ui.allocate_ui_with_layout(vec2(text_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_width(text_w);
+                ui.spacing_mut().item_spacing.y = t.spacing.xs;
+                ui.add(egui::Label::new(w::heading_s(t, label, t.text)).wrap());
+                if !note.is_empty() {
+                    ui.add(egui::Label::new(w::body_m(t, note, t.text_dim)).wrap());
+                }
             });
-            draw(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| draw(ui));
         });
     };
-    line(ui, &t!("My profile"), &t!("Your level, badges, friends, groups and summary."), false, &mut |ui| {
+    // A check box under a setting ("keep my playtime private").
+    let check = |ui: &mut Ui, on: &mut bool, label: &str| {
+        ui.horizontal(|ui| {
+            ui.add_space(indent * 2.0);
+            w::check(ui, t, on, w::body_m(t, label, t.text));
+        });
+    };
+    setting(ui, &t!("My basic details"), &t!("Your profile name, avatar, real name, location and summary. Anyone can see these; leave a field empty on the General page to hide it."), false, &mut |ui| {
+        ui.label(w::body_l(t, t!("Public"), t.text_dim));
+    });
+    ui.separator();
+    setting(ui, &t!("My profile"), &t!("Your level, badges, showcases, comments and groups. When it isn't public, people who can't see it only see your basic details."), false, &mut |ui| {
         w::select(ui, t, &mut p.profile, &levels(3), select_w);
     });
     let top = p.profile;
@@ -421,39 +468,35 @@ pub(crate) fn privacy_rows(ui: &mut Ui, t: &Theme, p: &mut ProfilePrivacy) -> bo
     p.games = p.games.min(top);
     p.friends = p.friends.min(top);
     p.inventory = p.inventory.min(top);
-    line(ui, &t!("Game details"), &t!("The games you own, your playtime and achievements."), true, &mut |ui| {
+    setting(ui, &t!("My game details"), &t!("The games you own and wishlist, your achievements and playtime. It also decides whether people see when you're playing and what."), true, &mut |ui| {
         w::select(ui, t, &mut p.games, &levels(top), select_w);
     });
     if p.games > 1 {
         let mut hide = p.playtime == 1;
-        line(ui, &t!("Total playtime"), &t!("Always keep my total playtime private"), true, &mut |ui| {
-            let games = levels(3).into_iter().find(|(v, _)| *v == p.games).map(|(_, l)| l).unwrap_or_default();
-            w::select(ui, t, &mut hide, &[(false, games), (true, t!("Private").to_string())], select_w);
-        });
+        check(ui, &mut hide, &t!("Always keep my total playtime private even if users can see my game details."));
         p.playtime = if hide { 1 } else { p.games };
     } else {
         p.playtime = p.games;
     }
-    line(ui, &t!("Friends list"), &t!("Who can see your friends."), true, &mut |ui| {
+    setting(ui, &t!("Friends List"), &t!("Who can see the list of your friends on your profile."), true, &mut |ui| {
         w::select(ui, t, &mut p.friends, &levels(top), select_w);
     });
-    line(ui, &t!("Inventory"), &t!("Your items, trading cards and gifts."), true, &mut |ui| {
+    setting(ui, &t!("Inventory"), &t!("Your items, trading cards, gifts and anything else in your Steam inventory."), true, &mut |ui| {
         w::select(ui, t, &mut p.inventory, &levels(top), select_w);
     });
     if p.inventory > 1 {
         let mut hide = p.gifts == 1;
-        line(ui, &t!("Steam Gifts"), &t!("Always keep Steam Gifts private"), true, &mut |ui| {
-            let inv = levels(3).into_iter().find(|(v, _)| *v == p.inventory).map(|(_, l)| l).unwrap_or_default();
-            w::select(ui, t, &mut hide, &[(false, inv), (true, t!("Private").to_string())], select_w);
-        });
+        check(ui, &mut hide, &t!("Always keep Steam Gifts private even if users can see my inventory."));
         p.gifts = if hide { 1 } else { p.inventory };
     } else {
         p.gifts = p.inventory;
     }
     // Comments: 1 everyone, 0 friends, 2 nobody.
-    line(ui, &t!("Profile comments"), &t!("Can post comments on my profile"), true, &mut |ui| {
+    setting(ui, &t!("Can post comments on my profile"), "", true, &mut |ui| {
         w::select(ui, t, &mut p.comments, &[(1, t!("Public").to_string()), (0, t!("Friends only").to_string()), (2, t!("Private").to_string())], select_w);
     });
+    ui.separator();
+    setting(ui, &t!("Screenshots, videos and Workshop items"), &t!("Each has its own privacy setting: choose it when you upload, or change it later on the item's own page."), false, &mut |_| {});
     *p != before
 }
 
@@ -562,7 +605,7 @@ impl Settings {
                 web("https://help.steampowered.com/faqs/view/647C-5CC1-7EA9-3C29");
             }
         });
-        group(ui, t, t!("Sign in"), |ui| {
+        group(ui, t, t!("Current sign-in"), |ui| {
             let id = format!("{} · {}", ctx.state.steam_id, ctx.state.country);
             if text_row(ui, t, t!("Steam ID"), "", &id, t.text_dim, Some(t!("Sign out"))) {
                 ctx.send(Command::LogOut);

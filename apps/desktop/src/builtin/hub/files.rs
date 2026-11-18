@@ -1016,6 +1016,10 @@ pub(super) fn user_files(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, 
             Go::Nav(page, arg) => extensions::Action::Navigate { page: page.into(), arg },
             Go::Act(a) => a,
             Go::Game(app) => crate::shell::game_page(io.state, app),
+            Go::Send(c) => {
+                io.send(c);
+                continue;
+            }
         });
     }
 }
