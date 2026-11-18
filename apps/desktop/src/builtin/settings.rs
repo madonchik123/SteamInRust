@@ -209,7 +209,7 @@ fn tile(ui: &mut Ui, t: &Theme, icon: &str, title: &str, sub: &str, width: f32) 
 }
 
 pub(super) fn web(url: &str) {
-    let _ = open::that_detached(url);
+    crate::links::open_http(url);
 }
 
 /// Like Steam's Account page.

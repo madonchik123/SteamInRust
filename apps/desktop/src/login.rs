@@ -271,7 +271,7 @@ fn form_and_qr(app: &mut SteamApp, ui: &mut Ui, t: &Theme, phase: &Phase) {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if ui.link(w::text(t!("Help, I can't sign in"), 12.5, t.text_dim)).clicked() {
-                    let _ = open::that_detached("https://help.steampowered.com/wizard/HelpWithLogin");
+                    crate::links::open_http("https://help.steampowered.com/wizard/HelpWithLogin");
                 }
                 if !app.saved.is_empty() {
                     ui.label(w::text("·", 12.5, t.text_faint));

@@ -233,7 +233,7 @@ impl Extension for Profile {
                                             ctx.navigate("profile", Some("edit".into()));
                                         }
                                     } else if w::button(ui, &t, Some(icons::EXTERNAL), t!("View on Steam"), w::Kind::Secondary, w::Size::Sm).clicked() {
-                                        let _ = open::that_detached(format!("https://steamcommunity.com/profiles/{id}"));
+                                        crate::links::open_http(&format!("https://steamcommunity.com/profiles/{id}"));
                                     }
                                     let r = w::button(ui, &t, Some(icons::COPY), &format!("{}  {}", t!("Copy SteamID"), icons::CARET_DOWN), w::Kind::Ghost, w::Size::Sm);
                                     if let Some(Some(what)) = egui::Popup::from_toggle_button_response(&r).show(|ui| super::steam_id_menu(ui, &t, id)).map(|r| r.inner) {
@@ -864,6 +864,6 @@ fn badge_icon(ui: &mut Ui, t: &Theme, badge: &model::Badge, size: f32) {
     }
     let tip = [badge.title.clone(), badge.detail.clone(), unlocked_text(badge)].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
     if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !badge.url.is_empty() {
-        let _ = open::that_detached(&badge.url);
+        crate::links::open_http(&badge.url);
     }
 }

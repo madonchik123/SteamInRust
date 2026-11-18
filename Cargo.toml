@@ -48,7 +48,7 @@ tray-icon = "0.26"
 # UI
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "persistence", "clipboard"] }
 egui = "0.37"
-egui_extras = { version = "0.37", features = ["all_loaders"] }
+egui_extras = { version = "0.37", default-features = false, features = ["image", "gif", "webp", "svg"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 # Async + network

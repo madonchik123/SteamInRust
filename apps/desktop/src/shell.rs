@@ -302,7 +302,7 @@ pub fn notification_text(state: &client::State, n: &model::Notification) -> (&'s
 fn open_notification(state: &client::State, n: &model::Notification, actions: &mut Vec<Action>) {
     let nav = |page: &str, arg: Option<String>| Action::Navigate { page: page.into(), arg };
     let web = |url: String| {
-        let _ = open::that_detached(url);
+        crate::links::open_http(&url);
     };
     let me = state.steam_id;
     let app = n.app_id.filter(|a| *a != 0 && *a != 753);
@@ -466,10 +466,10 @@ fn wallet_button(ui: &mut Ui, t: &Theme, balance: i64, currency: i32, pending: i
         ui.separator();
         let item = |ui: &mut Ui, icon: &str, label: &str| w::menu_item(ui, t, icon, label).clicked();
         if item(ui, icons::PLUS, t!("Add funds…")) {
-            let _ = open::that_detached("https://store.steampowered.com/steamaccount/addfunds");
+            crate::links::open_http("https://store.steampowered.com/steamaccount/addfunds");
         }
         if item(ui, icons::TAG, t!("Redeem a Steam Wallet code…")) {
-            let _ = open::that_detached("https://store.steampowered.com/account/redeemwalletcode");
+            crate::links::open_http("https://store.steampowered.com/account/redeemwalletcode");
         }
         if item(ui, icons::STOREFRONT, t!("My market listings")) {
             actions.push(Action::Navigate { page: "inventory".into(), arg: Some("listings".into()) });
@@ -513,7 +513,7 @@ fn app_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action
             app.activate = Some(Default::default());
         }
         if item(ui, icons::TAG, t!("Redeem a Steam Wallet code…")) {
-            let _ = open::that_detached("https://store.steampowered.com/account/redeemwalletcode");
+            crate::links::open_http("https://store.steampowered.com/account/redeemwalletcode");
         }
         if item(ui, icons::PLUGS, t!("Plugins")) {
             actions.push(Action::Navigate { page: "settings".into(), arg: Some("plugins".into()) });
@@ -998,7 +998,7 @@ fn friend_row(app: &mut SteamApp, ui: &mut Ui, t: &Theme, p: &Persona, actions: 
                 }
             }
             if persona.broadcasting && ui.button(format!("{}  {}", icons::EYE, t!("Watch game"))).on_hover_text(t!("Opens their Steam broadcast")).clicked() {
-                let _ = open::that_detached(format!("https://steamcommunity.com/broadcast/watch/{}", persona.steam_id));
+                crate::links::open_http(&format!("https://steamcommunity.com/broadcast/watch/{}", persona.steam_id));
                 ui.close();
             }
             if ui.button(format!("{}  {}", icons::CONTROLLER, t!("View game info"))).clicked() {

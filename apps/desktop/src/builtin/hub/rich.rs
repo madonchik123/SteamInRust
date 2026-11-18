@@ -20,6 +20,13 @@ pub enum Block {
     Hr,
 }
 
+/// What the user clicked inside rendered rich content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Click {
+    Link(String),
+    Image(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Span {
     pub text: String,
@@ -269,7 +276,7 @@ fn youtube_id(s: &str) -> Option<String> {
     for key in ["youtube.com/embed/", "youtube.com/watch?v=", "youtu.be/", "youtube-nocookie.com/embed/"] {
         if let Some(i) = s.find(key) {
             let id: String = s[i + key.len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
-            if id.len() >= 6 {
+            if crate::links::valid_youtube_id(&id).is_some() && id.len() >= 6 {
                 return Some(id);
             }
         }
@@ -400,15 +407,15 @@ fn handle_bbcode(p: &mut Parser, name: &str, tag: &str, closing: bool, after: &s
         "img" => {
             let (url, used) = raw("[/img]");
             let url = url.trim().to_string();
-            if url.starts_with("http") {
+            if crate::links::validate_http_url(&url).is_some() {
                 p.push_block(Block::Image(url));
             }
             return Some(used);
         }
         "previewyoutube" => {
             let id = value.unwrap_or_default().split(';').next().unwrap_or_default().to_string();
-            if !id.is_empty() {
-                p.push_block(Block::Video(id));
+            if let Some(id) = crate::links::valid_youtube_id(&id) {
+                p.push_block(Block::Video(id.to_string()));
             }
         }
         // Inline pictures by preview id: the item's pictures show above instead.
@@ -494,7 +501,7 @@ fn handle_html(p: &mut Parser, name: &str, tag: &str, closing: bool, after: &str
                 if let Some(alt) = attr(tag, "alt") {
                     p.text(&alt);
                 }
-            } else if src.starts_with("http") {
+            } else if crate::links::validate_http_url(&src).is_some() {
                 p.push_block(Block::Image(src));
             }
         }
@@ -564,7 +571,11 @@ fn handle_html(p: &mut Parser, name: &str, tag: &str, closing: bool, after: &str
                 return (end + 6).min(after.len());
             }
             if class.contains("YouTubeVideo") || class.contains("youtube") {
-                if let Some(id) = attr(tag, "data-youtube").or_else(|| attr(tag, "id").map(|i| i.trim_start_matches("youtubeEmbed_").to_string())).filter(|i| i.len() >= 6) {
+                if let Some(id) = attr(tag, "data-youtube")
+                    .or_else(|| attr(tag, "id").map(|i| i.trim_start_matches("youtubeEmbed_").to_string()))
+                    .and_then(|i| crate::links::valid_youtube_id(&i).map(str::to_string))
+                    .filter(|i| i.len() >= 6)
+                {
                     p.push_block(Block::Video(id));
                 }
             }
@@ -658,15 +669,14 @@ fn job(t: &Theme, spans: &[Span], size: f32, color: Color32, width: f32, reveal:
 }
 
 /// Draw a document. Returns a link the user clicked (to open natively when
-/// it's a Steam page, in the browser otherwise) or a picture to enlarge
-/// (prefixed with `image:`).
-pub fn show(ui: &mut Ui, t: &Theme, doc: &Doc, size: f32) -> Option<String> {
+/// it's a Steam page, in the browser otherwise) or a picture to enlarge.
+pub fn show(ui: &mut Ui, t: &Theme, doc: &Doc, size: f32) -> Option<Click> {
     let mut clicked = None;
     show_blocks(ui, t, &doc.blocks, &doc.links, size, &mut clicked, 0);
     clicked
 }
 
-fn show_blocks(ui: &mut Ui, t: &Theme, blocks: &[Block], links: &[String], size: f32, clicked: &mut Option<String>, depth: usize) {
+fn show_blocks(ui: &mut Ui, t: &Theme, blocks: &[Block], links: &[String], size: f32, clicked: &mut Option<Click>, depth: usize) {
     for (i, b) in blocks.iter().enumerate() {
         if i > 0 {
             ui.add_space(size * 0.55);
@@ -694,7 +704,7 @@ fn show_blocks(ui: &mut Ui, t: &Theme, blocks: &[Block], links: &[String], size:
                     let url = links.get(l).cloned().unwrap_or_default();
                     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&url);
                     if resp.clicked() && !url.is_empty() {
-                        *clicked = Some(url);
+                        *clicked = Some(Click::Link(url));
                     }
                 } else if has_spoiler && resp.clicked() {
                     ui.ctx().data_mut(|d| d.insert_temp(id, !reveal));
@@ -712,10 +722,11 @@ fn show_blocks(ui: &mut Ui, t: &Theme, blocks: &[Block], links: &[String], size:
                     w::image_or_skeleton(ui, t, rect, url, CornerRadius::same(4));
                 }
                 if r.on_hover_cursor(egui::CursorIcon::ZoomIn).clicked() {
-                    *clicked = Some(format!("image:{url}"));
+                    *clicked = Some(Click::Image(url.clone()));
                 }
             }
             Block::Video(id) => {
+                let Some(id) = crate::links::valid_youtube_id(id) else { continue };
                 let wdt = ui.available_width().min(640.0);
                 let (rect, resp) = ui.allocate_exact_size(vec2(wdt, wdt * 9.0 / 16.0), Sense::click());
                 w::image_or_skeleton(ui, t, rect, &format!("https://img.youtube.com/vi/{id}/hqdefault.jpg"), CornerRadius::same(4));
@@ -723,7 +734,7 @@ fn show_blocks(ui: &mut Ui, t: &Theme, blocks: &[Block], links: &[String], size:
                 ui.painter().circle_filled(rect.center(), 30.0, if hover { t.accent } else { Color32::from_black_alpha(170) });
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icons::PLAY, w::font(26.0), Color32::WHITE);
                 if resp.on_hover_text(i18n::t!("Watch on YouTube")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    *clicked = Some(format!("https://www.youtube.com/watch?v={id}"));
+                    *clicked = Some(Click::Link(format!("https://www.youtube.com/watch?v={id}")));
                 }
             }
             Block::Quote(inner) => {
@@ -795,5 +806,15 @@ mod tests {
     fn code_and_entities() {
         let d = parse("[code]let x = 1;\nlet y = &amp;x;[/code]Tom&#39;s");
         assert_eq!(text(&d), "[code let x = 1;\nlet y = &x;] | Tom's");
+    }
+
+    #[test]
+    fn rejects_unsafe_image_and_video_tags() {
+        let d = parse("[img]file://attacker/share/a.png[/img][img]http:file://attacker/share/a.png[/img][previewyoutube=abc&list=evil][/previewyoutube][url=image:file://attacker/share/a.png]click[/url]");
+        assert_eq!(text(&d), "click");
+        assert_eq!(d.links, vec!["image:file://attacker/share/a.png".to_string()]);
+
+        let html_doc = parse(r#"<img src="file://attacker/share/a.png"><img src="https://ok.example/a.png"><div class="YouTubeVideo" data-youtube="bad&list=evil"></div>"#);
+        assert_eq!(text(&html_doc), "[img https://ok.example/a.png]");
     }
 }

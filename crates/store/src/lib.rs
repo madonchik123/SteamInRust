@@ -289,8 +289,8 @@ impl StoreClient {
             kind: d.kind,
             short_description: html::text(&d.short_description),
             about: html::parse(&d.about_the_game),
-            header: d.header_image,
-            background: d.background_raw.or(d.background).unwrap_or_default(),
+            header: html::valid_http_url(&d.header_image).unwrap_or_else(|| model::art::header(id)),
+            background: d.background_raw.or(d.background).and_then(|s| html::valid_http_url(&s)).unwrap_or_default(),
             developers: d.developers,
             publishers: d.publishers,
             genres: d.genres.into_iter().map(|g| g.description).collect(),
@@ -305,7 +305,11 @@ impl StoreClient {
                 discount: p.discount_percent,
                 currency: p.currency,
             }),
-            screenshots: d.screenshots.into_iter().map(|s| Screenshot { thumb: s.path_thumbnail, full: s.path_full }).collect(),
+            screenshots: d
+                .screenshots
+                .into_iter()
+                .filter_map(|s| Some(Screenshot { thumb: html::valid_http_url(&s.path_thumbnail)?, full: html::valid_http_url(&s.path_full)? }))
+                .collect(),
             requirements_min: min,
             requirements_rec: rec,
             requirements: per_os,
@@ -313,7 +317,7 @@ impl StoreClient {
             recommendations: d.recommendations.map(|r| r.total),
             platforms: d.platforms.map(|p| (p.windows, p.mac, p.linux)).unwrap_or((true, false, false)),
             languages: html::text(&d.supported_languages),
-            website: d.website.filter(|w| !w.is_empty()),
+            website: d.website.and_then(|w| html::valid_http_url(&w)),
             content_descriptors: d.content_descriptors.as_ref().map(|c| c.ids.clone()).unwrap_or_default(),
             content_notes: d.content_descriptors.and_then(|c| c.notes).filter(|n| !n.is_empty()),
             package_id: d
@@ -402,8 +406,8 @@ impl From<RawItem> for Item {
     fn from(i: RawItem) -> Self {
         Item {
             app_id: i.id,
-            header: if i.header_image.is_empty() { model::art::header(i.id) } else { i.header_image },
-            large: i.large_capsule_image.filter(|s| !s.is_empty()),
+            header: html::valid_http_url(&i.header_image).unwrap_or_else(|| model::art::header(i.id)),
+            large: i.large_capsule_image.and_then(|s| html::valid_http_url(&s)),
             name: i.name,
             windows: i.windows_available,
             price: Price {
@@ -570,5 +574,23 @@ mod tests {
     fn discount_math() {
         assert_eq!(super::discount(2000, 1000), 50);
         assert_eq!(super::discount(0, 0), 0);
+    }
+
+    #[test]
+    fn store_item_rejects_non_http_images() {
+        let item = super::Item::from(super::RawItem {
+            id: 440,
+            kind: 0,
+            name: "TF2".into(),
+            discount_percent: 0,
+            original_price: None,
+            final_price: None,
+            currency: String::new(),
+            header_image: "file://attacker/share/pwn.png".into(),
+            large_capsule_image: Some("javascript:alert(1)".into()),
+            windows_available: true,
+        });
+        assert!(item.header.starts_with("https://"));
+        assert_eq!(item.large, None);
     }
 }

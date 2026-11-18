@@ -221,8 +221,8 @@ fn post(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, p: &hub::Post, nu
         });
         ui.add_space(6.0);
         let doc = rich::parse(&p.html);
-        if let Some(link) = rich::show(ui, t, &doc, 14.0) {
-            hv.follow(io, &link);
+        if let Some(click) = rich::show(ui, t, &doc, 14.0) {
+            hv.follow(io, click);
         }
     });
 }
