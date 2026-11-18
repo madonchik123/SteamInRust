@@ -28,6 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 fs4 = "1"
 qrcode.workspace = true
+rand.workspace = true
 global-hotkey.workspace = true
 tray-icon.workspace = true
 rfd = "0.18"
