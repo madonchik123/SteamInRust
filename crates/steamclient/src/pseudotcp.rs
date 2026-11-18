@@ -8,7 +8,7 @@
 //! ```
 //! all big-endian. The first segment carries the control byte CTL_CONNECT
 //! (flag CTL), which takes one byte of sequence space. Sequence numbers
-//! start at 0 and aren't compared modulo 2^32, like the original.
+//! start at 0 and are compared modulo 2^32.
 
 use std::collections::VecDeque;
 
@@ -285,6 +285,9 @@ impl PseudoTcp {
             self.closedown(104); // ECONNRESET
             return false;
         }
+        if data.len() > u32::MAX as usize {
+            return false;
+        }
         let mut data = data;
         let mut len = data.len() as u32;
         let mut connect = false;
@@ -301,10 +304,12 @@ impl PseudoTcp {
             }
         }
         // Timestamp to echo.
-        if seq <= self.ts_lastack && self.ts_lastack < seq.wrapping_add(len) {
+        if self.ts_lastack.wrapping_sub(seq) < len {
             self.ts_recent = tsval;
         }
-        if ack > self.snd_una && ack <= self.snd_nxt {
+        let acked = ack.wrapping_sub(self.snd_una);
+        let in_flight_before = self.snd_nxt.wrapping_sub(self.snd_una);
+        if acked > 0 && acked <= in_flight_before {
             if tsecr != 0 {
                 let rtt = diff(now, tsecr);
                 if rtt >= 0 {
@@ -320,7 +325,6 @@ impl PseudoTcp {
                 }
             }
             self.snd_wnd = wnd;
-            let acked = ack - self.snd_una;
             self.snd_una = ack;
             self.rto_base = if self.snd_una == self.snd_nxt { 0 } else { now };
             self.slen -= acked;
@@ -339,8 +343,8 @@ impl PseudoTcp {
                 }
             }
             if self.dup_acks >= 3 {
-                if self.snd_una >= self.recover {
-                    let in_flight = self.snd_nxt - self.snd_una;
+                if self.snd_una.wrapping_sub(self.recover) <= 0x8000_0000 {
+                    let in_flight = self.snd_nxt.wrapping_sub(self.snd_una);
                     self.cwnd = self.ssthresh.min(in_flight + self.mss);
                     self.dup_acks = 0;
                 } else {
@@ -373,7 +377,7 @@ impl PseudoTcp {
                         return false;
                     }
                     self.recover = self.snd_nxt;
-                    let in_flight = self.snd_nxt - self.snd_una;
+                    let in_flight = self.snd_nxt.wrapping_sub(self.snd_una);
                     self.ssthresh = (in_flight / 2).max(2 * self.mss);
                     self.cwnd = self.ssthresh + 3 * self.mss;
                 } else if self.dup_acks > 3 {
@@ -391,50 +395,79 @@ impl PseudoTcp {
         } else {
             SendFlags::None
         };
-        // Trim what we already have.
-        if seq < self.rcv_nxt {
-            let adjust = self.rcv_nxt - seq;
-            if adjust < len {
-                seq += adjust;
-                data = &data[adjust as usize..];
-                len -= adjust;
+        // Trim what we already have (modular 32-bit TCP sequence space).
+        let behind = self.rcv_nxt.wrapping_sub(seq);
+        if seq != self.rcv_nxt && behind <= 0x8000_0000 {
+            if behind < len {
+                seq = seq.wrapping_add(behind);
+                data = &data[behind as usize..];
+                len -= behind;
             } else {
                 len = 0;
             }
         }
-        // And what doesn't fit.
-        let room = RBUF as u32 - self.rlen;
-        if seq.wrapping_add(len).wrapping_sub(self.rcv_nxt) > room {
-            let adjust = seq.wrapping_add(len).wrapping_sub(self.rcv_nxt) - room;
-            len = len.saturating_sub(adjust);
+        // And what doesn't fit in the receive window.
+        let room = (RBUF as u32).saturating_sub(self.rlen);
+        let delta = seq.wrapping_sub(self.rcv_nxt);
+        if delta >= room {
+            len = 0;
+        } else {
+            len = len.min(room - delta);
         }
         let ignore = flags & FLAG_CTL != 0;
         if len > 0 {
             if ignore {
                 if seq == self.rcv_nxt {
-                    self.rcv_nxt += len;
+                    self.rcv_nxt = self.rcv_nxt.wrapping_add(len);
                 }
             } else {
-                let off = (self.rlen + (seq - self.rcv_nxt)) as usize;
-                self.rbuf[off..off + len as usize].copy_from_slice(&data[..len as usize]);
+                let Some(off) = (self.rlen as usize).checked_add(delta as usize) else {
+                    return false;
+                };
+                let Some(end) = off.checked_add(len as usize) else {
+                    return false;
+                };
+                if end > self.rbuf.len() || (len as usize) > data.len() {
+                    return false;
+                }
+                self.rbuf[off..end].copy_from_slice(&data[..len as usize]);
                 if seq == self.rcv_nxt {
                     self.rlen += len;
-                    self.rcv_nxt += len;
+                    self.rcv_nxt = self.rcv_nxt.wrapping_add(len);
                     self.rcv_wnd -= len.min(self.rcv_wnd);
                     // Earlier out-of-order segments that now fit.
-                    while let Some(r) = self.rlist.first().filter(|r| r.seq <= self.rcv_nxt) {
-                        if r.seq + r.len > self.rcv_nxt {
+                    while let Some(r) = self.rlist.first() {
+                        let r_behind = self.rcv_nxt.wrapping_sub(r.seq);
+                        if r_behind > 0x8000_0000 {
+                            break;
+                        }
+                        if r.len > r_behind {
                             sflags = SendFlags::ImmediateAck;
-                            let adjust = r.seq + r.len - self.rcv_nxt;
+                            let adjust = r.len - r_behind;
                             self.rlen += adjust;
-                            self.rcv_nxt += adjust;
+                            self.rcv_nxt = self.rcv_nxt.wrapping_add(adjust);
                             self.rcv_wnd -= adjust.min(self.rcv_wnd);
                         }
                         self.rlist.remove(0);
                     }
                 } else {
-                    let pos = self.rlist.iter().position(|r| r.seq >= seq).unwrap_or(self.rlist.len());
-                    self.rlist.insert(pos, RSeg { seq, len });
+                    let pos = self
+                        .rlist
+                        .iter()
+                        .position(|r| r.seq.wrapping_sub(self.rcv_nxt) >= delta)
+                        .unwrap_or(self.rlist.len());
+                    let covered_by_prev = pos > 0 && {
+                        let prev = &self.rlist[pos - 1];
+                        let prev_delta = prev.seq.wrapping_sub(self.rcv_nxt);
+                        prev_delta.saturating_add(prev.len) >= delta.saturating_add(len)
+                    };
+                    if !covered_by_prev {
+                        if pos < self.rlist.len() && self.rlist[pos].seq == seq {
+                            self.rlist[pos].len = self.rlist[pos].len.max(len);
+                        } else {
+                            self.rlist.insert(pos, RSeg { seq, len });
+                        }
+                    }
                 }
             }
         }
@@ -489,7 +522,7 @@ impl PseudoTcp {
             let window = self.snd_wnd.min(cwnd);
             let in_flight = self.snd_nxt.wrapping_sub(self.snd_una);
             let useable = window.saturating_sub(in_flight);
-            let mut available = (self.slen - in_flight).min(self.mss);
+            let mut available = self.slen.saturating_sub(in_flight).min(self.mss);
             if available > useable {
                 available = if useable * 4 < window { 0 } else { useable };
             }
@@ -505,7 +538,7 @@ impl PseudoTcp {
                 return;
             }
             // Nagle: wait while data is in flight and the segment isn't full.
-            if self.snd_nxt > self.snd_una && available < self.mss {
+            if in_flight > 0 && available < self.mss {
                 return;
             }
             let Some(idx) = self.slist.iter().position(|s| s.xmit == 0) else { return };
@@ -600,5 +633,109 @@ mod tests {
         assert_eq!(u16::from_be_bytes([s[14], s[15]]) as usize, RBUF);
         assert_eq!(u32::from_be_bytes(s[16..20].try_into().unwrap()), 5000);
         assert_eq!(s[24], CTL_CONNECT);
+    }
+
+    fn build_seg(conv: u32, seq: u32, ack: u32, flags: u8, wnd: u16, payload: &[u8]) -> Vec<u8> {
+        let mut pkt = Vec::with_capacity(HEADER_SIZE + payload.len());
+        pkt.extend_from_slice(&conv.to_be_bytes());
+        pkt.extend_from_slice(&seq.to_be_bytes());
+        pkt.extend_from_slice(&ack.to_be_bytes());
+        pkt.push(0);
+        pkt.push(flags);
+        pkt.extend_from_slice(&wnd.to_be_bytes());
+        pkt.extend_from_slice(&2000u32.to_be_bytes());
+        pkt.extend_from_slice(&1000u32.to_be_bytes());
+        pkt.extend_from_slice(payload);
+        pkt
+    }
+
+    fn established_pair() -> (PseudoTcp, PseudoTcp) {
+        let mut a = PseudoTcp::new(0, 1100, 1000);
+        let mut b = PseudoTcp::new(0, 1100, 1000);
+        a.connect(1000);
+        let mut n = 0;
+        let mut now = 1000;
+        for _ in 0..20 {
+            now += 20;
+            pump(&mut a, &mut b, now, 0, &mut n);
+            a.notify_clock(now);
+            b.notify_clock(now);
+        }
+        assert_eq!(a.state, State::Established);
+        assert_eq!(b.state, State::Established);
+        (a, b)
+    }
+
+    #[test]
+    fn wrapping_seq_behind_rcv_nxt_trims_without_oob_panic() {
+        let (mut a, mut b) = established_pair();
+        // Handshake consumed 1 byte (CTL_CONNECT), so b.rcv_nxt == 1.
+        // Send 9 stream bytes so b.rcv_nxt == 10.
+        assert_eq!(a.send(b"123456789", 1100), 9);
+        let mut n = 0;
+        pump(&mut a, &mut b, 1110, 0, &mut n);
+        let mut got = Vec::new();
+        b.recv(&mut got, 1110);
+        assert_eq!(got, b"123456789");
+        assert_eq!(b.rcv_nxt, 10);
+
+        // Segment at seq = u32::MAX - 4 with len = 16 spans [-5..11) mod 2^32:
+        // 15 bytes are behind rcv_nxt (10) and the last byte (0xAB) lands at seq = 10.
+        let mut payload = [0u8; 16];
+        payload[15] = 0xAB;
+        let seg = build_seg(0, u32::MAX - 4, 1, 0, 60000, &payload);
+        assert!(b.notify_packet(&seg, 1120));
+
+        got.clear();
+        b.recv(&mut got, 1120);
+        assert_eq!(got, &[0xAB]);
+        assert_eq!(b.rcv_nxt, 11);
+
+        // Purely old wrapped segment ([-5..5) mod 2^32 when rcv_nxt == 11) must be dropped.
+        let old_seg = build_seg(0, u32::MAX - 4, 1, 0, 60000, &[0xFF; 10]);
+        assert!(b.notify_packet(&old_seg, 1130));
+        got.clear();
+        b.recv(&mut got, 1130);
+        assert!(got.is_empty());
+        assert_eq!(b.rcv_nxt, 11);
+
+        // Far-ahead out-of-window segments must be dropped without wrapping into window.
+        let far_seg = build_seg(0, 11 + RBUF as u32 + 500, 1, 0, 60000, &[0xEE; 32]);
+        assert!(b.notify_packet(&far_seg, 1140));
+        let half_space = build_seg(0, 11u32.wrapping_add(0x7FFF_FFF0), 1, 0, 60000, &[0xDD; 64]);
+        assert!(b.notify_packet(&half_space, 1150));
+        got.clear();
+        b.recv(&mut got, 1150);
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn out_of_order_reassembly_across_u32_wrap() {
+        let (_a, mut b) = established_pair();
+        b.rcv_nxt = u32::MAX - 3; // 0xFFFF_FFFC
+
+        // Out-of-order segment after wrap: seq = 1, len = 4 ("FGHI", delta = 5)
+        let seg_after = build_seg(0, 1, 1, 0, 60000, b"FGHI");
+        assert!(b.notify_packet(&seg_after, 1200));
+
+        // Out-of-order segment straddling u32::MAX: seq = u32::MAX - 1, len = 3 ("CDE", delta = 2)
+        // Covers 0xFFFF_FFFE, 0xFFFF_FFFF, 0x0000_0000 -> ends at seq = 1.
+        let seg_straddle = build_seg(0, u32::MAX - 1, 1, 0, 60000, b"CDE");
+        assert!(b.notify_packet(&seg_straddle, 1210));
+
+        // Duplicate of straddling segment should not corrupt rlist/rlen
+        assert!(b.notify_packet(&seg_straddle, 1215));
+
+        let mut got = Vec::new();
+        b.recv(&mut got, 1215);
+        assert!(got.is_empty());
+
+        // Gap filler at rcv_nxt = u32::MAX - 3, len = 2 ("AB") unlocks all 9 bytes ("ABCDEFGHI")
+        let seg_gap = build_seg(0, u32::MAX - 3, 1, 0, 60000, b"AB");
+        assert!(b.notify_packet(&seg_gap, 1220));
+
+        b.recv(&mut got, 1220);
+        assert_eq!(got, b"ABCDEFGHI");
+        assert_eq!(b.rcv_nxt, 5);
     }
 }
