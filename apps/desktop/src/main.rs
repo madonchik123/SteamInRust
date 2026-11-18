@@ -62,9 +62,15 @@ fn main() -> eframe::Result {
         default_hook(info);
     }));
 
+    // `--offscreen` (previews and screenshots): the window opens far off the
+    // screen and stays there, so test copies never show up on the desktop.
+    let mut viewport = egui::ViewportBuilder::default();
+    if app::offscreen() {
+        viewport = viewport.with_position(app::OFFSCREEN_POS);
+    }
     let options = eframe::NativeOptions {
         // Our own title bar (see chrome.rs) instead of the Windows one.
-        viewport: chrome::frame(egui::ViewportBuilder::default())
+        viewport: chrome::frame(viewport)
             .with_title("SteamInRust")
             // Starts at sign-in size; the app resizes itself after sign-in.
             .with_inner_size([720.0, 470.0])

@@ -2115,3 +2115,8 @@
 "Steam didn't take the reply" = "Steam не принял ответ"
 "Couldn't read your market history. Is the market available on your account?" = "Не удалось прочитать историю торговой площадки. Доступна ли она на вашем аккаунте?"
 "Steam didn't return your market history" = "Steam не вернул историю торговой площадки"
+
+# --- Redesign: app shell ---
+"Help|menu" = "Справка"
+"View|menu" = "Вид"
+"Sort by" = "Сортировать по"

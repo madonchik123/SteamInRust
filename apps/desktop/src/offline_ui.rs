@@ -246,13 +246,6 @@ pub fn downloads_notice(app: &SteamApp, ui: &mut Ui, t: &Theme) {
     }
 }
 
-/// In the status bar, next to "Downloads".
-pub fn status_note(app: &SteamApp, ui: &mut Ui, t: &Theme) {
-    if !app.state.online() {
-        ui.label(w::text(t!("· paused while offline"), 12.5, t.away));
-    }
-}
-
 /// Play time on a game's page, with time played offline in SteamInRust
 /// that Steam doesn't have yet.
 pub fn playtime_stat(ui: &mut Ui, t: &Theme, state: &client::State, app_id: model::AppId, steam_minutes: Option<u64>) {

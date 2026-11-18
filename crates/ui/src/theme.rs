@@ -33,11 +33,28 @@ pub struct Theme {
     pub danger: Color32,
     pub discount: Color32,
     pub radius: u8,
+    /// Main call-to-action fill: primary buttons, the selected tab in a
+    /// page's bar (the style guide's "Color / Secondary").
+    pub secondary: Color32,
+    /// The page bar under the top bar (the style guide's "Bg / Tertiary").
+    pub tertiary: Color32,
+    /// Store pages' background, top to bottom ([`Theme::paint_store_background`]).
+    pub store_gradient: [Color32; 2],
+    /// Library pages' background, center to edge ([`Theme::paint_library_background`]).
+    pub library_gradient: [Color32; 2],
+    /// Which tokens this theme was saved with. Themes saved before the
+    /// redesign tokens existed read as 0 and get them filled in by
+    /// [`Theme::upgrade`].
+    #[serde(default)]
+    pub rev: u8,
 }
+
+/// The current [`Theme::rev`].
+pub const THEME_REV: u8 = 1;
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::midnight()
+        Self::slate()
     }
 }
 
@@ -47,7 +64,49 @@ const fn hex(rgb: u32) -> Color32 {
 
 impl Theme {
     pub fn presets() -> Vec<Theme> {
-        vec![Self::midnight(), Self::aurora(), Self::classic(), Self::oled(), Self::daylight()]
+        vec![Self::slate(), Self::midnight(), Self::aurora(), Self::classic(), Self::oled(), Self::daylight()]
+    }
+
+    /// The default since the redesign: the Figma style guide's colors
+    /// (frame `11:103`, "colors"). `docs/redesign.md` says what each is for.
+    pub fn slate() -> Self {
+        Self {
+            name: "Slate".into(),
+            dark: true,
+            bg: hex(0x181D24),
+            // Bg / Main.
+            chrome: hex(0x0E141B),
+            surface: hex(0x262C35),
+            // Bg / Hover.
+            surface_hover: hex(0x313843),
+            // Bg / Highlight: menus, inputs, secondary buttons, tags.
+            raised: hex(0x1E2329),
+            border: hex(0x2A313B),
+            // Text / Main, Text / Dim.
+            text: hex(0xF3F3F3),
+            text_dim: hex(0x76808C),
+            text_faint: hex(0x525B66),
+            // Color / Primary.
+            accent: hex(0x66C0F4),
+            accent_2: hex(0x4B619B),
+            on_accent: hex(0x0E141B),
+            // Accent / Green.
+            play: hex(0xA1CD44),
+            online: hex(0x66C0F4),
+            in_game: hex(0xA1CD44),
+            // Accent / Yellow, Accent / Red.
+            away: hex(0xC1B15F),
+            danger: hex(0xCD5444),
+            discount: hex(0xA1CD44),
+            radius: 5,
+            // Color / Secondary, Bg / Tertiary.
+            secondary: hex(0x4B619B),
+            tertiary: hex(0x212B45),
+            // --gpGradient-StoreBackground and --gpGradient-LibraryBackground.
+            store_gradient: [hex(0x2A475E), hex(0x1B2838)],
+            library_gradient: [hex(0x3D4450), hex(0x23262E)],
+            rev: THEME_REV,
+        }
     }
 
     /// Default: inky blue-black, electric blue to violet accent.
@@ -74,6 +133,11 @@ impl Theme {
             danger: hex(0xF0544F),
             discount: hex(0x4C6B22),
             radius: 12,
+            secondary: hex(0x4F8CFF),
+            tertiary: hex(0x111720),
+            store_gradient: [hex(0x131922), hex(0x0A0D12)],
+            library_gradient: [hex(0x1A222D), hex(0x0A0D12)],
+            rev: THEME_REV,
         }
     }
 
@@ -92,6 +156,10 @@ impl Theme {
             accent: hex(0x2DD4BF),
             accent_2: hex(0x38BDF8),
             on_accent: hex(0x04201C),
+            secondary: hex(0x1F9E8E),
+            tertiary: hex(0x0D1A1C),
+            store_gradient: [hex(0x0F1E20), hex(0x081112)],
+            library_gradient: [hex(0x15292B), hex(0x081112)],
             ..Self::midnight()
         }
     }
@@ -114,6 +182,10 @@ impl Theme {
             on_accent: hex(0x0E1C2A),
             play: hex(0x5C7E10),
             radius: 4,
+            secondary: hex(0x417A9B),
+            tertiary: hex(0x1F2C3D),
+            store_gradient: [hex(0x2A475E), hex(0x1B2838)],
+            library_gradient: [hex(0x3D4450), hex(0x23262E)],
             ..Self::midnight()
         }
     }
@@ -131,6 +203,10 @@ impl Theme {
             accent: hex(0xF5F5F5),
             accent_2: hex(0xA3A3A3),
             on_accent: hex(0x000000),
+            secondary: hex(0x2A2A2E),
+            tertiary: hex(0x0A0A0B),
+            store_gradient: [hex(0x0E0E0F), hex(0x000000)],
+            library_gradient: [hex(0x18181A), hex(0x000000)],
             ..Self::midnight()
         }
     }
@@ -158,7 +234,60 @@ impl Theme {
             danger: hex(0xDC2626),
             discount: hex(0x4D7C0F),
             radius: 12,
+            secondary: hex(0x2563EB),
+            tertiary: hex(0xE8EDF3),
+            store_gradient: [hex(0xFFFFFF), hex(0xF3F5F8)],
+            library_gradient: [hex(0xFFFFFF), hex(0xEEF2F7)],
+            rev: THEME_REV,
         }
+    }
+
+    /// Fill in tokens added after this theme was saved (see [`Theme::rev`])
+    /// from the ones it has, so an older saved theme keeps its look.
+    pub fn upgrade(&mut self) {
+        if self.rev >= THEME_REV {
+            return;
+        }
+        if let Some(p) = Self::presets().into_iter().find(|p| p.name == self.name) {
+            // A preset: its own new tokens, but primary buttons follow an
+            // accent color the user picked.
+            self.secondary = if p.accent == self.accent { p.secondary } else { self.accent };
+            self.tertiary = p.tertiary;
+            self.store_gradient = p.store_gradient;
+            self.library_gradient = p.library_gradient;
+        } else {
+            self.secondary = self.accent;
+            self.tertiary = crate::widgets::mix(self.chrome, self.surface, 0.5);
+            self.store_gradient = [self.surface, self.bg];
+            self.library_gradient = [self.surface_hover, self.bg];
+        }
+        self.rev = THEME_REV;
+    }
+
+    /// Text that reads on `fill`: near-black on light fills (the Play
+    /// button's green, the Install button's blue), near-white on dark ones.
+    pub fn text_on(&self, fill: Color32) -> Color32 {
+        let l = 0.2126 * fill.r() as f32 + 0.7152 * fill.g() as f32 + 0.0722 * fill.b() as f32;
+        if l > 140.0 { hex(0x0E141B) } else { hex(0xF3F3F3) }
+    }
+
+    /// The store's background (`--gpGradient-StoreBackground`): top to
+    /// bottom, reaching the second color 80% of the way down.
+    pub fn paint_store_background(&self, painter: &egui::Painter, rect: egui::Rect) {
+        let [a, b] = self.store_gradient;
+        let mid = egui::pos2(rect.right(), rect.top() + rect.height() * 0.8);
+        crate::widgets::gradient(painter, egui::Rect::from_min_max(rect.min, mid), a, b, false);
+        painter.rect_filled(egui::Rect::from_min_max(egui::pos2(rect.left(), mid.y), rect.max), egui::CornerRadius::ZERO, b);
+    }
+
+    /// The library's background (`--gpGradient-LibraryBackground`): a
+    /// radial glow centered 40 px in from the top-left corner, reaching
+    /// the second color 80% of the way to the farthest corner.
+    pub fn paint_library_background(&self, painter: &egui::Painter, rect: egui::Rect) {
+        let [a, b] = self.library_gradient;
+        let center = rect.min + egui::vec2(40.0, 40.0);
+        let far = (rect.max - center).length() * 0.8;
+        crate::widgets::radial_gradient(painter, rect, center, far, a, b);
     }
 
     pub fn corner(&self) -> CornerRadius {
@@ -178,7 +307,9 @@ impl Theme {
         v.window_stroke = Stroke::new(1.0, self.border);
         v.window_corner_radius = self.corner();
         v.window_shadow = egui::Shadow { offset: [0, 12], blur: 32, spread: 0, color: Color32::from_black_alpha(140) };
-        v.popup_shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(120) };
+        // The style guide's menu shadow is (0, 4) blurred 4 at 25% black;
+        // a little softer here so menus over pictures still stand out.
+        v.popup_shadow = egui::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(100) };
         v.menu_corner_radius = self.corner_small();
         v.extreme_bg_color = self.raised;
         v.faint_bg_color = self.surface;
@@ -226,15 +357,34 @@ impl Theme {
             s.interaction.selectable_labels = false;
             use egui::TextStyle::*;
             s.text_styles = [
-                (Heading, FontId::new(24.0, semibold())),
-                (Body, FontId::new(14.0, FontFamily::Proportional)),
-                (Button, FontId::new(14.0, medium())),
-                (Small, FontId::new(12.0, FontFamily::Proportional)),
+                (Heading, FontId::new(type_scale::HEADING_M, bold())),
+                (Body, FontId::new(type_scale::BODY_M, FontFamily::Proportional)),
+                (Button, FontId::new(type_scale::BODY_M, medium())),
+                (Small, FontId::new(type_scale::BODY_S, FontFamily::Proportional)),
                 (Monospace, FontId::new(13.0, FontFamily::Monospace)),
             ]
             .into();
         });
     }
+}
+
+/// The style guide's type scale (frame `10:8`, "fonts / motiva sans").
+/// The design is set in Motiva Sans, which is Valve's and can't be
+/// shipped; Inter stands in at the same sizes and weights (headings bold,
+/// body regular). Inter runs a little wider than Motiva at the same size.
+pub mod type_scale {
+    /// Heading Large: 26 px, bold.
+    pub const HEADING_L: f32 = 26.0;
+    /// Heading Medium: 22 px, bold.
+    pub const HEADING_M: f32 = 22.0;
+    /// Heading Small: 18 px, bold. Also the top bar's sections and large buttons.
+    pub const HEADING_S: f32 = 18.0;
+    /// Body Large: 16 px, regular. Page-bar tabs, secondary buttons, menu rows.
+    pub const BODY_L: f32 = 16.0;
+    /// Body Medium: 14 px, regular. The default text size.
+    pub const BODY_M: f32 = 14.0;
+    /// Body Small: 12 px, regular. Tags, review bars, captions.
+    pub const BODY_S: f32 = 12.0;
 }
 
 pub fn medium() -> FontFamily {
@@ -331,4 +481,43 @@ pub fn install_fonts(ctx: &egui::Context) {
     fonts.families.insert(bold(), family("inter-bold", true));
     fonts.families.entry(FontFamily::Monospace).or_default().push("phosphor".into());
     ctx.set_fonts(fonts);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slate_is_the_default() {
+        let t = Theme::default();
+        assert_eq!(t.name, "Slate");
+        assert_eq!(t.rev, THEME_REV);
+        assert_eq!(Theme::presets()[0], t);
+    }
+
+    #[test]
+    fn themes_saved_before_the_redesign_get_the_new_tokens() {
+        // A Midnight theme saved before `secondary`, `tertiary` and the
+        // gradients existed, with an accent the user picked.
+        let mut old = serde_json::to_value(Theme::midnight()).unwrap();
+        for key in ["secondary", "tertiary", "store_gradient", "library_gradient", "rev"] {
+            old.as_object_mut().unwrap().remove(key);
+        }
+        old["accent"] = serde_json::to_value(Color32::from_rgb(1, 2, 3)).unwrap();
+        let mut t: Theme = serde_json::from_value(old).unwrap();
+        assert_eq!(t.rev, 0);
+        t.upgrade();
+        assert_eq!(t.rev, THEME_REV);
+        // Primary buttons follow the picked accent; the rest is Midnight's.
+        assert_eq!(t.secondary, Color32::from_rgb(1, 2, 3));
+        assert_eq!(t.tertiary, Theme::midnight().tertiary);
+        assert_eq!(t.library_gradient, Theme::midnight().library_gradient);
+    }
+
+    #[test]
+    fn text_on_picks_a_readable_color() {
+        let t = Theme::slate();
+        assert_eq!(t.text_on(t.play), hex(0x0E141B));
+        assert_eq!(t.text_on(t.secondary), hex(0xF3F3F3));
+    }
 }

@@ -5,6 +5,7 @@
 
 pub mod community;
 mod downloads;
+mod gallery;
 pub mod hub;
 mod inventory;
 pub mod library;
@@ -31,6 +32,10 @@ pub fn registry(rt: tokio::runtime::Handle, ctx: egui::Context, flags: settings:
     r.register(support::Support::default());
     r.register(plugins::Plugins::new(rt.clone(), ctx.clone()));
     r.register(settings::Settings::new(flags));
+    // The design gallery, only when asked for (`--page=gallery`).
+    if std::env::args().any(|a| a == "--page=gallery") {
+        r.register(gallery::Gallery::default());
+    }
     r
 }
 

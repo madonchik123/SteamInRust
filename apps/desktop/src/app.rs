@@ -48,6 +48,22 @@ pub struct Prefs {
     pub tray_icon: ui::brand::Logo,
 }
 
+/// `--offscreen`: keep the window far off the screen (previews and
+/// screenshots of a test copy, which then never shows on the desktop).
+pub fn offscreen() -> bool {
+    std::env::args().any(|a| a == "--offscreen")
+}
+
+/// Where an `--offscreen` window sits: left of any monitor.
+pub const OFFSCREEN_POS: [f32; 2] = [-12000.0, 40.0];
+
+/// `--window-size=1920x1080`: the main window's size (previews).
+fn window_size_flag() -> Option<[f32; 2]> {
+    let v = std::env::args().find_map(|a| a.strip_prefix("--window-size=").map(String::from))?;
+    let (w, h) = v.split_once('x')?;
+    Some([w.parse().ok()?, h.parse().ok()?])
+}
+
 fn yes() -> bool {
     true
 }
@@ -157,7 +173,9 @@ impl SteamApp {
     pub fn new(cc: &eframe::CreationContext<'_>, link: Option<String>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         ui::install_fonts(&cc.egui_ctx);
-        let prefs: Prefs = cc.storage.and_then(|s| eframe::get_value(s, "prefs")).unwrap_or_default();
+        let mut prefs: Prefs = cc.storage.and_then(|s| eframe::get_value(s, "prefs")).unwrap_or_default();
+        // A theme saved before the redesign tokens: fill them in.
+        prefs.theme.upgrade();
         // `--lang=en` / `--lang=ru` overrides the saved choice (screenshots, testing).
         let lang_flag = std::env::args().find_map(|a| a.strip_prefix("--lang=").map(String::from));
         // The language picked in setup counts until one is chosen in the app.
@@ -282,6 +300,10 @@ impl SteamApp {
         let flag = |name: &str| std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from));
         if let Some(page) = flag("page") {
             app.go(page, flag("arg"));
+        }
+        // `--theme=Slate`: show one of the built-in themes (previews).
+        if let Some(theme) = flag("theme").and_then(|n| Theme::presets().into_iter().find(|p| p.name.eq_ignore_ascii_case(&n))) {
+            app.prefs.theme = theme;
         }
         app.login.signing_in = auto_account;
         // `--overlay` opens the Shift+Tab overlay right away (for previews).
@@ -477,7 +499,11 @@ impl SteamApp {
             match a {
                 Action::Navigate { page, arg } => self.navigate(page, arg),
                 Action::Toast(text) => self.toast(now, text, ""),
-                Action::SetTheme(t) => self.prefs.theme = t,
+                Action::SetTheme(mut t) => {
+                    // Plugins may hand over a theme without the newer tokens.
+                    t.upgrade();
+                    self.prefs.theme = t;
+                }
                 Action::SetZoom(z) => self.prefs.zoom = z.clamp(0.7, 2.0),
                 Action::SetEnabled { id, enabled } => {
                     self.registry.set_enabled(&id, enabled);
@@ -697,6 +723,36 @@ impl eframe::App for SteamApp {
         [0.0, 0.0, 0.0, 0.0]
     }
 
+    /// Previews of an `--offscreen` copy can't be pointed at with the real
+    /// mouse: `--pointer=x,y` keeps a pretend pointer there (hover states),
+    /// and `--click=x,y` clicks there once, 4 seconds in.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if !offscreen() || raw_input.viewport_id != egui::ViewportId::ROOT {
+            return;
+        }
+        let at = |name: &str| -> Option<egui::Pos2> {
+            let v = std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from))?;
+            let (x, y) = v.split_once(',')?;
+            Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))
+        };
+        let time = raw_input.time.unwrap_or(0.0);
+        raw_input.events.retain(|e| !matches!(e, egui::Event::PointerGone | egui::Event::PointerMoved(_)));
+        if let Some(p) = at("pointer") {
+            raw_input.events.push(egui::Event::PointerMoved(p));
+        }
+        if let Some(p) = at("click") {
+            let done = ctx.data(|d| d.get_temp::<bool>(egui::Id::unique("preview-clicked"))).unwrap_or(false);
+            if time > 4.0 && !done {
+                ctx.data_mut(|d| d.insert_temp(egui::Id::unique("preview-clicked"), true));
+                let modifiers = egui::Modifiers::NONE;
+                raw_input.events.push(egui::Event::PointerMoved(p));
+                raw_input.events.push(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers });
+                raw_input.events.push(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers });
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // The running download (not a file check) on the taskbar / Dock.
@@ -792,8 +848,9 @@ impl eframe::App for SteamApp {
         self.bigpicture_was_on = big_picture;
         if self.window_mode != Some(mode) {
             self.window_mode = Some(mode);
+            let main_size = window_size_flag().unwrap_or([1440.0, 900.0]);
             let (size, min, resizable) = match mode {
-                WindowMode::Main => ([1440.0, 900.0], [1060.0, 680.0], true),
+                WindowMode::Main => (main_size, [1060.0, 680.0], true),
                 WindowMode::SignIn => ([720.0, 470.0], [720.0, 470.0], false),
                 WindowMode::Splash => ([380.0, 250.0], [380.0, 250.0], false),
             };
@@ -803,8 +860,11 @@ impl eframe::App for SteamApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(resizable));
             ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min.into()));
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size.into()));
-            // Keep it centered on the screen, like Steam's windows.
-            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+            // Keep it centered on the screen, like Steam's windows (an
+            // off-screen preview stays where it is).
+            if offscreen() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(OFFSCREEN_POS.into()));
+            } else if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
                 let pos = ((monitor - egui::Vec2::from(size)) / 2.0).max(egui::Vec2::ZERO);
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos.to_pos2()));
             }

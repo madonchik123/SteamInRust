@@ -2,7 +2,7 @@
 //! extensions and built-in pages all look the same.
 
 use crate::Theme;
-use crate::theme::{bold, medium, semibold};
+use crate::theme::{bold, medium, semibold, type_scale};
 use egui::{
     Align2, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Rect, Response, RichText, Sense,
     Stroke, StrokeKind, Ui, Vec2, load::TexturePoll, pos2, vec2,
@@ -22,6 +22,38 @@ pub fn text_semibold(s: impl Into<String>, size: f32, color: Color32) -> RichTex
 pub fn text_bold(s: impl Into<String>, size: f32, color: Color32) -> RichText {
     RichText::new(s).size(size).color(color).family(bold())
 }
+
+// The style guide's type scale ([`crate::theme::type_scale`]) as text helpers.
+
+/// Heading Large: 26 px bold.
+pub fn heading_l(s: impl Into<String>, color: Color32) -> RichText {
+    text_bold(s, type_scale::HEADING_L, color)
+}
+/// Heading Medium: 22 px bold.
+pub fn heading_m(s: impl Into<String>, color: Color32) -> RichText {
+    text_bold(s, type_scale::HEADING_M, color)
+}
+/// Heading Small: 18 px bold.
+pub fn heading_s(s: impl Into<String>, color: Color32) -> RichText {
+    text_bold(s, type_scale::HEADING_S, color)
+}
+/// Body Large: 16 px regular.
+pub fn body_l(s: impl Into<String>, color: Color32) -> RichText {
+    text(s, type_scale::BODY_L, color)
+}
+/// Body Medium: 14 px regular.
+pub fn body_m(s: impl Into<String>, color: Color32) -> RichText {
+    text(s, type_scale::BODY_M, color)
+}
+/// Body Small: 12 px regular.
+pub fn body_s(s: impl Into<String>, color: Color32) -> RichText {
+    text(s, type_scale::BODY_S, color)
+}
+
+/// Height of the app's top bar (Figma `333:2374`, "Rectangle 68").
+pub const TOP_BAR_HEIGHT: f32 = 59.0;
+/// Height of a page's own bar under it (Figma `375:2459`, "library header").
+pub const PAGE_BAR_HEIGHT: f32 = 57.0;
 
 /// Draw an icon glyph centered on `center` by its visible outline (text
 /// centering uses the line box, which leaves glyphs off-center). A play
@@ -69,6 +101,36 @@ pub fn gradient(painter: &egui::Painter, rect: Rect, a: Color32, b: Color32, hor
     mesh.colored_vertex(rect.left_bottom(), c3);
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(0, 2, 3);
+    painter.add(mesh);
+}
+
+/// A radial gradient filling `rect`: `inner` at `center`, blending to
+/// `outer` at `radius` and beyond (as CSS `radial-gradient`). Drawn as a
+/// fine grid of shaded cells, so it stays smooth at any size.
+pub fn radial_gradient(painter: &egui::Painter, rect: Rect, center: egui::Pos2, radius: f32, inner: Color32, outer: Color32) {
+    if !rect.is_positive() {
+        return;
+    }
+    let (cols, rows) = (32u32, 20u32);
+    let mut mesh = egui::Mesh::default();
+    let radius = radius.max(1.0);
+    for j in 0..=rows {
+        for i in 0..=cols {
+            let p = pos2(rect.left() + rect.width() * i as f32 / cols as f32, rect.top() + rect.height() * j as f32 / rows as f32);
+            let k = ((p - center).length() / radius).clamp(0.0, 1.0);
+            mesh.colored_vertex(p, mix(inner, outer, k));
+        }
+    }
+    for j in 0..rows {
+        for i in 0..cols {
+            let a = j * (cols + 1) + i;
+            let b = a + 1;
+            let c = a + cols + 1;
+            let d = c + 1;
+            mesh.add_triangle(a, b, d);
+            mesh.add_triangle(a, d, c);
+        }
+    }
     painter.add(mesh);
 }
 
@@ -275,12 +337,10 @@ pub fn image_or_title(ui: &Ui, t: &Theme, rect: Rect, url: &str, title: &str, ra
 
 // ---------- containers ----------
 
+/// A content block: flat, rounded, no border (the library's "Friends who
+/// play", "Achievements" and "Activity" boxes, Figma `523:6593`).
 pub fn card(t: &Theme) -> Frame {
-    Frame::new()
-        .fill(t.surface)
-        .stroke(Stroke::new(1.0, t.border))
-        .corner_radius(t.corner())
-        .inner_margin(Margin::same(18))
+    Frame::new().fill(t.surface).corner_radius(t.corner()).inner_margin(Margin::same(22))
 }
 
 pub fn panel(t: &Theme) -> Frame {
@@ -289,112 +349,203 @@ pub fn panel(t: &Theme) -> Frame {
 
 // ---------- buttons ----------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Button styles, each matching a frame of the style guide (Figma page
+/// `10:5`). `docs/redesign.md` lists the node IDs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
+    /// "primary button" (`84:791`): Color / Secondary, Color / Primary on hover.
     Primary,
+    /// "secondary button" (`84:787`): Bg / Highlight, Bg / Hover on hover.
     Secondary,
+    /// "tertiary button 2" (`400:13118`): an outline only, firmer on hover.
+    Tertiary,
+    /// No fill until hovered, for toolbars and dense rows.
     Ghost,
+    /// "Play button" (`335:1183`): Accent / Green with dark text.
     Play,
+    /// "install button" (`375:4453`): Color / Primary with dark text.
+    Install,
+    /// "pause button" (`379:8204`): Bg / Hover.
+    Pause,
+    /// Red, for actions that remove or can't be undone.
     Danger,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Button heights: 32, 40 and 53 px (53 is the style guide's size).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Size {
     Sm,
     Md,
     Lg,
 }
 
-/// The one button. `icon` is a glyph from [`crate::icons`].
+/// The one button. `icon` is a glyph from [`crate::icons`] (`icons::PLAY`
+/// and `icons::PAUSE` are drawn as solid shapes, like the design's).
 pub fn button(ui: &mut Ui, t: &Theme, icon: Option<&str>, label: &str, kind: Kind, size: Size) -> Response {
     let (h, fs, pad) = match size {
-        Size::Sm => (30.0, 13.0, 12.0),
-        Size::Md => (38.0, 14.0, 16.0),
-        Size::Lg => (48.0, 16.0, 24.0),
+        Size::Sm => (32.0, 13.0, 14.0),
+        Size::Md => (40.0, 15.0, 20.0),
+        Size::Lg => (53.0, type_scale::HEADING_S, 30.0),
     };
-    let text = match icon {
-        Some(i) if !label.is_empty() => format!("{i}  {label}"),
-        Some(i) => i.to_string(),
-        None => label.to_string(),
-    };
-    let (bg, fg, border) = match kind {
-        Kind::Primary => (t.accent, t.on_accent, Color32::TRANSPARENT),
-        Kind::Play => (t.play, Color32::WHITE, Color32::TRANSPARENT),
-        Kind::Danger => (t.danger.gamma_multiply(0.18), t.danger, t.danger.gamma_multiply(0.4)),
-        Kind::Secondary => (t.raised, t.text, t.border),
-        Kind::Ghost => (Color32::TRANSPARENT, t.text_dim, Color32::TRANSPARENT),
-    };
-    let galley = ui.painter().layout_no_wrap(text, font_semibold(fs), fg);
-    let w = if label.is_empty() { h } else { galley.size().x + pad * 2.0 };
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
-    if ui.is_rect_visible(rect) {
-        let enabled = ui.is_enabled();
-        let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() && enabled, 0.12);
-        let pressed = resp.is_pointer_button_down_on();
-        let fill = match kind {
-            Kind::Ghost => mix(Color32::TRANSPARENT, t.surface_hover, hover),
-            Kind::Secondary => mix(bg, t.surface_hover, hover),
-            _ => mix(bg, mix(bg, Color32::WHITE, 0.14), hover),
-        };
-        let fill = if pressed { mix(fill, Color32::BLACK, 0.12) } else { fill };
-        let fill = if enabled { fill } else { fill.gamma_multiply(0.45) };
-        let r = t.corner_small();
-        let p = ui.painter();
-        if matches!(kind, Kind::Primary | Kind::Play) && enabled {
-            p.rect_filled(rect.translate(vec2(0.0, 2.0)), r, bg.gamma_multiply(0.25 + 0.2 * hover));
-        }
-        p.rect_filled(rect, r, fill);
-        if matches!(kind, Kind::Primary | Kind::Play) {
-            // Soft top highlight for depth.
-            let top = Rect::from_min_max(rect.min, pos2(rect.right(), rect.center().y));
-            gradient(&ui.painter_at(top.shrink2(vec2(r.nw as f32 * 0.6, 0.0))), top, Color32::from_white_alpha(18), Color32::TRANSPARENT, false);
-        }
-        if border != Color32::TRANSPARENT {
-            p.rect_stroke(rect, r, Stroke::new(1.0, border), StrokeKind::Inside);
-        }
-        let fg = if enabled { mix(fg, if kind == Kind::Ghost { t.text } else { fg }, hover) } else { fg.gamma_multiply(0.6) };
-        p.galley(rect.center() - galley.size() / 2.0, galley, fg);
-    }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    button_sized(ui, t, icon, label, kind, h, fs, pad)
 }
 
-/// Square icon button with optional red badge.
-pub fn icon_button(ui: &mut Ui, t: &Theme, icon: &str, tooltip: &str, active: bool, badge: usize) -> Response {
+/// [`button`] at any height, `fs` the text size and `pad` the space on
+/// each side (the main CTA's button is 44 px tall, for example).
+#[allow(clippy::too_many_arguments)]
+pub fn button_sized(ui: &mut Ui, t: &Theme, icon: Option<&str>, label: &str, kind: Kind, h: f32, fs: f32, pad: f32) -> Response {
+    let enabled = ui.is_enabled();
+    // Fill, fill on hover, text, text on hover, outline.
+    let white = |c: Color32| mix(c, Color32::WHITE, 0.10);
+    let (bg, bg_hover, fg, fg_hover, outline) = match kind {
+        Kind::Primary => (t.secondary, t.accent, t.text_on(t.secondary), t.text_on(t.secondary), None),
+        Kind::Secondary => (t.raised, t.surface_hover, t.text, t.text, None),
+        Kind::Tertiary => (Color32::TRANSPARENT, Color32::TRANSPARENT, t.text, t.text, Some((t.text_dim.gamma_multiply(0.2), t.text_dim.gamma_multiply(0.4)))),
+        Kind::Ghost => (Color32::TRANSPARENT, t.surface_hover, t.text_dim, t.text, None),
+        Kind::Play => (t.play, white(t.play), t.text_on(t.play), t.text_on(t.play), None),
+        // The design turns the label light on hover.
+        Kind::Install => (t.accent, white(t.accent), t.text_on(t.accent), Color32::from_rgb(0xF3, 0xF3, 0xF3), None),
+        Kind::Pause => (t.surface_hover, white(t.tertiary), t.text, t.text, None),
+        Kind::Danger => (t.danger.gamma_multiply(0.18), t.danger.gamma_multiply(0.3), t.danger, t.danger, Some((t.danger.gamma_multiply(0.4), t.danger.gamma_multiply(0.6)))),
+    };
+    let bold_text = matches!(kind, Kind::Primary | Kind::Play | Kind::Install | Kind::Pause);
+    let fid = if bold_text { font_bold(fs) } else { font_medium(fs) };
+    let galley = ui.painter().layout_no_wrap(label.to_string(), fid, Color32::PLACEHOLDER);
+    let icon_w = if icon.is_some() { fs * 1.1 } else { 0.0 };
+    let gap = if icon.is_some() && !label.is_empty() { (fs * 0.55).round() } else { 0.0 };
+    let w = if label.is_empty() { h } else { galley.size().x + icon_w + gap + pad * 2.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() && enabled, 0.12);
+        let pressed = resp.is_pointer_button_down_on() && enabled;
+        let mut fill = mix(bg, bg_hover, hover);
+        if pressed {
+            fill = mix(fill, Color32::BLACK, 0.14);
+        }
+        let mut color = mix(fg, fg_hover, hover);
+        if !enabled {
+            fill = fill.gamma_multiply(0.45);
+            color = color.gamma_multiply(0.55);
+        }
+        let r = t.corner_small();
+        let p = ui.painter();
+        p.rect_filled(rect, r, fill);
+        if let Some((a, b)) = outline {
+            p.rect_stroke(rect, r, Stroke::new(1.0, mix(a, b, hover)), StrokeKind::Inside);
+        }
+        let x0 = rect.center().x - (icon_w + gap + if label.is_empty() { 0.0 } else { galley.size().x }) / 2.0;
+        if let Some(i) = icon {
+            let c = pos2(x0 + icon_w / 2.0, rect.center().y);
+            paint_icon(p, c, i, fs * 1.1, color);
+        }
+        if !label.is_empty() {
+            p.galley(pos2(x0 + icon_w + gap, rect.center().y - galley.size().y / 2.0), galley, color);
+        }
+    }
+    resp.on_hover_cursor(if enabled { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Default })
+}
+
+/// Draw an icon glyph centered on `c`, `size` px tall. Play and pause are
+/// drawn as solid shapes (the font only has outlines).
+pub fn paint_icon(p: &egui::Painter, c: egui::Pos2, icon: &str, size: f32, color: Color32) {
+    if icon == crate::icons::PLAY {
+        // The design's play arrow: a solid triangle, a little right of center.
+        let h = size * 0.62;
+        let w = h * 0.84;
+        let x = c.x - w * 0.42;
+        p.add(egui::Shape::convex_polygon(vec![pos2(x, c.y - h / 2.0), pos2(x + w, c.y), pos2(x, c.y + h / 2.0)], color, Stroke::NONE));
+    } else if icon == crate::icons::PAUSE {
+        let h = size * 0.62;
+        let bw = h * 0.3;
+        for dx in [-h * 0.25, h * 0.25] {
+            p.rect_filled(Rect::from_center_size(pos2(c.x + dx, c.y), vec2(bw, h)), CornerRadius::same(1), color);
+        }
+    } else {
+        icon_centered(p, c, icon, size * 0.9, color);
+    }
+}
+
+/// The big green Play button (Figma `335:1183`).
+pub fn play_button(ui: &mut Ui, t: &Theme, label: &str) -> Response {
+    button(ui, t, Some(crate::icons::PLAY), label, Kind::Play, Size::Lg)
+}
+
+/// The blue Install button (Figma `375:4453`).
+pub fn install_button(ui: &mut Ui, t: &Theme, label: &str) -> Response {
+    button(ui, t, Some(crate::icons::DOWNLOAD), label, Kind::Install, Size::Lg)
+}
+
+/// The Pause button for a running download (Figma `379:8204`).
+pub fn pause_button(ui: &mut Ui, t: &Theme, label: &str) -> Response {
+    button(ui, t, Some(crate::icons::PAUSE), label, Kind::Pause, Size::Lg)
+}
+
+/// A count badge (Figma `447:3845`): a 16 px circle in the accent color
+/// with the number in dark text, centered on `c`.
+pub fn badge(p: &egui::Painter, t: &Theme, c: egui::Pos2, n: usize) {
+    let label = if n > 99 { "99+".to_string() } else { n.to_string() };
+    let g = p.layout_no_wrap(label, font_semibold(11.0), t.text_on(t.accent));
+    let w = (g.size().x + 8.0).max(16.0);
+    p.rect_filled(Rect::from_center_size(c, vec2(w, 16.0)), CornerRadius::same(8), t.accent);
+    p.galley(c - g.size() / 2.0, g, t.text_on(t.accent));
+}
+
+/// Square icon button with an optional count badge.
+pub fn icon_button(ui: &mut Ui, t: &Theme, icon: &str, tooltip: &str, active: bool, badge_count: usize) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
-    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+    let enabled = ui.is_enabled();
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() && enabled, 0.12);
     let p = ui.painter();
     let bg = if active { t.surface_hover } else { mix(Color32::TRANSPARENT, t.surface_hover, hover) };
     p.rect_filled(rect, t.corner_small(), bg);
     let color = if active { t.text } else { mix(t.text_dim, t.text, hover) };
+    let color = if enabled { color } else { color.gamma_multiply(0.45) };
     p.text(rect.center(), Align2::CENTER_CENTER, icon, font(18.0), color);
-    if badge > 0 {
-        let c = rect.right_top() + vec2(-8.0, 8.0);
-        let label = if badge > 99 { "99+".to_string() } else { badge.to_string() };
-        let w = (label.len() as f32 * 6.0 + 8.0).max(16.0);
-        let b = Rect::from_center_size(c, vec2(w, 16.0));
-        p.rect_filled(b, CornerRadius::same(8), t.danger);
-        p.text(c, Align2::CENTER_CENTER, label, font_bold(10.0), Color32::WHITE);
+    if badge_count > 0 {
+        badge(p, t, rect.right_top() + vec2(-7.0, 7.0), badge_count);
     }
     resp.on_hover_text(tooltip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The favorite button: an outlined heart, filled in red once the game is a
-/// favorite, so you can see which it is at a glance.
-pub fn heart_button(ui: &mut Ui, t: &Theme, on: bool, tooltip: &str) -> Response {
-    if !on {
-        return icon_button(ui, t, crate::icons::HEART, tooltip, false, 0);
-    }
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+/// The top bar's Friends and Notifications buttons (Figma `447:3849`,
+/// `766:10160`): a 56×37 block in Bg / Highlight with a dim icon and a
+/// count badge on its top-right corner.
+pub fn bar_button(ui: &mut Ui, t: &Theme, icon: &str, tooltip: &str, active: bool, badge_count: usize) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(56.0, 37.0), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
     let p = ui.painter();
-    p.rect_filled(rect, t.corner_small(), t.surface_hover);
+    let fill = if active { t.surface_hover } else { mix(t.raised, t.surface_hover, hover) };
+    p.rect_filled(rect, t.corner_small(), fill);
+    icon_centered(p, rect.center(), icon, 22.0, if active { t.text } else { mix(t.text_dim, t.text, hover) });
+    if badge_count > 0 {
+        badge(p, t, pos2(rect.right() - 5.0, rect.top() + 6.0), badge_count);
+    }
+    resp.on_hover_text(tooltip).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A small square button with an icon (Figma "icon box" `280:175` and
+/// "icon select" `346:2627`): 40 px, a faint fill, the icon in Text / Dim.
+/// For view switches and filters in a page's bar, and the actions row under
+/// a game's art. `selected` marks the view that's showing.
+pub fn icon_box(ui: &mut Ui, t: &Theme, icon: &str, tooltip: &str, selected: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+    let p = ui.painter();
+    let k = if selected { 0.16 } else { 0.05 + 0.07 * hover };
+    p.rect_filled(rect, t.corner_small(), t.text_dim.gamma_multiply(k));
+    let color = if selected { t.text } else { mix(t.text_dim, t.text, hover) };
+    icon_centered(p, rect.center(), icon, 22.0, color);
+    resp.on_hover_text(tooltip).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Draw the filled heart, `size` px wide, centered on `c`.
+pub fn paint_heart(p: &egui::Painter, c: egui::Pos2, size: f32, color: Color32) {
     // Two round lobes and a point, each drawn with smooth edges (a filled
     // curve had jagged, clipped-looking edges).
-    let color = Color32::from_rgb(0xE8, 0x4A, 0x5F);
-    let k = 1.0 + 0.06 * hover;
+    let k = size / 18.0;
     let (r, d, tip) = (4.7 * k, 3.5 * k, 9.6 * k);
     // Centered: the shape spans from `-r` (lobe tops) to `tip`.
-    let o = rect.center() - vec2(0.0, (tip - r) / 2.0 - 0.5);
+    let o = c - vec2(0.0, (tip - r) / 2.0 - 0.5);
     let left = o + vec2(-d, 0.0);
     let right = o + vec2(d, 0.0);
     let point = o + vec2(0.0, tip);
@@ -408,37 +559,83 @@ pub fn heart_button(ui: &mut Ui, t: &Theme, on: bool, tooltip: &str) -> Response
     p.circle_filled(left, r, color);
     p.circle_filled(right, r, color);
     p.add(egui::Shape::convex_polygon(vec![point, touch(left, 1.0), left, right, touch(right, -1.0)], color, Stroke::NONE));
+}
+
+/// The favorite button: an outlined heart, filled in red once the game is a
+/// favorite, so you can see which it is at a glance.
+pub fn heart_button(ui: &mut Ui, t: &Theme, on: bool, tooltip: &str) -> Response {
+    if !on {
+        return icon_button(ui, t, crate::icons::HEART, tooltip, false, 0);
+    }
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+    let p = ui.painter();
+    p.rect_filled(rect, t.corner_small(), t.surface_hover);
+    paint_heart(p, rect.center(), 18.0 * (1.0 + 0.06 * hover), t.danger);
     resp.on_hover_text(tooltip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// Top navigation tab with an animated underline.
-/// A row in a dropdown menu: icon and label, the full menu width, with a
-/// highlight while hovered so it's clear which item a click will hit.
+/// The Wishlist button (Figma "wishlist" `280:345` and "wishlist page"
+/// `302:1745`): an outlined heart on Bg / Highlight; once wishlisted, a
+/// solid heart on Bg / Hover, turning red on hover to say a click removes
+/// it. `label` adds text after the heart ("Wishlist", "Wishlisted").
+pub fn wishlist_button(ui: &mut Ui, t: &Theme, wishlisted: bool, label: Option<&str>) -> Response {
+    let h = 53.0;
+    let galley = label.map(|l| ui.painter().layout_no_wrap(l.to_string(), font(type_scale::BODY_L), Color32::PLACEHOLDER));
+    let w = match &galley {
+        Some(g) => 19.0 + 24.0 + 10.0 + g.size().x + 22.0,
+        None => 62.0,
+    };
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+        let fill = match wishlisted {
+            false => mix(t.raised, t.surface_hover, hover),
+            true => mix(t.surface_hover, t.danger, hover),
+        };
+        let p = ui.painter();
+        p.rect_filled(rect, t.corner_small(), fill);
+        let heart_c = if galley.is_some() { pos2(rect.left() + 19.0 + 12.0, rect.center().y) } else { rect.center() };
+        if wishlisted {
+            paint_heart(p, heart_c, 20.0, t.text);
+        } else {
+            icon_centered(p, heart_c, crate::icons::HEART, 22.0, t.text);
+        }
+        if let Some(g) = galley {
+            p.galley(pos2(heart_c.x + 12.0 + 10.0, rect.center().y - g.size().y / 2.0), g, t.text);
+        }
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A row in a dropdown menu (Figma "Menu items" `18:248`): icon and label
+/// across the menu's width, Bg / Hover behind the row under the pointer.
 pub fn menu_item(ui: &mut Ui, t: &Theme, icon: &str, label: &str) -> Response {
     menu_item_tinted(ui, t, icon, label, None)
 }
 
 /// [`menu_item`] in its own color, e.g. red for "Uninstall…".
 pub fn menu_item_tinted(ui: &mut Ui, t: &Theme, icon: &str, label: &str, tint: Option<Color32>) -> Response {
+    let fs = 14.5;
     // As wide as the text needs, and the menu's set width; a right-click
     // menu with no width set offers ~400 px, which made every row that wide.
-    let text_w = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.5), Color32::PLACEHOLDER).size().x;
+    let text_w = ui.painter().layout_no_wrap(label.to_string(), font(fs), Color32::PLACEHOLDER).size().x;
     let avail = ui.available_width();
-    let width = (36.0 + text_w + 28.0).max(if avail > 360.0 { 220.0 } else { avail });
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
+    let width = (44.0 + text_w + 28.0).max(if avail > 360.0 { 220.0 } else { avail });
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 38.0), Sense::click());
     if ui.is_rect_visible(rect) {
         let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.08);
         let p = ui.painter();
         if hover > 0.0 {
-            p.rect_filled(rect, t.corner_small(), t.accent.gamma_multiply(0.16 * hover));
+            p.rect_filled(rect, t.corner_small(), t.surface_hover.gamma_multiply(hover));
         }
         let y = rect.center().y;
         let (icon_c, text_c) = match tint {
             Some(c) => (c, c),
-            None => (mix(t.text_dim, t.accent, hover), mix(t.text_dim, t.text, 0.6 + 0.4 * hover)),
+            None => (mix(t.text_dim, t.text, hover), t.text),
         };
-        p.text(pos2(rect.left() + 18.0, y), egui::Align2::CENTER_CENTER, icon, font(14.0), icon_c);
-        p.text(pos2(rect.left() + 36.0, y), egui::Align2::LEFT_CENTER, label, font_medium(13.5), text_c);
+        p.text(pos2(rect.left() + 20.0, y), egui::Align2::CENTER_CENTER, icon, font(15.0), icon_c);
+        p.text(pos2(rect.left() + 40.0, y), egui::Align2::LEFT_CENTER, label, font(fs), text_c);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -451,27 +648,49 @@ pub fn submenu_item(ui: &mut Ui, t: &Theme, icon: &str, label: &str) -> Response
     r
 }
 
+/// An all-caps tab: dim, brighter on hover, in the accent color once
+/// selected (the top bar's look, at a smaller size for in-page tabs).
 pub fn nav_tab(ui: &mut Ui, t: &Theme, label: &str, selected: bool, height: f32) -> Response {
-    // Laid out without a color, so the state color below applies (a fixed
-    // color made every tab look the same, hovered or not).
-    let galley = ui.painter().layout_no_wrap(label.to_uppercase(), font_bold(13.0), Color32::PLACEHOLDER);
-    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 24.0, height), Sense::click());
+    tab_caps(ui, t, label, selected, height, 13.0, 24.0)
+}
+
+/// A main section in the top bar (Figma `18:294` "store menu"): bold
+/// all-caps 18 px, Text / Main, Color / Primary when it's the open one.
+pub fn section_tab(ui: &mut Ui, t: &Theme, label: &str, selected: bool, height: f32) -> Response {
+    section_tab_sized(ui, t, label, selected, height, 17.0)
+}
+
+/// [`section_tab`] at another text size (the top bar uses 14 on narrow windows).
+pub fn section_tab_sized(ui: &mut Ui, t: &Theme, label: &str, selected: bool, height: f32, size: f32) -> Response {
+    tab_caps(ui, t, label, selected, height, size, 0.0)
+}
+
+fn tab_caps(ui: &mut Ui, t: &Theme, label: &str, selected: bool, height: f32, fs: f32, pad: f32) -> Response {
+    // Laid out without a color, so the state color below applies.
+    let galley = ui.painter().layout_no_wrap(label.to_uppercase(), font_bold(fs), Color32::PLACEHOLDER);
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + pad, height), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
     let sel = ui.ctx().animate_bool_with_time(resp.id.with("sel"), selected, 0.18);
-    let color = mix(mix(t.text_dim, t.text, hover), t.text, sel);
-    let p = ui.painter();
-    // A soft pill behind the hovered tab.
-    if hover > 0.0 {
-        let bg = Rect::from_center_size(rect.center(), vec2(rect.width() - 4.0, (galley.size().y + 14.0).min(rect.height())));
-        p.rect_filled(bg, CornerRadius::same(6), t.surface_hover.gamma_multiply(hover * 0.8));
-    }
-    p.galley(rect.center() - galley.size() / 2.0, galley, color);
-    // Accent underline for the open page; a faint one while hovering others.
-    let underline = sel.max(hover * 0.45);
-    if underline > 0.0 {
-        let w = (rect.width() - 24.0) * underline.max(sel);
-        let line = Rect::from_center_size(pos2(rect.center().x, rect.bottom() - 1.5), vec2(w, 3.0));
-        p.rect_filled(line, CornerRadius::same(2), if sel > 0.0 { t.accent } else { t.text_faint.gamma_multiply(hover) });
+    // The top bar's sections are white until opened; smaller tabs start dim.
+    let rest = if pad == 0.0 { mix(t.text, t.text_dim, 0.12) } else { t.text_dim };
+    let color = mix(mix(rest, t.text, hover), t.accent, sel);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A tab in a page's bar (Figma "menu" `82:322`): 45 px tall, 16 px text,
+/// Color / Secondary behind the selected one, a light wash on hover.
+pub fn sub_tab(ui: &mut Ui, t: &Theme, label: &str, selected: bool) -> Response {
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font(type_scale::BODY_L), Color32::PLACEHOLDER);
+    // 29 px each side in the design; less when the bar is short of room.
+    let pad = if ui.available_width() > 900.0 { 29.0 } else { 18.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + pad * 2.0, 45.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+        let fill = if selected { t.secondary } else { Color32::from_white_alpha(25).gamma_multiply(hover) };
+        ui.painter().rect_filled(rect, t.corner_small(), fill);
+        let color = if selected { t.text_on(t.secondary) } else { t.text };
+        ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -484,29 +703,34 @@ pub fn chip(ui: &mut Ui, t: &Theme, label: &str, selected: bool) -> Response {
 /// A chip in its own color, e.g. an item rarity: a colored dot and text,
 /// and a tinted fill when selected.
 pub fn tinted_chip(ui: &mut Ui, t: &Theme, label: &str, tint: Option<Color32>, selected: bool) -> Response {
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.0), Color32::PLACEHOLDER);
+    // The style guide's tag shape (`280:203`): a 30 px block, 13 px each
+    // side; Bg / Highlight, Bg / Hover once selected.
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font(13.0), Color32::PLACEHOLDER);
     let dot = if tint.is_some() { 14.0 } else { 0.0 };
-    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 24.0 + dot, 30.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 26.0 + dot, 30.0), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
     let p = ui.painter();
-    let r = CornerRadius::same(15);
-    let accent = tint.unwrap_or(t.accent);
+    let r = t.corner_small();
     if selected {
-        p.rect_filled(rect, r, accent.gamma_multiply(0.20));
-        p.rect_stroke(rect, r, Stroke::new(1.0, accent.gamma_multiply(0.8)), StrokeKind::Inside);
+        p.rect_filled(rect, r, t.surface_hover);
+        if let Some(c) = tint {
+            p.rect_stroke(rect, r, Stroke::new(1.0, c.gamma_multiply(0.8)), StrokeKind::Inside);
+        }
     } else {
-        p.rect_filled(rect, r, mix(t.raised, t.surface_hover, hover));
-        p.rect_stroke(rect, r, Stroke::new(1.0, tint.map(|c| c.gamma_multiply(0.45)).unwrap_or(t.border)), StrokeKind::Inside);
+        p.rect_filled(rect, r, mix(t.raised, t.surface_hover, hover * 0.6));
+        if let Some(c) = tint {
+            p.rect_stroke(rect, r, Stroke::new(1.0, c.gamma_multiply(0.35)), StrokeKind::Inside);
+        }
     }
     let color = match (tint, selected) {
         (Some(c), _) => mix(c, t.text, if selected { 0.25 } else { 0.1 + hover * 0.2 }),
-        (None, true) => t.accent,
+        (None, true) => t.text,
         (None, false) => mix(t.text_dim, t.text, hover),
     };
     if let Some(c) = tint {
         p.circle_filled(egui::pos2(rect.left() + 16.0, rect.center().y), 4.0, c);
     }
-    let pos = egui::pos2(rect.left() + 12.0 + dot, rect.center().y - galley.size().y / 2.0);
+    let pos = egui::pos2(rect.left() + 13.0 + dot, rect.center().y - galley.size().y / 2.0);
     p.galley(pos, galley, color);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -530,12 +754,12 @@ pub fn pill(ui: &mut Ui, text_: &str, fg: Color32, bg: Color32) {
     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, fg);
 }
 
-/// Pill-shaped segmented control. Returns true if the selection changed.
+/// A row of choices in one dark block, the selected one lit (the "sorting"
+/// bar's look, Figma `457:12113`, compact). Returns true if it changed.
 pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, t: &Theme, value: &mut T, options: &[(T, &str)]) -> bool {
     let mut changed = false;
     Frame::new()
-        .fill(t.raised)
-        .stroke(Stroke::new(1.0, t.border))
+        .fill(t.chrome)
         .corner_radius(t.corner_small())
         .inner_margin(Margin::same(3))
         .show(ui, |ui| {
@@ -543,13 +767,15 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, t: &Theme, value: &mut T, opt
             ui.horizontal(|ui| {
                 for (opt, label) in options {
                     let on = *value == *opt;
-                    let galley = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.0), Color32::PLACEHOLDER);
-                    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 20.0, 26.0), Sense::click());
+                    let galley = ui.painter().layout_no_wrap(label.to_string(), font(13.0), Color32::PLACEHOLDER);
+                    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 22.0, 26.0), Sense::click());
                     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
                     if on {
                         ui.painter().rect_filled(rect, t.corner_small(), t.surface_hover);
+                    } else if hover > 0.0 {
+                        ui.painter().rect_filled(rect, t.corner_small(), t.raised.gamma_multiply(hover));
                     }
-                    let c = if on { t.text } else { mix(t.text_faint, t.text_dim, hover) };
+                    let c = if on { t.text } else { mix(t.text_dim, t.text, hover * 0.6) };
                     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, c);
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !on {
                         *value = *opt;
@@ -561,37 +787,248 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, t: &Theme, value: &mut T, opt
     changed
 }
 
-/// Compact pill search field (34 px tall) with a clear button.
+/// The search field (Figma "Search" `280:57`), 34 px tall: a dark block,
+/// the hint and magnifier in Color / Secondary, a clear button once typed in.
 pub fn search(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width: f32) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 34.0), Sense::hover());
-    let r = CornerRadius::same(17);
-    ui.painter().rect_filled(rect, r, t.raised);
-    ui.painter().text(rect.left_center() + vec2(15.0, 0.0), Align2::CENTER_CENTER, crate::icons::SEARCH, font(14.0), t.text_faint);
-    let clear_w = if value.is_empty() { 0.0 } else { 26.0 };
-    let field = Rect::from_min_max(pos2(rect.left() + 30.0, rect.top()), pos2(rect.right() - 12.0 - clear_w, rect.bottom()));
+    search_sized(ui, t, value, hint, width, 34.0)
+}
+
+/// [`search`] at the page bar's height (41 px), as in the store and
+/// library bars.
+pub fn bar_search(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width: f32) -> Response {
+    search_sized(ui, t, value, hint, width, 41.0)
+}
+
+fn search_sized(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width: f32, height: f32) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(width.max(60.0), height), Sense::hover());
+    let r = t.corner_small();
+    ui.painter().rect_filled(rect, r, t.chrome.gamma_multiply(0.4));
+    let clear_w = 30.0;
+    let field = Rect::from_min_max(pos2(rect.left() + 16.0, rect.top()), pos2(rect.right() - clear_w, rect.bottom()));
     // `place`, not `put`: `put` would end the row at the text field,
     // so the next widget overlapped the box's right end.
     let resp = ui.place(
         field,
         egui::TextEdit::singleline(value)
-            .hint_text(text(hint, 13.5, t.text_faint))
-            .font(font(13.5))
+            .hint_text(text(hint, 14.0, hint_color(t)))
+            .font(font(14.0))
             .frame(Frame::NONE)
             .margin(vec2(0.0, 0.0))
             .align(Align2::LEFT_CENTER)
             .desired_width(field.width()),
     ).with_edit_menu();
-    let border = if resp.has_focus() { t.accent.gamma_multiply(0.8) } else { t.border };
-    ui.painter().rect_stroke(rect, r, Stroke::new(1.0, border), StrokeKind::Inside);
-    if !value.is_empty() {
-        let c = pos2(rect.right() - 20.0, rect.center().y);
-        let x = ui.interact(Rect::from_center_size(c, Vec2::splat(20.0)), resp.id.with("clear"), Sense::click());
-        ui.painter().text(c, Align2::CENTER_CENTER, crate::icons::X, font(12.0), if x.hovered() { t.text } else { t.text_faint });
-        if x.clicked() {
+    if resp.has_focus() {
+        ui.painter().rect_stroke(rect, r, Stroke::new(1.0, t.accent.gamma_multiply(0.6)), StrokeKind::Inside);
+    }
+    let c = pos2(rect.right() - 18.0, rect.center().y);
+    if value.is_empty() {
+        ui.painter().text(c, Align2::CENTER_CENTER, crate::icons::SEARCH, font(16.0), hint_color(t));
+    } else {
+        let x = ui.interact(Rect::from_center_size(c, Vec2::splat(22.0)), resp.id.with("clear"), Sense::click());
+        ui.painter().text(c, Align2::CENTER_CENTER, crate::icons::X, font(13.0), if x.hovered() { t.text } else { t.text_dim });
+        if x.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             value.clear();
         }
     }
     resp
+}
+
+/// The search hint's color: Color / Secondary, lifted a little on themes
+/// where it would sink into the field.
+fn hint_color(t: &Theme) -> Color32 {
+    mix(t.secondary, t.text_dim, 0.25)
+}
+
+/// The states of a [`tag`] (Figma "tag" `280:203`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TagState {
+    /// A game's tag: Bg / Highlight, dim text.
+    Plain,
+    /// A filter you can turn on: no fill, white text, the count dim.
+    Unchecked,
+    /// A filter that's on: Bg / Hover.
+    Checked,
+    /// The tag of the page you're on: Bg / Highlight, white text.
+    Current,
+    /// A filter in use, shown with a × to remove it: Bg / Hover.
+    Filtered,
+}
+
+/// A tag (Figma "tag" `280:203`): 30 px tall, 12 px text, an optional count
+/// after it ("5,000"), and a × for [`TagState::Filtered`].
+pub fn tag(ui: &mut Ui, t: &Theme, label: &str, count: Option<&str>, state: TagState) -> Response {
+    let fs = type_scale::BODY_S;
+    let g = ui.painter().layout_no_wrap(label.to_string(), font(fs), Color32::PLACEHOLDER);
+    let cg = count.map(|c| ui.painter().layout_no_wrap(c.to_string(), font(fs), Color32::PLACEHOLDER));
+    let extra = match (&cg, state) {
+        (_, TagState::Filtered) => 10.0 + 8.0,
+        (Some(c), _) => 10.0 + c.size().x,
+        (None, _) => 0.0,
+    };
+    let (rect, resp) = ui.allocate_exact_size(vec2(13.0 + g.size().x + extra + 13.0, 30.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+        let (fill, fg) = match state {
+            TagState::Plain => (mix(t.raised, t.surface_hover, hover), mix(t.text_dim, t.text, hover)),
+            TagState::Unchecked => (t.raised.gamma_multiply(hover), t.text),
+            TagState::Checked | TagState::Filtered => (t.surface_hover, t.text),
+            TagState::Current => (t.raised, t.text),
+        };
+        let p = ui.painter();
+        p.rect_filled(rect, t.corner_small(), fill);
+        let y = rect.center().y;
+        p.galley(pos2(rect.left() + 13.0, y - g.size().y / 2.0), g.clone(), fg);
+        let x = rect.left() + 13.0 + g.size().x + 10.0;
+        if state == TagState::Filtered {
+            let c = pos2(x + 3.0, y);
+            let s = Stroke::new(1.2, mix(t.text_dim, t.text, hover));
+            p.line_segment([c - vec2(3.0, 3.0), c + vec2(3.0, 3.0)], s);
+            p.line_segment([c + vec2(-3.0, 3.0), c + vec2(3.0, -3.0)], s);
+        } else if let Some(c) = cg {
+            p.galley(pos2(x, y - c.size().y / 2.0), c, t.text_dim.gamma_multiply(0.8));
+        }
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// An on/off switch (Figma "toggle" `477:7301`): 63×30, the knob in
+/// Color / Primary on Bg / Tertiary when on, Bg / Hover on Bg / Highlight
+/// when off. Flips `on` when clicked.
+pub fn toggle(ui: &mut Ui, t: &Theme, on: &mut bool) -> Response {
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(63.0, 30.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    if ui.is_rect_visible(rect) {
+        let k = ui.ctx().animate_bool_with_time(resp.id, *on, 0.14);
+        let hover = ui.ctx().animate_bool_with_time(resp.id.with("h"), resp.hovered(), 0.1);
+        let p = ui.painter();
+        let track = mix(t.raised, t.tertiary, k);
+        p.rect_filled(rect, CornerRadius::same(15), mix(track, Color32::WHITE, 0.04 * hover));
+        let x = rect.left() + 15.0 + (rect.width() - 30.0) * k;
+        p.circle_filled(pos2(x, rect.center().y), 10.0, mix(t.surface_hover, t.accent, k));
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A [`toggle`] with a label before it, the switch at the row's right end.
+pub fn toggle_row(ui: &mut Ui, t: &Theme, on: &mut bool, label: &str) -> Response {
+    ui.horizontal(|ui| {
+        ui.label(body_m(label, t.text));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| toggle(ui, t, on)).inner
+    })
+    .inner
+}
+
+/// One choice in a "Sort by" row (Figma "sort filter" `296:579`): 39 px,
+/// 16 px dim text on Bg / Main; Bg / Highlight on hover; Bg / Hover with
+/// white text once selected.
+pub fn sort_chip(ui: &mut Ui, t: &Theme, label: &str, selected: bool) -> Response {
+    let g = ui.painter().layout_no_wrap(label.to_string(), font(type_scale::BODY_L), Color32::PLACEHOLDER);
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 40.0, 39.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+        let fill = if selected { t.surface_hover } else { mix(t.chrome, t.raised, hover) };
+        ui.painter().rect_filled(rect, t.corner_small(), fill);
+        ui.painter().galley(rect.center() - g.size() / 2.0, g, if selected { t.text } else { t.text_dim });
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// "Sort by" and a row of [`sort_chip`]s. Returns true if the choice changed.
+pub fn sort_by<T: PartialEq + Copy>(ui: &mut Ui, t: &Theme, value: &mut T, options: &[(T, &str)]) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        ui.label(body_l(i18n::t!("Sort by"), t.text_dim));
+        ui.add_space(5.0);
+        for (opt, label) in options {
+            if sort_chip(ui, t, label, *value == *opt).clicked() && *value != *opt {
+                *value = *opt;
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
+/// A dropdown's button: the [`sort_chip`] look with a caret, at least
+/// `min_width` wide. Open a menu from it with `egui::Popup::menu(&response)`
+/// (its rows are [`menu_item`]s).
+pub fn dropdown(ui: &mut Ui, t: &Theme, label: &str, min_width: f32) -> Response {
+    let g = ui.painter().layout_no_wrap(label.to_string(), font(type_scale::BODY_L), Color32::PLACEHOLDER);
+    let w = (20.0 + g.size().x + 12.0 + 12.0 + 16.0).max(min_width);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 39.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+        let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+        let fill = if open { t.surface_hover } else { mix(t.chrome, t.raised, hover) };
+        let p = ui.painter();
+        p.rect_filled(rect, t.corner_small(), fill);
+        let y = rect.center().y;
+        p.galley(pos2(rect.left() + 20.0, y - g.size().y / 2.0), g, if open { t.text } else { mix(t.text_dim, t.text, hover) });
+        let caret = if open { crate::icons::CARET_UP } else { crate::icons::CARET_DOWN };
+        p.text(pos2(rect.right() - 20.0, y), Align2::CENTER_CENTER, caret, font(13.0), t.text_dim);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A review score bar (Figma "reviews" `289:270`), `width` wide and 23 px
+/// tall: the positive share in Color / Primary and the negative share in
+/// Accent / Red, with their percentages above. `positive` is 0–100.
+pub fn review_bar(ui: &mut Ui, t: &Theme, positive: u8, width: f32) -> Response {
+    let positive = positive.min(100);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width.max(60.0), 23.0), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let fs = type_scale::BODY_S;
+        let up = format!("{positive}%");
+        let down = format!("{}%", 100 - positive);
+        let gu = p.layout_no_wrap(up, font(fs), t.accent);
+        let gd = p.layout_no_wrap(down, font(fs), t.danger);
+        let gu_w = gu.size().x;
+        p.galley(rect.left_top(), gu, t.accent);
+        p.text(pos2(rect.left() + gu_w + 3.0, rect.top()), Align2::LEFT_TOP, crate::icons::THUMBS_UP, font(fs), t.accent.gamma_multiply(0.4));
+        let thumb_w = 15.0;
+        p.text(pos2(rect.right(), rect.top()), Align2::RIGHT_TOP, crate::icons::THUMBS_DOWN, font(fs), t.danger.gamma_multiply(0.4));
+        p.galley(pos2(rect.right() - thumb_w - gd.size().x, rect.top()), gd, t.danger);
+        let bar = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 4.0), rect.right_bottom());
+        let split = bar.left() + (bar.width() - 2.0) * positive as f32 / 100.0;
+        let r = CornerRadius::same(2);
+        if positive > 0 {
+            p.rect_filled(Rect::from_min_max(bar.min, pos2(split, bar.bottom())), r, t.accent.gamma_multiply(0.8));
+        }
+        if positive < 100 {
+            p.rect_filled(Rect::from_min_max(pos2(split + 2.0, bar.top()), bar.max), r, t.danger.gamma_multiply(0.8));
+        }
+    }
+    resp
+}
+
+/// A small download ring (Figma "download status" `383:10133`): Bg / Hover
+/// track, Color / Primary arc for `fraction` (0–1), centered on `c`.
+pub fn progress_ring(p: &egui::Painter, t: &Theme, c: egui::Pos2, radius: f32, fraction: f32) {
+    p.circle_filled(c, radius, t.surface_hover);
+    let f = fraction.clamp(0.0, 1.0);
+    if f <= 0.0 {
+        return;
+    }
+    // A pie slice from 12 o'clock, clockwise.
+    let steps = (48.0 * f).ceil().max(2.0) as usize;
+    let mut pts = vec![c];
+    for i in 0..=steps {
+        let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * f * i as f32 / steps as f32;
+        pts.push(c + vec2(a.cos(), a.sin()) * radius);
+    }
+    let mut mesh = egui::Mesh::default();
+    for q in &pts {
+        mesh.colored_vertex(*q, t.accent);
+    }
+    for i in 1..pts.len() - 1 {
+        mesh.add_triangle(0, i as u32, i as u32 + 1);
+    }
+    p.add(mesh);
 }
 
 /// Labeled text input used on forms.
@@ -660,45 +1097,75 @@ pub fn game_tile(ui: &mut Ui, t: &Theme, url: &str, fallback_url: &str, title: &
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// Price with an optional discount badge and struck-through original.
+/// A compact price for cards and rows (36 px): the price alone, or the
+/// style guide's discount look (Figma "price" `426:4419`) at a smaller size.
 pub fn price_tag(ui: &mut Ui, t: &Theme, label: &str, original: Option<&str>, discount: u8) {
+    price_block(ui, t, label, original, discount, 36.0, 14.0);
+}
+
+/// The price block at the style guide's size (Figma "price" `426:4419`,
+/// 44 px): the price in bold 18 px; with a discount, a green "-34%" block,
+/// then the old price struck through above the new price in green.
+pub fn price(ui: &mut Ui, t: &Theme, label: &str, original: Option<&str>, discount: u8) {
+    price_block(ui, t, label, original, discount, 44.0, type_scale::HEADING_S);
+}
+
+fn price_block(ui: &mut Ui, t: &Theme, label: &str, original: Option<&str>, discount: u8, h: f32, fs: f32) {
     if discount == 0 {
-        ui.label(text_semibold(label, 14.0, t.text));
+        let g = ui.painter().layout_no_wrap(label.to_string(), font_bold(fs), t.text);
+        let (rect, _) = ui.allocate_exact_size(vec2(g.size().x, h), Sense::hover());
+        ui.painter().galley(pos2(rect.left(), rect.center().y - g.size().y / 2.0), g, t.text);
         return;
     }
-    // Like Steam: a green "-10%" block joined to a dark block with the old
-    // price struck through above the new one.
-    let pct = ui.painter().layout_no_wrap(format!("-{discount}%"), font_bold(17.0), Color32::from_rgb(0xBE, 0xEE, 0x11));
-    let new = ui.painter().layout_no_wrap(label.to_string(), font_semibold(14.0), t.text);
-    let old = original.map(|o| ui.painter().layout_no_wrap(o.to_string(), font(11.0), t.text_faint));
-    let h = 36.0;
-    let pct_w = pct.size().x + 16.0;
-    let price_w = new.size().x.max(old.as_ref().map(|g| g.size().x).unwrap_or(0.0)) + 16.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(pct_w + price_w, h), Sense::hover());
+    // The design's numbers at 44 px: block 75×39 with 19 px text; prices 18 px.
+    let k = h / 44.0;
+    let pct = ui.painter().layout_no_wrap(format!("-{discount}%"), font_bold(fs * 1.054), t.text_on(t.discount));
+    let new_color = if t.dark { mix(t.discount, t.play, 0.5) } else { t.play };
+    let new = ui.painter().layout_no_wrap(label.to_string(), font_bold(fs), new_color);
+    let old = original.map(|o| ui.painter().layout_no_wrap(o.to_string(), font_bold(fs * 0.78), t.text_dim));
+    let block_w = (pct.size().x + 24.0 * k).max(75.0 * k);
+    let gap = 10.0 * k;
+    let price_w = new.size().x.max(old.as_ref().map(|g| g.size().x).unwrap_or(0.0));
+    let (rect, _) = ui.allocate_exact_size(vec2(block_w + gap + price_w, h), Sense::hover());
     if !ui.is_rect_visible(rect) {
         return;
     }
     let p = ui.painter();
-    let left = Rect::from_min_size(rect.min, vec2(pct_w, h));
-    let right = Rect::from_min_max(egui::pos2(left.right(), rect.top()), rect.max);
-    let r = CornerRadius::same(3);
-    p.rect_filled(left, CornerRadius { nw: r.nw, sw: r.sw, ne: 0, se: 0 }, t.discount);
-    p.rect_filled(right, CornerRadius { nw: 0, sw: 0, ne: r.ne, se: r.se }, Color32::from_black_alpha(140));
-    p.galley(left.center() - pct.size() / 2.0, pct, Color32::from_rgb(0xBE, 0xEE, 0x11));
+    let block = Rect::from_min_size(pos2(rect.left(), rect.center().y - 19.5 * k), vec2(block_w, 39.0 * k));
+    p.rect_filled(block, CornerRadius::same(2), t.discount);
+    p.galley(block.center() - pct.size() / 2.0, pct, t.text_on(t.discount));
+    let x = block.right() + gap;
     match old {
         Some(old) => {
-            let x = right.right() - 8.0;
-            let top = egui::pos2(x - old.size().x, right.top() + 3.0);
+            let top = pos2(x, rect.top());
             let strike_y = top.y + old.size().y / 2.0;
             let old_w = old.size().x;
-            p.galley(top, old, t.text_faint);
-            p.line_segment([egui::pos2(top.x - 1.0, strike_y), egui::pos2(top.x + old_w + 1.0, strike_y)], Stroke::new(1.0, t.text_faint));
-            p.galley(egui::pos2(x - new.size().x, right.bottom() - 3.0 - new.size().y), new, t.text);
+            p.galley(top, old, t.text_dim);
+            p.line_segment([pos2(top.x, strike_y), pos2(top.x + old_w, strike_y)], Stroke::new(1.0, t.text_dim));
+            p.galley(pos2(x, rect.bottom() - new.size().y), new, new_color);
         }
         None => {
-            p.galley(right.center() - new.size() / 2.0, new, t.text);
+            p.galley(pos2(x, rect.center().y - new.size().y / 2.0), new, new_color);
         }
     }
+}
+
+/// The store page's buy row (Figma "main-cta" `426:4355`): an optional
+/// "Until October 19" note, the [`price`] block, and a 44 px primary button
+/// (`button_label`, e.g. "Add to Cart"). Returns the button's response.
+pub fn main_cta(ui: &mut Ui, t: &Theme, label: &str, original: Option<&str>, discount: u8, until: Option<&str>, button_label: &str) -> Response {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 13.0;
+        if let Some(u) = until.filter(|_| discount > 0) {
+            ui.vertical(|ui| {
+                ui.add_space(24.0);
+                ui.label(body_s(u, t.text_dim));
+            });
+        }
+        price(ui, t, label, original, discount);
+        button_sized(ui, t, None, button_label, Kind::Primary, 44.0, type_scale::HEADING_S, 26.0)
+    })
+    .inner
 }
 
 // ---------- layout helpers ----------
@@ -789,7 +1256,7 @@ pub fn progress(ui: &mut Ui, t: &Theme, value: f32, width: f32) {
     // Never negative: egui aborts the whole app on a negative size.
     let width = width.max(0.0);
     let (rect, _) = ui.allocate_exact_size(vec2(width, 6.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(3), t.raised);
+    ui.painter().rect_filled(rect, CornerRadius::same(3), t.surface_hover);
     let fill = Rect::from_min_size(rect.min, vec2(rect.width() * value.clamp(0.0, 1.0), rect.height()));
     ui.painter().rect_filled(fill, CornerRadius::same(3), t.accent);
 }
@@ -829,10 +1296,10 @@ fn choice_row(ui: &mut Ui, label: impl Into<egui::WidgetText>, paint: impl FnOnc
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// A clearly visible radio button.
+/// A clearly visible radio button, ringed like the [`check`] box.
 pub fn radio(ui: &mut Ui, t: &Theme, selected: bool, label: impl Into<egui::WidgetText>) -> Response {
     choice_row(ui, label, |p, r, hover| {
-        let ring = if selected { t.accent } else { mix(t.text_faint, t.text_dim, hover) };
+        let ring = if selected { t.accent } else { mix(t.surface_hover, t.text_dim, hover) };
         p.circle_filled(r.center(), 9.0, t.raised);
         p.circle_stroke(r.center(), 8.5, Stroke::new(1.6, ring));
         if selected {
@@ -851,24 +1318,12 @@ pub fn radio_value<V: PartialEq>(ui: &mut Ui, t: &Theme, current: &mut V, value:
     r
 }
 
-/// A clearly visible checkbox.
+/// A check box with its label (Figma "Check box" `757:10005`): an outline
+/// in Bg / Hover, Text / Dim on hover, and a Text / Dim box with a dark
+/// check mark when on.
 pub fn check(ui: &mut Ui, t: &Theme, on: &mut bool, label: impl Into<egui::WidgetText>) -> Response {
     let state = *on;
-    let mut r = choice_row(ui, label, |p, r, hover| {
-        let rr = CornerRadius::same(4);
-        if state {
-            p.rect_filled(r, rr, t.accent);
-            let s = Stroke::new(2.0, t.on_accent);
-            let a = egui::pos2(r.left() + 4.5, r.center().y + 0.5);
-            let b = egui::pos2(r.left() + 7.8, r.bottom() - 5.0);
-            let c = egui::pos2(r.right() - 4.0, r.top() + 5.0);
-            p.line_segment([a, b], s);
-            p.line_segment([b, c], s);
-        } else {
-            p.rect_filled(r, rr, t.raised);
-            p.rect_stroke(r, rr, Stroke::new(1.6, mix(t.text_faint, t.text_dim, hover)), StrokeKind::Inside);
-        }
-    });
+    let mut r = choice_row(ui, label, |p, r, hover| paint_check(p, t, r, state, hover));
     if r.clicked() {
         *on = !*on;
         r.mark_changed();
@@ -876,29 +1331,52 @@ pub fn check(ui: &mut Ui, t: &Theme, on: &mut bool, label: impl Into<egui::Widge
     r
 }
 
+/// The check box alone (no label), `size` px square. Flips `on` when clicked.
+pub fn checkbox(ui: &mut Ui, t: &Theme, on: &mut bool, size: f32) -> Response {
+    let (rect, mut resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    paint_check(ui.painter(), t, rect.shrink(size * 0.08), *on, hover);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn paint_check(p: &egui::Painter, t: &Theme, r: Rect, on: bool, hover: f32) {
+    let rr = CornerRadius::same(3);
+    if on {
+        p.rect_filled(r, rr, mix(t.text_dim, t.text, hover * 0.3));
+        let s = Stroke::new((r.width() * 0.11).max(1.8), t.chrome);
+        let (w, h) = (r.width(), r.height());
+        let a = pos2(r.left() + w * 0.22, r.top() + h * 0.52);
+        let b = pos2(r.left() + w * 0.42, r.top() + h * 0.72);
+        let c = pos2(r.left() + w * 0.78, r.top() + h * 0.30);
+        p.line_segment([a, b], s);
+        p.line_segment([b, c], s);
+    } else {
+        p.rect_stroke(r, rr, Stroke::new(2.0, mix(t.surface_hover, t.text_dim, hover)), StrokeKind::Inside);
+    }
+}
+
 /// A chip with a small picture (a game icon, an avatar) before the label.
 pub fn image_chip(ui: &mut Ui, t: &Theme, image: Option<&str>, label: &str, selected: bool) -> Response {
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font_medium(13.0), Color32::PLACEHOLDER);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font(13.0), Color32::PLACEHOLDER);
     let pic = if image.is_some() { 26.0 } else { 0.0 };
-    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 24.0 + pic, 30.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 26.0 + pic, 30.0), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
-    let r = CornerRadius::same(15);
+    let r = t.corner_small();
     let p = ui.painter();
-    if selected {
-        p.rect_filled(rect, r, t.accent.gamma_multiply(0.18));
-        p.rect_stroke(rect, r, Stroke::new(1.0, t.accent.gamma_multiply(0.7)), StrokeKind::Inside);
-    } else {
-        p.rect_filled(rect, r, mix(t.raised, t.surface_hover, hover));
-        p.rect_stroke(rect, r, Stroke::new(1.0, t.border), StrokeKind::Inside);
-    }
+    let fill = if selected { t.surface_hover } else { mix(t.raised, t.surface_hover, hover * 0.6) };
+    p.rect_filled(rect, r, fill);
     if let Some(url) = image {
         let img = Rect::from_center_size(egui::pos2(rect.left() + 18.0, rect.center().y), Vec2::splat(20.0));
         if !paint_cover(ui, img, url, CornerRadius::same(4)) {
             skeleton(ui, t, img, CornerRadius::same(4));
         }
     }
-    let color = if selected { t.accent } else { mix(t.text_dim, t.text, hover) };
-    ui.painter().galley(egui::pos2(rect.left() + 12.0 + pic, rect.center().y - galley.size().y / 2.0), galley, color);
+    let color = if selected { t.text } else { mix(t.text_dim, t.text, hover) };
+    ui.painter().galley(egui::pos2(rect.left() + 13.0 + pic, rect.center().y - galley.size().y / 2.0), galley, color);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 

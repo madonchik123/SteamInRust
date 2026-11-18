@@ -81,7 +81,7 @@ fn button(ui: &mut Ui, t: &Theme, icon: &str, height: f32, close: bool) -> egui:
         ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, bg.gamma_multiply(hover));
     }
     let fg = if close && hover > 0.5 { Color32::WHITE } else { w::mix(t.text_dim, t.text, hover) };
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, w::font(14.0), fg);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, w::font(16.0), fg);
     resp
 }
 

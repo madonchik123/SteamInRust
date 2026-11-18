@@ -2115,3 +2115,8 @@
 "Steam didn't take the reply" = "Steam hat die Antwort nicht angenommen"
 "Couldn't read your market history. Is the market available on your account?" = "Dein Marktverlauf konnte nicht gelesen werden. Ist der Markt für dein Konto verfügbar?"
 "Steam didn't return your market history" = "Steam hat deinen Marktverlauf nicht geliefert"
+
+# --- Redesign: app shell ---
+"Help|menu" = "Hilfe"
+"View|menu" = "Ansicht"
+"Sort by" = "Sortieren nach"

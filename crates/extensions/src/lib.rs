@@ -134,6 +134,14 @@ pub trait Extension: 'static {
     }
     /// Draw one of this extension's pages.
     fn page(&mut self, _page: &str, _ui: &mut egui::Ui, _ctx: &mut Ctx) {}
+    /// Fill the page's bar under the app's top bar (57 px, the theme's
+    /// `tertiary` color): its own tabs, search and view buttons, laid out
+    /// left to right and centered vertically. Return false to leave the bar
+    /// to the app (it shows the app-wide search there). Called before `page`
+    /// in the same frame. See `docs/redesign.md`.
+    fn page_bar(&mut self, _page: &str, _ui: &mut egui::Ui, _ctx: &mut Ctx) -> bool {
+        false
+    }
     /// Called when the user navigates to one of this extension's pages.
     fn on_navigate(&mut self, _page: &str, _arg: Option<&str>) {}
 
@@ -347,6 +355,15 @@ impl Registry {
     pub fn show_page(&mut self, page: &str, ui: &mut egui::Ui, env: Env<'_>) -> bool {
         match self.owner_of(page) {
             Some(i) => self.with(i, env, |ext, ctx| ext.page(page, ui, ctx)).is_some(),
+            None => false,
+        }
+    }
+
+    /// The page's own bar ([`Extension::page_bar`]). False when the page
+    /// has none (or isn't known).
+    pub fn show_page_bar(&mut self, page: &str, ui: &mut egui::Ui, env: Env<'_>) -> bool {
+        match self.owner_of(page) {
+            Some(i) => self.with(i, env, |ext, ctx| ext.page_bar(page, ui, ctx)).unwrap_or(false),
             None => false,
         }
     }

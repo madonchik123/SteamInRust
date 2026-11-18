@@ -2115,3 +2115,8 @@
 "Steam didn't take the reply" = "Steam 未接受该回复"
 "Couldn't read your market history. Is the market available on your account?" = "无法读取你的市场历史记录。你的帐户可以使用市场吗？"
 "Steam didn't return your market history" = "Steam 没有返回你的市场历史记录"
+
+# --- Redesign: app shell ---
+"Help|menu" = "帮助"
+"View|menu" = "视图"
+"Sort by" = "排序方式"
