@@ -824,7 +824,12 @@ mod security_tests {
 
     #[test]
     fn install_folder_name_rejects_traversal() {
-        for bad in ["..", ".", "../evil", "a/b", r"a\b", "CON", "evil."] {
+        let mut bad_names = vec!["..", ".", "../evil", "a/b", r"a\b"];
+        // Only Windows can't hold these (fine as Mac and Linux folders).
+        if cfg!(windows) {
+            bad_names.extend(["CON", "evil."]);
+        }
+        for bad in bad_names {
             let app = OwnedApp { app_id: 1, install_dir: bad.into(), name: "Game".into(), ..Default::default() };
             assert!(install_folder_name(&app).is_err(), "expected {bad:?} rejected");
         }
