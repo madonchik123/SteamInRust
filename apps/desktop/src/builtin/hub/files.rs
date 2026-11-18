@@ -315,14 +315,21 @@ fn news(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId) {
         Some(Ok(l)) if l.is_empty() => return w::empty(ui, t, NEWSPAPER, t!("No news yet"), t!("This game hasn't posted any news.")),
         Some(Ok(l)) => l.clone(),
     };
-    for n in &list {
+    news_cards(hv, ui, t, io, &list);
+}
+
+/// News or announcement cards; one opens in place.
+pub(super) fn news_cards(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, list: &[hub::News]) {
+    for n in list {
         let open = hv.news_open.as_deref() == Some(n.id.as_str());
         w::card(t).show(ui, |ui| {
             ui.set_width(ui.available_width());
             let head = ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(w::text_bold(n.feed.to_uppercase(), 10.5, t.accent));
+                    if !n.feed.is_empty() {
+                        ui.label(w::text_bold(n.feed.to_uppercase(), 10.5, t.accent));
+                    }
                     ui.add(egui::Label::new(w::text_bold(&n.title, 17.0, t.text)).wrap());
                     let by = if n.author.is_empty() { ui::date(n.time) } else { format!("{} · {}", ui::date(n.time), n.author) };
                     ui.label(w::text(by, 12.0, t.text_faint));

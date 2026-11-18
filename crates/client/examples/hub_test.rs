@@ -102,7 +102,7 @@ fn main() {
                     Err(e) => println!("forum {key}: ERROR {e}"),
                 },
                 Response::Thread { key, result } => match result {
-                    Ok(t) => println!("thread {key}: {:?} op {:?} {} posts of {}", t.title, t.op.name, t.posts.len(), t.total),
+                    Ok(t) => println!("thread {key}: {:?} op {:?} {} posts of {}, can reply here: {}", t.title, t.op.name, t.posts.len(), t.total, t.reply.is_some()),
                     Err(e) => println!("thread {key}: ERROR {e}"),
                 },
                 Response::News { result, .. } => match result {

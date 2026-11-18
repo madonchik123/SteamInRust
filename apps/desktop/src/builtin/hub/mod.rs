@@ -11,6 +11,7 @@ mod achievements;
 pub mod demo;
 mod files;
 mod forum;
+mod group;
 pub mod rich;
 
 use client::hub::{self, FileKind, FileQuery, Request};
@@ -91,12 +92,14 @@ pub enum View {
     Achievements { app: AppId, friend: Option<SteamId> },
     /// Screenshots, artwork, videos, Workshop items or guides someone shared.
     UserFiles { user: SteamId, kind: FileKind },
+    /// A Steam group by its 64-bit id or address name.
+    Group(String),
     /// Another page of the app (store, Workshop browser, profile).
     Page(String, Option<String>),
 }
 
 /// The pages this extension draws.
-pub const PAGES: [&str; 7] = ["hub", "workshop_item", "guides", "discussions", "thread", "achievements", "user_files"];
+pub const PAGES: [&str; 8] = ["hub", "workshop_item", "guides", "discussions", "thread", "achievements", "user_files", "group"];
 
 /// URL-ish names for kinds of shared files (page arguments).
 pub fn kind_slug(k: FileKind) -> &'static str {
@@ -128,6 +131,7 @@ impl View {
             View::Achievements { app, friend: None } => (p("achievements"), Some(app.to_string())),
             View::Achievements { app, friend: Some(f) } => (p("achievements"), Some(format!("{app}/{f}"))),
             View::UserFiles { user, kind } => (p("user_files"), Some(format!("{user}/{}", kind_slug(*kind)))),
+            View::Group(key) => (p("group"), Some(key.clone())),
             View::Page(page, arg) => (page.clone(), arg.clone()),
         }
     }
@@ -144,6 +148,7 @@ impl View {
             "thread" => View::Thread(arg.to_string()).filter_thread()?,
             "achievements" => View::Achievements { app: app?, friend: rest.parse().ok() },
             "user_files" => View::UserFiles { user: first.parse().ok()?, kind: kind_from_slug(rest) },
+            "group" => View::Group(hub::group_path(arg).map(|_| arg.to_string())?),
             _ => return None,
         })
     }
@@ -179,6 +184,10 @@ impl View {
             View::Thread(_) => t!("Discussions").to_string(),
             View::Achievements { app, .. } => format!("{} · {}", game(app), t!("Achievements")),
             View::UserFiles { user, kind } => format!("{} · {}", state.persona(*user).name, files::kind_title(*kind)),
+            View::Group(key) => match state.hub.groups.get(key) {
+                Some(Ok(g)) => g.name.clone(),
+                _ => t!("Group").to_string(),
+            },
             View::Page(p, _) => p.clone(),
         }
     }
@@ -241,6 +250,13 @@ pub fn route(url: &str) -> Option<View> {
                 };
                 Some(View::UserFiles { user: num(Some(id))?, kind })
             }
+            // A group's discussion thread; anything else of a group is its page.
+            ["groups", name, "discussions", n, topic, ..] if topic.chars().all(|c| c.is_ascii_digit()) && n.chars().all(|c| c.is_ascii_digit()) => {
+                hub::group_path(name)?;
+                Some(View::Thread(format!("https://steamcommunity.com/groups/{name}/discussions/{n}/{topic}/")))
+            }
+            ["groups", name, ..] => Some(View::Group(hub::group_path(name).map(|_| name.to_string())?)),
+            ["gid", id, ..] => Some(View::Group(num(Some(id))?.to_string())),
             ["profiles", id, "inventory", ..] => Some(View::Page("inventory".into(), Some(num(Some(id))?.to_string()))),
             ["profiles", id, ..] => Some(View::Page("profile".into(), Some(num(Some(id))?.to_string()))),
             _ => None,
@@ -332,6 +348,12 @@ pub struct HubView {
     ach_filter: u8,
     ach_sort: u8,
     show_all_notes: bool,
+    /// Reply drafts per thread.
+    reply_text: HashMap<String, String>,
+    /// Threads with a reply on its way, and the page to show once it's posted.
+    reply_sending: HashMap<String, u32>,
+    /// How many reply answers per thread were already handled.
+    reply_seen: HashMap<String, u32>,
 }
 
 impl HubView {
@@ -420,6 +442,7 @@ impl HubView {
                 }
                 View::Achievements { app, friend } => w::centered(ui, 1100.0, pad, |ui| achievements::show(self, ui, t, io, *app, *friend)),
                 View::UserFiles { user, kind } => w::centered(ui, 1240.0, pad, |ui| files::user_files(self, ui, t, io, *user, *kind)),
+                View::Group(key) => w::centered(ui, 1240.0, pad, |ui| group::show(self, ui, t, io, key)),
                 View::Page(..) => {}
             }
             ui.add_space(30.0);
@@ -625,6 +648,10 @@ impl Extension for Hub {
                 (Ok(()), false) => t!("Removed from your favorites").to_string(),
                 (Err(e), _) => t!("Couldn't change favorites: {error}", error = e),
             }),
+            Event::Hub(hub::Response::Replied { result, .. }) => ctx.toast(match result {
+                Ok(()) => t!("Reply posted").to_string(),
+                Err(e) => t!("Couldn't post your reply: {error}", error = i18n::tr_dyn(e)),
+            }),
             _ => {}
         }
     }
@@ -697,6 +724,14 @@ mod tests {
         assert_eq!(route("https://steamcommunity.com/linkfilter/?u=https%3A%2F%2Fstardewvalleywiki.com"), None);
         assert_eq!(route("https://stardewvalleywiki.com/Tools"), None);
         assert_eq!(route("https://store.steampowered.com/checkout/"), None);
+        assert_eq!(route("https://steamcommunity.com/groups/SteamClientBeta"), Some(View::Group("steamclientbeta".into())));
+        assert_eq!(route("https://steamcommunity.com/groups/SteamClientBeta/announcements"), Some(View::Group("steamclientbeta".into())));
+        assert_eq!(route("https://steamcommunity.com/gid/103582791433918461/"), Some(View::Group("103582791433918461".into())));
+        assert_eq!(
+            route("https://steamcommunity.com/groups/x/discussions/0/586188528590954637/"),
+            Some(View::Thread("https://steamcommunity.com/groups/x/discussions/0/586188528590954637/".into()))
+        );
+        assert_eq!(route("https://steamcommunity.com/groups/a.b/"), None);
     }
 
     #[test]
@@ -712,6 +747,8 @@ mod tests {
             View::Achievements { app: 3, friend: None },
             View::Achievements { app: 3, friend: Some(76561197960265729) },
             View::UserFiles { user: 76561197960265729, kind: FileKind::Guides },
+            View::Group("103582791433918461".into()),
+            View::Group("steamclientbeta".into()),
         ] {
             let (page, arg) = v.to_page();
             assert_eq!(View::from_page(&page, arg.as_deref()), Some(v));

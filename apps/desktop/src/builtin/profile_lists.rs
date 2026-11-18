@@ -173,10 +173,9 @@ impl Profile {
                     line = format!("{line} · {}", g.headline);
                 }
                 ui.painter().text(av.right_center() + vec2(12.0, 10.0), Align2::LEFT_CENTER, line, w::font(12.5), t.text_dim);
-                ui.painter().text(r.right_center() - vec2(12.0, 0.0), Align2::RIGHT_CENTER, icons::EXTERNAL, w::font(12.0), t.text_faint);
-                // A group's own page is still Steam's website.
-                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Opens in your browser")).clicked() {
-                    crate::links::open_http(&format!("https://steamcommunity.com/gid/{}", g.id));
+                ui.painter().text(r.right_center() - vec2(12.0, 0.0), Align2::RIGHT_CENTER, icons::CARET_RIGHT, w::font(12.0), t.text_faint);
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    ctx.navigate("group", Some(g.id.to_string()));
                 }
             }
         });

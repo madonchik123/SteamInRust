@@ -18,6 +18,7 @@ mod ipctool;
 mod launch;
 pub mod market;
 pub mod trade;
+pub mod groupchat;
 pub mod profile_edit;
 pub mod social;
 pub mod cloud;
@@ -129,6 +130,8 @@ pub enum Command {
     /// Steam then asks for confirmation in the Steam Mobile app.
     SellItem { app_id: AppId, context_id: u64, asset_id: u64, amount: u64, receive: u64 },
     LoadMyListings,
+    /// A page of your Community Market history (50 rows from `start`).
+    LoadMarketHistory { start: u32, language: String },
     /// Your profile's editable details, privacy, owned items and themes.
     LoadProfileEdit { language: String },
     SaveProfileInfo(Box<model::ProfileEdit>),
@@ -146,6 +149,13 @@ pub enum Command {
     /// Your trade offers (active ones and recent changes); item names in
     /// `language` (Steam's name for it).
     LoadTradeOffers { language: String },
+    /// Your group chats (and start receiving their messages).
+    LoadChatGroups,
+    /// A room's messages; `before` = (time, ordinal) of the oldest shown, to page back.
+    LoadGroupHistory { group: u64, room: u64, before: Option<(u32, u32)> },
+    SendGroupMessage { group: u64, room: u64, text: String },
+    /// Mark a room read up to a message's time.
+    AckGroupRoom { group: u64, room: u64, time: u32 },
     /// Accept, decline or cancel a trade offer.
     RespondTradeOffer { id: u64, partner: SteamId, action: model::TradeAction },
     /// Send a trade offer. `counter` replaces an offer you got; `token` is the
@@ -311,6 +321,7 @@ impl std::fmt::Debug for Command {
             Command::MarketPrices { app_id, names, currency } => f.debug_struct("MarketPrices").field("app_id", app_id).field("names", names).field("currency", currency).finish(),
             Command::SellItem { app_id, context_id, asset_id, amount, receive } => f.debug_struct("SellItem").field("app_id", app_id).field("context_id", context_id).field("asset_id", asset_id).field("amount", amount).field("receive", receive).finish(),
             Command::LoadMyListings => f.write_str("LoadMyListings"),
+            Command::LoadMarketHistory { start, .. } => f.debug_struct("LoadMarketHistory").field("start", start).finish(),
             Command::LoadProfileEdit { language } => f.debug_struct("LoadProfileEdit").field("language", language).finish(),
             Command::SaveProfileInfo(p) => f.debug_tuple("SaveProfileInfo").field(p).finish(),
             Command::SaveProfilePrivacy(p) => f.debug_tuple("SaveProfilePrivacy").field(p).finish(),
@@ -320,6 +331,10 @@ impl std::fmt::Debug for Command {
             Command::LoadLocations { country, state } => f.debug_struct("LoadLocations").field("country", country).field("state", state).finish(),
             Command::LoadPersonas { ids } => f.debug_struct("LoadPersonas").field("ids", ids).finish(),
             Command::LoadTradeOffers { language } => f.debug_struct("LoadTradeOffers").field("language", language).finish(),
+            Command::LoadChatGroups => f.write_str("LoadChatGroups"),
+            Command::LoadGroupHistory { group, room, before } => f.debug_struct("LoadGroupHistory").field("group", group).field("room", room).field("before", before).finish(),
+            Command::SendGroupMessage { group, room, .. } => f.debug_struct("SendGroupMessage").field("group", group).field("room", room).finish(),
+            Command::AckGroupRoom { group, room, time } => f.debug_struct("AckGroupRoom").field("group", group).field("room", room).field("time", time).finish(),
             Command::RespondTradeOffer { id, partner, action } => f.debug_struct("RespondTradeOffer").field("id", id).field("partner", partner).field("action", action).finish(),
             Command::SendTradeOffer { partner, give, get, message, counter, token } => f.debug_struct("SendTradeOffer").field("partner", partner).field("give", give).field("get", get).field("message", message).field("counter", counter).field("token", &token.as_ref().map(|_| "[REDACTED]")).finish(),
             Command::LoadSteamCollections => f.write_str("LoadSteamCollections"),
@@ -384,6 +399,7 @@ impl std::fmt::Debug for Command {
             Command::CartAdd { package_id, gift, gift_to } => f.debug_struct("CartAdd").field("package_id", package_id).field("gift", gift).field("gift_to", gift_to).finish(),
             Command::CartModify { line_item_id, gift, gift_to } => f.debug_struct("CartModify").field("line_item_id", line_item_id).field("gift", gift).field("gift_to", gift_to).finish(),
             Command::CartRemove { line_item_id } => f.debug_struct("CartRemove").field("line_item_id", line_item_id).finish(),
+            Command::Hub(hub::Request::Reply { thread_url, .. }) => f.debug_struct("HubReply").field("thread_url", thread_url).finish_non_exhaustive(),
             Command::Hub(req) => f.debug_tuple("Hub").field(req).finish(),
             Command::LogOut => f.write_str("LogOut"),
         }
@@ -465,7 +481,19 @@ pub enum Event {
     /// Result of [`Command::SellItem`]: `Ok(true)` = needs confirming on your phone.
     ItemListed { asset_id: u64, result: Result<bool, String> },
     MyListings(Result<model::MyListings, String>),
+    /// A page of market history: rows from `start`, and how many there are.
+    MarketHistory { start: u32, result: Result<(Vec<model::HistoryRow>, u32), String> },
     TradeOffers(Result<model::TradeOffers, String>),
+    ChatGroups(Result<Vec<model::ChatGroup>, String>),
+    /// Who's in each group chat.
+    ChatGroupMembers(Vec<(u64, Vec<SteamId>)>),
+    /// A page of a room's messages (`older`: from paging back).
+    GroupHistory { group: u64, room: u64, result: Result<(Vec<model::GroupMessage>, bool), String>, older: bool },
+    /// A new message in a group chat (yours too, once Steam echoes it).
+    GroupMessage(model::GroupMessage),
+    GroupMessageFailed { group: u64, room: u64, error: String },
+    /// A room was read here (its unread mark goes).
+    GroupRoomRead { group: u64, room: u64 },
     ProfileEdit(Result<model::ProfileEdit, String>),
     ProfileSaved { what: model::ProfileSave, result: Result<(), String> },
     /// (code, name) for [`Command::LoadLocations`].

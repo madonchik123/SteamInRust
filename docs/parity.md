@@ -14,9 +14,9 @@ Steam's website" still works; it just isn't native yet.
 | Library | 0.75 | Dynamic collections show and stay up to date, but their filters can only be changed in Steam |
 | Downloads and installs | 1 | |
 | Store | 1 | Checkout happens on Steam's website (Steam requires it) |
-| Friends and chat | 0.75 | No group chats or voice chat |
-| Community | 0.75 | Reading only for discussions; a group's own page opens Steam's website |
-| Inventory and Market | 1 | Your Market history opens Steam's website |
+| Friends and chat | 0.75 | No voice chat; group chats are text only (no pictures, polls or managing rooms) |
+| Community | 0.75 | Starting a new discussion topic, and joining or leaving a group, open Steam's website |
+| Inventory and Market | 1 | |
 | Steam Cloud | 1 | |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers; inventory item definitions |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser or screenshots |
@@ -117,7 +117,8 @@ All native, no web view.
 | Separate Friends & Chat window that works while the main window is in the tray | Done |
 | Right-click menu: join game, view server info (live A2S query), watch game, view game info, invite to play, nickname, favorites, remove, block | Done |
 | Add friends: friend code, Quick Invite links (make, copy, or open someone's), search profiles by name; accept or ignore requests | Done |
-| Group chats, voice chat | Not yet |
+| Group chats: your groups with unread marks, rooms, history, sending, live messages, who's online in a members list | Done, in the app. Text only: pictures, polls, and creating or managing rooms aren't there yet |
+| Voice chat | Not yet |
 
 ## Community
 
@@ -128,9 +129,10 @@ All native, no web view.
 | Community hub per game: screenshots, artwork, videos, news | Done |
 | Workshop item pages: media, description, required items, change notes, comments; subscribe, rate, favorite | Done. Rating and favoriting weren't tested on a real account |
 | Guides: list, sorts, search, reader with contents | Done |
-| Discussions: forums, topics, threads with quotes and spoilers | Reading only |
+| Discussions: forums, topics, threads with quotes and spoilers; reply to a thread | Done, in the app. Starting a new topic opens Steam's website. Sending a reply wasn't tested on a real account |
 | Steam Support: your requests and replies | Done. New requests open Steam's help site |
-| Someone's friends (online first, searchable), their latest reviews, their groups, and the badges list | Done, in the app. A group's own page opens Steam's website |
+| Someone's friends (online first, searchable), their latest reviews, their groups, and the badges list | Done, in the app |
+| Group pages: name, headline, member counts, description, announcements, members (friends first), a button to the group's chat | Done, in the app, also for steamcommunity.com/groups links. Joining or leaving opens Steam's website |
 
 ## Inventory and Market
 
@@ -141,7 +143,8 @@ All native, no web view.
 | Sell, quick sell, sell to the highest buy order, your listings and buy orders | Done. Steam's fees per currency; you confirm in the Steam Mobile app |
 | Trade offers: incoming and sent, with both sides' items and market value; accept, decline, cancel, counter | Done, in the app. Giving items away needs your confirmation in the Steam Mobile app, like on Steam |
 | New trade offers: to a friend or by trade link, items from both inventories with a game picker, search, tag filters, sorting and prices | Done, in the app |
-| Market search: by name and game, most popular first, with each item's price history and order book | Done, in the app. Your Market history opens Steam's website |
+| Market search: by name and game, most popular first, with each item's price history and order book | Done, in the app |
+| Your Market history: sold, bought, listed and removed, with prices and dates, filters, 50 at a time | Done, in the app (My listings → History) |
 
 ## Steam Cloud
 

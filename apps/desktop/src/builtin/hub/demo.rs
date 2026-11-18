@@ -161,6 +161,7 @@ pub fn events() -> Vec<Event> {
             total: 3,
             page_size: 15,
             locked: false,
+            reply: None,
         }),
     }));
 

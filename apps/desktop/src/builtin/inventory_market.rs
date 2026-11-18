@@ -9,7 +9,7 @@ use client::Command;
 use egui::{Align, Align2, CornerRadius, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2};
 use extensions::Ctx;
 use i18n::t;
-use model::{AppId, InventoryItem, ListingStatus, MarketPrice, art, fees, format_money};
+use model::{AppId, HistoryKind, InventoryItem, ListingStatus, MarketPrice, art, fees, format_money};
 use ui::{Theme, icons, widgets as w};
 
 /// "Put up for sale" dialog.
@@ -25,6 +25,30 @@ pub struct SellDialog {
     /// What the buyer pays, as typed.
     pays: String,
     game_fee: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum ListingsTab {
+    #[default]
+    Listings,
+    History,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum HistoryFilter {
+    #[default]
+    All,
+    Sold,
+    Bought,
+    Listings,
+}
+
+#[derive(Default)]
+pub(super) struct HistoryState {
+    asked: bool,
+    /// Rows we had when "Show more" was pressed (waiting while equal).
+    more_from: Option<usize>,
+    filter: HistoryFilter,
 }
 
 pub(super) fn money(cents: u64, currency: i32) -> String {
@@ -371,6 +395,12 @@ impl Inventory {
 
     /// Your listings (active, waiting for confirmation, on hold) and buy orders.
     pub(super) fn listings_page(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        ui.horizontal(|ui| w::segmented(ui, t, &mut self.listings_tab, &[(ListingsTab::Listings, &t!("On the market")), (ListingsTab::History, &t!("History"))]));
+        ui.add_space(10.0);
+        if self.listings_tab == ListingsTab::History {
+            self.history_page(ui, t, ctx);
+            return;
+        }
         let data = match &ctx.state.my_listings {
             None => {
                 for _ in 0..5 {
@@ -392,9 +422,6 @@ impl Inventory {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if w::button(ui, t, Some(icons::REFRESH), t!("Refresh"), w::Kind::Ghost, w::Size::Sm).clicked() {
                     ctx.send(Command::LoadMyListings);
-                }
-                if w::button(ui, t, Some(icons::EXTERNAL), t!("Market history"), w::Kind::Ghost, w::Size::Sm).on_hover_text(t!("Opens in your browser")).clicked() {
-                    crate::links::open_http("https://steamcommunity.com/market/#myhistory");
                 }
             });
         });
@@ -421,7 +448,7 @@ impl Inventory {
                 ui.add_space(4.0);
                 for l in rows {
                     let sub = if l.created > 0 { format!("{} · {}", l.game, ui::ago(l.created)) } else { l.game.clone() };
-                    row(ui, t, &l.icon, &l.name, l.name_color.as_deref(), &sub, |ui| {
+                    row(ui, t, &econ(&l.icon), &l.name, l.name_color.as_deref(), &sub, |ui| {
                         if w::button(ui, t, Some(icons::X), t!("Remove"), w::Kind::Ghost, w::Size::Sm).clicked() {
                             ctx.send(Command::CancelListing { listing_id: l.listing_id });
                         }
@@ -440,7 +467,7 @@ impl Inventory {
                 ui.add_space(4.0);
                 for o in &data.buy_orders {
                     let sub = t!("{left} of {n} left", left = o.remaining, n = o.quantity);
-                    row(ui, t, &o.icon, &o.name, None, &sub, |ui| {
+                    row(ui, t, &econ(&o.icon), &o.name, None, &sub, |ui| {
                         if w::button(ui, t, Some(icons::X), t!("Cancel"), w::Kind::Ghost, w::Size::Sm).clicked() {
                             ctx.send(Command::CancelBuyOrder { order_id: o.order_id });
                         }
@@ -450,16 +477,126 @@ impl Inventory {
             }
         });
     }
+
+    /// Your Community Market history: what sold, what you bought, listings
+    /// you made or took down. Newest first, 50 at a time.
+    fn history_page(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        let lang = || i18n::language().steam_name().to_string();
+        if !self.history.asked {
+            self.history.asked = true;
+            ctx.send(Command::LoadMarketHistory { start: 0, language: lang() });
+        }
+        let (rows, total) = match &ctx.state.market_history {
+            None => {
+                for _ in 0..6 {
+                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 58.0), Sense::hover());
+                    w::skeleton(ui, t, r.shrink2(vec2(0.0, 4.0)), t.corner_small());
+                }
+                return;
+            }
+            Some(Err(e)) => {
+                w::empty(ui, t, icons::WARNING, t!("Couldn't load your market history"), &i18n::tr_dyn(e));
+                if w::button(ui, t, Some(icons::REFRESH), t!("Try again"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                    ctx.send(Command::LoadMarketHistory { start: 0, language: lang() });
+                }
+                return;
+            }
+            Some(Ok((rows, total))) => (rows.clone(), *total),
+        };
+        if self.history.more_from.is_some_and(|n| n != rows.len()) {
+            self.history.more_from = None;
+        }
+        ui.horizontal(|ui| {
+            w::segmented(
+                ui,
+                t,
+                &mut self.history.filter,
+                &[(HistoryFilter::All, &t!("All")), (HistoryFilter::Sold, &t!("Sold")), (HistoryFilter::Bought, &t!("Bought")), (HistoryFilter::Listings, &t!("Listings"))],
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if w::button(ui, t, Some(icons::REFRESH), t!("Refresh"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                    self.history.more_from = None;
+                    ctx.send(Command::LoadMarketHistory { start: 0, language: lang() });
+                }
+                ui.label(w::text(t!("{n} of {total} shown", n = rows.len(), total = total), 12.5, t.text_faint));
+            });
+        });
+        ui.add_space(8.0);
+        if rows.is_empty() {
+            w::empty(ui, t, icons::STOREFRONT, t!("No market history yet"), t!("Items you buy and sell on the Community Market show up here."));
+            return;
+        }
+        let filter = self.history.filter;
+        let shown: Vec<&model::HistoryRow> = rows
+            .iter()
+            .filter(|r| match filter {
+                HistoryFilter::All => true,
+                HistoryFilter::Sold => r.kind == HistoryKind::Sold,
+                HistoryFilter::Bought => r.kind == HistoryKind::Bought,
+                HistoryFilter::Listings => matches!(r.kind, HistoryKind::Listed | HistoryKind::Canceled),
+            })
+            .collect();
+        egui::ScrollArea::vertical().id_salt("market-history").auto_shrink([false, false]).show(ui, |ui| {
+            if shown.is_empty() {
+                ui.add_space(12.0);
+                ui.label(w::text(t!("Nothing like that in what's loaded so far."), 13.0, t.text_faint));
+            }
+            for r in shown {
+                let (label, color) = match r.kind {
+                    HistoryKind::Sold => (t!("Sold").to_string(), t.online),
+                    HistoryKind::Bought => (t!("Bought").to_string(), t.accent),
+                    HistoryKind::Listed => (t!("Listed").to_string(), t.text_dim),
+                    HistoryKind::Canceled => (t!("Listing removed").to_string(), t.text_faint),
+                    HistoryKind::Other => (r.note.clone(), t.text_dim),
+                };
+                let mut sub = r.game.clone();
+                if !r.acted.is_empty() {
+                    sub = format!("{sub} · {}", r.acted);
+                }
+                if !r.listed.is_empty() && r.listed != r.acted && matches!(r.kind, HistoryKind::Sold | HistoryKind::Bought) {
+                    sub = format!("{sub} · {}", t!("listed {date}", date = r.listed));
+                }
+                if !r.other.is_empty() {
+                    sub = format!("{sub} · {}", r.other);
+                }
+                row(ui, t, &r.image, &r.name, r.name_color.as_deref(), &sub, |ui| {
+                    ui.vertical(|ui| {
+                        ui.with_layout(Layout::top_down(Align::Max), |ui| {
+                            ui.label(w::text_bold(&r.price, 14.0, t.text));
+                            ui.label(w::text(&label, 12.0, color));
+                        });
+                    });
+                });
+            }
+            if rows.len() < total as usize && rows.len() < 5000 {
+                ui.add_space(6.0);
+                ui.vertical_centered(|ui| {
+                    if self.history.more_from.is_some() {
+                        ui.add(egui::Spinner::new().color(t.accent));
+                    } else if w::button(ui, t, Some(icons::CARET_DOWN), t!("Show more"), w::Kind::Secondary, w::Size::Md).clicked() {
+                        self.history.more_from = Some(rows.len());
+                        ctx.send(Command::LoadMarketHistory { start: rows.len() as u32, language: lang() });
+                    }
+                });
+            }
+        });
+    }
 }
 
-fn row(ui: &mut Ui, t: &Theme, icon: &str, name: &str, color: Option<&str>, sub: &str, right: impl FnOnce(&mut Ui)) {
+/// An item picture link from Steam's short icon name.
+fn econ(icon: &str) -> String {
+    if icon.is_empty() { String::new() } else { art::econ(icon, 192) }
+}
+
+/// One item row: picture, name and a line under it, then `right`.
+fn row(ui: &mut Ui, t: &Theme, image: &str, name: &str, color: Option<&str>, sub: &str, right: impl FnOnce(&mut Ui)) {
     egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
             ui.painter().rect_filled(r, CornerRadius::same(4), t.raised);
-            if !icon.is_empty() {
-                w::paint_contain(ui, r.shrink(3.0), &art::econ(icon, 192), Align2::CENTER_CENTER);
+            if !image.is_empty() {
+                w::paint_contain(ui, r.shrink(3.0), image, Align2::CENTER_CENTER);
             }
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
