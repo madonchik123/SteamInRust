@@ -10,7 +10,7 @@
 
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use crate::ifaces::{This, text};
+use crate::ifaces::This;
 use crate::protocol::{GameServer, Reply, Request};
 use crate::state::{Bytes, on_game_thread};
 use crate::vt::Fp;
@@ -253,19 +253,27 @@ fn item(s: &GameServer, ping: u32, responded: bool) -> Box<[u8; ITEM]> {
 
 // --------------------------------------------------------------- lists
 
-/// MatchMakingKeyValuePair_t (256-byte key, 256-byte value) list → "\key\value...".
+fn bounded_field(ptr: *const u8, max_len: usize) -> String {
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, max_len) };
+    match std::ffi::CStr::from_bytes_until_nul(bytes) {
+        Ok(c) => c.to_string_lossy().into_owned(),
+        Err(_) => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+/// MatchMakingKeyValuePair_t (256-byte key, 256-byte value) pointer array → "\key\value...".
 fn filter_text(filters: *const *const u8, n: u32) -> String {
     if filters.is_null() || n == 0 {
         return String::new();
     }
-    let list = unsafe { *filters };
-    if list.is_null() {
-        return String::new();
-    }
     let mut out = String::new();
     for i in 0..n.min(64) as usize {
-        let at = unsafe { list.add(i * 512) };
-        let (k, v) = unsafe { (text(at as *const c_char), text(at.add(256) as *const c_char)) };
+        let pair = unsafe { *filters.add(i) };
+        if pair.is_null() {
+            continue;
+        }
+        let k = bounded_field(pair, 256);
+        let v = bounded_field(unsafe { pair.add(256) }, 256);
         out.push_str(&format!("\\{k}\\{v}"));
     }
     out
@@ -320,6 +328,9 @@ fn run_list(h: usize) {
             l.items = items;
         }
         on_game_thread(move || {
+            if cancelled.load(Ordering::Relaxed) || !s().lists.contains_key(&h) {
+                return;
+            }
             for (i, ok) in answered.iter().enumerate() {
                 if cancelled.load(Ordering::Relaxed) || !s().lists.contains_key(&h) {
                     return;
@@ -329,6 +340,9 @@ fn run_list(h: usize) {
                 } else {
                     virt!(response, 1, fn(usize, i32), h, i as i32);
                 }
+            }
+            if cancelled.load(Ordering::Relaxed) || !s().lists.contains_key(&h) {
+                return;
             }
             if let Some(l) = s().lists.get_mut(&h) {
                 l.refreshing = false;
@@ -362,8 +376,14 @@ extern "C" fn empty_list(_t: This, app_id: u32, _filters: *const *const u8, _n: 
         return 0;
     }
     let h = new_list(app_id, String::new(), response as usize, false);
+    let Some(cancelled) = s().lists.get(&h).map(|l| l.cancelled.clone()) else {
+        return h;
+    };
     let r = response as usize;
     on_game_thread(move || {
+        if cancelled.load(Ordering::Relaxed) || !s().lists.contains_key(&h) {
+            return;
+        }
         if let Some(l) = s().lists.get_mut(&h) {
             l.refreshing = false;
         }
@@ -410,14 +430,14 @@ extern "C" fn count(_t: This, h: usize) -> i32 {
 
 /// Ask one listed server again; ServerResponded / ServerFailedToRespond after.
 extern "C" fn refresh_server(_t: This, h: usize, i: i32) {
-    let Some((response, ip, port)) = s().lists.get(&h).and_then(|l| {
+    let Some((response, cancelled, ip, port)) = s().lists.get(&h).and_then(|l| {
         let b = l.items.get(i as usize)?;
-        Some((l.response, u32::from_le_bytes(b[4..8].try_into().unwrap()), u16::from_le_bytes(b[2..4].try_into().unwrap())))
+        Some((l.response, l.cancelled.clone(), u32::from_le_bytes(b[4..8].try_into().unwrap()), u16::from_le_bytes(b[2..4].try_into().unwrap())))
     }) else {
         return;
     };
     std::thread::spawn(move || {
-        let found = query_all(&[(ip, port)], Duration::from_secs(2), &AtomicBool::new(false), false);
+        let found = query_all(&[(ip, port)], Duration::from_secs(2), &cancelled, false);
         let ok = if let Some((f, ping)) = found.get(&(ip, port)) {
             if let Some(slot) = s().lists.get_mut(&h).and_then(|l| l.items.get_mut(i as usize)) {
                 *slot = item(&GameServer { ip, query_port: port, ..f.clone() }, *ping, true);
@@ -427,7 +447,7 @@ extern "C" fn refresh_server(_t: This, h: usize, i: i32) {
             false
         };
         on_game_thread(move || {
-            if s().lists.contains_key(&h) {
+            if !cancelled.load(Ordering::Relaxed) && s().lists.contains_key(&h) {
                 virt!(response, if ok { 0 } else { 1 }, fn(usize, i32), h, i);
             }
         });
@@ -585,12 +605,84 @@ mod tests {
 
     #[test]
     fn filters_become_text() {
-        let mut pairs = vec![0u8; 1024];
-        pairs[..7].copy_from_slice(b"gamedir");
-        pairs[256..260].copy_from_slice(b"csgo");
-        pairs[512..516].copy_from_slice(b"full");
-        pairs[768..769].copy_from_slice(b"1");
-        let p = pairs.as_ptr();
-        assert_eq!(filter_text(&p, 2), "\\gamedir\\csgo\\full\\1");
+        let mut pair0 = Box::new([0u8; 512]);
+        pair0[..7].copy_from_slice(b"gamedir");
+        pair0[256..260].copy_from_slice(b"csgo");
+
+        // Separate allocation (not contiguous with pair0) + null entry skipped.
+        let _spacer = Box::new([0xFFu8; 1024]);
+        let mut pair1 = Box::new([0u8; 512]);
+        pair1[..4].copy_from_slice(b"full");
+        pair1[256..257].copy_from_slice(b"1");
+
+        // Unterminated 256-byte key and 256-byte value must be bounded at 256 bytes each.
+        let pair2 = Box::new([b'x'; 512]);
+
+        let ptrs: [*const u8; 4] = [pair0.as_ptr(), std::ptr::null(), pair1.as_ptr(), pair2.as_ptr()];
+        let got = filter_text(ptrs.as_ptr(), ptrs.len() as u32);
+        let expected_256 = "x".repeat(256);
+        assert_eq!(got, format!("\\gamedir\\csgo\\full\\1\\{expected_256}\\{expected_256}"));
+    }
+
+    #[test]
+    fn released_or_cancelled_lists_do_not_invoke_response_callbacks() {
+        use std::sync::atomic::AtomicUsize;
+
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        #[cfg(target_arch = "x86")]
+        extern "thiscall" fn cb(_this: usize, _h: usize, _arg: i32) {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+        #[cfg(not(target_arch = "x86"))]
+        extern "C" fn cb(_this: usize, _h: usize, _arg: i32) {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        #[repr(C)]
+        struct FakeResponse {
+            vtable: *const usize,
+        }
+
+        // Drain any leftover tasks from other tests first.
+        crate::state::run_game_thread_tasks();
+        CALLS.store(0, Ordering::SeqCst);
+
+        let fp = cb as *const () as usize;
+        let vt: [usize; 3] = [fp, fp, fp];
+        let mut resp = Box::new(FakeResponse { vtable: vt.as_ptr() });
+        let resp_ptr = (&mut *resp as *mut FakeResponse).cast::<c_void>();
+
+        // 0. Sanity: active empty_list invokes RefreshComplete once.
+        let h0 = empty_list(std::ptr::null_mut(), 730, std::ptr::null(), 0, resp_ptr);
+        crate::state::run_game_thread_tasks();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        release(std::ptr::null_mut(), h0);
+        CALLS.store(0, Ordering::SeqCst);
+
+        // 1. empty_list released before SteamAPI_RunCallbacks must not touch freed response.
+        let h1 = empty_list(std::ptr::null_mut(), 730, std::ptr::null(), 0, resp_ptr);
+        release(std::ptr::null_mut(), h1);
+        resp.vtable = std::ptr::null();
+        crate::state::run_game_thread_tasks();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+
+        // 2. empty_list cancelled before callbacks must not invoke RefreshComplete.
+        resp.vtable = vt.as_ptr();
+        let h2 = empty_list(std::ptr::null_mut(), 730, std::ptr::null(), 0, resp_ptr);
+        cancel(std::ptr::null_mut(), h2);
+        resp.vtable = std::ptr::null();
+        crate::state::run_game_thread_tasks();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+        release(std::ptr::null_mut(), h2);
+
+        // 3. internet list released after background thread queues game-thread task.
+        resp.vtable = vt.as_ptr();
+        let h3 = internet(std::ptr::null_mut(), 730, std::ptr::null(), 0, resp_ptr);
+        std::thread::sleep(Duration::from_millis(80));
+        release(std::ptr::null_mut(), h3);
+        resp.vtable = std::ptr::null();
+        crate::state::run_game_thread_tasks();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
     }
 }
