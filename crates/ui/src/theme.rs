@@ -724,6 +724,12 @@ pub struct Components {
     pub progress: Component,
     /// Toast messages.
     pub toast: Component,
+    /// Game rows in the library's list beside the page (`selected` is the open game).
+    pub game_row: Component,
+    /// The library's blocks: a collection's games, a sidebar group, a game in the list view.
+    pub shelf: Component,
+    /// A game in the Downloads list.
+    pub download_row: Component,
 }
 
 // ---------- assets ----------
@@ -1153,6 +1159,9 @@ impl Components {
             ("wishlist", &self.wishlist),
             ("progress", &self.progress),
             ("toast", &self.toast),
+            ("game_row", &self.game_row),
+            ("shelf", &self.shelf),
+            ("download_row", &self.download_row),
         ]
     }
 }

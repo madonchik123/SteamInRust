@@ -346,6 +346,10 @@ impl SteamApp {
         if std::env::args().any(|a| a == "--friends-panel") {
             app.prefs.friends_open = true;
         }
+        // `--no-friends-panel` starts without it (screenshots at the design's width).
+        if std::env::args().any(|a| a == "--no-friends-panel") {
+            app.prefs.friends_open = false;
+        }
         // `--tray-menu` opens the tray menu near the screen corner (previews).
         if std::env::args().any(|a| a == "--tray-menu") {
             app.tray.open_menu(egui::pos2(900.0, 700.0));
@@ -528,6 +532,8 @@ impl SteamApp {
         let now = ctx.input(|i| i.time);
         for a in actions {
             match a {
+                // "activate" is the Activate a Product dialog, not a page (the library's bar opens it).
+                Action::Navigate { page, .. } if page == "activate" => self.activate = Some(Default::default()),
                 Action::Navigate { page, arg } => self.navigate(page, arg),
                 Action::Toast(text) => self.toast(now, text, ""),
                 Action::SetTheme(t) => {

@@ -248,22 +248,21 @@ pub fn downloads_notice(app: &SteamApp, ui: &mut Ui, t: &Theme) {
 
 /// Play time on a game's page, with time played offline in SteamInRust
 /// that Steam doesn't have yet.
-pub fn playtime_stat(ui: &mut Ui, t: &Theme, state: &client::State, app_id: model::AppId, steam_minutes: Option<u64>) {
+pub fn playtime_value(state: &client::State, app_id: model::AppId, steam_minutes: Option<u64>) -> (String, Option<String>) {
     let (offline_total, not_sent) = state.offline_playtime.get(&app_id).copied().unwrap_or((0, 0));
     let extra = not_sent / 60;
     let value = match (steam_minutes, extra) {
         (None, 0) => "—".to_string(),
         (m, extra) => ui::playtime(m.unwrap_or(0) + extra),
     };
-    let r = ui.scope(|ui| w::stat(ui, t, t!("Play time"), &value)).response;
-    if offline_total >= 60 {
-        let tip = if not_sent >= 60 {
+    let tip = (offline_total >= 60).then(|| {
+        if not_sent >= 60 {
             t!("Includes {time} played offline that Steam doesn't have yet. It's sent to your Steam profile when you're back online.", time = ui::playtime(not_sent / 60))
         } else {
             t!("{time} of it was played offline and has been sent to Steam.", time = ui::playtime(offline_total / 60))
-        };
-        r.on_hover_text(tip);
-    }
+        }
+    });
+    (value, tip)
 }
 
 /// Draw a small "cloud upload waiting" mark on a game page's play bar.

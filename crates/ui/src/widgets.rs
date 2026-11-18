@@ -467,6 +467,50 @@ pub fn paint_cover_first(ui: &Ui, rect: Rect, urls: &[&str], radius: CornerRadiu
     false
 }
 
+/// [`paint_cover_first`] fading out toward the bottom: solid down to
+/// `solid` (0..1 of the height), clear at the bottom edge, so whatever is
+/// behind shows through (a game's hero picture over the page's background).
+pub fn paint_cover_fade(ui: &Ui, rect: Rect, urls: &[&str], solid: f32) -> bool {
+    let mut texture = None;
+    for url in urls {
+        match load(ui, url, rect.size(), true) {
+            (_, Some(tex)) => {
+                texture = Some(tex);
+                break;
+            }
+            (ImageState::Missing, _) => continue,
+            _ => return false,
+        }
+    }
+    let Some(texture) = texture else { return false };
+    let (ta, ra) = (texture.size.x / texture.size.y, rect.width() / rect.height());
+    let uv = if ta > ra {
+        let w = ra / ta;
+        Rect::from_min_max(pos2((1.0 - w) / 2.0, 0.0), pos2((1.0 + w) / 2.0, 1.0))
+    } else {
+        let h = ta / ra;
+        Rect::from_min_max(pos2(0.0, (1.0 - h) / 2.0), pos2(1.0, (1.0 + h) / 2.0))
+    };
+    let solid = solid.clamp(0.0, 1.0);
+    // Three bands of the picture: solid, fading, and the rows' alphas.
+    let stops = [(0.0, 255u8), (solid, 255), (solid + (1.0 - solid) * 0.5, 90), (1.0, 0)];
+    let mut mesh = egui::Mesh::with_texture(texture.id);
+    for (i, (f, a)) in stops.iter().enumerate() {
+        let y = rect.top() + rect.height() * f;
+        let v = uv.top() + uv.height() * f;
+        let c = Color32::from_white_alpha(*a);
+        mesh.vertices.push(egui::epaint::Vertex { pos: pos2(rect.left(), y), uv: pos2(uv.left(), v), color: c });
+        mesh.vertices.push(egui::epaint::Vertex { pos: pos2(rect.right(), y), uv: pos2(uv.right(), v), color: c });
+        if i > 0 {
+            let b = (i as u32) * 2;
+            mesh.add_triangle(b - 2, b - 1, b);
+            mesh.add_triangle(b - 1, b + 1, b);
+        }
+    }
+    ui.painter().with_clip_rect(rect).add(mesh);
+    true
+}
+
 /// Draw a remote image as large as fits in `rect`, anchored by `align`.
 pub fn paint_contain(ui: &Ui, rect: Rect, url: &str, align: Align2) -> bool {
     let (_, Some(texture)) = load(ui, url, rect.size(), false) else {
@@ -1183,47 +1227,124 @@ pub fn avatar(ui: &mut Ui, t: &Theme, url: &str, size: f32, status: Option<Color
 
 // ---------- games ----------
 
-/// Library capsule (2:3) with hover lift and installed marker, in the
-/// theme's `game_card` style.
+/// What a [`game_tile_info`] shows when the pointer is on it (Figma "game
+/// card" `363:5954`, its hover state): the title, a button (Play, Install…)
+/// and two facts with their icons.
+#[derive(Clone, Copy, Default)]
+pub struct TileInfo<'a> {
+    /// The button's icon (`icons::PLAY`, `icons::DOWNLOAD`…); `None` for no button.
+    pub action: Option<&'a str>,
+    /// The button's tooltip.
+    pub action_tip: &'a str,
+    /// Last played ("21 Aug 2022").
+    pub last_played: Option<&'a str>,
+    /// Time played ("92 hours").
+    pub playtime: Option<&'a str>,
+}
+
+/// A game's cover in the theme's `game_card` style (Figma "game card"
+/// `363:5954`). Not-installed games are dimmed.
 pub fn game_tile(ui: &mut Ui, t: &Theme, url: &str, fallback_url: &str, title: &str, installed: bool, size: Vec2) -> Response {
+    game_tile_info(ui, t, url, fallback_url, title, installed, size, &TileInfo::default()).0
+}
+
+/// [`game_tile`] with what shows on hover: the picture dims, the title
+/// appears at the top and a strip slides up from the bottom with the
+/// button and the facts in `info`. Returns the card's response and whether
+/// the button was clicked.
+#[allow(clippy::too_many_arguments)]
+pub fn game_tile_info(ui: &mut Ui, t: &Theme, url: &str, fallback_url: &str, title: &str, installed: bool, size: Vec2, info: &TileInfo) -> (Response, bool) {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     if !ui.is_rect_visible(rect) {
-        return resp;
+        return (resp, false);
     }
     let c = &t.components.game_card;
-    let s = interact(ui, &resp, false);
-    let hover = s.hover;
+    // The button on the card takes the pointer; the card stays "hovered".
+    let on = resp.contains_pointer() && ui.is_enabled();
+    let hover = ui.ctx().animate_bool_with_time(resp.id.with("hover"), on, 0.2);
     let r = t.radius_of(c);
-    let img = rect.expand(hover * 3.0);
-    if hover > 0.0 {
-        ui.painter().rect_filled(img.translate(vec2(0.0, 8.0 * hover)), r, t.overlay_dark(1).gamma_multiply(hover));
+    if !paint_cover_first(ui, rect, &[url, fallback_url], r) {
+        placeholder(ui, t, rect, title, r);
     }
-    if !paint_cover_first(ui, img, &[url, fallback_url], r) {
-        placeholder(ui, t, img, title, r);
-    }
-    let p = ui.painter();
+    let p = ui.painter_at(rect);
     if !installed {
-        p.rect_filled(img, r, t.overlay_dark(1));
+        p.rect_filled(rect, r, t.overlay_dark(1));
     }
-    let look = t.look(c, s);
+    // Sized for the design's 191 × 282 card, smaller on smaller or wide cards.
+    let k = (size.x / 191.0).min(size.y / 282.0).clamp(0.5, 1.4);
+    let mut clicked = false;
+    if hover > 0.0 {
+        // Dim the picture, darker at the top for the title, tinted below.
+        p.rect_filled(rect, r, t.overlay_dark(1).gamma_multiply(hover));
+        gradient(&p, rect, t.overlay_dark(2).gamma_multiply(hover), t.accent_2.gamma_multiply(0.44 * hover), false);
+        let mut job = egui::text::LayoutJob::simple(title.to_string(), t.typography.body_l.font(), t.text.gamma_multiply(hover), rect.width() - 18.0 * k);
+        job.wrap.max_rows = 2;
+        job.wrap.overflow_character = Some('…');
+        p.galley(rect.min + vec2(9.0, 11.0) * k, p.layout_job(job), t.text);
+        // The strip slides up from below the card.
+        let has_facts = info.last_played.is_some() || info.playtime.is_some();
+        if info.action.is_some() || has_facts {
+            let strip_h = 74.0 * k;
+            let top = rect.bottom() - strip_h * hover;
+            let strip = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), strip_h));
+            let mut x = strip.left() + 9.0 * k;
+            if let Some(icon) = info.action {
+                let b = Rect::from_min_size(pos2(x, strip.top() + 11.0 * k), Vec2::splat(51.0 * k));
+                let br = ui.interact(b.intersect(rect), resp.id.with("action"), Sense::click());
+                let ib = &t.components.icon_box;
+                let look = t.look(ib, Interact { selected: true, ..interact(ui, &br, true) });
+                p.rect_filled(b, t.radius_of(ib), match look.fill {
+                    ResolvedFill::Color(c) => c,
+                    _ => t.overlay_light(1),
+                });
+                paint_icon(&p, b.center(), icon, 34.0 * k, t.text.gamma_multiply(hover));
+                clicked = br.on_hover_text(info.action_tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                x = b.right() + 10.0 * k;
+            }
+            let fid = t.typography.body_s.font();
+            let icon_color = t.text_dim.gamma_multiply(0.5 + 0.5 * hover);
+            let mut y = strip.top() + 14.0 * k;
+            for (icon, value) in [(crate::icons::CALENDAR, info.last_played), (crate::icons::CLOCK, info.playtime)] {
+                let Some(value) = value else { continue };
+                let line = Rect::from_min_size(pos2(x, y), vec2(strip.right() - x - 6.0, 20.0 * k));
+                icon_centered(&p, pos2(line.left() + 10.0 * k, line.center().y), icon, 16.0 * k, icon_color);
+                let mut job = egui::text::LayoutJob::simple_singleline(value.to_string(), fid.clone(), t.text.gamma_multiply(hover));
+                job.wrap = egui::text::TextWrapping::truncate_at_width(line.width() - 25.0 * k);
+                let g = p.layout_job(job);
+                p.galley(pos2(line.left() + 25.0 * k, line.center().y - g.size().y / 2.0), g, t.text);
+                y += 26.0 * k;
+            }
+        }
+    }
+    let look = t.look(c, Interact { hover, ..Default::default() });
     if look.border.a() > 0 && c.border > 0.0 {
-        p.rect_stroke(img, r, Stroke::new(c.border, look.border), StrokeKind::Outside);
+        ui.painter().rect_stroke(rect, r, Stroke::new(c.border, look.border), StrokeKind::Outside);
     }
-    if installed {
-        let center = img.left_bottom() + vec2(14.0, -14.0);
-        p.circle_filled(center, 7.0, t.overlay_dark(3));
-        p.circle_filled(center, 4.0, t.play);
-    }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    (resp.on_hover_cursor(egui::CursorIcon::PointingHand), clicked)
 }
 
 /// A game card in the theme's card style ([`crate::theme::CardStyle`]):
 /// the cover art (2:3) or the wide header picture (460:215), `width` wide.
 /// Library pages should use this so a theme's choice shows.
 pub fn game_card(ui: &mut Ui, t: &Theme, cover_url: &str, header_url: &str, title: &str, installed: bool, width: f32) -> Response {
+    game_card_info(ui, t, cover_url, header_url, title, installed, width, &TileInfo::default()).0
+}
+
+/// [`game_card`] with what shows on hover (see [`game_tile_info`]).
+#[allow(clippy::too_many_arguments)]
+pub fn game_card_info(ui: &mut Ui, t: &Theme, cover_url: &str, header_url: &str, title: &str, installed: bool, width: f32, info: &TileInfo) -> (Response, bool) {
+    let size = game_card_size(t, width);
     match t.layout.game_card {
-        crate::theme::CardStyle::Cover => game_tile(ui, t, cover_url, header_url, title, installed, vec2(width, width * 1.5)),
-        crate::theme::CardStyle::Header => game_tile(ui, t, header_url, cover_url, title, installed, vec2(width, width * 215.0 / 460.0)),
+        crate::theme::CardStyle::Cover => game_tile_info(ui, t, cover_url, header_url, title, installed, size, info),
+        crate::theme::CardStyle::Header => game_tile_info(ui, t, header_url, cover_url, title, installed, size, info),
+    }
+}
+
+/// The size of a [`game_card`] `width` wide in the theme's card style.
+pub fn game_card_size(t: &Theme, width: f32) -> Vec2 {
+    match t.layout.game_card {
+        crate::theme::CardStyle::Cover => vec2(width, (width * 1.5).round()),
+        crate::theme::CardStyle::Header => vec2(width, (width * 215.0 / 460.0).round()),
     }
 }
 
