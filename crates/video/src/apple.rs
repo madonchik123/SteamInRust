@@ -272,10 +272,22 @@ unsafe fn copy_nv12(pb: CFRef, pts: f64) -> Option<Picture> {
             }
             let (stride, rows) = (CVPixelBufferGetBytesPerRowOfPlane(pb, 0), CVPixelBufferGetHeightOfPlane(pb, 0));
             let (uv_stride, uv_rows) = (CVPixelBufferGetBytesPerRowOfPlane(pb, 1), CVPixelBufferGetHeightOfPlane(pb, 1));
-            let mut data = Vec::with_capacity(stride * (rows + uv_rows));
-            data.extend_from_slice(std::slice::from_raw_parts(y, stride * rows));
+            let max_dim = crate::mp4::MAX_DIM as usize * 2;
+            let max_stride = max_dim * 4;
+            if stride == 0 || rows == 0 || stride > max_stride || rows > max_dim || uv_rows > max_dim {
+                return None;
+            }
+            let total_rows = rows.checked_add(uv_rows)?;
+            let total_bytes = stride.checked_mul(total_rows)?;
+            let luma_bytes = stride.checked_mul(rows)?;
+            if total_bytes > 64 * 1024 * 1024 {
+                return None;
+            }
+            let mut data = Vec::with_capacity(total_bytes);
+            data.extend_from_slice(std::slice::from_raw_parts(y, luma_bytes));
             for r in 0..uv_rows {
-                let row = std::slice::from_raw_parts(uv.add(r * uv_stride), uv_stride.min(stride));
+                let off = r.checked_mul(uv_stride)?;
+                let row = std::slice::from_raw_parts(uv.add(off), uv_stride.min(stride));
                 data.extend_from_slice(row);
                 data.resize(data.len() + stride - row.len(), 128);
             }

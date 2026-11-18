@@ -67,6 +67,10 @@ pub fn is_master(text: &str) -> bool {
     text.contains("#EXT-X-STREAM-INF")
 }
 
+const MAX_VARIANTS: usize = 64;
+const MAX_SEGMENTS: usize = 5_000;
+const MIN_EXTINF: f64 = 0.05;
+
 /// Variants of a master playlist, smallest first.
 pub fn parse_master(text: &str, base: &str) -> Vec<Variant> {
     let mut audio_groups: Vec<(String, String)> = Vec::new();
@@ -91,6 +95,9 @@ pub fn parse_master(text: &str, base: &str) -> Vec<Variant> {
             pending = Some(attrs(a));
         } else if !line.is_empty() && !line.starts_with('#') {
             if let Some(a) = pending.take() {
+                if out.len() >= MAX_VARIANTS {
+                    break;
+                }
                 let (width, height) = get(&a, "RESOLUTION")
                     .and_then(|r| r.split_once('x'))
                     .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
@@ -113,7 +120,11 @@ pub fn parse_media(text: &str, base: &str) -> Media {
         } else if let Some(d) = line.strip_prefix("#EXTINF:") {
             dur = d.split(',').next().and_then(|d| d.trim().parse::<f64>().ok());
         } else if !line.is_empty() && !line.starts_with('#') {
-            m.segments.push((resolve(base, line), dur.take().unwrap_or(0.0)));
+            if m.segments.len() >= MAX_SEGMENTS {
+                break;
+            }
+            let d = dur.take().filter(|v| v.is_finite()).map_or(MIN_EXTINF, |v| v.max(MIN_EXTINF));
+            m.segments.push((resolve(base, line), d));
         }
     }
     m
@@ -146,5 +157,18 @@ hls_264_3_video.m3u8
         let m = parse_media("#EXTM3U\n#EXT-X-MAP:URI=\"dash_h264/init-stream1.m4s\"\n#EXTINF:3,\ndash_h264/a.m4s\n#EXTINF:1.5\ndash_h264/b.m4s\n#EXT-X-ENDLIST\n", "https://cdn/x/v.m3u8");
         assert_eq!(m.init.as_deref(), Some("https://cdn/x/dash_h264/init-stream1.m4s"));
         assert_eq!(m.segments, vec![("https://cdn/x/dash_h264/a.m4s".to_string(), 3.0), ("https://cdn/x/dash_h264/b.m4s".to_string(), 1.5)]);
+    }
+
+    #[test]
+    fn clamps_extinf_and_caps_segments() {
+        let mut playlist = String::from("#EXTM3U\n#EXTINF:-5,\nseg0.m4s\n#EXTINF:0,\nseg1.m4s\n#EXTINF:NaN,\nseg2.m4s\n#EXTINF:inf,\nseg3.m4s\nseg4.m4s\n");
+        for i in 5..5_100 {
+            playlist.push_str(&format!("#EXTINF:1.0,\nseg{i}.m4s\n"));
+        }
+        let m = parse_media(&playlist, "https://cdn/x/v.m3u8");
+        assert_eq!(m.segments.len(), 5_000);
+        for (_, d) in &m.segments {
+            assert!(d.is_finite() && *d >= 0.05, "bad segment duration {d}");
+        }
     }
 }

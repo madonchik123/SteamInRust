@@ -7,6 +7,9 @@ use std::fmt;
 
 pub mod binary;
 
+/// Maximum object nesting depth permitted during text/binary VDF parsing and serialization.
+pub const MAX_DEPTH: usize = 64;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Str(String),
@@ -23,6 +26,8 @@ pub enum Error {
     Eof,
     #[error("unexpected '{0}' at byte {1}")]
     Unexpected(char, usize),
+    #[error("maximum VDF nesting depth ({MAX_DEPTH}) exceeded")]
+    TooDeep,
 }
 
 impl Value {
@@ -84,6 +89,9 @@ pub fn write(obj: &Obj) -> String {
         s.replace('\\', "\\\\").replace('"', "\\\"")
     }
     fn go(o: &Obj, depth: usize, out: &mut String) {
+        if depth >= MAX_DEPTH {
+            return;
+        }
         let pad = "\t".repeat(depth);
         for (k, v) in &o.0 {
             match v {
@@ -116,7 +124,7 @@ impl Obj {
 /// holds a single root key such as `"libraryfolders"` or `"AppState"`.
 pub fn parse(input: &str) -> Result<Obj, Error> {
     let mut p = Parser { src: input.as_bytes(), pos: 0 };
-    p.object(true)
+    p.object(true, 0)
 }
 
 struct Parser<'a> {
@@ -131,7 +139,10 @@ enum Tok {
 }
 
 impl Parser<'_> {
-    fn object(&mut self, top: bool) -> Result<Obj, Error> {
+    fn object(&mut self, top: bool, depth: usize) -> Result<Obj, Error> {
+        if depth >= MAX_DEPTH {
+            return Err(Error::TooDeep);
+        }
         let mut out = Vec::new();
         loop {
             let key = match self.next()? {
@@ -144,7 +155,7 @@ impl Parser<'_> {
             };
             let value = match self.next()? {
                 Some(Tok::Str(s)) => Value::Str(s),
-                Some(Tok::Open) => Value::Obj(self.object(false)?),
+                Some(Tok::Open) => Value::Obj(self.object(false, depth + 1)?),
                 Some(Tok::Close) => return Err(Error::Unexpected('}', self.pos)),
                 None => return Err(Error::Eof),
             };
@@ -271,5 +282,25 @@ mod tests {
     #[test]
     fn errors_on_unclosed() {
         assert!(parse("a { b c").is_err());
+    }
+
+    #[test]
+    fn enforces_max_depth_on_parse_and_write() {
+        let mut deep = String::new();
+        for _ in 0..65 {
+            deep.push_str("\"a\" { ");
+        }
+        deep.push_str("\"k\" \"v\"");
+        for _ in 0..65 {
+            deep.push_str(" }");
+        }
+        assert!(parse(&deep).is_err(), "text VDF deeper than MAX_DEPTH must fail");
+
+        let mut obj = Obj::default().with("k", "v");
+        for _ in 0..70 {
+            obj = Obj::default().with_obj("a", obj);
+        }
+        let written = write(&obj);
+        assert!(written.matches('{').count() <= 64, "write must cap nesting depth");
     }
 }

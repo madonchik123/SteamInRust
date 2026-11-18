@@ -2,6 +2,13 @@
 //! files (Steam's microtrailers) and fragmented MP4 segments (Steam's HLS and
 //! DASH trailers).
 
+/// Maximum video width or height (pixels) accepted from untrusted MP4 headers.
+pub(crate) const MAX_DIM: u32 = 4096;
+/// Maximum sample count accepted in MP4 sample tables (`stsz`/`stts`/`ctts`/`trun`, etc.).
+const MAX_SAMPLES: usize = 500_000;
+/// Cap on initial `Vec::with_capacity` preallocations from untrusted box counts.
+const MAX_PREALLOC: usize = 16_384;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Codec {
     H264 { nal_len: usize, sps: Vec<Vec<u8>>, pps: Vec<Vec<u8>> },
@@ -126,9 +133,9 @@ fn boxes(d: &[u8], base: usize) -> impl Iterator<Item = ([u8; 4], &[u8], usize)>
             return None;
         }
         // A box cut short (a partial download) still yields what is there.
-        let end = (p as u64 + size).min(d.len() as u64) as usize;
-        let payload = d.get(p + header as usize..end)?;
-        let at = base + p;
+        let end = (p as u64).checked_add(size).unwrap_or(d.len() as u64).min(d.len() as u64) as usize;
+        let payload = d.get(p.checked_add(header as usize)?..end)?;
+        let at = base.saturating_add(p);
         p = end;
         Some((kind, payload, at))
     })
@@ -214,15 +221,20 @@ fn parse_elst(e: &[u8], movie_scale: u32, timescale: u32) -> Option<i64> {
     let mut r = R::new(e);
     let v = r.u8()?;
     r.skip(3)?;
-    let n = r.u32()?;
+    let n = r.u32()? as usize;
+    let entry_bytes = if v == 1 { 20 } else { 12 };
+    if n > MAX_SAMPLES || r.left() < n.saturating_mul(entry_bytes) {
+        return None;
+    }
     let mut empty = 0i64;
     for _ in 0..n {
         let (dur, media) = if v == 1 { (r.u64()? as i64, r.u64()? as i64) } else { (r.u32()? as i64, r.u32()? as i32 as i64) };
         r.skip(4)?;
         if media == -1 {
-            empty += dur * timescale as i64 / movie_scale.max(1) as i64;
+            let scaled = dur.checked_mul(timescale as i64)? / movie_scale.max(1) as i64;
+            empty = empty.checked_add(scaled)?;
         } else {
-            return Some(media - empty);
+            return media.checked_sub(empty);
         }
     }
     None
@@ -238,6 +250,9 @@ fn parse_stsd(stsd: &[u8]) -> Option<(Codec, u32, u32)> {
             e.skip(6 + 2 + 16)?;
             let w = e.u16()? as u32;
             let h = e.u16()? as u32;
+            if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
+                return None;
+            }
             e.skip(4 + 4 + 4 + 2 + 32 + 2 + 2)?;
             let avcc = child(&entry[e.p..], b"avcC")?;
             Some((parse_avcc(avcc)?, w, h))
@@ -323,26 +338,38 @@ fn parse_stbl(stbl: &[u8]) -> Option<Vec<Sample>> {
     let (_, mut r) = full(b"stsz")?;
     let fixed = r.u32()?;
     let count = r.u32()? as usize;
-    if count == 0 {
+    if count == 0 || count > MAX_SAMPLES {
         return None;
     }
-    let mut sizes = Vec::with_capacity(count);
+    if fixed == 0 && r.left() < count.saturating_mul(4) {
+        return None;
+    }
+    let mut sizes = Vec::with_capacity(count.min(MAX_PREALLOC));
     for _ in 0..count {
         sizes.push(if fixed != 0 { fixed } else { r.u32()? });
     }
     // Chunk offsets.
     let offsets: Vec<u64> = if let Some((_, mut r)) = full(b"stco") {
-        let n = r.u32()?;
+        let n = r.u32()? as usize;
+        if n > MAX_SAMPLES || r.left() < n.saturating_mul(4) {
+            return None;
+        }
         (0..n).map(|_| r.u32().map(u64::from)).collect::<Option<_>>()?
     } else {
         let (_, mut r) = full(b"co64")?;
-        let n = r.u32()?;
+        let n = r.u32()? as usize;
+        if n > MAX_SAMPLES || r.left() < n.saturating_mul(8) {
+            return None;
+        }
         (0..n).map(|_| r.u64()).collect::<Option<_>>()?
     };
     // Samples per chunk.
     let (_, mut r) = full(b"stsc")?;
-    let n = r.u32()?;
-    let mut stsc = Vec::new();
+    let n = r.u32()? as usize;
+    if n > MAX_SAMPLES || r.left() < n.saturating_mul(12) {
+        return None;
+    }
+    let mut stsc = Vec::with_capacity(n.min(MAX_PREALLOC));
     for _ in 0..n {
         let first = r.u32()?;
         let per = r.u32()?;
@@ -351,47 +378,63 @@ fn parse_stbl(stbl: &[u8]) -> Option<Vec<Sample>> {
     }
     // Durations.
     let (_, mut r) = full(b"stts")?;
-    let n = r.u32()?;
-    let mut durs = Vec::with_capacity(count);
+    let n = r.u32()? as usize;
+    if n > MAX_SAMPLES || r.left() < n.saturating_mul(8) {
+        return None;
+    }
+    let mut durs = Vec::with_capacity(count.min(MAX_PREALLOC));
     for _ in 0..n {
-        let c = r.u32()?;
+        let c = r.u32()? as usize;
         let d = r.u32()?;
-        durs.extend(std::iter::repeat_n(d, c as usize));
+        if durs.len().checked_add(c).is_none_or(|tot| tot > MAX_SAMPLES) {
+            return None;
+        }
+        durs.extend(std::iter::repeat_n(d, c));
     }
     // Composition offsets.
     let mut ctts = Vec::new();
     if let Some((v, mut r)) = full(b"ctts") {
-        let n = r.u32()?;
+        let n = r.u32()? as usize;
+        if n > MAX_SAMPLES || r.left() < n.saturating_mul(8) {
+            return None;
+        }
         for _ in 0..n {
-            let c = r.u32()?;
+            let c = r.u32()? as usize;
             let o = r.u32()?;
+            if ctts.len().checked_add(c).is_none_or(|tot| tot > MAX_SAMPLES) {
+                return None;
+            }
             let o = if v == 1 { o as i32 as i64 } else { o as i64 };
-            ctts.extend(std::iter::repeat_n(o, c as usize));
+            ctts.extend(std::iter::repeat_n(o, c));
         }
     }
     // Sync samples (1-based); none listed means every sample is a key frame.
     let sync: Option<Vec<u32>> = full(b"stss").and_then(|(_, mut r)| {
-        let n = r.u32()?;
+        let n = r.u32()? as usize;
+        if n > MAX_SAMPLES || r.left() < n.saturating_mul(4) {
+            return None;
+        }
         (0..n).map(|_| r.u32()).collect()
     });
 
-    let mut out = Vec::with_capacity(count);
+    let mut out = Vec::with_capacity(count.min(MAX_PREALLOC));
     let mut dts = 0i64;
     let mut idx = 0usize;
     for (ci, &off) in offsets.iter().enumerate() {
-        let chunk = ci as u32 + 1;
+        let chunk = u32::try_from(ci).ok()?.checked_add(1)?;
         let per = stsc.iter().rev().find(|(f, _)| *f <= chunk).map(|x| x.1).unwrap_or(1);
-        let mut pos = off as usize;
+        let mut pos = usize::try_from(off).ok()?;
         for _ in 0..per {
             if idx >= count {
                 break;
             }
             let size = sizes[idx] as usize;
+            let next_pos = pos.checked_add(size)?;
             let duration = durs.get(idx).copied().unwrap_or(0);
             let key = sync.as_ref().is_none_or(|s| s.binary_search(&(idx as u32 + 1)).is_ok());
             out.push(Sample { offset: pos, size, dts, cts: ctts.get(idx).copied().unwrap_or(0), duration, key });
-            pos += size;
-            dts += duration as i64;
+            pos = next_pos;
+            dts = dts.checked_add(duration as i64)?;
             idx += 1;
         }
     }
@@ -449,10 +492,18 @@ fn parse_traf(traf: &[u8], moof_at: usize, t: &Track, out: &mut Vec<Sample>) -> 
             let b = r.bytes(3)?;
             (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32
         };
-        let n = r.u32()?;
-        let mut pos = base as i64;
+        let n = r.u32()? as usize;
+        if n > MAX_SAMPLES || out.len().checked_add(n).is_none_or(|tot| tot > MAX_SAMPLES) {
+            return None;
+        }
+        let per_sample = ((f & 0x100 != 0) as usize + (f & 0x200 != 0) as usize + (f & 0x400 != 0) as usize + (f & 0x800 != 0) as usize) * 4;
+        let header_extra: usize = if f & 0x1 != 0 { 4 } else { 0 } + if f & 0x4 != 0 { 4 } else { 0 };
+        if r.left() < header_extra.saturating_add(n.saturating_mul(per_sample)) {
+            return None;
+        }
+        let mut pos = i64::try_from(base).ok()?;
         if f & 0x1 != 0 {
-            pos += r.u32()? as i32 as i64;
+            pos = pos.checked_add(r.u32()? as i32 as i64)?;
         }
         let first_flags = if f & 0x4 != 0 { Some(r.u32()?) } else { None };
         for i in 0..n {
@@ -465,9 +516,10 @@ fn parse_traf(traf: &[u8], moof_at: usize, t: &Track, out: &mut Vec<Sample>) -> 
             } else {
                 0
             };
-            out.push(Sample { offset: pos.max(0) as usize, size: size as usize, dts, cts, duration, key: sflags & 0x1_0000 == 0 });
-            pos += size as i64;
-            dts += duration as i64;
+            let offset = usize::try_from(pos.max(0)).ok()?;
+            out.push(Sample { offset, size: size as usize, dts, cts, duration, key: sflags & 0x1_0000 == 0 });
+            pos = pos.checked_add(size as i64)?;
+            dts = dts.checked_add(duration as i64)?;
         }
     }
     Some(())
@@ -483,14 +535,17 @@ pub fn annex_b(sample: &[u8], nal_len: usize, params: Option<(&[Vec<u8>], &[Vec<
             out.extend_from_slice(p);
         }
     }
+    if !(1..=4).contains(&nal_len) {
+        return;
+    }
     let mut p = 0usize;
-    while p + nal_len <= sample.len() {
+    while p.checked_add(nal_len).is_some_and(|e| e <= sample.len()) {
         let mut n = 0usize;
         for b in &sample[p..p + nal_len] {
             n = (n << 8) | *b as usize;
         }
         p += nal_len;
-        let end = (p + n).min(sample.len());
+        let end = p.checked_add(n).unwrap_or(sample.len()).min(sample.len());
         out.extend_from_slice(&[0, 0, 0, 1]);
         out.extend_from_slice(&sample[p..end]);
         p = end;
@@ -546,5 +601,60 @@ mod tests {
         assert_eq!((s[1].offset, s[1].size, s[1].key), (data_off as usize + 5, 3, false));
         assert_eq!(t.pts(&s[0]), 4.0);
         assert_eq!(t.pts(&s[1]), 2.0);
+    }
+
+    #[test]
+    fn rejects_oversized_sample_tables_and_dimensions() {
+        let mut avc1_body = vec![0u8; 6 + 2 + 16];
+        avc1_body.extend_from_slice(&65535u16.to_be_bytes());
+        avc1_body.extend_from_slice(&65535u16.to_be_bytes());
+        avc1_body.extend_from_slice(&vec![0u8; 4 + 4 + 4 + 2 + 32 + 2 + 2]);
+        avc1_body.extend_from_slice(&bx(b"avcC", &[1, 0x64, 0, 0x1f, 0xff, 0xe0, 0]));
+        let mut stsd = vec![0u8; 8];
+        stsd.extend_from_slice(&bx(b"avc1", &avc1_body));
+        let stbl_bad_dim = bx(b"stbl", &bx(b"stsd", &stsd));
+        let tkhd = bx(b"tkhd", &[&[0u8; 12][..], &1u32.to_be_bytes()].concat());
+        let mdhd = bx(b"mdhd", &[&[0u8; 12][..], &1000u32.to_be_bytes(), &1000u32.to_be_bytes()].concat());
+        let mdia = bx(b"mdia", &[mdhd, bx(b"minf", &stbl_bad_dim)].concat());
+        let moov = bx(b"moov", &bx(b"trak", &[tkhd.clone(), mdia].concat()));
+        assert!(parse_movie(&moov).unwrap().video().is_none(), "65535x65535 track must be rejected");
+
+        let mut avc1_ok = vec![0u8; 6 + 2 + 16];
+        avc1_ok.extend_from_slice(&320u16.to_be_bytes());
+        avc1_ok.extend_from_slice(&180u16.to_be_bytes());
+        avc1_ok.extend_from_slice(&vec![0u8; 4 + 4 + 4 + 2 + 32 + 2 + 2]);
+        avc1_ok.extend_from_slice(&bx(b"avcC", &[1, 0x64, 0, 0x1f, 0xff, 0xe0, 0]));
+        let mut stsd_ok = vec![0u8; 8];
+        stsd_ok.extend_from_slice(&bx(b"avc1", &avc1_ok));
+        let mut stsz = vec![0u8; 4];
+        stsz.extend_from_slice(&16u32.to_be_bytes());
+        stsz.extend_from_slice(&500_001u32.to_be_bytes());
+        let mut stco = vec![0u8; 4];
+        stco.extend_from_slice(&1u32.to_be_bytes());
+        stco.extend_from_slice(&0u32.to_be_bytes());
+        let mut stsc = vec![0u8; 4];
+        stsc.extend_from_slice(&1u32.to_be_bytes());
+        stsc.extend_from_slice(&1u32.to_be_bytes());
+        stsc.extend_from_slice(&500_001u32.to_be_bytes());
+        stsc.extend_from_slice(&1u32.to_be_bytes());
+        let mut stts = vec![0u8; 4];
+        stts.extend_from_slice(&1u32.to_be_bytes());
+        stts.extend_from_slice(&500_001u32.to_be_bytes());
+        stts.extend_from_slice(&10u32.to_be_bytes());
+        let stbl_big = bx(
+            b"stbl",
+            &[bx(b"stsd", &stsd_ok), bx(b"stsz", &stsz), bx(b"stco", &stco), bx(b"stsc", &stsc), bx(b"stts", &stts)].concat(),
+        );
+        let mdia_big = bx(b"mdia", &[bx(b"mdhd", &[&[0u8; 12][..], &1000u32.to_be_bytes(), &1000u32.to_be_bytes()].concat()), bx(b"minf", &stbl_big)].concat());
+        let moov_big = bx(b"moov", &bx(b"trak", &[tkhd, mdia_big].concat()));
+        let movie = parse_movie(&moov_big).unwrap();
+        assert!(movie.video().unwrap().samples.is_empty(), "stsz > 500_000 samples must be rejected");
+
+        let tfhd = bx(b"tfhd", &[&0u32.to_be_bytes()[..], &1u32.to_be_bytes()].concat());
+        let mut trun = vec![0u8; 4];
+        trun.extend_from_slice(&500_001u32.to_be_bytes());
+        let moof = bx(b"moof", &bx(b"traf", &[tfhd, bx(b"trun", &trun)].concat()));
+        let t = Track { id: 1, timescale: 1000, codec: Codec::Other(*b"test"), width: 0, height: 0, delay: 0, duration: 0, samples: vec![], default_duration: 1, default_size: 1, default_flags: 0 };
+        assert!(parse_fragment(&moof, &t).is_empty(), "trun > 500_000 samples must be rejected");
     }
 }
