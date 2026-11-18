@@ -63,14 +63,17 @@ impl Target {
         Some(match key.as_str() {
             "gameinstall" => self.install_dir.clone(),
             "steamclouddocuments" => self.remote_dir(),
-            "winmydocuments" if cfg!(target_os = "windows") => user.as_ref()?.document_dir()?.to_path_buf(),
-            "winappdatalocal" if cfg!(target_os = "windows") => base.as_ref()?.data_local_dir().to_path_buf(),
-            "winappdataroaming" if cfg!(target_os = "windows") => base.as_ref()?.data_dir().to_path_buf(),
-            "winappdatalocallow" if cfg!(target_os = "windows") => home?.join("AppData").join("LocalLow"),
-            "winsavedgames" if cfg!(target_os = "windows") => home?.join("Saved Games"),
-            "winpictures" if cfg!(target_os = "windows") => user.as_ref()?.picture_dir()?.to_path_buf(),
-            "winvideos" if cfg!(target_os = "windows") => user.as_ref()?.video_dir()?.to_path_buf(),
-            "winmusic" if cfg!(target_os = "windows") => user.as_ref()?.audio_dir()?.to_path_buf(),
+            // Windows locations everywhere: many games' rules name only these,
+            // and on a Mac/Linux the nearest folders stand in (we don't read
+            // Steam's root overrides). Files must still match a rule.
+            "winmydocuments" => user.as_ref()?.document_dir()?.to_path_buf(),
+            "winappdatalocal" => base.as_ref()?.data_local_dir().to_path_buf(),
+            "winappdataroaming" => base.as_ref()?.data_dir().to_path_buf(),
+            "winappdatalocallow" => home?.join("AppData").join("LocalLow"),
+            "winsavedgames" => home?.join("Saved Games"),
+            "winpictures" => user.as_ref()?.picture_dir()?.to_path_buf(),
+            "winvideos" => user.as_ref()?.video_dir()?.to_path_buf(),
+            "winmusic" => user.as_ref()?.audio_dir()?.to_path_buf(),
             // Steam's macOS roots.
             "machome" if cfg!(target_os = "macos") => home?,
             "macappsupport" if cfg!(target_os = "macos") => base.as_ref()?.data_dir().to_path_buf(),
@@ -950,6 +953,18 @@ mod tests {
         assert!(t_ruled.local_path("%GameInstall%Saves/2/slot1.sav").is_none());
         assert!(t_ruled.local_path("%GameInstall%Saves/1/../slot1.sav").is_none());
         assert!(t_ruled.local_path("%LinuxHome%.bashrc").is_none());
+
+        // A rule under a Windows location works on every platform (Mac and
+        // Linux use the nearest folder), still only for matching files.
+        let win = base_target(Some(CloudConfig {
+            quota: 1000,
+            max_files: 10,
+            save_files: vec![model::SaveRule { root: "WinAppDataLocal".into(), path: "KnightsEnd/Saved".into(), pattern: "*.sav".into(), recursive: true }],
+        }));
+        let save = win.local_path("%WinAppDataLocal%KnightsEnd/Saved/SaveGames/Save02.sav").expect("windows root resolves");
+        assert!(save.ends_with("KnightsEnd/Saved/SaveGames/Save02.sav"));
+        assert!(win.local_path("%WinAppDataLocal%KnightsEnd/evil.dll").is_none());
+        assert!(win.local_path("%WinAppDataLocal%Other/x.sav").is_none());
     }
 
     #[cfg(unix)]
