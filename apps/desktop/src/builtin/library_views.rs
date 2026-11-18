@@ -89,11 +89,29 @@ impl Library {
     fn filter_buttons(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
         let n = self.adv.count();
         let tip = if n > 0 { format!("{} ({n})", t!("Filters")) } else { t!("Filters").to_string() };
-        let r = w::icon_box(ui, t, icons::FUNNEL, &tip, n > 0);
+        let r = w::icon_box(ui, t, icons::FUNNEL, &tip, n > 0 || self.filters_open);
+        // Under the button, over the page (not the game list), inside the window.
+        let screen = ui.ctx().content_rect();
+        let margin = t.spacing.lg;
+        let left = self.page_left.max(screen.left()) + margin;
+        let width = (screen.right() - margin - left).clamp(280.0, 860.0);
+        let x = r.rect.center().x.clamp(left + width / 2.0, (screen.right() - margin - width / 2.0).max(left + width / 2.0));
+        let anchor = Rect::from_min_max(pos2(x - 1.0, r.rect.top()), pos2(x + 1.0, r.rect.bottom()));
         egui::Popup::from_toggle_button_response(&r)
+            .anchor(egui::PopupAnchor::ParentRect(anchor))
+            .align(egui::RectAlign::BOTTOM)
+            .align_alternatives(&[egui::RectAlign::BOTTOM])
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .width(860.0)
-            .show(|ui| self.adv_panel(ui, t, ctx));
+            .width(width)
+            .show(|ui| {
+                ui.set_width(width - t.spacing.md * 2.0);
+                self.adv_panel(ui, t, ctx)
+            });
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&r));
+        if open != self.filters_open {
+            self.filters_open = open;
+            ui.ctx().request_repaint();
+        }
         if w::icon_box(ui, t, icons::CLOCK, t!("Recent games"), self.recent).clicked() {
             self.recent = !self.recent;
         }
@@ -254,8 +272,10 @@ impl Library {
             }
             let setup = setup_state(ctx, e.app_id, e.installed.is_some());
             let busy = matches!(setup, Setup::Downloading(_) | Setup::Queued);
-            let look = t.look(&t.components.game_row, w::interact(ui, &resp, sel));
-            let color = if busy { t.accent } else if e.installed.is_some() || sel { look.text } else { t.text_dim };
+            let s = w::interact(ui, &resp, sel);
+            let look = t.look(&t.components.game_row, s);
+            // Not installed: dim, brightening under the pointer.
+            let color = if busy { t.accent } else if e.installed.is_some() || sel { look.text } else { w::mix(t.text_dim, look.text, s.hover) };
             row_text(ui, t, rect, icon, e.name, color);
             if ctx.state.playing == Some(e.app_id) {
                 ui.painter().circle_filled(rect.right_center() - vec2(t.spacing.md, 0.0), t.spacing.xs, t.in_game);
@@ -302,6 +322,10 @@ impl Library {
                 ui.set_width(width);
                 let (hr, hresp) = ui.allocate_exact_size(vec2(width, t.dense(38.0)), Sense::click());
                 let hover = ui.ctx().animate_bool_with_time(hresp.id, hresp.hovered(), 0.1);
+                if hover > 0.0 {
+                    let look = t.look(&t.components.game_row, ui::theme::Interact { hover, ..Default::default() });
+                    w::paint_box(ui, t, hr, &t.components.game_row, &look, 0.0);
+                }
                 let pad = t.spacing.md;
                 ui.painter().text(pos2(hr.left() + pad, hr.center().y), Align2::LEFT_CENTER, title.to_uppercase(), t.typography.body_l.font(), t.text);
                 w::icon_centered(ui.painter(), pos2(hr.right() - pad - 8.0, hr.center().y), if open { icons::CARET_UP } else { icons::CARET_DOWN }, t.typography.body_l.size, w::mix(t.text_dim, t.text, hover));
@@ -514,7 +538,9 @@ impl Library {
             }
             let look = t.look(c, w::interact(ui, &resp, false));
             w::paint_box(ui, t, rect, c, &look, 0.0);
-            let img = Rect::from_min_size(rect.min + Vec2::splat(pad), vec2(((h - pad * 2.0) * 363.0 / 106.0).round(), h - pad * 2.0));
+            // The design's 363 × 106 picture, narrower on a narrow window.
+            let img_w = ((h - pad * 2.0) * 363.0 / 106.0).min(rect.width() * 0.28).round();
+            let img = Rect::from_min_size(rect.min + Vec2::splat(pad), vec2(img_w, h - pad * 2.0));
             w::image_or_title(ui, t, img, &art::header(id), e.name, t.corner_small());
             if e.installed.is_none() {
                 ui.painter().rect_filled(img, t.corner_small(), t.overlay_dark(1));
@@ -543,15 +569,24 @@ impl Library {
                 }
                 ui.add_space(t.spacing.sm);
                 ui.set_clip_rect(ui.clip_rect().intersect(Rect::from_min_max(pos2(buttons.left(), rect.top()), pos2(buttons.left() + room, rect.bottom()))));
-                let last = last_played(ctx.state, e).map(ui::date).unwrap_or_else(|| t!("Never").to_string());
-                icon_stat(ui, t, icons::CALENDAR, t!("Last played"), &last, None);
-                let played = minutes_played(ctx.state, e).map(ui::playtime).unwrap_or_else(|| "—".into());
-                icon_stat(ui, t, icons::CLOCK, t!("Play time"), &played, None);
+                // The facts, most important first, while they fit whole.
+                let mut facts = vec![
+                    Fact::new(icons::CALENDAR, t!("Last played"), last_played(ctx.state, e).map(ui::date).unwrap_or_else(|| t!("Never").to_string())),
+                    Fact::new(icons::CLOCK, t!("Play time"), minutes_played(ctx.state, e).map(ui::playtime).unwrap_or_else(|| "—".into())),
+                ];
                 if let Some((got, total)) = achievements(ctx.state, id) {
-                    icon_stat(ui, t, icons::TROPHY, t!("Achievements"), &format!("{got}/{total}"), Some(got as f32 / total as f32));
+                    facts.push(Fact { bar: Some(got as f32 / total as f32), ..Fact::new(icons::TROPHY, t!("Achievements"), format!("{got}/{total}")) });
                 }
                 if let Some(g) = e.installed {
-                    icon_stat(ui, t, icons::DRIVES, t!("Disk size"), &ui::bytes(g.size_on_disk), None);
+                    facts.push(Fact::new(icons::DRIVES, t!("Disk size"), ui::bytes(g.size_on_disk)));
+                }
+                let end = buttons.left() + room;
+                for f in facts {
+                    let width = icon_stat_width(ui, t, &f.label, &f.value, f.bar.is_some());
+                    if ui.cursor().left() + width > end {
+                        break;
+                    }
+                    icon_stat(ui, t, f.icon, &f.label, &f.value, f.bar);
                 }
             });
             self.game_menu(t, &resp, id, e.installed.is_some(), ctx.state.playing == Some(id));
@@ -731,7 +766,9 @@ impl Library {
     #[allow(clippy::too_many_arguments)]
     fn play_bar(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, name: &str, installed: Option<&InstalledGame>, owned: Option<&model::OwnedApp>, download: Option<&model::DownloadStatus>, queued: bool) {
         let full = ui.max_rect();
-        let row_h = (t.height_of(&t.components.button_play, 40.0) * 1.325).round();
+        // A running download shows three lines beside the button: room for them.
+        let button_h = (t.height_of(&t.components.button_play, 40.0) * 1.325).round();
+        let row_h = if download.is_some() { button_h + t.spacing.xl } else { button_h };
         // The buttons at the right end first (Figma "Frame 91": 40 px boxes, 11 apart).
         let (rr, _) = ui.allocate_exact_size(vec2(full.width(), row_h), Sense::hover());
         let mut right = ui.new_child(UiBuilder::new().max_rect(rr).layout(Layout::right_to_left(Align::Center)));
@@ -757,63 +794,31 @@ impl Library {
         if left.width() < 120.0 {
             return;
         }
-        let mut c = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(left.min, pos2(left.right(), left.bottom() + 400.0))).layout(Layout::left_to_right(Align::Min).with_main_wrap(true)));
-        c.spacing_mut().item_spacing = vec2(t.spacing.xl + 3.0, t.spacing.md);
-        c.set_clip_rect(c.clip_rect().intersect(Rect::from_min_max(left.min, pos2(left.right(), left.bottom() + 400.0))));
-        let title_h = row_h;
-        // Each piece asks for its own width, so the row wraps between pieces.
-        let title_w = ui.painter().layout_no_wrap(name.to_string(), t.typography.heading_m.font(), t.text).size().x.min(360.0).min(left.width());
-        c.allocate_ui_with_layout(vec2(title_w, title_h), Layout::left_to_right(Align::Center), |ui| {
-            ui.add(egui::Label::new(w::heading_m(t, name, t.text)).truncate());
-        });
-        let rest = c.available_size_before_wrap().x;
-        c.allocate_ui_with_layout(vec2(rest, title_h), Layout::left_to_right(Align::Center), |ui| {
-            self.main_big_button(ui, t, ctx, id, installed, owned, download, queued);
-        });
-        let stat = |c: &mut Ui, icon: &str, label: &str, value: &str, bar: Option<f32>| {
-            let width = icon_stat_width(c, t, label, value, bar.is_some());
-            c.allocate_ui_with_layout(vec2(width, title_h), Layout::left_to_right(Align::Center), |ui| icon_stat(ui, t, icon, label, value, bar)).inner
-        };
+        // One row: the name, the button, then as many facts as fit, most
+        // important first. The rest go to the Details card below.
+        let mut facts: Vec<Fact> = Vec::new();
         if let Some(g) = installed {
-            stat(&mut c, icons::CALENDAR, t!("Last played"), &g.last_played.map(ui::date).unwrap_or_else(|| t!("Never").to_string()), None);
+            facts.push(Fact::new(icons::CALENDAR, t!("Last played"), g.last_played.map(ui::date).unwrap_or_else(|| t!("Never").to_string())));
             let (value, tip) = crate::offline_ui::playtime_value(ctx.state, id, g.playtime_minutes);
-            let r = stat(&mut c, icons::CLOCK, t!("Play time"), &value, None);
-            if let Some(tip) = tip {
-                r.on_hover_text(tip);
-            }
-            if let Some(cloud) = self.cloud_status(ctx, id) {
-                stat(&mut c, icons::CLOUD_CHECK, t!("Cloud status"), &cloud, None);
-            }
+            facts.push(Fact { tip, ..Fact::new(icons::CLOCK, t!("Play time"), value) });
         }
         if let Some((got, total)) = achievements(ctx.state, id) {
-            stat(&mut c, icons::TROPHY, t!("Achievements"), &format!("{got}/{total}"), Some(got as f32 / total as f32));
+            facts.push(Fact { bar: Some(got as f32 / total as f32), ..Fact::new(icons::TROPHY, t!("Achievements"), format!("{got}/{total}")) });
+        }
+        if installed.is_some()
+            && let Some(cloud) = self.cloud_status(ctx, id)
+        {
+            facts.push(Fact::new(icons::CLOUD_CHECK, t!("Cloud status"), cloud));
         }
         if let Some(g) = installed {
             // Like Steam: the game and its Workshop items together.
             let workshop = local::manage::workshop_size(g);
-            let r = stat(&mut c, icons::DRIVES, t!("Size"), &ui::bytes(g.size_on_disk + workshop), None);
-            if workshop > 0 {
-                r.on_hover_text(t!("{game} game + {workshop} Workshop items", game = ui::bytes(g.size_on_disk), workshop = ui::bytes(workshop)));
-            }
-            // Where the game's Steam features come from (see docs/steam-compatibility.md).
-            // Worked out in the background: reading the install folder
-            // would hold up the frame (the stat appears a moment later).
-            let mode = owned.and_then(|o| client::launch_mode_peek(o, &g.install_dir));
-            if owned.is_some() && mode.is_none() {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
-            }
-            if let Some(mode) = mode {
-                let (mode, why) = match mode {
-                    client::LaunchMode::SteamInRust => (t!("SteamInRust"), t!("Achievements, cloud saves and friends work through SteamInRust.").to_string()),
-                    client::LaunchMode::OfficialSteam { anti_cheat } => (t!("Runs through Steam (anti-cheat)"), t!("Uses {name}: starts through the official Steam client, which opens in the background.", name = anti_cheat)),
-                    client::LaunchMode::NoSteam { reason } => (t!("Starts without Steam"), i18n::tr_dyn(&reason)),
-                };
-                stat(&mut c, icons::LIGHTNING, t!("Steam features"), mode, None).on_hover_text(why);
-            }
+            let tip = (workshop > 0).then(|| t!("{game} game + {workshop} Workshop items", game = ui::bytes(g.size_on_disk), workshop = ui::bytes(workshop)).to_string());
+            facts.push(Fact { tip, ..Fact::new(icons::DRIVES, t!("Size"), ui::bytes(g.size_on_disk + workshop)) });
         } else if let Some(o) = owned {
             let size: u64 = o.depots.iter().filter(|d| d.dlc_app.is_none() && model::os_matches(&d.os, model::THIS_OS)).filter_map(|d| d.manifest("public").map(|m| m.1)).sum();
             if size > 0 {
-                stat(&mut c, icons::DRIVES, t!("Download size"), &format!("≈ {}", ui::bytes(size)), None);
+                facts.push(Fact::new(icons::DRIVES, t!("Download size"), format!("≈ {}", ui::bytes(size))));
             }
         }
         // Which systems it has versions for, and whether this one is among them.
@@ -827,13 +832,51 @@ impl Library {
                 } else {
                     t!("Made for {list} only: it doesn't run on {os}.", list = names.join(", "), os = here).to_string()
                 };
-                stat(&mut c, icons::DESKTOP, t!("Runs on"), &names.join(" · "), None).on_hover_text(why);
+                facts.push(Fact { tip: Some(why), ..Fact::new(icons::DESKTOP, t!("Runs on"), names.join(" · ")) });
             }
         }
-        // The wrapped facts can take more than one line.
-        let used = c.min_rect().bottom() - rr.bottom();
-        if used > 1.0 {
-            ui.add_space(used);
+        if let Some(g) = installed {
+            // Where the game's Steam features come from (see docs/steam-compatibility.md).
+            // Worked out in the background: reading the install folder
+            // would hold up the frame (the fact appears a moment later).
+            let mode = owned.and_then(|o| client::launch_mode_peek(o, &g.install_dir));
+            if owned.is_some() && mode.is_none() {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            if let Some(mode) = mode {
+                let (mode, why) = match mode {
+                    client::LaunchMode::SteamInRust => (t!("SteamInRust").to_string(), t!("Achievements, cloud saves and friends work through SteamInRust.").to_string()),
+                    client::LaunchMode::OfficialSteam { anti_cheat } => (t!("Runs through Steam (anti-cheat)").to_string(), t!("Uses {name}: starts through the official Steam client, which opens in the background.", name = anti_cheat)),
+                    client::LaunchMode::NoSteam { reason } => (t!("Starts without Steam").to_string(), i18n::tr_dyn(&reason).to_string()),
+                };
+                facts.push(Fact { tip: Some(why), ..Fact::new(icons::LIGHTNING, t!("Steam features"), mode) });
+            }
+        }
+
+        let mut c = ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)));
+        c.set_clip_rect(c.clip_rect().intersect(left));
+        let gap = t.spacing.xl + 3.0;
+        c.spacing_mut().item_spacing.x = gap;
+        // The name takes at most a third of the row on a narrow window.
+        let name_w = ui.painter().layout_no_wrap(name.to_string(), t.typography.heading_m.font(), t.text).size().x;
+        let title_w = name_w.min((left.width() * 0.34).max(120.0)).min(360.0);
+        c.allocate_ui_with_layout(vec2(title_w, row_h), Layout::left_to_right(Align::Center), |ui| {
+            ui.add(egui::Label::new(w::heading_m(t, name, t.text)).truncate()).on_hover_text(name);
+        });
+        c.scope(|ui| self.main_big_button(ui, t, ctx, id, installed, owned, download, queued));
+        self.more_facts.clear();
+        let mut full = false;
+        for f in facts {
+            let width = icon_stat_width(&c, t, &f.label, &f.value, f.bar.is_some());
+            if full || c.available_width() < width {
+                full = true;
+                self.more_facts.push((f.label, f.value));
+                continue;
+            }
+            let r = c.allocate_ui_with_layout(vec2(width, row_h), Layout::left_to_right(Align::Center), |ui| icon_stat(ui, t, f.icon, &f.label, &f.value, f.bar)).inner;
+            if let Some(tip) = f.tip {
+                r.on_hover_text(tip);
+            }
         }
     }
 
@@ -1046,6 +1089,12 @@ impl Library {
                     ui.label(w::body_m(t, g.last_updated.map(ui::date).unwrap_or_else(|| "—".into()), t.text));
                     ui.end_row();
                 }
+                // Facts the play bar had no room for.
+                for (label, value) in &self.more_facts {
+                    ui.label(w::caption_text(t, label));
+                    ui.label(w::body_m(t, value, t.text));
+                    ui.end_row();
+                }
                 if let Some(o) = owned.filter(|o| !o.branches.is_empty()) {
                     label(ui, t!("Versions"));
                     ui.label(w::body_m(t, o.branches.len().to_string(), t.text));
@@ -1164,6 +1213,21 @@ pub(super) fn icon_stat(ui: &mut Ui, t: &Theme, icon: &str, label: &str, value: 
         });
     })
     .response
+}
+
+/// A fact in a game's play bar.
+struct Fact {
+    icon: &'static str,
+    label: String,
+    value: String,
+    bar: Option<f32>,
+    tip: Option<String>,
+}
+
+impl Fact {
+    fn new(icon: &'static str, label: &str, value: String) -> Self {
+        Self { icon, label: label.to_string(), value, bar: None, tip: None }
+    }
 }
 
 /// How wide [`icon_stat`] draws.

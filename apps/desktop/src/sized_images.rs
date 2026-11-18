@@ -91,9 +91,10 @@ fn worker(rx: &Mutex<Receiver<Job>>, entries: &Mutex<HashMap<String, Entry>>) {
         let mut map = entries.lock().unwrap();
         // Forgotten meanwhile (another page): don't keep it.
         if matches!(map.get(&job.uri), Some(Entry::Pending)) {
-            map.insert(job.uri, match result {
+            map.insert(job.uri.clone(), match result {
                 Ok(image) => Entry::Ready(Arc::new(image), Instant::now()),
-                Err(e) => Entry::Failed(e),
+                // Not a picture we can read: final (the widget shows its fallback).
+                Err(e) => Entry::Failed(format!("{}can't decode: {e}", ui::widgets::GONE)),
             });
             drop(map);
             job.ctx.request_repaint();

@@ -196,7 +196,7 @@ selected = { fill = "surface_hover", text = "text" }
 [components.icon_box]
 height = 40
 normal = { fill = "text_dim@0.05", text = "text_dim" }
-hover = { fill = "text_dim@0.12", text = "text" }
+hover = { fill = "text_dim@0.2", text = "text" }
 selected = { fill = "text_dim@0.16", text = "text" }
 
 [components.badge]
@@ -384,20 +384,22 @@ height = 33
 padding = [13, 0]
 text = "body_m"
 normal = { fill = "transparent", text = "text" }
-hover = { fill = "raised" }
+hover = { fill = "surface_hover@0.7" }
 selected = { fill = "surface_hover", text = "text" }
 
 [components.library_shelf]
 padding = [20, 20]
 radius = "large"
 normal = { fill = "raised@0.4" }
-hover = { fill = "raised@0.7" }
-selected = { fill = "surface_hover@0.6" }
+hover = { fill = "surface_hover@0.6" }
+selected = { fill = "surface_hover@0.8" }
 
 [components.download_row]
 padding = [10, 10]
 radius = "large"
 normal = { fill = "chrome" }
+hover = { fill = "mix(chrome, surface_hover, 0.45)" }
+selected = { fill = "mix(chrome, accent_2, 0.25)" }
 
 # ---- community ----
 

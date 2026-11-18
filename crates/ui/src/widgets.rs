@@ -268,7 +268,10 @@ pub fn paint_background(ui: &Ui, t: &Theme, rect: Rect, area: &str) {
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    Color32::from_rgba_unmultiplied(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), l(a.a(), b.a()))
+    // Color32 keeps its channels premultiplied by alpha: blend them as they
+    // are. (Reading them as unmultiplied multiplied see-through colors twice,
+    // so a hover from a clear fill came out darker instead of lighter.)
+    Color32::from_rgba_premultiplied(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), l(a.a(), b.a()))
 }
 
 // ---------- painting ----------
@@ -379,13 +382,18 @@ fn note_state(url: &str, state: ImageState) {
     }
 }
 
-/// Failed loads: url -> (attempts, when the last one failed).
+/// Failed loads: url -> (attempts, when the last one was asked for).
 static FAILED: std::sync::Mutex<Option<std::collections::HashMap<String, (u32, f64)>>> = std::sync::Mutex::new(None);
-const RETRIES: u32 = 3;
 
-/// Load an image, retrying failed downloads a few times with a pause.
-/// Steam's image servers sometimes drop a connection when many images load
-/// at once; without this a dropped one would stay blank.
+/// How a loader's error starts when the picture isn't there for good (a
+/// 404, not a picture): it's shown as missing at once, so the widget's
+/// fallback (another picture, or the title) shows instead of a long wait.
+pub const GONE: &str = "gone: ";
+
+/// Load an image. A picture that isn't there is missing at once; any other
+/// failure (a dropped connection, a busy server, which happens when many
+/// pictures load at once) is tried again with a growing pause, as long as
+/// the picture is still drawn, so a hiccup never leaves it blank.
 fn load(ui: &Ui, url: &str, size: Vec2, cover: bool) -> (ImageState, Option<egui::load::SizedTexture>) {
     let (state, texture) = load_sized(ui, url, size, cover);
     if !url.is_empty() {
@@ -403,16 +411,19 @@ fn load_sized(ui: &Ui, url: &str, size: Vec2, cover: bool) -> (ImageState, Optio
     match img.load_for_size(ui.ctx(), size) {
         Ok(TexturePoll::Ready { texture }) => (ImageState::Ready, Some(texture)),
         Ok(TexturePoll::Pending { .. }) => (ImageState::Loading, None),
-        Err(_) => {
+        Err(e) => {
+            // Only a failed download is worth another try; anything else
+            // (no such picture, not a picture, no loader for it) is final.
+            let transient = matches!(&e, egui::load::LoadError::Loading(s) if !s.starts_with(GONE));
+            if !transient {
+                return (ImageState::Missing, None);
+            }
             let now = ui.input(|i| i.time);
             let mut guard = FAILED.lock().unwrap();
             let map = guard.get_or_insert_with(Default::default);
             let entry = map.entry(url.to_string()).or_insert((0, now));
-            if entry.0 >= RETRIES {
-                return (ImageState::Missing, None);
-            }
-            // Wait 2 s, 4 s, 6 s between attempts.
-            if now - entry.1 > 2.0 * (entry.0 + 1) as f64 {
+            // Wait 1 s, 2 s, 4 s… up to 30 s between attempts.
+            if now - entry.1 > f64::from(1u32 << entry.0.min(5)).min(30.0) {
                 entry.0 += 1;
                 entry.1 = now;
                 ui.ctx().forget_image(url);
@@ -1753,6 +1764,19 @@ mod markup_tests {
         assert!(job.sections.iter().any(|s| s.format.color == egui::Color32::from_rgb(0xff, 0xdb, 0xa5)));
         // Brackets that aren't tags stay.
         assert_eq!(super::markup("[x] and [y]", 12.0, egui::Color32::WHITE, 100.0).text, "[x] and [y]");
+    }
+
+    #[test]
+    fn mixing_see_through_colors_keeps_them() {
+        use egui::Color32;
+        let veil = Color32::WHITE.gamma_multiply(0.1);
+        // A hover from a clear fill ends exactly on the hover color...
+        assert_eq!(super::mix(Color32::TRANSPARENT, veil, 1.0), veil);
+        // ...and halfway is half as strong, not darker.
+        let half = super::mix(Color32::TRANSPARENT, veil, 0.5);
+        assert!(half.a() > 0 && half.r() >= half.a() - 1);
+        // Solid colors blend as before.
+        assert_eq!(super::mix(Color32::BLACK, Color32::WHITE, 0.5), Color32::from_rgb(128, 128, 128));
     }
 }
 

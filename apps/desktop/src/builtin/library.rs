@@ -302,6 +302,11 @@ pub struct Library {
     asked_achievements: BTreeSet<AppId>,
     /// "DLC" in a game's links: scroll down to its DLC.
     scroll_to_dlc: bool,
+    /// Where the page starts, right of the game list (for the filters popup).
+    page_left: f32,
+    filters_open: bool,
+    /// The game page's facts that didn't fit in its play bar (label, value).
+    more_facts: Vec<(String, String)>,
     /// Launch waiting on a Steam Cloud conflict choice.
     cloud_hold: Option<CloudHold>,
     flags: Option<super::settings::SharedFlags>,
@@ -418,6 +423,7 @@ impl Extension for Library {
             .frame(egui::Frame::new())
             .show(ui, |ui| {
                 let r = ui.max_rect();
+                self.page_left = r.right();
                 w::gradient(ui.painter(), r, t.raised, t.raised.gamma_multiply(0.0), false);
                 egui::Frame::new().inner_margin(Margin { left: 11, right: 0, top: 10, bottom: 8 }).show(ui, |ui| self.sidebar(ui, &t, ctx));
             });
@@ -1248,8 +1254,10 @@ impl Library {
 
     fn download_bar(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: AppId, d: &model::DownloadStatus) {
         let label = i18n::tr_dyn(d.activity());
+        // Narrower when the play bar is short of room.
+        let width = (ui.available_width() * 0.45).clamp(200.0, 380.0);
         ui.vertical(|ui| {
-            ui.set_width(380.0);
+            ui.set_width(width);
             ui.horizontal(|ui| {
                 ui.label(w::body_m(t, label, t.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1258,7 +1266,7 @@ impl Library {
                     ui.label(w::body_s(t, format!("{} / {}", ui::bytes(done), ui::bytes(total)), t.text_dim));
                 });
             });
-            w::progress(ui, t, d.fraction(), 380.0);
+            w::progress(ui, t, d.fraction(), width);
             // Network and disk separately (they differ a lot: reused data
             // and buffered writes hit the disk without coming over the network).
             if !d.verifying() {

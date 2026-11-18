@@ -29,7 +29,31 @@ const PARALLEL: usize = 16;
 enum Entry {
     Pending,
     Ready(Bytes, Option<String>),
-    Failed(String),
+    /// The error, and when. Errors starting with [`ui::widgets::GONE`] are
+    /// final (the picture doesn't exist); others are asked again later.
+    Failed(String, std::time::Instant),
+}
+
+/// A failed download is tried again when it's asked for this long after.
+const RETRY_AFTER: Duration = Duration::from_secs(5);
+/// Attempts per download for a dropped connection, a timeout or a busy server.
+const ATTEMPTS: u32 = 3;
+
+/// Whether a reply means the picture isn't there (no point asking again).
+fn final_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 400 | 401 | 403 | 404 | 410 | 451)
+}
+
+/// Whether bytes look like a picture the app can show (JPEG, PNG, GIF,
+/// WebP, BMP, ICO or SVG), so a broken file is fetched again.
+fn looks_like_picture(b: &[u8]) -> bool {
+    b.starts_with(&[0xFF, 0xD8, 0xFF])
+        || b.starts_with(b"\x89PNG")
+        || b.starts_with(b"GIF8")
+        || (b.len() > 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP")
+        || b.starts_with(b"BM")
+        || b.starts_with(&[0, 0, 1, 0])
+        || std::str::from_utf8(&b[..b.len().min(512)]).is_ok_and(|s| s.contains("<svg"))
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -113,6 +137,10 @@ pub fn trim_decoded(ctx: &egui::Context) {
 
 /// Where pictures are kept: `<cache dir>/images`.
 pub fn dir() -> PathBuf {
+    // `STEAMINRUST_IMAGE_CACHE`: another folder (tests with an empty cache).
+    if let Some(d) = std::env::var_os("STEAMINRUST_IMAGE_CACHE") {
+        return PathBuf::from(d);
+    }
     directories::ProjectDirs::from("dev", "SteamInRust", "SteamInRust").map(|d| d.cache_dir().join("images")).unwrap_or_else(|| PathBuf::from("cache/images"))
 }
 
@@ -163,14 +191,14 @@ impl BytesLoader for ImageCache {
             return Err(LoadError::NotSupported);
         }
         if let Err(err) = validate_image_url(uri) {
-            return Err(LoadError::Loading(err));
+            return Err(LoadError::Loading(format!("{}{err}", ui::widgets::GONE)));
         }
-        if let Some(e) = self.entries.lock().unwrap().get(uri).cloned() {
-            return match e {
-                Entry::Pending => Ok(BytesPoll::Pending { size: None }),
-                Entry::Ready(bytes, mime) => Ok(BytesPoll::Ready { size: None, bytes, mime }),
-                Entry::Failed(err) => Err(LoadError::Loading(err)),
-            };
+        match self.entries.lock().unwrap().get(uri).cloned() {
+            Some(Entry::Pending) => return Ok(BytesPoll::Pending { size: None }),
+            Some(Entry::Ready(bytes, mime)) => return Ok(BytesPoll::Ready { size: None, bytes, mime }),
+            // A hiccup: asked for again a little later, it's tried again.
+            Some(Entry::Failed(err, at)) if err.starts_with(ui::widgets::GONE) || at.elapsed() < RETRY_AFTER => return Err(LoadError::Loading(err)),
+            _ => {}
         }
         self.entries.lock().unwrap().insert(uri.to_string(), Entry::Pending);
         let (uri, ctx) = (uri.to_string(), ctx.clone());
@@ -178,11 +206,16 @@ impl BytesLoader for ImageCache {
         let (http, slots, entries) = (self.http.clone(), self.slots.clone(), self.entries.clone());
         self.rt.spawn(async move {
             let done = |e: Entry| {
+                if let Entry::Failed(err, _) = &e {
+                    tracing::debug!("picture {uri}: {err}");
+                }
                 entries.lock().unwrap().insert(uri.clone(), e);
                 ctx.request_repaint();
             };
+            let failed = |err: String| Entry::Failed(err, std::time::Instant::now());
             // 1. A saved copy shows right away (even if it's old, or offline).
-            let saved = std::fs::read(&path).ok();
+            // One that isn't a picture (cut short, or an error page) is fetched again.
+            let saved = std::fs::read(&path).ok().filter(|b| looks_like_picture(b));
             let meta = read_meta(&path);
             if let Some(bytes) = &saved {
                 done(Entry::Ready(Bytes::from(bytes.clone()), meta.mime.clone()));
@@ -192,7 +225,7 @@ impl BytesLoader for ImageCache {
                 }
             }
             // 2. Download, or revalidate an old copy.
-            let _slot = slots.acquire().await;
+            let mut slot = Some(slots.acquire().await);
             let request = || {
                 let mut req = http.get(&uri);
                 if saved.is_some() {
@@ -205,15 +238,27 @@ impl BytesLoader for ImageCache {
                 }
                 req.send()
             };
-            // One retry for a stalled or dropped request.
-            let sent = match request().await {
-                Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => request().await,
-                r => r,
+            // Try again after a dropped or stalled connection or a busy
+            // server, with a pause (without holding a download slot).
+            let mut attempt = 1;
+            let sent = loop {
+                let r = request().await;
+                let again = match &r {
+                    Err(e) => e.is_timeout() || e.is_connect() || e.is_request() || e.is_body(),
+                    Ok(resp) => resp.status().is_server_error() || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS,
+                };
+                if !again || attempt >= ATTEMPTS {
+                    break r;
+                }
+                drop(slot.take());
+                tokio::time::sleep(Duration::from_millis(700 * 2u64.pow(attempt))).await;
+                slot = Some(slots.acquire().await);
+                attempt += 1;
             };
             match sent {
                 Ok(resp) if resp.remote_addr().is_some_and(|a| !is_public_ip(a.ip())) => {
                     if saved.is_none() {
-                        done(Entry::Failed("blocked non-public image host".into()));
+                        done(failed(format!("{}blocked non-public image host", ui::widgets::GONE)));
                     }
                 }
                 Ok(resp) if resp.status() == reqwest::StatusCode::NOT_MODIFIED => {
@@ -234,12 +279,15 @@ impl BytesLoader for ImageCache {
                             }
                             done(Entry::Ready(Bytes::from(bytes), meta.mime));
                         }
-                        Err(e) if saved.is_none() => done(Entry::Failed(e)),
+                        Err(e) if saved.is_none() => done(failed(e)),
                         Err(_) => {}
                     }
                 }
-                Ok(resp) if saved.is_none() => done(Entry::Failed(format!("HTTP {}", resp.status()))),
-                Err(e) if saved.is_none() => done(Entry::Failed(e.to_string())),
+                Ok(resp) if saved.is_none() => {
+                    let gone = if final_status(resp.status()) { ui::widgets::GONE } else { "" };
+                    done(failed(format!("{gone}HTTP {}", resp.status())));
+                }
+                Err(e) if saved.is_none() => done(failed(e.to_string())),
                 // Offline or the server hiccuped: keep showing the saved copy.
                 _ => {}
             }
