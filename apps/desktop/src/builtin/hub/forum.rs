@@ -6,6 +6,7 @@ use client::hub::{self, Request};
 use egui::{Align, Align2, CornerRadius, Layout, Sense, Ui, vec2};
 use i18n::t;
 use model::AppId;
+use ui::widgets::EditMenu;
 use ui::{Theme, icons, widgets as w};
 
 pub(super) fn forum(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId, forum: &str) {
@@ -120,6 +121,7 @@ fn topic_row(ui: &mut Ui, t: &Theme, topic: &hub::Topic) -> bool {
 }
 
 pub(super) fn thread(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, url: &str) {
+    reply_answered(hv, io, url);
     let page = hv.pages.get(url).copied().unwrap_or(1);
     let key = hub::thread_key(url, page);
     let lang = io.lang();
@@ -176,6 +178,53 @@ pub(super) fn thread(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, url:
     }
     if let Some(p) = pager(ui, t, page, pages) {
         hv.pages.insert(url.to_string(), p);
+    }
+    if let Some(target) = &data.reply {
+        // The new reply lands on the last page.
+        let last = (data.total + 1).div_ceil(data.page_size.max(1)).max(1);
+        reply_box(hv, ui, t, io, url, target, last);
+    }
+}
+
+/// A reply was answered: on success forget the old pages and show the last one.
+fn reply_answered(hv: &mut HubView, io: &Io, url: &str) {
+    let Some((n, result)) = io.state.hub.replied.get(url) else { return };
+    if hv.reply_seen.get(url) == Some(n) {
+        return;
+    }
+    hv.reply_seen.insert(url.to_string(), *n);
+    let page = hv.reply_sending.remove(url);
+    if result.is_ok() {
+        hv.reply_text.remove(url);
+        let prefix = format!("{url}#");
+        hv.asked.retain(|k| !k.starts_with(&prefix));
+        if let Some(p) = page {
+            hv.pages.insert(url.to_string(), p);
+        }
+    }
+}
+
+fn reply_box(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, url: &str, target: &hub::ReplyTarget, last: u32) {
+    ui.add_space(16.0);
+    ui.label(w::text_bold(t!("Reply"), 14.0, t.text));
+    ui.add_space(6.0);
+    let sending = hv.reply_sending.contains_key(url);
+    let draft = hv.reply_text.entry(url.to_string()).or_default();
+    ui.add_enabled(!sending, egui::TextEdit::multiline(draft).hint_text(t!("Write a reply…")).desired_rows(3).desired_width(f32::INFINITY).margin(vec2(10.0, 8.0))).with_edit_menu();
+    ui.add_space(4.0);
+    let text = draft.trim().to_string();
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(!sending && !text.is_empty(), |ui| {
+            let label = if sending { t!("Posting…") } else { t!("Post reply") };
+            if w::button(ui, t, Some(icons::SEND), label, w::Kind::Primary, w::Size::Sm).clicked() {
+                hv.reply_sending.insert(url.to_string(), last);
+                io.send(client::Command::Hub(Request::Reply { thread_url: url.to_string(), target: target.clone(), text }));
+            }
+        });
+        ui.label(w::text(t!("Everyone can see your reply."), 11.5, t.text_faint));
+    });
+    if let Some((_, Err(e))) = io.state.hub.replied.get(url).filter(|_| !sending) {
+        ui.label(w::text(t!("Couldn't post your reply: {error}", error = i18n::tr_dyn(e)), 12.0, t.danger));
     }
 }
 

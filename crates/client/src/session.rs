@@ -785,7 +785,53 @@ async fn online(
                 }),
                 Some(Command::SellItem { app_id, context_id, asset_id, amount, receive }) => st.sell_item(app_id, context_id, asset_id, amount, receive, sink),
                 Some(Command::LoadMyListings) => st.my_listings(sink),
+                Some(Command::LoadMarketHistory { start, language }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::market::history(&w, start, &language).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::MarketHistory { start, result });
+                }),
                 Some(Command::LoadTradeOffers { language }) => st.trade_offers(language, sink),
+                Some(Command::LoadChatGroups) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        match crate::groupchat::groups(&conn).await {
+                            Ok((groups, members)) => {
+                                // Names and avatars for members who aren't friends.
+                                let mut ids: Vec<SteamId> = members.iter().flat_map(|(_, who)| who.iter().copied()).collect();
+                                ids.sort_unstable();
+                                ids.dedup();
+                                for chunk in ids.chunks(100) {
+                                    let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: chunk.to_vec() });
+                                }
+                                sink(Event::ChatGroupMembers(members));
+                                sink(Event::ChatGroups(Ok(groups)));
+                            }
+                            Err(e) => sink(Event::ChatGroups(Err(e))),
+                        }
+                    });
+                }
+                Some(Command::LoadGroupHistory { group, room, before }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        let result = crate::groupchat::history(&conn, group, room, before).await;
+                        sink(Event::GroupHistory { group, room, result, older: before.is_some() });
+                    });
+                }
+                Some(Command::SendGroupMessage { group, room, text }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        match crate::groupchat::send(&conn, me, group, room, &text).await {
+                            Ok(m) => sink(Event::GroupMessage(m)),
+                            Err(error) => sink(Event::GroupMessageFailed { group, room, error }),
+                        }
+                    });
+                }
+                Some(Command::AckGroupRoom { group, room, time }) => {
+                    crate::groupchat::ack(&st.conn, group, room, time);
+                    sink(Event::GroupRoomRead { group, room });
+                }
                 Some(Command::LoadProfileEdit { language }) => {
                     let conn = st.conn.clone();
                     st.with_web(sink, move |web, sink| async move {
@@ -1638,6 +1684,20 @@ impl Online {
                         sink(Event::NotificationsArrived(items));
                     }
                     self.load_notifications(sink);
+                } else if name.starts_with("ChatRoomClient.NotifyIncomingChatMessage") {
+                    let n: CChatRoomIncomingChatMessageNotification = p.body()?;
+                    if let Some(m) = crate::groupchat::incoming(&n) {
+                        sink(Event::GroupMessage(m));
+                    }
+                } else if name.starts_with("ChatRoomClient.NotifyChatRoomGroupRoomsChange") || name.starts_with("ChatRoomClient.NotifyChatGroupUserStateChanged") || name.starts_with("ChatRoomClient.NotifyChatRoomHeaderStateChange") {
+                    // Rooms added, renamed or removed; joined or left a group.
+                    let (conn, sink) = (self.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        if let Ok((groups, members)) = crate::groupchat::groups(&conn).await {
+                            sink(Event::ChatGroupMembers(members));
+                            sink(Event::ChatGroups(Ok(groups)));
+                        }
+                    });
                 } else if name.starts_with("FriendMessagesClient.IncomingMessage") {
                     let n: CFriendMessagesIncomingMessageNotification = p.body()?;
                     match n.chat_entry_type() {

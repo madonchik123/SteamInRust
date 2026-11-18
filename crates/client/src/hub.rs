@@ -4,8 +4,8 @@
 //! Data comes from Steam's unified services where they exist
 //! (`PublishedFile.*`, `Player.*`) and from steamcommunity.com pages where
 //! they don't (discussion forums, guide sections, comments). Everything here
-//! only reads, except [`Request::Vote`] and [`Request::Favorite`], which the
-//! user starts with a button.
+//! only reads, except [`Request::Vote`], [`Request::Favorite`] and
+//! [`Request::Reply`], which the user starts with a button.
 
 use crate::market::Web;
 use crate::{Event, Sink};
@@ -52,6 +52,11 @@ pub enum Request {
     Vote { file_id: u64, up: bool },
     /// Add an item or guide to your favorites, or take it out.
     Favorite { app_id: AppId, file_id: u64, add: bool },
+    /// Post a reply to a discussion thread (public, under your name).
+    Reply { thread_url: String, target: ReplyTarget, text: String },
+    /// A Steam group's page. `key` is its 64-bit id or its address name
+    /// (steamcommunity.com/groups/<name>).
+    Group { key: String },
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +71,8 @@ pub enum Response {
     Achievements { steam_id: SteamId, app_id: AppId, result: Result<Vec<model::Achievement>, String> },
     Voted { file_id: u64, up: bool, result: Result<(), String> },
     Favorited { file_id: u64, add: bool, result: Result<(), String> },
+    Replied { thread_url: String, result: Result<(), String> },
+    Group { key: String, result: Result<Group, String> },
 }
 
 /// Kinds of shared files a game can have.
@@ -268,6 +275,39 @@ pub struct Thread {
     pub total: u32,
     pub page_size: u32,
     pub locked: bool,
+    /// Where a reply goes; none when the page didn't say (or you can't reply).
+    pub reply: Option<ReplyTarget>,
+}
+
+/// A Steam group's page: what it is, who's around, its announcements.
+#[derive(Debug, Clone, Default)]
+pub struct Group {
+    pub id: u64,
+    pub name: String,
+    /// Its address name (steamcommunity.com/groups/<url>).
+    pub url: String,
+    pub headline: String,
+    /// HTML.
+    pub summary: String,
+    pub avatar: String,
+    pub members: u32,
+    pub in_game: u32,
+    pub online: u32,
+    pub in_chat: u32,
+    /// The first members Steam lists (up to 1000).
+    pub member_ids: Vec<SteamId>,
+    /// Newest first.
+    pub announcements: Vec<News>,
+}
+
+/// Where a reply to a discussion thread goes, read from the thread's page.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReplyTarget {
+    pub owner: String,
+    pub feature: String,
+    pub topic: String,
+    pub extended_data: String,
+    pub page_size: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -308,6 +348,10 @@ pub struct Cache {
     pub achievements: HashMap<(SteamId, AppId), Result<Vec<model::Achievement>, String>>,
     /// Favorites you changed this session.
     pub favorites: HashMap<u64, bool>,
+    /// Replies sent per thread this session: how many answers came back and
+    /// the last one.
+    pub replied: HashMap<String, (u32, Result<(), String>)>,
+    pub groups: HashMap<String, Result<Group, String>>,
 }
 
 impl Cache {
@@ -355,6 +399,18 @@ impl Cache {
             }
             Response::Favorited { file_id, add, result: Ok(()) } => {
                 self.favorites.insert(*file_id, *add);
+            }
+            Response::Replied { thread_url, result } => {
+                if result.is_ok() {
+                    // The thread changed: load its pages again.
+                    let prefix = format!("{thread_url}#");
+                    self.threads.retain(|k, _| !k.starts_with(&prefix));
+                }
+                let e = self.replied.entry(thread_url.clone()).or_insert((0, Ok(())));
+                *e = (e.0 + 1, result.clone());
+            }
+            Response::Group { key, result } => {
+                self.groups.insert(key.clone(), result.clone());
             }
             Response::Voted { .. } | Response::Favorited { .. } => {}
         }
@@ -513,6 +569,20 @@ pub(crate) async fn handle(conn: Connection, me: SteamId, web: Result<Arc<Web>, 
                 Err(e) => Err(e),
             };
             out(Response::Favorited { file_id, add, result });
+        }
+        Request::Reply { thread_url, target, text } => {
+            let result = match web {
+                Ok(w) => reply(&w, &thread_url, &target, &text).await,
+                Err(e) => Err(e),
+            };
+            out(Response::Replied { thread_url, result });
+        }
+        Request::Group { key } => {
+            let result = group(&web_or_anon, &key).await;
+            if let Ok(g) = &result {
+                want_personas(&conn, g.member_ids.iter().take(48).copied().collect());
+            }
+            out(Response::Group { key, result });
         }
     }
 }
@@ -721,6 +791,143 @@ async fn favorite(web: &Web, app_id: AppId, file_id: u64, add: bool) -> Result<(
         .await
         .map_err(|e| e.to_string())?;
     if r.status().is_success() { Ok(()) } else { Err(format!("Steam answered {}", r.status())) }
+}
+
+async fn reply(web: &Web, thread_url: &str, t: &ReplyTarget, text: &str) -> Result<(), String> {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(&t.owner) || !digits(&t.feature) || !digits(&t.topic) {
+        return Err("This discussion can't be answered here".into());
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("The reply is empty".into());
+    }
+    let referer = if thread_url.starts_with(&format!("{COMMUNITY}/")) { thread_url.to_string() } else { COMMUNITY.to_string() };
+    let form: Vec<(&str, String)> = vec![
+        ("comment", text.to_string()),
+        ("count", t.page_size.max(1).to_string()),
+        ("sessionid", web.session_id.clone()),
+        ("extended_data", t.extended_data.clone()),
+        ("feature2", t.topic.clone()),
+        ("oldestfirst", "true".into()),
+        ("include_raw", "true".into()),
+    ];
+    let v: serde_json::Value = web
+        .http
+        .post(format!("{COMMUNITY}/comment/ForumTopic/post/{}/{}/", t.owner, t.feature))
+        .header("Referer", referer)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|_| "Steam didn't answer".to_string())?;
+    if v.get("success").and_then(|s| s.as_bool()) == Some(true) {
+        Ok(())
+    } else {
+        Err(v.get("error").and_then(|e| e.as_str()).unwrap_or("Steam didn't take the reply").to_string())
+    }
+}
+
+/// Where a group's pages live: `gid/<id>` or `groups/<name>`.
+pub fn group_path(key: &str) -> Option<String> {
+    if !key.is_empty() && key.len() <= 20 && key.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(format!("gid/{key}"));
+    }
+    (!key.is_empty() && key.len() <= 64 && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')).then(|| format!("groups/{key}"))
+}
+
+async fn group(web: &Web, key: &str) -> Result<Group, String> {
+    let path = group_path(key).ok_or("This isn't a Steam group")?;
+    let body = crate::market::page(web, &format!("{COMMUNITY}/{path}/memberslistxml/?xml=1&p=1")).await?;
+    let mut g = parse_group(&body)?;
+    // Announcements are a bonus: the page still shows without them.
+    let feed = match group_path(&g.url) {
+        Some(p) if !g.url.is_empty() => format!("{COMMUNITY}/{p}/rss/"),
+        _ => format!("{COMMUNITY}/gid/{}/rss/", g.id),
+    };
+    if let Ok(rss) = crate::market::page(web, &feed).await {
+        g.announcements = parse_group_rss(&rss);
+    }
+    Ok(g)
+}
+
+fn xml_field(s: &str, tag: &str) -> String {
+    let raw = between(s, &format!("<{tag}>"), &format!("</{tag}>")).unwrap_or_default().trim();
+    raw.strip_prefix("<![CDATA[").and_then(|r| r.strip_suffix("]]>")).unwrap_or(raw).trim().to_string()
+}
+
+/// A group's details and first members from its `memberslistxml`.
+pub fn parse_group(xml: &str) -> Result<Group, String> {
+    let Some(details) = between(xml, "<groupDetails>", "</groupDetails>") else {
+        return Err("Steam didn't send this group. It may be private or gone.".into());
+    };
+    let num = |s: &str, tag: &str| xml_field(s, tag).replace(',', "").parse().unwrap_or(0);
+    let id = xml_field(xml, "groupID64").parse().map_err(|_| "Steam didn't send this group".to_string())?;
+    let members = between(xml, "<members>", "</members>").unwrap_or_default();
+    let member_ids = members.split("<steamID64>").skip(1).filter_map(|m| m.split('<').next()?.trim().parse().ok()).collect();
+    Ok(Group {
+        id,
+        name: decode(&xml_field(details, "groupName")),
+        url: xml_field(details, "groupURL"),
+        headline: decode(&xml_field(details, "headline")),
+        summary: xml_field(details, "summary"),
+        avatar: xml_field(details, "avatarFull"),
+        members: num(details, "memberCount"),
+        in_game: num(details, "membersInGame"),
+        online: num(details, "membersOnline"),
+        in_chat: num(details, "membersInChat"),
+        member_ids,
+        announcements: Vec::new(),
+    })
+}
+
+/// A group's announcements from its RSS feed.
+pub fn parse_group_rss(xml: &str) -> Vec<News> {
+    xml.split("<item>")
+        .skip(1)
+        .take(20)
+        .map(|item| {
+            let item = item.split("</item>").next().unwrap_or(item);
+            let url = xml_field(item, "link");
+            News {
+                id: url.clone(),
+                title: decode(&xml_field(item, "title")),
+                url,
+                author: decode(&xml_field(item, "author")),
+                contents: decode(&xml_field(item, "description")),
+                feed: String::new(),
+                time: rss_time(&xml_field(item, "pubDate")),
+                external: false,
+            }
+        })
+        .collect()
+}
+
+/// "Fri, 13 Nov 2026 02:32:05 +0000" as Unix seconds (0 if unreadable).
+fn rss_time(s: &str) -> u64 {
+    let p: Vec<&str> = s.split_whitespace().collect();
+    let [_, day, mon, year, clock, zone, ..] = p.as_slice() else { return 0 };
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (Some(m), Ok(d), Ok(y)) = (MONTHS.iter().position(|x| x == mon), day.parse::<i64>(), year.parse::<i64>()) else { return 0 };
+    let hms: Vec<i64> = clock.split(':').filter_map(|x| x.parse().ok()).collect();
+    let [h, mi, se] = hms.as_slice() else { return 0 };
+    let off = zone.parse::<i64>().map(|z| (z / 100) * 3600 + (z % 100) * 60).unwrap_or(0);
+    let t = model::days_from_civil(y, m as i64 + 1, d) * 86_400 + h * 3600 + mi * 60 + se - off;
+    t.max(0) as u64
+}
+
+/// The reply target from a thread page's `InitializeCommentThread(…, {…})`.
+fn reply_target(body: &str) -> Option<ReplyTarget> {
+    let at = body.find("InitializeCommentThread(")?;
+    let rest = &body[at..];
+    let open = rest.find('{')?;
+    let v: serde_json::Value = serde_json::Deserializer::from_str(&rest[open..]).into_iter::<serde_json::Value>().next()?.ok()?;
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str().map(str::to_string).or_else(|| x.as_u64().map(|n| n.to_string()))).unwrap_or_default();
+    let num = |x: &String| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
+    let t = ReplyTarget { owner: s("owner"), feature: s("feature"), topic: s("feature2"), extended_data: s("extended_data"), page_size: v.get("pagesize").and_then(|n| n.as_u64()).unwrap_or(15) as u32 };
+    (num(&t.owner) && num(&t.feature) && num(&t.topic)).then_some(t)
 }
 
 async fn file_comments(web: &Web, file_id: u64, creator: SteamId, start: u32) -> Result<model::Comments, String> {
@@ -1022,7 +1229,9 @@ pub fn parse_thread(body: &str) -> Result<Thread, String> {
             rest = &rest[at + 10..];
         }
     }
-    Ok(Thread { title, forum, forum_url, op, posts, total, page_size, locked: !can_reply || op_block.contains("forum_icon_Locked") })
+    let locked = !can_reply || op_block.contains("forum_icon_Locked");
+    let reply = if locked { None } else { reply_target(body) };
+    Ok(Thread { title, forum, forum_url, op, posts, total, page_size, locked, reply })
 }
 
 #[cfg(test)]
@@ -1129,6 +1338,69 @@ mod tests {
         assert!(t.posts[0].html.ends_with("chest."), "{}", t.posts[0].html);
         assert_eq!(t.posts[1].html, "Second");
         assert!(!t.locked);
+        // That sample has no owner / feature: no reply target.
+        assert_eq!(t.reply, None);
+    }
+
+    #[test]
+    fn reads_groups() {
+        let xml = r#"<?xml version="1.0"?><memberList>
+<groupID64>103582791433918461</groupID64>
+<groupDetails>
+		<groupName><![CDATA[Steam Client Beta]]></groupName>
+		<groupURL><![CDATA[SteamClientBeta]]></groupURL>
+		<headline><![CDATA[Tests &amp; more]]></headline>
+		<summary><![CDATA[Welcome.<br>Hi]]></summary>
+		<avatarFull><![CDATA[https://avatars.akamai.steamstatic.com/x_full.jpg]]></avatarFull>
+		<memberCount>425228</memberCount>
+		<membersInChat>22521</membersInChat>
+		<membersInGame>11477</membersInGame>
+		<membersOnline>76963</membersOnline>
+</groupDetails>
+<members>
+<steamID64>76561197960265731</steamID64>
+<steamID64>76561197960265732</steamID64>
+</members></memberList>"#;
+        let g = parse_group(xml).unwrap();
+        assert_eq!(g.id, 103582791433918461);
+        assert_eq!((g.name.as_str(), g.url.as_str(), g.headline.as_str()), ("Steam Client Beta", "SteamClientBeta", "Tests & more"));
+        assert_eq!(g.summary, "Welcome.<br>Hi");
+        assert_eq!((g.members, g.in_game, g.online, g.in_chat), (425228, 11477, 76963, 22521));
+        assert_eq!(g.member_ids, vec![76561197960265731, 76561197960265732]);
+        assert!(parse_group("<memberList></memberList>").is_err());
+
+        let rss = r#"<rss><channel><title>x</title><item>
+      <title>Beta &amp; notes</title>
+      <description>&lt;p&gt;Fixed&lt;/p&gt;</description>
+      <link>https://steamcommunity.com/groups/SteamClientBeta/announcements/detail/1</link>
+      <pubDate>Fri, 13 Nov 2026 02:32:05 +0000</pubDate>
+      <author>lostgoat</author>
+    </item></channel></rss>"#;
+        let n = parse_group_rss(rss);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].title, "Beta & notes");
+        assert_eq!(n[0].contents, "<p>Fixed</p>");
+        assert_eq!(n[0].author, "lostgoat");
+        assert_eq!(n[0].time, 1794537125);
+        assert_eq!(rss_time("Fri, 13 Nov 2026 04:32:05 +0200"), 1794537125);
+
+        assert_eq!(group_path("103582791433918461").as_deref(), Some("gid/103582791433918461"));
+        assert_eq!(group_path("SteamClientBeta").as_deref(), Some("groups/SteamClientBeta"));
+        assert_eq!(group_path("../x"), None);
+        assert_eq!(group_path(""), None);
+    }
+
+    #[test]
+    fn reads_reply_target() {
+        let page = r#"<script>$J( function() { InitializeCommentThread( "ForumTopic", "ForumTopic_103582791440692154_487876568238453267_586188528590954637", {"feature":"487876568238453267","feature2":"586188528590954637","owner":"103582791440692154","total_count":4,"pagesize":15,"extended_data":"{\"topic_permissions\":{\"can_reply\":1}}"}, 'https://steamcommunity.com/comment/ForumTopic/', 40 ); } );</script>"#;
+        let t = reply_target(page).unwrap();
+        assert_eq!(t.owner, "103582791440692154");
+        assert_eq!(t.feature, "487876568238453267");
+        assert_eq!(t.topic, "586188528590954637");
+        assert_eq!(t.page_size, 15);
+        assert_eq!(t.extended_data, r#"{"topic_permissions":{"can_reply":1}}"#);
+        // Anything but numbers in the path parts is refused.
+        assert_eq!(reply_target(&page.replace("\"owner\":\"103582791440692154\"", "\"owner\":\"../x\"")), None);
     }
 
     #[test]

@@ -33,7 +33,15 @@ pub struct State {
     /// Market prices by (app, market hash name).
     pub market_prices: HashMap<(AppId, String), Result<model::MarketPrice, String>>,
     pub my_listings: Option<Result<model::MyListings, String>>,
+    /// Your market history so far (newest first), how many rows Steam has,
+    /// or why it couldn't load.
+    pub market_history: Option<Result<(Vec<model::HistoryRow>, u32), String>>,
     pub trade_offers: Option<Result<model::TradeOffers, String>>,
+    pub chat_groups: Option<Result<Vec<model::ChatGroup>, String>>,
+    pub chat_group_members: HashMap<u64, Vec<SteamId>>,
+    /// Messages per (group, room), oldest first, and whether older ones exist.
+    pub group_messages: HashMap<(u64, u64), Vec<model::GroupMessage>>,
+    pub group_more: HashMap<(u64, u64), bool>,
     pub profile_edit: Option<Result<model::ProfileEdit, String>>,
     /// Badge pages by their link.
     pub badge_pages: HashMap<String, Result<model::BadgeDetail, String>>,
@@ -185,7 +193,71 @@ impl State {
                 self.market_prices.insert((*app_id, hash_name.clone()), result);
             }
             Event::MyListings(r) => self.my_listings = Some(r.clone()),
+            Event::MarketHistory { start, result } => match (result, &mut self.market_history) {
+                // A later page adds to what's there.
+                (Ok((rows, total)), Some(Ok((have, t)))) if *start > 0 => {
+                    for r in rows {
+                        if !have.iter().any(|h| h.id == r.id) {
+                            have.push(r.clone());
+                        }
+                    }
+                    *t = *total;
+                }
+                (Err(_), Some(Ok(_))) if *start > 0 => {}
+                _ => self.market_history = Some(result.clone()),
+            },
             Event::TradeOffers(r) => self.trade_offers = Some(r.clone()),
+            Event::ChatGroups(r) => self.chat_groups = Some(r.clone()),
+            Event::ChatGroupMembers(list) => {
+                for (g, who) in list {
+                    self.chat_group_members.insert(*g, who.clone());
+                }
+            }
+            Event::GroupHistory { group, room, result: Ok((msgs, more)), older } => {
+                let key = (*group, *room);
+                let list = self.group_messages.entry(key).or_default();
+                // Merge: a page can overlap what live messages already added.
+                for m in msgs {
+                    if !list.iter().any(|x| x.time == m.time && x.ordinal == m.ordinal && x.sender == m.sender) {
+                        list.push(m.clone());
+                    }
+                }
+                list.sort_by_key(|m| (m.time, m.ordinal));
+                if *older || !self.group_more.contains_key(&key) {
+                    self.group_more.insert(key, *more);
+                }
+            }
+            Event::GroupMessage(m) => {
+                let list = self.group_messages.entry((m.group, m.room)).or_default();
+                if !list.iter().any(|x| x.time == m.time && x.ordinal == m.ordinal && x.sender == m.sender) {
+                    list.push(m.clone());
+                    list.sort_by_key(|m| (m.time, m.ordinal));
+                }
+                // The room shows it as its latest message, unread unless yours.
+                let mine = m.sender == self.steam_id;
+                if let Some(Ok(groups)) = &mut self.chat_groups {
+                    if let Some(g) = groups.iter_mut().find(|g| g.id == m.group) {
+                        if let Some(r) = g.rooms.iter_mut().find(|r| r.id == m.room) {
+                            r.last_message = m.text.clone();
+                            r.last_time = m.time;
+                            r.last_sender = m.sender;
+                            r.unread = r.unread || !mine;
+                        }
+                        g.unread = !g.muted && g.rooms.iter().any(|r| r.unread);
+                    }
+                }
+            }
+            Event::GroupRoomRead { group, room } => {
+                if let Some(Ok(groups)) = &mut self.chat_groups {
+                    if let Some(g) = groups.iter_mut().find(|g| g.id == *group) {
+                        if let Some(r) = g.rooms.iter_mut().find(|r| r.id == *room) {
+                            r.unread = false;
+                        }
+                        g.unread = !g.muted && g.rooms.iter().any(|r| r.unread);
+                    }
+                }
+            }
+            Event::GroupHistory { .. } | Event::GroupMessageFailed { .. } => {}
             Event::ProfileEdit(r) => self.profile_edit = Some(r.clone()),
             Event::Badge { url, result } => {
                 self.badge_pages.insert(url.clone(), result.clone());

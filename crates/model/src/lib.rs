@@ -880,6 +880,54 @@ pub enum ProfileSave {
     Theme,
 }
 
+/// A Steam group chat (Friends & Chat's chat room groups).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChatGroup {
+    pub id: u64,
+    pub name: String,
+    pub tagline: String,
+    pub avatar: String,
+    /// The Steam group it belongs to (0 = a group chat of friends).
+    pub clan_id: u32,
+    pub app_id: u32,
+    /// The room it opens on.
+    pub default_room: u64,
+    pub active_members: u32,
+    /// Text channels.
+    pub rooms: Vec<ChatRoom>,
+    /// Something new since you last read (and not muted).
+    pub unread: bool,
+    pub muted: bool,
+}
+
+/// A text channel in a group chat.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChatRoom {
+    pub id: u64,
+    pub name: String,
+    pub last_message: String,
+    /// Unix seconds.
+    pub last_time: u32,
+    pub last_sender: SteamId,
+    pub unread: bool,
+    pub voice: bool,
+    pub sort: u32,
+}
+
+/// A message in a group chat room.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GroupMessage {
+    pub group: u64,
+    pub room: u64,
+    pub sender: SteamId,
+    /// With Steam's markup (mentions, links, invites).
+    pub text: String,
+    /// Unix seconds.
+    pub time: u32,
+    /// Orders messages sent in the same second.
+    pub ordinal: u32,
+}
+
 /// Days since 1970-01-01 for a calendar date.
 pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -1211,6 +1259,39 @@ pub struct FamilyStatus {
     pub cooldown: u32,
     /// Families that invited you: (family id, inviter).
     pub invites: Vec<(u64, SteamId)>,
+}
+
+/// What happened in a row of your Community Market history.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HistoryKind {
+    Bought,
+    Sold,
+    Listed,
+    Canceled,
+    #[default]
+    Other,
+}
+
+/// One row of your Community Market history, as Steam shows it (price and
+/// dates already written out in your currency and language).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HistoryRow {
+    pub id: String,
+    pub kind: HistoryKind,
+    pub name: String,
+    pub name_color: Option<String>,
+    pub game: String,
+    /// Full picture link.
+    pub image: String,
+    pub price: String,
+    /// When it happened, and when it was listed.
+    pub acted: String,
+    pub listed: String,
+    /// Who bought or sold it (empty for listings you made or took down).
+    pub other: String,
+    /// What Steam writes in that column when nobody else was involved
+    /// ("Listing created", "Listing canceled"…).
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

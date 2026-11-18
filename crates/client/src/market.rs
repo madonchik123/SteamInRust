@@ -516,6 +516,102 @@ pub async fn my_listings(web: &Web) -> Result<model::MyListings, String> {
     Ok(out)
 }
 
+/// A page of your Community Market history (newest first) and how many
+/// rows there are in all.
+pub async fn history(web: &Web, start: u32, language: &str) -> Result<(Vec<model::HistoryRow>, u32), String> {
+    let v: Value = web
+        .http
+        .get(format!("{COMMUNITY}/market/myhistory/render/"))
+        .query(&[("query", String::new()), ("start", start.to_string()), ("count", "50".to_string()), ("l", language.to_string())])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|_| "Couldn't read your market history. Is the market available on your account?".to_string())?;
+    if v.get("success").and_then(|s| s.as_bool()) != Some(true) {
+        return Err("Steam didn't return your market history".into());
+    }
+    let html = v.get("results_html").and_then(|h| h.as_str()).unwrap_or_default();
+    let total = v.get("total_count").and_then(num).unwrap_or(0) as u32;
+    Ok((parse_history(html), total))
+}
+
+/// The rows of Steam's market history table.
+pub fn parse_history(html: &str) -> Vec<model::HistoryRow> {
+    fn between<'a>(s: &'a str, a: &str, b: &str) -> Option<&'a str> {
+        let i = s.find(a)? + a.len();
+        let j = s[i..].find(b)? + i;
+        Some(&s[i..j])
+    }
+    /// The inside of the element whose opening tag contains `marker`.
+    fn inner<'a>(s: &'a str, marker: &str) -> Option<&'a str> {
+        let at = s.find(marker)?;
+        let open = s[at..].find('>')? + at + 1;
+        let tag_start = if s[at..].starts_with('<') { at } else { s[..at].rfind('<')? };
+        let tag: String = s[tag_start + 1..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+        // Count nested tags of the same name to find the matching close.
+        let (open_tag, close_tag) = (format!("<{tag}"), format!("</{tag}>"));
+        let mut depth = 1;
+        let mut i = open;
+        while depth > 0 {
+            let next_close = s[i..].find(&close_tag)? + i;
+            match s[i..].find(&open_tag).map(|o| o + i).filter(|o| *o < next_close) {
+                Some(o) => {
+                    depth += 1;
+                    i = o + open_tag.len();
+                }
+                None => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&s[open..next_close]);
+                    }
+                    i = next_close + close_tag.len();
+                }
+            }
+        }
+        None
+    }
+    let text = |s: Option<&str>| s.map(|x| crate::hub::decode(&crate::hub::strip_tags(x)).split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+    html.split("<div class=\"market_listing_row market_recent_listing_row")
+        .skip(1)
+        .filter_map(|row| {
+            let id = between(row, "id=\"", "\"")?.trim_start_matches("history_row_").to_string();
+            let sign = text(inner(row, "market_listing_gainorloss"));
+            let who = inner(row, "market_listing_whoactedwith").unwrap_or_default();
+            // The name block: "Seller: <a>name</a>", or just "Listing canceled".
+            let block = inner(who, "market_listing_whoactedwith_name_block").unwrap_or(who);
+            let other = text(block.rfind("<a ").and_then(|i| inner(&block[i..], "<a ")));
+            let note = if other.is_empty() { text(Some(block)) } else { String::new() };
+            let lower = note.to_lowercase();
+            let kind = match sign.as_str() {
+                "+" => model::HistoryKind::Bought,
+                "-" | "\u{2212}" => model::HistoryKind::Sold,
+                _ if lower.contains("cancel") => model::HistoryKind::Canceled,
+                _ if lower.contains("creat") || lower.contains("listed") => model::HistoryKind::Listed,
+                _ => model::HistoryKind::Other,
+            };
+            let dates: Vec<String> = row.match_indices("market_listing_listed_date can_combine").filter_map(|(i, _)| inner(&row[row[..i].rfind('<').unwrap_or(0)..], "market_listing_listed_date can_combine")).map(|d| text(Some(d))).collect();
+            let name_tag = row.find("class=\"market_listing_item_name\"").map(|i| &row[row[..i].rfind('<').unwrap_or(i)..]);
+            let name_color = name_tag.and_then(|t| between(t, "color: #", ";")).map(|c| c.trim().to_string()).filter(|c| c.len() == 6 && c.bytes().all(|b| b.is_ascii_hexdigit()));
+            let image = between(row, "_image\" src=\"", "\"").map(|s| s.trim().to_string()).unwrap_or_default();
+            Some(model::HistoryRow {
+                id,
+                kind,
+                name: text(inner(row, "class=\"market_listing_item_name\"")),
+                name_color,
+                game: text(inner(row, "class=\"market_listing_game_name\"")),
+                image: if image.starts_with("https://") { image } else { String::new() },
+                price: text(inner(row, "class=\"market_listing_price\"")),
+                acted: dates.first().cloned().unwrap_or_default(),
+                listed: dates.get(1).cloned().unwrap_or_default(),
+                other,
+                note,
+            })
+        })
+        .collect()
+}
+
 fn listing(x: &Value, status: model::ListingStatus) -> Option<model::MyListing> {
     let a = x.get("asset")?;
     if tracing::enabled!(tracing::Level::DEBUG) {
@@ -564,6 +660,67 @@ mod tests {
         let book = super::embedded(page, r#"{\"amtMaxBuyOrder\""#).unwrap();
         assert_eq!(book["cSellOrders"], 51830);
         assert_eq!(super::ladder(book.get("rgCompactSellOrders")), vec![(3, 11059), (4, 25755)]);
+    }
+
+    #[test]
+    fn reads_market_history() {
+        let html = r##"<div class="market_listing_table_header"></div>
+<div class="market_listing_row market_recent_listing_row" id="history_row_1_2">
+	<div class="market_listing_left_cell market_listing_gainorloss">
+		+			</div>
+	<img id="history_row_1_2_image" src="https://community.akamai.steamstatic.com/economy/image/abc/62fx62f" style="border-color: #D2D2D2;" class="market_listing_item_img" alt="" />
+	<div class="market_listing_right_cell market_listing_their_price">
+		<span class="market_table_value">
+			<span class="market_listing_price">
+				0,03&#8364;			</span>
+			<br/>
+		</span>
+	</div>
+	<div class="market_listing_right_cell market_listing_whoactedwith">
+		<span class="market_listing_owner_avatar"><span class="playerAvatar offline"><a href="https://steamcommunity.com/profiles/1"><img src="x.jpg"></a></span></span>
+		<div class="market_listing_whoactedwith_name_block">
+			Seller:<br/>
+			<a href="https://steamcommunity.com/profiles/1" class="market_whoactedwith_name">Some  Seller</a>
+		</div>
+	</div>
+	<div class="market_listing_right_cell market_listing_listed_date can_combine">
+		17 Nov	</div>
+	<div class="market_listing_right_cell market_listing_listed_date can_combine">
+		15 Nov	</div>
+	<div class="market_listing_item_name_block">
+		<span id="history_row_1_2_name" class="market_listing_item_name" style="color: #CF6A32;">Chroma Case</span>
+		<br/>
+		<span class="market_listing_game_name">Counter-Strike 2</span>
+	</div>
+	<div style="clear: both"></div>
+</div>
+<div class="market_listing_row market_recent_listing_row" id="history_row_3_4">
+	<div class="market_listing_left_cell market_listing_gainorloss">
+					</div>
+	<img id="history_row_3_4_image" src="https://community.akamai.steamstatic.com/economy/image/def/62fx62f" class="market_listing_item_img" alt="" />
+	<div class="market_listing_right_cell market_listing_their_price"><span class="market_table_value"><span class="market_listing_price">0,05&#8364;</span></span></div>
+	<div class="market_listing_right_cell market_listing_whoactedwith">
+		<div class="market_listing_whoactedwith_name_block">Listing canceled</div>
+	</div>
+	<div class="market_listing_right_cell market_listing_listed_date can_combine">12 Nov</div>
+	<div class="market_listing_right_cell market_listing_listed_date can_combine">10 Nov</div>
+	<div class="market_listing_item_name_block"><span class="market_listing_item_name">Card</span><br/><span class="market_listing_game_name">Dota 2 Trading Card</span></div>
+</div>"##;
+        let rows = super::parse_history(html);
+        assert_eq!(rows.len(), 2);
+        let r = &rows[0];
+        assert_eq!(r.id, "1_2");
+        assert_eq!(r.kind, model::HistoryKind::Bought);
+        assert_eq!((r.name.as_str(), r.game.as_str(), r.price.as_str()), ("Chroma Case", "Counter-Strike 2", "0,03\u{20ac}"));
+        assert_eq!(r.name_color.as_deref(), Some("CF6A32"));
+        assert_eq!((r.acted.as_str(), r.listed.as_str()), ("17 Nov", "15 Nov"));
+        assert_eq!(r.other, "Some Seller");
+        assert!(r.image.ends_with("abc/62fx62f"));
+        let r = &rows[1];
+        assert_eq!(r.kind, model::HistoryKind::Canceled);
+        assert_eq!(r.note, "Listing canceled");
+        assert_eq!(r.other, "");
+        assert_eq!((r.acted.as_str(), r.listed.as_str()), ("12 Nov", "10 Nov"));
     }
 
     #[test]

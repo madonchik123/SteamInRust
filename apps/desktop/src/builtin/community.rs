@@ -6,12 +6,31 @@ use client::{Client, Command, State};
 use egui::{Align, Align2, CornerRadius, Key, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2};
 use extensions::{Action, Ctx, Extension, Manifest, PageSpec};
 use model::{PersonaState, SteamId, art};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use ui::{Theme, icons, widgets as w};
+
+#[path = "community_groups.rs"]
+mod groups;
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Side {
+    #[default]
+    Friends,
+    Groups,
+}
 
 #[derive(Default)]
 pub struct Community {
     selected: Option<SteamId>,
+    /// The sidebar: friends or group chats.
+    side: Side,
+    /// The open group chat: (group, room).
+    group: Option<(u64, u64)>,
+    group_input: String,
+    groups_asked: bool,
+    history_asked: HashSet<(u64, u64)>,
+    /// The newest message time told to Steam as read, per room.
+    acked: HashMap<(u64, u64), u32>,
     filter: String,
     input: String,
     loaded: HashSet<SteamId>,
@@ -84,9 +103,13 @@ impl Extension for Community {
     }
 
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
-        // A friend opens their chat; nothing (the Friends button, "All
-        // friends") goes back to the friends page.
+        // A friend opens their chat; "group:<id>" a group chat; nothing (the
+        // Friends button, "All friends") goes back to the friends page.
         self.selected = arg.and_then(|a| a.parse().ok());
+        self.group = arg.and_then(|a| a.strip_prefix("group:")).and_then(|g| g.parse().ok()).map(|g| (g, 0));
+        if self.group.is_some() || arg == Some("groups") {
+            self.side = Side::Groups;
+        }
     }
 
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {
@@ -105,19 +128,48 @@ impl Extension for Community {
             .resizable(false)
             .frame(egui::Frame::new().fill(t.chrome).inner_margin(Margin { left: 16, right: 10, top: 18, bottom: 10 }))
             .show(ui, |ui| {
-                ui.label(w::text_bold(t!("Friends"), 20.0, t.text));
+                // Friends, or group chats (a dot when one has something new).
+                let groups_unread = ctx.state.chat_groups.as_ref().and_then(|r| r.as_ref().ok()).is_some_and(|l| l.iter().any(|g| g.unread));
+                let r = ui.horizontal(|ui| w::segmented(ui, &t, &mut self.side, &[(Side::Friends, &t!("Friends")), (Side::Groups, &t!("Group chats"))]));
+                if groups_unread && self.side != Side::Groups {
+                    ui.painter().circle_filled(r.response.rect.right_top() + vec2(-6.0, 6.0), 4.0, t.accent);
+                }
                 ui.add_space(8.0);
                 let width = ui.available_width() - 4.0;
-                w::search(ui, &t, &mut self.filter, t!("Search friends"), width);
+                let hint = if self.side == Side::Friends { t!("Search friends") } else { t!("Search group chats") };
+                w::search(ui, &t, &mut self.filter, hint, width);
                 ui.add_space(10.0);
-                if let Some(id) = friend_list(ui, &t, ctx.state, &self.filter, self.selected) {
-                    self.selected = Some(id);
+                match self.side {
+                    Side::Friends => {
+                        if let Some(id) = friend_list(ui, &t, ctx.state, &self.filter, self.selected) {
+                            self.selected = Some(id);
+                            self.group = None;
+                        }
+                    }
+                    Side::Groups => {
+                        if let Some(g) = self.group_list(ui, &t, ctx) {
+                            self.group = Some(g);
+                            self.selected = None;
+                        }
+                    }
                 }
             });
 
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg)).show(ui, |ui| match self.selected {
-            Some(id) => self.conversation(ui, &t, ctx, id),
-            None => self.overview(ui, &t, ctx),
+        // A link to a group (no room yet): its default room once groups are known.
+        if let Some((g, 0)) = self.group {
+            if !self.groups_asked {
+                self.groups_asked = true;
+                ctx.send(Command::LoadChatGroups);
+            }
+            if let Some(found) = ctx.state.chat_groups.as_ref().and_then(|r| r.as_ref().ok()).and_then(|l| l.iter().find(|x| x.id == g)) {
+                let room = if found.default_room != 0 { found.default_room } else { found.rooms.first().map(|r| r.id).unwrap_or(0) };
+                self.group = Some((g, room));
+            }
+        }
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg)).show(ui, |ui| match (self.selected, self.group) {
+            (Some(id), _) => self.conversation(ui, &t, ctx, id),
+            (None, Some((g, room))) => self.group_conversation(ui, &t, ctx, g, room),
+            (None, None) => self.overview(ui, &t, ctx),
         });
     }
 }

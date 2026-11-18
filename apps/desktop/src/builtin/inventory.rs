@@ -86,6 +86,9 @@ pub struct Inventory {
     sell: Option<market::SellDialog>,
     gift: Option<u64>,
     listings_requested: bool,
+    /// "My listings": what's on the market, or your history.
+    listings_tab: market::ListingsTab,
+    history: market::HistoryState,
     market: search::MarketSearch,
     trades: trades::Trades,
 }
@@ -100,9 +103,11 @@ impl Extension for Inventory {
     }
 
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
-        if arg == Some("listings") {
+        // "listings", or "history" for your market history.
+        if arg == Some("listings") || arg == Some("history") {
             self.owner = None;
             self.view = View::Listings;
+            self.listings_tab = if arg == Some("history") { market::ListingsTab::History } else { market::ListingsTab::Listings };
             return;
         }
         if arg == Some("market") {
