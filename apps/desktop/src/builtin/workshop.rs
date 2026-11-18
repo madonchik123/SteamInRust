@@ -337,7 +337,8 @@ impl Workshop {
     /// tags; Subscribe on the right.
     fn row(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, app: AppId, it: &WorkshopEntry) {
         let mut open = false;
-        w::post_card(t).inner_margin(egui::Margin::same(t.spacing.lg as i8 + 3)).show(ui, |ui| {
+        let id = egui::Id::unique(("workshop-row", it.id));
+        let (_, card) = w::hover_frame(ui, t, &t.components.post_card, id, Some(egui::Margin::same(t.spacing.lg as i8 + 3)), |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = t.spacing.lg + 3.0;
@@ -382,6 +383,7 @@ impl Workshop {
                 });
             });
         });
+        open |= card.on_hover_text(&it.description).clicked();
         ui.add_space(t.spacing.lg - ui.spacing().item_spacing.y);
         if open {
             ctx.navigate("workshop_item", Some(it.id.to_string()));

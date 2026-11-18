@@ -352,3 +352,125 @@ fn reads_community_cards() {
     assert_eq!(live.game, "Sample Racer");
     assert_eq!(live.avatar.as_deref(), Some("https://avatars.akamai.steamstatic.com/dddd.jpg"));
 }
+
+/// A game's hub in Russian (`/app/<id>/homecontent/`): the kind labels are
+/// translated, announcements and discussions have cards of their own, and
+/// a card with nothing in it must not come out.
+const HUB_RU: &str = r##"<div id="page1">
+<div data-panel="{}" role="button" class="apphub_Card Announcement_Card modalContentLink interactable pinned" style="display: none" data-modal-content-url="https://steamcommunity.com/gid/103582791400000001/announcements/detail/100" data-partner-event-announce-gid='100' data-partner-event-appid='570'>
+<div class="apphub_CardPinnedIcon"></div>
+<div class="apphub_CardContentMain">
+<div class="apphub_CardContentNewsTitle">Обновление 1.2</div>
+<div class="apphub_CardContentNewsDate">12:00</div>
+<div class="apphub_CardContentNewsDesc">
+<div class="apphub_CardTextContent"><img src="https://clan.fastly.steamstatic.com/images/1/banner.png"><p class="bb_paragraph">Вышло обновление.<br>Исправлены ошибки.</p></div>
+</div>
+</div>
+</div>
+<div data-panel="{}" role="button" class="apphub_Card interactable modalContentLink" style="display: none" data-modal-content-url="https://steamcommunity.com/app/570/discussions/0/555/" data-modal-content-sizetofit="false">
+<div class="apphub_CardContentMain discussion">
+<div class="apphub_CardContentDiscussionTitle ellipsis">Второй акт?</div>
+<div class="apphub_CardContentNewsDesc">
+<div class="apphub_CardContentDiscussionText">
+<div class="apphub_CardTextContent">
+У всех обновление зависает?				</div>
+</div>
+</div>
+<div class="apphub_CardCommentCount alignDiscussion">14</div>
+<div class="apphub_CardContentDiscussionAuthorBlock">
+<div class="apphub_friend_block_container" data-miniprofile="1005">
+<a href="https://steamcommunity.com/profiles/76561197960266733/">
+<div class="apphub_friend_block">
+<div class="appHubIconHolder large offline"><img src="https://avatars.fastly.steamstatic.com/eeee.jpg"></div>
+<div class="apphub_CardContentAuthorName discussion offline ellipsis"><a href="https://steamcommunity.com/profiles/76561197960266733/">Пример</a></div>
+<div class="apphub_CardContentDiscussionDate">3 ч. назад</div>
+</div>
+</a>
+</div>
+</div>
+</div>
+<div class="apphub_CardContentDiscussionType">
+Общие обсуждения	</div>
+</div>
+<div data-panel="{}" role="button" class="apphub_Card modalContentLink interactable ugc"
+style="display: none" data-modal-content-url="https://steamcommunity.com/sharedfiles/filedetails/?id=901" id="apphub_Card_901"
+data-appid="570" data-publishedfileid="901">
+<div class="apphub_CardContentClickable">
+<div class="apphub_CardBG workshop"></div>		<div class="apphub_CardContentTypeContainer">
+<div class="apphub_CardContentType">Работа из мастерской</div>
+</div>
+<div class="apphub_CardContentPreviewImageBorder"><div class="apphub_CardContentMain">
+<img class="apphub_CardContentPreviewImage" src="https://images.steamusercontent.com/ugc/9/AAA/?imw=512" width="512">
+</div></div>
+</div>
+<div class="apphub_CardMetaData"><div class="apphub_CardControls"></div><div class="apphub_CardContentTitle ellipsis">Новый шлем&nbsp;</div></div>
+</div>
+<div data-panel="{}" role="button" class="apphub_Card interactable modalContentLink" style="display: none" data-modal-content-url="https://steamcommunity.com/sharedfiles/filedetails/?id=902" id="apphub_Card_902">
+<div class="apphub_CardContentClickable"><div class="apphub_CardContentPreviewImageBorder"><div class="apphub_CardContentMain">
+<div class="apphub_CardContentType guide">Руководство</div>
+<div class="apphub_CardContentGuideTitle">
+<img class="apphub_CardContentGuideImage" src="https://images.steamusercontent.com/ugc/9/BBB/?imw=128">
+Как начать				</div>
+<div class="apphub_CardContentGuideDesc">&nbsp;</div>
+</div></div></div>
+<div class="apphub_CardMetaData"><div class="apphub_CardControls"><div class="apphub_CardRating fourStar starRating">Оценок: 165</div>
+<div class="apphub_CardRightData"><div class="apphub_CardCommentCount">47</div></div></div></div>
+</div>
+<div data-panel="{}" role="button" class="apphub_Card modalContentLink interactable ugc"
+style="display: none" data-modal-content-url="https://steamcommunity.com/sharedfiles/filedetails/?id=903" id="apphub_Card_903"
+data-appid="570" data-publishedfileid="903">
+<div class="apphub_CardContentClickable">
+<div class="apphub_CardContentTypeContainer"><div class="apphub_CardContentType">Скриншот</div></div>
+<div class="apphub_CardContentPreviewImageBorder"><div class="apphub_CardContentMain">
+<img class="apphub_CardContentPreviewImage" src="https://images.steamusercontent.com/ugc/9/CCC/?imw=1024" width="1024" height="576">
+</div></div>
+</div>
+<div class="apphub_CardMetaData"><div class="apphub_CardControls"><div class="apphub_CardRightData">
+<div class="apphub_CardRating rateUp withRateButtons">3599</div><div class="apphub_CardCommentCount">582</div></div></div>
+<div class="apphub_CardContentTitle ellipsis">&nbsp;</div></div>
+</div>
+<div data-panel="{}" role="button" class="apphub_Card interactable modalContentLink" style="display: none" data-modal-content-url="https://steamcommunity.com/app/570/discussions/0/556/">
+<div class="apphub_CardContentMain"><div class="apphub_CardCommentCount">11</div></div>
+</div>
+</div>"##;
+
+#[test]
+fn reads_a_hub_in_another_language() {
+    let posts = parse_explore(HUB_RU);
+    let kinds: Vec<PostKind> = posts.iter().map(|p| p.kind).collect();
+    // The last card has only a count: left out.
+    assert_eq!(kinds, [PostKind::Announcement, PostKind::Discussion, PostKind::Workshop, PostKind::Guide, PostKind::Screenshot]);
+
+    let news = &posts[0];
+    assert_eq!((news.app_id, news.title.as_str(), news.when.as_str()), (570, "Обновление 1.2", "12:00"));
+    assert_eq!(news.images, ["https://clan.fastly.steamstatic.com/images/1/banner.png"]);
+    assert_eq!(news.text, "Вышло обновление.\nИсправлены ошибки.");
+
+    let topic = &posts[1];
+    assert_eq!((topic.title.as_str(), topic.text.as_str()), ("Второй акт?", "У всех обновление зависает?"));
+    assert_eq!((topic.author, topic.author_name.as_str(), topic.when.as_str()), (BASE_ID + 1005, "Пример", "3 ч. назад"));
+    assert_eq!((topic.action.as_str(), topic.comments), ("Общие обсуждения", 14));
+    assert_eq!(topic.avatar.as_deref(), Some("https://avatars.fastly.steamstatic.com/eeee.jpg"));
+
+    let item = &posts[2];
+    assert_eq!((item.file_id, item.title.as_str()), (901, "Новый шлем"));
+    assert_eq!(item.images, ["https://images.steamusercontent.com/ugc/9/AAA/?imw=512"]);
+
+    let guide = &posts[3];
+    assert_eq!((guide.title.as_str(), guide.text.as_str(), guide.comments), ("Как начать", "", 47));
+
+    let shot = &posts[4];
+    assert_eq!((shot.file_id, shot.votes_up, shot.comments, shot.title.as_str()), (903, 3599, 582, ""));
+    assert_eq!(shot.images.len(), 1);
+}
+
+#[test]
+fn file_details_tell_the_kind() {
+    let mut p = Post { kind: PostKind::Screenshot, file_id: 1, ..Default::default() };
+    super::super::fill_from_details(&mut p, 76561197960266729, 3, "Ink sketch", 1_700_000_000);
+    assert_eq!((p.kind, p.author, p.title.as_str(), p.time), (PostKind::Artwork, 76561197960266729, "Ink sketch", 1_700_000_000));
+    // A guide keeps its own card.
+    let mut g = Post { kind: PostKind::Guide, title: "Mine".into(), ..Default::default() };
+    super::super::fill_from_details(&mut g, 5, 0, "Theirs", 0);
+    assert_eq!((g.kind, g.title.as_str()), (PostKind::Guide, "Mine"));
+}

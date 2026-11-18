@@ -22,6 +22,40 @@ pub enum Click {
     /// The game's store page.
     Store(AppId),
     Profile(SteamId),
+    /// The game's news (an announcement).
+    News(AppId),
+}
+
+/// What kind of post it is, for the line under a game hub's or Explore's
+/// cards (Figma `495:6863`).
+pub fn kind_label(kind: PostKind) -> String {
+    match kind {
+        PostKind::Screenshot => t!("Screenshot"),
+        PostKind::Artwork => t!("Artwork"),
+        PostKind::Video => t!("Video"),
+        PostKind::Broadcast => t!("Broadcast"),
+        PostKind::Workshop => t!("Workshop item"),
+        PostKind::Guide => t!("Guide"),
+        PostKind::Review => t!("Review"),
+        PostKind::Announcement => t!("Announcement"),
+        PostKind::Discussion => t!("Discussion"),
+        PostKind::Achievement | PostKind::Purchase | PostKind::Status | PostKind::Other => return String::new(),
+    }
+    .to_string()
+}
+
+/// Whether a post has anything to show (never draw an empty card).
+pub fn showable(p: &Post) -> bool {
+    p.kind == PostKind::Review || !p.title.trim().is_empty() || !p.text.trim().is_empty() || !p.images.is_empty() || !p.action.trim().is_empty()
+}
+
+/// Where a click on the post itself goes.
+fn open_target(p: &Post) -> Option<Click> {
+    // Announcements read best in the game's news (in the app).
+    if p.kind == PostKind::Announcement && p.app_id != 0 {
+        return Some(Click::News(p.app_id));
+    }
+    (!p.url.is_empty()).then(|| Click::Open(p.url.clone())).or((p.app_id != 0).then_some(Click::Hub(p.app_id)))
 }
 
 /// The game's name for a post (Steam's, else the one we know).
@@ -91,7 +125,8 @@ pub fn card(ui: &mut Ui, t: &Theme, state: &State, p: &Post, width: f32, show_ga
     let mut click = None;
     let pad = t.padding_of(&t.components.post_card).x;
     let inner = (width - pad * 2.0).max(60.0);
-    w::post_card(t).show(ui, |ui| {
+    let id = egui::Id::unique(("post-card", &p.url, p.file_id, &p.title, &p.action, p.author));
+    let (_, frame) = w::hover_frame(ui, t, &t.components.post_card, id, None, |ui| {
         ui.set_width(inner);
         ui.spacing_mut().item_spacing.y = t.spacing.lg;
         let game = game_name(state, p);
@@ -121,6 +156,10 @@ pub fn card(ui: &mut Ui, t: &Theme, state: &State, p: &Post, width: f32, show_ga
             click = Some(c);
         }
     });
+    // Anywhere else on the card opens the post.
+    if click.is_none() && frame.clicked() {
+        click = open_target(p);
+    }
     click
 }
 
@@ -136,6 +175,8 @@ fn author_row(ui: &mut Ui, t: &Theme, state: &State, p: &Post) -> Option<Click> 
     let detail = match p.kind {
         PostKind::Broadcast if p.views > 0 => t!("{n} viewers", n = number(p.views)),
         _ if sentence => String::new(),
+        // A friend's post says what they did; others say what they are.
+        _ if p.action.is_empty() => kind_label(p.kind),
         _ => p.action.clone(),
     };
     ui.horizontal(|ui| {
@@ -174,7 +215,7 @@ fn author_row(ui: &mut Ui, t: &Theme, state: &State, p: &Post) -> Option<Click> 
 
 fn body(ui: &mut Ui, t: &Theme, p: &Post, width: f32) -> Option<Click> {
     let mut click = None;
-    let open = || (!p.url.is_empty()).then(|| Click::Open(p.url.clone()));
+    let open = || open_target(p);
     match p.kind {
         PostKind::Review => {
             review_box(ui, t, p);
@@ -218,11 +259,11 @@ fn body(ui: &mut Ui, t: &Theme, p: &Post, width: f32) -> Option<Click> {
                     live_badge(ui, t, r);
                 }
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    click = open().or(if p.app_id != 0 { Some(Click::Hub(p.app_id)) } else { None });
+                    click = open();
                 }
             }
             match p.kind {
-                PostKind::Announcement | PostKind::Guide => {
+                PostKind::Announcement | PostKind::Guide | PostKind::Discussion => {
                     if !p.title.is_empty() {
                         let r = ui.add(egui::Label::new(w::heading_s(t, &p.title, t.text)).wrap().sense(Sense::click()));
                         if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -299,7 +340,7 @@ fn live_badge(ui: &Ui, t: &Theme, r: Rect) {
 /// review helpful?" and its counts (`495:5835`).
 fn footer(ui: &mut Ui, t: &Theme, p: &Post) -> Option<Click> {
     let mut click = None;
-    let open = (!p.url.is_empty()).then(|| Click::Open(p.url.clone()));
+    let open = open_target(p);
     let counts = |ui: &mut Ui, click: &mut Option<Click>| {
         let mut chip = |ui: &mut Ui, icon: &str, label: Option<&str>, n: u32| {
             if w::stat_chip(ui, t, icon, label, Some(&number(n))).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -387,7 +428,7 @@ pub fn masonry(ui: &mut Ui, t: &Theme, state: &State, posts: &[&Post], salt: &st
     // Which column each post goes in.
     let mut fill = vec![0.0f32; cols];
     let mut columns: Vec<Vec<usize>> = vec![Vec::new(); cols];
-    for (i, p) in posts.iter().enumerate() {
+    for (i, p) in posts.iter().enumerate().filter(|(_, p)| showable(p)) {
         let h = heights.get(&key(p)).copied().unwrap_or_else(|| guess_height(t, p, col_w));
         let c = (0..cols).min_by(|a, b| fill[*a].total_cmp(&fill[*b])).unwrap_or(0);
         fill[c] += h + gap;

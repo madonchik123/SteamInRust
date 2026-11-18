@@ -87,18 +87,43 @@ pub fn events() -> Vec<Event> {
         Post { kind: PostKind::Video, app_id: 570, game: "Dota 2".into(), author_name: "Ferris".into(), author: friend(0), avatar: avatar.clone(), title: "Rampage in 40 seconds".into(), images: vec![art::hero(570)], votes_up: 88, comments: 12, file_id: 1001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=1001".into(), time: now - 86_400 * 3, ..Default::default() },
     ];
     let broadcasts: Vec<Post> = explore_posts.iter().filter(|p| p.kind == PostKind::Broadcast).cloned().collect();
-    // Hades' hub (`--page=hub --arg=1145360`): the same kinds of posts, about Hades.
-    let hades: Vec<Post> = explore_posts
-        .iter()
-        .cloned()
-        .map(|mut p| {
+    // Hades' hub (`--page=hub --arg=1145360`): a pinned announcement and a
+    // discussion first, then the same kinds of posts as Explore, about Hades.
+    let pinned = vec![
+        Post {
+            kind: PostKind::Announcement,
+            app_id: 1145360,
+            title: "Patch notes: quality of life update".into(),
+            text: "This update makes the codex easier to search and fixes a crash when quitting during a boss fight.".into(),
+            images: vec![art::header(1145360)],
+            when: "12:00".into(),
+            url: "https://steamcommunity.com/games/1145360/announcements/detail/1".into(),
+            ..Default::default()
+        },
+        Post {
+            kind: PostKind::Discussion,
+            app_id: 1145360,
+            author: friend(3),
+            avatar: avatar.clone(),
+            action: "General Discussions".into(),
+            title: "Best keepsake for the final boss?".into(),
+            text: "I keep switching between the cube and the owl. What do you all take into the last room?".into(),
+            comments: 31,
+            when: "3 hr ago".into(),
+            url: "https://steamcommunity.com/app/1145360/discussions/0/3001/".into(),
+            ..Default::default()
+        },
+    ];
+    let hades: Vec<Post> = pinned
+        .into_iter()
+        .chain(explore_posts.iter().cloned().map(|mut p| {
             p.app_id = 1145360;
             p.game = "Hades".into();
             if !p.images.is_empty() {
                 p.images = vec![art::hero(1145360)];
             }
             p
-        })
+        }))
         .collect();
     let hub_feed = Event::Hub(Response::Explore { key: ExploreQuery { section: Section::All, recent: false, page: 1, language: lang.clone(), app: 1145360, search: String::new() }.key(), result: Ok(Feed { posts: hades, next: 0 }) });
     let explore = |section, posts: Vec<Post>| Event::Hub(Response::Explore { key: ExploreQuery { section, recent: false, page: 1, language: lang.clone(), ..Default::default() }.key(), result: Ok(Feed { posts, next: 0 }) });

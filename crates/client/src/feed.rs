@@ -36,8 +36,10 @@ pub enum PostKind {
     Purchase,
     /// Became friends, joined a group, a status post…
     Status,
-    /// A game's announcement (from games you follow).
+    /// A game's announcement (from games you follow, or on its hub).
     Announcement,
+    /// A topic in a game's discussions.
+    Discussion,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -165,4 +167,32 @@ pub async fn explore(web: &Web, q: &ExploreQuery) -> Result<Feed, String> {
     }
     let body = crate::market::page(web, url.as_str()).await?;
     Ok(Feed { posts: parse_explore(&body), next: 0 })
+}
+
+/// Fill in a shared file's post from Steam's details of it: the author
+/// and title when the page left them out, when it was made, and what it
+/// is (Steam's `EWorkshopFileType`; the page only says it in words, in the
+/// reader's language).
+pub fn fill_from_details(p: &mut Post, creator: SteamId, file_type: u32, title: &str, created: u64) {
+    if p.author == 0 {
+        p.author = creator;
+    }
+    if p.title.is_empty() {
+        p.title = title.to_string();
+    }
+    if p.time == 0 {
+        p.time = created;
+    }
+    let kind = match file_type {
+        3 => Some(PostKind::Artwork),
+        4 => Some(PostKind::Video),
+        5 => Some(PostKind::Screenshot),
+        9 | 10 => Some(PostKind::Guide),
+        0..=2 => Some(PostKind::Workshop),
+        _ => None,
+    };
+    // A guide card keeps its own layout; pictures get their true kind.
+    if let Some(k) = kind.filter(|_| matches!(p.kind, PostKind::Screenshot | PostKind::Artwork | PostKind::Workshop | PostKind::Video | PostKind::Other)) {
+        p.kind = k;
+    }
 }

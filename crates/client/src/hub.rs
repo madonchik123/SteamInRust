@@ -614,18 +614,16 @@ pub(crate) async fn handle(conn: Connection, me: SteamId, web: Result<Arc<Web>, 
         Request::Explore(q) => {
             let key = q.key();
             let mut result = crate::feed::explore(&web_or_anon, &q).await;
-            // The page leaves most authors out: ask for the shared files'.
+            // Ask Steam about the shared files: the page leaves most authors
+            // out, and only its label (in the reader's language) tells a
+            // screenshot from artwork.
             if let Ok(f) = &mut result {
-                let ids: Vec<u64> = f.posts.iter().filter(|p| p.author == 0 && p.file_id != 0).map(|p| p.file_id).collect();
+                let ids: Vec<u64> = f.posts.iter().filter(|p| p.file_id != 0).map(|p| p.file_id).collect();
                 if !ids.is_empty() {
                     if let Ok(found) = details(&conn, ids, &q.language, false).await {
                         for d in found.iter().filter(|d| d.result() == 1) {
                             for p in f.posts.iter_mut().filter(|p| p.file_id == d.publishedfileid()) {
-                                p.author = d.creator();
-                                if p.title.is_empty() {
-                                    p.title = d.title().to_string();
-                                }
-                                p.time = d.time_created() as u64;
+                                crate::feed::fill_from_details(p, d.creator(), d.file_type(), d.title(), d.time_created() as u64);
                             }
                         }
                     }
