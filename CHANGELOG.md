@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.0](https://github.com/madonchik123/SteamInRust/compare/v0.11.0...v0.12.0) (2026-11-19)
+
+
+### New
+
+* post a status for your friends from Community's Friends activity ([#107](https://github.com/madonchik123/SteamInRust/issues/107)) ([17a3bc0](https://github.com/madonchik123/SteamInRust/commit/17a3bc039ccb33c7575950338454ee1d20188b4a))
+* reorder the wishlist by dragging or typing a place, like Steam ([#108](https://github.com/madonchik123/SteamInRust/issues/108)) ([95c9dcc](https://github.com/madonchik123/SteamInRust/commit/95c9dccb10097a38e8319280ef4ad24409ee0099))
+
+
+### Fixes
+
+* Big Picture chat fills the screen and scrolls, and the screenshot viewer works with the mouse ([#106](https://github.com/madonchik123/SteamInRust/issues/106)) ([2bf61d4](https://github.com/madonchik123/SteamInRust/commit/2bf61d447cc9381e76a41d671bf2c51039ad5184))
+* games installed into a folder Steam doesn't list show as installed ([#104](https://github.com/madonchik123/SteamInRust/issues/104)) ([a1855fa](https://github.com/madonchik123/SteamInRust/commit/a1855faf92c0de27731969d7037c1999209cc9e3))
+* name menu opens your inventory and friends; long summaries stay in their box ([#105](https://github.com/madonchik123/SteamInRust/issues/105)) ([a22e77c](https://github.com/madonchik123/SteamInRust/commit/a22e77c3460bf67639b2a0c8e9be40ea91f5794f))
+
 ## [0.11.0](https://github.com/madonchik123/SteamInRust/compare/v0.10.0...v0.11.0) (2026-11-19)
 
 
