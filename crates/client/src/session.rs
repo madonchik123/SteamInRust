@@ -902,6 +902,14 @@ async fn online(
                     };
                     sink(Event::Locations { country, state, result });
                 }),
+                Some(Command::LoadAppNames { ids }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        if let Ok(names) = crate::pics::names(&conn, &ids).await {
+                            sink(Event::AppNames(names));
+                        }
+                    });
+                }
                 Some(Command::LoadPersonas { ids }) => {
                     for chunk in ids.chunks(100) {
                         let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: chunk.to_vec() });
@@ -2174,6 +2182,12 @@ impl Online {
                     .map(|i| i.image_small())
                     .filter(|s| !s.is_empty())
                     .map(model::art::community_item);
+            }
+            let custom: Result<CPlayerGetProfileCustomizationResponse, _> = conn
+                .call("Player.GetProfileCustomization#1", &CPlayerGetProfileCustomizationRequest { steamid: Some(steam_id), ..Default::default() })
+                .await;
+            if let Ok(c) = custom {
+                info.theme = c.profile_theme.as_ref().map(|t| t.theme_id().to_string()).unwrap_or_default();
             }
             let reply = conn
                 .request(emsg::CLIENT_FRIEND_PROFILE_INFO, &CMsgClientFriendProfileInfo { steamid_friend: Some(steam_id) })

@@ -23,6 +23,10 @@ mod edit;
 mod badges;
 #[path = "profile_files.rs"]
 pub(crate) mod files;
+#[path = "profile_themes.rs"]
+pub(crate) mod themes;
+#[path = "profile_more.rs"]
+mod more;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum GameSort {
@@ -59,6 +63,11 @@ pub struct Profile {
     lists_requested: HashSet<(SteamId, &'static str)>,
     /// The search box on a profile's friends list.
     list_search: String,
+    /// The inventory's game and section shown on the profile.
+    inv_app: Option<(model::AppId, u64)>,
+    inv_asked: HashSet<(SteamId, model::AppId, u64)>,
+    /// Game names asked for (the wishlist's games you don't own).
+    names_asked: HashSet<model::AppId>,
     /// Which page of friends or groups shows.
     list_page: usize,
     /// Which page of screenshots (or other files) shows, from 1.
@@ -115,6 +124,8 @@ impl Extension for Profile {
             Some("videos") => Sub::Files(FileKind::Videos),
             Some("workshop") | Some("collections") => Sub::Files(FileKind::Items),
             Some("guides") => Sub::Files(FileKind::Guides),
+            Some("wishlist") => Sub::Wishlist,
+            Some("inventory") => Sub::Inventory,
             _ => Sub::None,
         };
         // Just "badges": your own.
@@ -153,6 +164,8 @@ impl Extension for Profile {
             Sub::Groups => Here::Groups,
             Sub::Badges => Here::Badges,
             Sub::Files(k) => here_of(k),
+            Sub::Wishlist => Here::Wishlist,
+            Sub::Inventory => Here::Inventory,
             Sub::None | Sub::Edit => Here::Profile,
         };
         // The links swap only this column; comments stay under it.
@@ -165,6 +178,8 @@ impl Extension for Profile {
                 Sub::Groups => self.groups_page(ui, &t, ctx, id, data.mine),
                 Sub::Badges => self.badges_page(ui, &t, ctx, id, &data.name),
                 Sub::Files(k) => self.files_page(ui, &t, ctx, id, k),
+                Sub::Wishlist => self.wishlist_page(ui, &t, ctx),
+                Sub::Inventory => self.inventory_page(ui, &t, ctx, id),
             }
             self.comments(ui, &t, ctx, id, data.mine);
         });
@@ -194,6 +209,9 @@ pub(super) enum Sub {
     Badges,
     /// Screenshots, artwork, videos, Workshop items or guides.
     Files(FileKind),
+    /// Your wishlist, and someone's inventory, inside the profile.
+    Wishlist,
+    Inventory,
 }
 
 /// Which link a kind of files is.
@@ -215,6 +233,8 @@ pub(crate) fn here_of(kind: FileKind) -> Here {
 pub(crate) enum Here {
     Profile,
     Games,
+    Wishlist,
+    Inventory,
     Friends,
     Reviews,
     Groups,
@@ -343,6 +363,10 @@ impl FrameData {
 /// links and buttons asked for.
 pub(crate) fn frame(ui: &mut Ui, t: &Theme, d: &FrameData, here: Here, embedded: bool, main: impl FnOnce(&mut Ui)) -> Vec<Go> {
     let mut go = Vec::new();
+    // The profile's Steam theme recolors the panel, boxes and buttons.
+    let steam_theme = d.info.as_ref().filter(|i| !i.theme.is_empty()).and_then(|i| themes::get(&i.theme));
+    let themed = d.info.as_ref().and_then(|i| themes::themed(t, &i.theme));
+    let t = themed.as_ref().unwrap_or(t);
     let full = if embedded { ui.clip_rect() } else { ui.max_rect() };
     // The profile's own background from Steam (a picture they chose), or the theme's.
     let painted = d.info.as_ref().is_some_and(|i| paint_profile_background(ui, t, full, i.background.as_deref(), i.background_video.as_deref(), i.background_full));
@@ -354,7 +378,9 @@ pub(crate) fn frame(ui: &mut Ui, t: &Theme, d: &FrameData, here: Here, embedded:
     let body = |ui: &mut Ui| {
         ui.add_space(t.spacing.xl * 2.0);
         w::centered(ui, 1241.0, t.spacing.xl, |ui| {
-            w::component_frame(t, &t.components.profile_panel).show(ui, |ui| {
+            // A Steam theme's panel goes under it (painted once its size is known).
+            let under = ui.painter().add(egui::Shape::Noop);
+            let panel = w::component_frame(t, &t.components.profile_panel).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let gap = t.spacing.xl + t.spacing.xs;
                 let side = (ui.available_width() * 0.25).clamp(220.0, 293.0);
@@ -375,6 +401,9 @@ pub(crate) fn frame(ui: &mut Ui, t: &Theme, d: &FrameData, here: Here, embedded:
                     });
                 });
             });
+            if let Some(s) = steam_theme {
+                ui.painter().set(under, s.panel_shape(panel.response.rect, t.dense(1.0)));
+            }
         });
         ui.add_space(t.spacing.xl * 2.0);
     };
@@ -580,10 +609,10 @@ fn side_column(ui: &mut Ui, t: &Theme, d: &FrameData, here: Here, go: &mut Vec<G
         let sub = |name: &str| Go::Nav("profile", Some(format!("{id}/{name}")));
         let mut links: Vec<(String, String, Here, Go)> = vec![(t!("Games").to_string(), d.games.clone(), Here::Games, sub("games"))];
         if d.mine {
-            links.push((t!("Wishlist").to_string(), d.wishlist.clone(), Here::Profile, Go::Nav("store", Some("wishlist".into()))));
+            links.push((t!("Wishlist").to_string(), d.wishlist.clone(), Here::Wishlist, sub("wishlist")));
         }
         links.extend([
-            (t!("Inventory").to_string(), d.items.clone(), Here::Profile, Go::Nav("inventory", Some(id.to_string()))),
+            (t!("Inventory").to_string(), d.items.clone(), Here::Inventory, sub("inventory")),
             (t!("Screenshots").to_string(), String::new(), Here::Screenshots, files("screenshots")),
             (t!("Videos").to_string(), String::new(), Here::Videos, files("videos")),
             (t!("Workshop Items").to_string(), String::new(), Here::Workshop, files("workshop")),
@@ -592,9 +621,7 @@ fn side_column(ui: &mut Ui, t: &Theme, d: &FrameData, here: Here, go: &mut Vec<G
             (t!("Artworks").to_string(), String::new(), Here::Artwork, files("artwork")),
             (t!("Groups").to_string(), String::new(), Here::Groups, sub("groups")),
         ]);
-        if !d.mine {
-            links.push((t!("Friends").to_string(), d.friends_total.map(|n| n.to_string()).unwrap_or_default(), Here::Friends, sub("friends")));
-        }
+        links.push((t!("Friends").to_string(), d.friends_total.map(|n| n.to_string()).unwrap_or_default(), Here::Friends, sub("friends")));
         for (label, count, page, target) in links {
             let on = page == here && page != Here::Profile;
             if w::list_row(ui, t, row, None, &label, &count, None, on).clicked() && !on {
@@ -612,7 +639,7 @@ fn side_column(ui: &mut Ui, t: &Theme, d: &FrameData, here: Here, go: &mut Vec<G
             let n = d.friends_total.unwrap_or(d.friends.len());
             let r = ui.add(egui::Label::new(w::body_l(t, t!("Friends ({n})", n = n), t.text_dim)).sense(Sense::click()));
             if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                go.push(if d.mine { Go::Nav("friends", None) } else { Go::Nav("profile", Some(format!("{id}/friends"))) });
+                go.push(Go::Nav("profile", Some(format!("{id}/friends"))));
             }
             if d.mine {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -912,7 +939,7 @@ impl Profile {
                 });
             });
             if ui.link(w::body_m(t, t!("Open inventory"), t.accent)).clicked() {
-                ctx.navigate("inventory", Some(id.to_string()));
+                ctx.navigate("profile", Some(format!("{id}/inventory")));
             }
         });
         if go {
@@ -1244,7 +1271,7 @@ fn their_actions(ui: &mut Ui, t: &Theme, d: &FrameData, go: &mut Vec<Go>) {
             crate::links::open_http(&link);
         }
         if w::menu_item(ui, t, icons::BACKPACK, t!("Inventory")).clicked() {
-            go.push(Go::Nav("inventory", Some(id.to_string())));
+            go.push(Go::Nav("profile", Some(format!("{id}/inventory"))));
         }
         ui.separator();
         if rel == Relationship::Friend && w::menu_item_tinted(ui, t, icons::USER, t!("Remove friend"), Some(t.danger)).clicked() {

@@ -75,6 +75,8 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
         real_name: "Demo Player".into(),
         summary: "Collector of indie gems and long co-op nights.".into(),
         location: "Earth".into(),
+        theme: "Midnight".into(),
+        background_full: true,
         member_since: Some(now - 9 * 31_536_000),
         ..Default::default()
     }));
@@ -289,7 +291,8 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
         summary: "Collector of indie gems and long co-op nights.".into(),
         privacy: model::ProfilePrivacy { profile: 3, inventory: 3, gifts: 1, games: 3, playtime: 1, friends: 2, comments: 1 },
         // Made-up items you own, with game art standing in for their pictures.
-        themes: ["Summer", "Midnight", "Steel", "Cosmic", "DarkMode"].iter().map(|n| (n.to_string(), if *n == "DarkMode" { "Dark Mode".to_string() } else { n.to_string() })).collect(),
+        // As Steam sends them: ids with "#ProfileTheme_…" keys for titles.
+        themes: ["Summer", "Midnight", "Steel", "Cosmic", "DarkMode"].iter().map(|n| (n.to_string(), format!("#ProfileTheme_{n}"))).collect(),
         theme: "Midnight".into(),
         backgrounds: [(1145360, "Hades Underworld", "Hades"), (413150, "Pelican Town", "Stardew Valley"), (620, "Aperture Labs", "Portal 2"), (440, "Mann Co. Workshop", "Team Fortress 2"), (570, "Dire Ancient", "Dota 2")]
             .iter()
@@ -326,6 +329,8 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
             ],
         }),
     });
+    // Names for the wishlist's games (you don't own them).
+    out.push(Event::AppNames(vec![(1245620, "ELDEN RING".into()), (1086940, "Baldur's Gate 3".into()), (367520, "Hollow Knight".into()), (1145350, "Hades II".into()), (504230, "Celeste".into()), (1091500, "Cyberpunk 2077".into())]));
     // Someone who isn't your friend (BASE + 300), for the profile's
     // "Add Friend" and "More" buttons.
     let stranger = 76561197960265728 + 300;
@@ -334,6 +339,7 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
         steam_id: stranger,
         real_name: "Lumen Vale".into(),
         summary: "Speedrunner. Mostly platformers.".into(),
+        theme: "Summer".into(),
         location: "Somewhere".into(),
         visibility: model::Visibility::Public,
         ..Default::default()

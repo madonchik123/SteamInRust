@@ -612,6 +612,9 @@ pub struct ProfileInfo {
     pub mini_background: Option<String>,
     #[serde(default)]
     pub mini_background_video: Option<String>,
+    /// The profile's Steam theme ("Summer", "DarkMode"…; "" for the default).
+    #[serde(default)]
+    pub theme: String,
 }
 
 /// Steam community visibility of a profile.

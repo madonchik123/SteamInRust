@@ -151,6 +151,8 @@ pub enum Command {
     LoadLocations { country: Option<String>, state: Option<String> },
     /// Fetch names and avatars of people who aren't your friends.
     LoadPersonas { ids: Vec<SteamId> },
+    /// Names for games (e.g. a wishlist's) that aren't in the library.
+    LoadAppNames { ids: Vec<AppId> },
     /// Your trade offers (active ones and recent changes); item names in
     /// `language` (Steam's name for it).
     LoadTradeOffers { language: String },
@@ -337,6 +339,7 @@ impl std::fmt::Debug for Command {
             Command::SetFavoriteBadge { badge } => f.debug_struct("SetFavoriteBadge").field("badge", badge).finish(),
             Command::LoadLocations { country, state } => f.debug_struct("LoadLocations").field("country", country).field("state", state).finish(),
             Command::LoadPersonas { ids } => f.debug_struct("LoadPersonas").field("ids", ids).finish(),
+            Command::LoadAppNames { ids } => f.debug_struct("LoadAppNames").field("ids", ids).finish(),
             Command::LoadTradeOffers { language } => f.debug_struct("LoadTradeOffers").field("language", language).finish(),
             Command::LoadChatGroups => f.write_str("LoadChatGroups"),
             Command::LoadGroupHistory { group, room, before } => f.debug_struct("LoadGroupHistory").field("group", group).field("room", room).field("before", before).finish(),
