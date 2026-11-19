@@ -411,7 +411,10 @@ fn load_sized(ui: &Ui, url: &str, size: Vec2, cover: bool) -> (ImageState, Optio
     let img = egui::Image::new(uri.clone());
     match img.load_for_size(ui.ctx(), size) {
         Ok(TexturePoll::Ready { texture }) => (ImageState::Ready, Some(texture)),
-        Ok(TexturePoll::Pending { .. }) => (ImageState::Loading, None),
+        Ok(TexturePoll::Pending { .. }) => {
+            note_pending(ui);
+            (ImageState::Loading, None)
+        }
         Err(e) => {
             // Only a failed download is worth another try; anything else
             // (no such picture, not a picture, no loader for it) is final.
@@ -433,6 +436,7 @@ fn load_sized(ui: &Ui, url: &str, size: Vec2, cover: bool) -> (ImageState, Optio
                 }
             }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+            note_pending(ui);
             (ImageState::Loading, None)
         }
     }
@@ -534,12 +538,28 @@ pub fn paint_contain(ui: &Ui, rect: Rect, url: &str, align: Align2) -> bool {
     true
 }
 
-/// Animated loading placeholder.
+/// The frame in which a picture was last still on its way.
+static LAST_PENDING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn note_pending(ui: &Ui) {
+    LAST_PENDING.store(ui.ctx().cumulative_pass_nr(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Loading placeholder. It pulses while pictures are still on their way;
+/// once nothing is loading (a picture that never comes, data that's late)
+/// it holds still, so an idle window stops drawing. New data or a picture
+/// arriving wakes the window by itself.
 pub fn skeleton(ui: &Ui, t: &Theme, rect: Rect, radius: CornerRadius) {
-    let time = ui.input(|i| i.time) as f32;
-    let k = (time * 2.2 + rect.left() * 0.004).sin() * 0.5 + 0.5;
+    let loading = ui.ctx().cumulative_pass_nr().saturating_sub(LAST_PENDING.load(std::sync::atomic::Ordering::Relaxed)) <= 2;
+    let k = if loading {
+        let time = ui.input(|i| i.time) as f32;
+        // A slow pulse: 10 frames a second is smooth enough for it.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        (time * 2.2 + rect.left() * 0.004).sin() * 0.5 + 0.5
+    } else {
+        0.5
+    };
     ui.painter().rect_filled(rect, radius, mix(t.surface, t.surface_hover, k));
-    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
 }
 
 /// Placeholder with a title, for apps that have no art.

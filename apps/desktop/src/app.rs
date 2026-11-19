@@ -872,6 +872,7 @@ impl eframe::App for SteamApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.save_look_now(&ui.ctx().clone(), frame);
         let ctx = ui.ctx().clone();
+        repaint_report(&ctx);
         // The running download (not a file check) on the taskbar / Dock.
         let shown = self.state.downloads.values().find(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed) && !d.verifying()).map(|d| (d.fraction(), d.paused));
         self.taskbar.show(frame, shown);
@@ -1172,5 +1173,32 @@ mod prefs_tests {
         let again = ron::ser::to_string(&prefs).unwrap();
         assert!(!again.contains("legacy"), "{again}");
         assert!(again.contains("skin"));
+    }
+}
+
+/// `STEAMINRUST_REPAINT_LOG=1`: every 5 s, log how many frames the main
+/// window drew and what asked for them (file:line), to find what keeps an
+/// idle window busy.
+fn repaint_report(ctx: &egui::Context) {
+    use std::sync::Mutex;
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("STEAMINRUST_REPAINT_LOG").is_some()) {
+        return;
+    }
+    type Stats = (std::time::Instant, u32, HashMap<String, u32>);
+    static STATS: Mutex<Option<Stats>> = Mutex::new(None);
+    let mut g = STATS.lock().unwrap();
+    let (since, frames, causes) = g.get_or_insert_with(|| (std::time::Instant::now(), 0, HashMap::new()));
+    *frames += 1;
+    for c in ctx.repaint_causes() {
+        *causes.entry(format!("{}:{} {}", c.file, c.line, c.reason)).or_default() += 1;
+    }
+    if since.elapsed().as_secs_f32() >= 5.0 {
+        let mut top: Vec<_> = causes.drain().collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1));
+        top.truncate(8);
+        tracing::info!("repaints: {} frames in 5 s; causes: {:?}", frames, top);
+        *since = std::time::Instant::now();
+        *frames = 0;
     }
 }

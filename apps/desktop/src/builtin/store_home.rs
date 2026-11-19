@@ -170,16 +170,21 @@ impl Store {
         let slide_h = (slide_w * 488.0 / 1281.0).max(t.dense(330.0));
         let (rect, resp) = ui.allocate_exact_size(vec2(width, slide_h + pad.y * 2.0), Sense::hover());
         w::paint_box(ui, t, rect, c, &t.look(c, Default::default()), 0.0);
-        // The pointer anywhere over it holds the timer.
-        if ui.rect_contains_pointer(rect) {
-            self.hero_changed += ui.input(|i| i.stable_dt) as f64;
+        // The pointer anywhere over it, or the window in the background,
+        // holds the timer (and a window in the background isn't redrawn for it).
+        let focused = ui.input(|i| i.focused);
+        if ui.rect_contains_pointer(rect) || !focused {
+            self.hero_changed += ui.input(|i| i.stable_dt).min(0.5) as f64;
         }
         let mut go = None;
         let elapsed = now - self.hero_changed;
         if elapsed > DWELL {
             go = Some((self.hero + 1) % n);
         }
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+        if focused {
+            // The page dot fills up over 8 s: 8 frames a second is plenty.
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(125));
+        }
         let _ = resp;
 
         // The slides, sliding: the strip moves by one slide (plus a gap) per game.
