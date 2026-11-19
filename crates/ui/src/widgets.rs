@@ -2144,8 +2144,19 @@ pub fn text_input(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width:
     let pad = t.padding_of(c);
     let line = ui.fonts_mut(|f| f.row_height(&fid));
     let single = t.height_of(c, 34.0);
-    let h = if rows <= 1 { single } else { (line * rows as f32 + (single - line).max(pad.x)).round() };
     let width = field_width(ui, &fid, hint, width, pad.x * 2.0);
+    // A text area grows with its text (wrapped to the box), from `rows`
+    // lines up to three times that; past it, it scrolls inside the box.
+    let (text_h, scrolls) = if rows <= 1 {
+        (0.0, false)
+    } else {
+        let wrapped = ui.fonts_mut(|f| f.layout(value.clone(), fid.clone(), Color32::PLACEHOLDER, (width - pad.x * 2.0).max(10.0)).size().y);
+        let (least, most) = (line * rows as f32, line * (rows * 3) as f32);
+        let need = wrapped + line * 0.5;
+        (need.clamp(least, most), need > most)
+    };
+    let h = if rows <= 1 { single } else { (text_h + (single - line).max(pad.x)).round() };
+    let area_id = ui.next_auto_id();
     let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
     let rest = t.look(c, Interact::default());
     paint_box(ui, t, rect, c, &rest, 0.0);
@@ -2155,17 +2166,24 @@ pub fn text_input(ui: &mut Ui, t: &Theme, value: &mut String, hint: &str, width:
         rect.shrink2(vec2(pad.x, ((single - line) / 2.0).max(4.0)))
     };
     let edit = if rows <= 1 { egui::TextEdit::singleline(value).align(Align2::LEFT_CENTER) } else { egui::TextEdit::multiline(value).desired_rows(rows) };
-    let resp = ui
-        .place(
-            inner,
-            edit.hint_text(RichText::new(hint).font(fid.clone()).color(rest.icon))
-                .font(fid.clone())
-                .text_color(rest.text)
-                .frame(Frame::NONE)
-                .margin(vec2(0.0, 0.0))
-                .desired_width(inner.width()),
-        )
-        .with_edit_menu();
+    let edit = edit
+        .hint_text(RichText::new(hint).font(fid.clone()).color(rest.icon))
+        .font(fid.clone())
+        .text_color(rest.text)
+        .frame(Frame::NONE)
+        .margin(vec2(0.0, 0.0))
+        .desired_width(inner.width());
+    let resp = if scrolls {
+        // Too long for the box: it scrolls inside it, never past its edges.
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+            ui.set_clip_rect(inner.intersect(ui.clip_rect()));
+            egui::ScrollArea::vertical().id_salt(area_id).max_height(inner.height()).auto_shrink([false, false]).show(ui, |ui| ui.add(edit)).inner
+        })
+        .inner
+    } else {
+        ui.place(inner, edit)
+    }
+    .with_edit_menu();
     let resp = if rows <= 1 { full_text_on_hover(ui, resp, &fid, value, hint, inner.width()) } else { resp };
     if rows <= 1 {
         fade_overflow(ui, t, c, inner, &fid, value, resp.has_focus());

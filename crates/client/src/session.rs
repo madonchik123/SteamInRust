@@ -1106,6 +1106,10 @@ async fn online(
                     // A download being cancelled doesn't count: "Apply now" restarts it.
                     let running = st.active.as_ref().is_some_and(|(a, p)| *a == req.app_id && !p.cancel.load(std::sync::atomic::Ordering::Relaxed));
                     if !running && !st.queue.iter().any(|q| q.app_id == req.app_id) {
+                        // A folder Steam may not list (picked with "Choose
+                        // another folder…"): remembered, or the finished game
+                        // would never show as installed.
+                        store::remember_library(&req.library);
                         st.queue.push_back(req);
                     }
                     st.pump(sink, &dl_tx);
@@ -1906,6 +1910,7 @@ impl Online {
             let busy = self.active.as_ref().is_some_and(|a| a.0 == req.app_id) || self.queue.iter().any(|q| q.app_id == req.app_id);
             if !busy && self.apps.contains_key(&req.app_id) {
                 tracing::info!("resuming the download of {}", req.app_id);
+                store::remember_library(&req.library);
                 self.queue.push_back(req);
             }
         }
@@ -3429,7 +3434,7 @@ fn logon_id() -> u32 {
 
 /// Workshop downloads for a game, if it's installed (found in the Steam libraries).
 async fn sync_installed(conn: Connection, me: SteamId, cell: u32, root: Option<std::path::PathBuf>, app_id: AppId, items: Vec<u64>, sink: Sink) {
-    let library = tokio::task::spawn_blocking(move || local::load(root).ok().and_then(|l| l.games.into_iter().find(|g| g.app_id == app_id)).map(|g| g.library)).await.ok().flatten();
+    let library = tokio::task::spawn_blocking(move || store::load_local(root).ok().and_then(|l| l.games.into_iter().find(|g| g.app_id == app_id)).map(|g| g.library)).await.ok().flatten();
     let Some(library) = library else { return };
     let result = crate::workshop::sync(&conn, me, app_id, &library, cell, items).await;
     sink(Event::WorkshopSync { app_id, result });

@@ -269,7 +269,7 @@ impl SteamApp {
         let local = if std::env::args().any(|a| a == "--no-local") {
             LocalState::default()
         } else {
-            local::load(None).unwrap_or_else(|e| {
+            client::store::load_local(None).unwrap_or_else(|e| {
                 tracing::warn!("local Steam library: {e}");
                 LocalState::default()
             })
@@ -478,7 +478,7 @@ impl SteamApp {
                 }
                 Event::GameStopped { .. } => {
                     self.overlay.game_stopped();
-                    if let Ok(l) = local::load(Some(self.local.steam_root.clone())) {
+                    if let Ok(l) = client::store::load_local(Some(self.local.steam_root.clone())) {
                         self.local = l;
                     }
                 }
@@ -630,7 +630,7 @@ impl SteamApp {
                 }
                 Action::OpenChat(id) => self.friends_window.show(crate::friends_window::Pane::Chat(id)),
                 Action::ReloadLocal => {
-                    if let Ok(l) = local::load(Some(self.local.steam_root.clone())) {
+                    if let Ok(l) = client::store::load_local(Some(self.local.steam_root.clone())) {
                         self.local = l;
                     }
                 }
@@ -832,6 +832,39 @@ impl SteamApp {
     }
 }
 
+/// `--keys=Down;Down;Enter;text:hello;wheel:960:540:-300;wait` (with
+/// `--offscreen`): replays keys, typing and mouse-wheel turns into a preview
+/// copy, one every 0.4 s from 4 s in (`--keys-after=<seconds>`), so screens
+/// that need the keyboard or a controller can be checked off-screen. Keys
+/// use egui's names (Down, Enter, Escape, Backspace, Q…).
+fn preview_keys(ctx: &egui::Context, raw_input: &mut egui::RawInput, time: f64) {
+    let Some(list) = std::env::args().find_map(|a| a.strip_prefix("--keys=").map(String::from)) else { return };
+    let after = std::env::args().find_map(|a| a.strip_prefix("--keys-after=").and_then(|v| v.parse::<f64>().ok())).unwrap_or(4.0);
+    let steps: Vec<&str> = list.split(';').collect();
+    let id = egui::Id::unique("preview-keys-done");
+    let done = ctx.data(|d| d.get_temp::<usize>(id)).unwrap_or(0);
+    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    if done >= steps.len() || time < after + done as f64 * 0.4 {
+        return;
+    }
+    ctx.data_mut(|d| d.insert_temp(id, done + 1));
+    let step = steps[done];
+    let modifiers = egui::Modifiers::NONE;
+    if let Some(text) = step.strip_prefix("text:") {
+        raw_input.events.push(egui::Event::Text(text.to_string()));
+    } else if let Some(w) = step.strip_prefix("wheel:") {
+        let n: Vec<f32> = w.split(':').filter_map(|v| v.parse().ok()).collect();
+        if let [x, y, dy] = n[..] {
+            raw_input.events.push(egui::Event::PointerMoved(egui::pos2(x, y)));
+            raw_input.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, dy), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers });
+        }
+    } else if let Some(key) = egui::Key::from_name(step) {
+        for pressed in [true, false] {
+            raw_input.events.push(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
+        }
+    }
+}
+
 impl eframe::App for SteamApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         // Transparent so the overlay window can see through; the main window
@@ -842,8 +875,9 @@ impl eframe::App for SteamApp {
     /// Previews of an `--offscreen` copy can't be pointed at with the real
     /// mouse: `--pointer=x,y` keeps a pretend pointer there (hover states),
     /// and `--click=x,y` clicks there once, 4 seconds in (or
-    /// `--click-after=<seconds>`); `--type=text` then types into what was
-    /// clicked, and `--drag=x1,y1,x2,y2` drags.
+    /// `--click-after=<seconds>`; `--type=<text>` then types into what it
+    /// focused, `--type-submit` adds Ctrl+Enter).
+    /// `--drag=x1,y1,x2,y2` drags.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if !offscreen() || raw_input.viewport_id != egui::ViewportId::ROOT {
             return;
@@ -882,6 +916,19 @@ impl eframe::App for SteamApp {
                 }
             }
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            // `--type=<text>`: typed into what the click focused, a moment
+            // later; `--type-submit` then presses Ctrl+Enter.
+            if let Some(text) = std::env::args().find_map(|a| a.strip_prefix("--type=").map(String::from)) {
+                let typed = ctx.data(|d| d.get_temp::<bool>(egui::Id::unique("preview-typed"))).unwrap_or(false);
+                if done && time > after + 0.5 && !typed {
+                    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("preview-typed"), true));
+                    raw_input.events.push(egui::Event::Text(text));
+                    if std::env::args().any(|a| a == "--type-submit") {
+                        let modifiers = egui::Modifiers::COMMAND;
+                        raw_input.events.push(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers });
+                    }
+                }
+            }
         }
         // `--drag=x1,y1,x2,y2`: press at the first point (`--click-after`
         // seconds in), glide to the second over a second and a half, then let
@@ -914,6 +961,7 @@ impl eframe::App for SteamApp {
                 ctx.request_repaint_after(std::time::Duration::from_millis(30));
             }
         }
+        preview_keys(ctx, raw_input, time);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {

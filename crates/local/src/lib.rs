@@ -91,19 +91,37 @@ fn read_vdf(path: &Path) -> Result<vdf::Obj> {
 
 /// Load the full local state. Missing optional files are skipped, not errors.
 pub fn load(steam_root: Option<PathBuf>) -> Result<LocalState> {
-    let root = steam_root.or_else(find_steam_root).ok_or(Error::NotFound)?;
-    let libraries = library_folders(&root)?;
-    let accounts = accounts(&root).unwrap_or_else(|e| {
+    load_with(steam_root, &[])
+}
+
+/// [`load`], also scanning `extra` library folders: ones games were
+/// installed into that Steam's `libraryfolders.vdf` doesn't list (a folder
+/// picked with "Choose another folder…", or any folder when Steam itself
+/// isn't installed). An empty `steam_root` means "find it".
+pub fn load_with(steam_root: Option<PathBuf>, extra: &[PathBuf]) -> Result<LocalState> {
+    let root = steam_root.filter(|r| !r.as_os_str().is_empty()).or_else(find_steam_root);
+    let mut libraries = match &root {
+        Some(r) => library_folders(r)?,
+        None => Vec::new(),
+    };
+    for lib in extra {
+        if lib.join("steamapps").is_dir() && !libraries.iter().any(|l| same_path(l, lib)) {
+            libraries.push(lib.clone());
+        }
+    }
+    if root.is_none() && libraries.is_empty() {
+        return Err(Error::NotFound);
+    }
+    let accounts = root.as_deref().map(accounts).unwrap_or(Ok(Vec::new())).unwrap_or_else(|e| {
         tracing::warn!("could not read accounts: {e}");
         Vec::new()
     });
 
-    let usage = accounts
-        .iter()
-        .find(|a| a.most_recent)
-        .or(accounts.first())
-        .map(|a| playtime(&root, model::account_id(a.steam_id)))
+    let usage = root
+        .as_deref()
+        .and_then(|root| accounts.iter().find(|a| a.most_recent).or(accounts.first()).map(|a| playtime(root, model::account_id(a.steam_id))))
         .unwrap_or_default();
+    let root = root.unwrap_or_default();
 
     let mut games: Vec<InstalledGame> = libraries
         .iter()
@@ -137,14 +155,68 @@ pub fn library_folders(root: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     libs.sort();
-    libs.dedup_by(|a, b| same_path(a, b));
-    libs.retain(|p| p.join("steamapps").is_dir());
-    Ok(libs)
+    // Not just neighbours: "D:\Games" and "d:\games\" sort apart.
+    let mut unique: Vec<PathBuf> = Vec::new();
+    for lib in libs {
+        if !unique.iter().any(|u| same_path(u, &lib)) {
+            unique.push(lib);
+        }
+    }
+    unique.retain(|p| p.join("steamapps").is_dir());
+    Ok(unique)
 }
 
-fn same_path(a: &Path, b: &Path) -> bool {
+/// True when `a` and `b` name the same folder (case, slashes and a
+/// trailing separator aside).
+pub fn same_path(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| p.to_string_lossy().to_lowercase().replace('/', "\\");
     norm(a).trim_end_matches('\\') == norm(b).trim_end_matches('\\')
+}
+
+/// Library folders listed in our own list file (one folder per line): the
+/// ones games were installed into besides Steam's own libraries.
+pub fn read_library_list(file: &Path) -> Vec<PathBuf> {
+    fs::read_to_string(file)
+        .map(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from).collect())
+        .unwrap_or_default()
+}
+
+/// Add `lib` to the list file unless it's there already. True when added.
+pub fn add_to_library_list(file: &Path, lib: &Path) -> std::io::Result<bool> {
+    if lib.as_os_str().is_empty() || lib.to_string_lossy().contains(['\n', '\r']) {
+        return Ok(false);
+    }
+    let mut list = read_library_list(file);
+    if list.iter().any(|l| same_path(l, lib)) {
+        return Ok(false);
+    }
+    list.push(lib.to_path_buf());
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let text: String = list.iter().map(|l| format!("{}\n", l.display())).collect();
+    fs::write(file, text)?;
+    Ok(true)
+}
+
+/// The library folder for a folder the player picked: the picked folder
+/// itself, or, when they picked something inside a library (its
+/// `steamapps`, `steamapps\common` or a game's folder), that library.
+pub fn library_root_of(picked: &Path) -> PathBuf {
+    picked
+        .ancestors()
+        .find(|a| a.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("steamapps")))
+        .and_then(Path::parent)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(picked)
+        .to_path_buf()
+}
+
+/// The game `app_id` as recorded in `lib` (its `appmanifest_<id>.acf`), if
+/// that library has it.
+pub fn game_in_library(lib: &Path, app_id: AppId) -> Option<InstalledGame> {
+    let path = lib.join("steamapps").join(format!("appmanifest_{app_id}.acf"));
+    parse_manifest(&path, lib).ok().flatten().filter(|g| g.app_id == app_id)
 }
 
 /// Read every `appmanifest_*.acf` in one library.
@@ -432,6 +504,64 @@ mod tests {
         assert_eq!(games.len(), 1, "unsafe installdir entries were not rejected: {games:?}");
         assert_eq!(games[0].app_id, 2000);
         let _ = fs::remove_dir_all(&lib);
+    }
+
+    /// Issue #103: a game downloaded into a folder picked with "Choose
+    /// another folder…" (here a second library, like D:\GAMES\STEAM) has its
+    /// files and its appmanifest there, but Steam's libraryfolders.vdf
+    /// doesn't list that folder, so it was never scanned: "Install" forever.
+    #[test]
+    fn finds_games_in_libraries_steam_does_not_list() {
+        let base = std::env::temp_dir().join(format!("sir-local-extra-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join("Steam");
+        let second = base.join("D").join("GAMES").join("STEAM");
+        fs::create_dir_all(root.join("steamapps")).unwrap();
+        fs::write(
+            root.join("steamapps").join("libraryfolders.vdf"),
+            vdf::write(&vdf::Obj::default().with_obj("libraryfolders", vdf::Obj::default().with_obj("0", vdf::Obj::default().with("path", root.to_string_lossy())))),
+        )
+        .unwrap();
+        let game = second.join("steamapps").join("common").join("Megabonk");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("Megabonk.exe"), b"MZ").unwrap();
+        let manifest = "\"AppState\"\n{\n\t\"appid\"\t\"3405340\"\n\t\"name\"\t\"Megabonk\"\n\t\"StateFlags\"\t\"4\"\n\t\"installdir\"\t\"Megabonk\"\n}\n";
+        fs::write(second.join("steamapps").join("appmanifest_3405340.acf"), manifest).unwrap();
+
+        // Only Steam's libraries: the game isn't seen (the bug).
+        let state = load_with(Some(root.clone()), &[]).unwrap();
+        assert!(state.games.iter().all(|g| g.app_id != 3405340));
+
+        // With the folder remembered it's installed, and Play finds its files.
+        let list = base.join("config").join("libraries.txt");
+        assert!(add_to_library_list(&list, &second).unwrap());
+        assert!(!add_to_library_list(&list, &second).unwrap(), "added twice");
+        let state = load_with(Some(root.clone()), &read_library_list(&list)).unwrap();
+        assert_eq!(state.libraries.len(), 2);
+        let g = state.games.iter().find(|g| g.app_id == 3405340).expect("Megabonk found");
+        assert_eq!(g.state, InstallState::Installed);
+        assert_eq!(g.library, second);
+        assert!(g.install_dir.join("Megabonk.exe").exists());
+        assert_eq!(game_in_library(&second, 3405340).map(|g| g.name), Some("Megabonk".into()));
+
+        // A folder with the files but no manifest isn't counted as installed
+        // (installing there checks the files and writes the manifest).
+        fs::remove_file(second.join("steamapps").join("appmanifest_3405340.acf")).unwrap();
+        let state = load_with(Some(root.clone()), &read_library_list(&list)).unwrap();
+        assert!(state.games.iter().all(|g| g.app_id != 3405340));
+        assert!(game_in_library(&second, 3405340).is_none());
+
+        // Picking a folder inside the library means the library.
+        for inside in [second.join("steamapps"), second.join("steamapps").join("common"), game.clone(), second.join("STEAMAPPS")] {
+            assert_eq!(library_root_of(&inside), second, "{inside:?}");
+        }
+        assert_eq!(library_root_of(&second), second);
+
+        // No Steam install at all: the remembered library still counts.
+        let no_steam = base.join("NoSteam");
+        let state = load_with(Some(no_steam), std::slice::from_ref(&second)).unwrap();
+        assert_eq!(state.libraries, vec![second.clone()]);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

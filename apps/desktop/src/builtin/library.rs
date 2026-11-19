@@ -1404,6 +1404,7 @@ impl Library {
         let name = ctx.state.app_name(id).unwrap_or_default().to_string();
         let mut go = false;
         let mut close = false;
+        let mut found: Option<std::path::PathBuf> = None;
         egui::Modal::new(egui::Id::unique(("install", id))).show(ui.ctx(), |ui| {
             ui.set_width(520.0);
             ui.horizontal(|ui| {
@@ -1423,9 +1424,19 @@ impl Library {
             }
             if w::button(ui, t, Some(icons::FOLDER), t!("Choose another folder…"), w::Kind::Ghost, w::Size::Sm).clicked() {
                 if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                    let _ = std::fs::create_dir_all(p.join("steamapps"));
-                    dlg.libraries.push(p.clone());
-                    dlg.library = p;
+                    // Picked its steamapps or the game's folder: the library.
+                    let p = local::library_root_of(&p);
+                    if local::game_in_library(&p, id).is_some() {
+                        // Already installed there (by Steam, or a download
+                        // from before this folder was remembered).
+                        found = Some(p);
+                    } else {
+                        let _ = std::fs::create_dir_all(p.join("steamapps"));
+                        if !dlg.libraries.iter().any(|l| local::same_path(l, &p)) {
+                            dlg.libraries.push(p.clone());
+                        }
+                        dlg.library = p;
+                    }
                 }
             }
             ui.add_space(8.0);
@@ -1447,7 +1458,13 @@ impl Library {
                 }
             });
         });
-        if go {
+        if let Some(lib) = found {
+            // Nothing to download: remember the folder and show the game.
+            client::store::remember_library(&lib);
+            ctx.act(extensions::Action::ReloadLocal);
+            ctx.toast(t!("{name} is already installed in {folder}", name = name, folder = lib.display().to_string()));
+            self.install_dialog = None;
+        } else if go {
             let d = self.install_dialog.take().unwrap();
             if d.desktop {
                 self.shortcut_after_install.insert(id, d.library.clone());
@@ -1769,8 +1786,12 @@ impl InstallDialog {
             .and_then(|a| a.get(&app))
             .map(|o| o.depots.iter().filter(|d| d.dlc_app.is_none() && !d.shared_install && model::os_matches(&d.os, model::THIS_OS)).filter_map(|d| d.manifest("public").map(|m| m.1)).sum())
             .unwrap_or(0);
-        // Pick the library with the most free space.
-        let library = libraries.iter().max_by_key(|l| fs4_free(l).unwrap_or(0)).cloned().unwrap_or_default();
+        // The library that already has the game's folder (files left by an
+        // earlier install: installing there checks and keeps them), else
+        // the one with the most free space.
+        let folder = ctx.state.apps.as_ref().and_then(|a| a.get(&app)).map(|o| if o.install_dir.is_empty() { o.name.clone() } else { o.install_dir.clone() });
+        let has_files = |l: &std::path::PathBuf| folder.as_deref().filter(|f| local::is_valid_folder_name(f)).is_some_and(|f| l.join("steamapps").join("common").join(f).is_dir());
+        let library = libraries.iter().find(|l| has_files(l)).or_else(|| libraries.iter().max_by_key(|l| fs4_free(l).unwrap_or(0))).cloned().unwrap_or_default();
         Self { app, libraries, library, size, desktop: true }
     }
 }

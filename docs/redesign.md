@@ -70,7 +70,7 @@ cargo run -p steam-rs -- --separate --demo --no-local --lang=en --page=gallery
   copy that never shows on the desktop. Capture it with `PrintWindow` and the
   `PW_RENDERFULLCONTENT` flag. Windows ignores real mouse messages for an
   off-screen window, so `--pointer=x,y` keeps a pretend pointer there (to see
-  hover states and hover menus) and `--click=x,y` clicks once, 4 seconds in.
+  hover states and hover menus) and `--click=x,y` clicks once, 4 seconds in; `--type=<text>` then types into what it focused (`--type-submit` adds Ctrl+Enter).
 - `--demo --no-local` shows a made-up account and library: use it for any
   screenshot you share.
 - `--new-look-prompt` shows the one-time "A new look for SteamInRust"

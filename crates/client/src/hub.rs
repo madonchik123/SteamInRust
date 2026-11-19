@@ -62,6 +62,9 @@ pub enum Request {
     Activity { start: u64, language: String },
     /// Steam's community-wide feed of popular or recent posts.
     Explore(crate::feed::ExploreQuery),
+    /// Post a status for your friends (public to them, under your name),
+    /// tagged with a game (`app_id` 0: none). The user starts it.
+    PostStatus { text: String, app_id: AppId },
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +83,7 @@ pub enum Response {
     Group { key: String, result: Result<Group, String> },
     Activity { start: u64, result: Result<crate::feed::Feed, String> },
     Explore { key: String, result: Result<crate::feed::Feed, String> },
+    StatusPosted { result: Result<(), String> },
 }
 
 /// Kinds of shared files a game can have.
@@ -429,6 +433,12 @@ impl Cache {
             Response::Explore { key, result } => {
                 self.explore.insert(key.clone(), result.clone());
             }
+            Response::StatusPosted { result } => {
+                // The feed changed: read it again.
+                if result.is_ok() {
+                    self.activity.clear();
+                }
+            }
             Response::Voted { .. } | Response::Favorited { .. } => {}
         }
     }
@@ -631,6 +641,13 @@ pub(crate) async fn handle(conn: Connection, me: SteamId, web: Result<Arc<Web>, 
                 want_personas(&conn, f.posts.iter().map(|p| p.author).collect());
             }
             out(Response::Explore { key, result });
+        }
+        Request::PostStatus { text, app_id } => {
+            let result = match web {
+                Ok(w) => crate::feed::post_status(&w, me, &text, app_id).await,
+                Err(e) => Err(e),
+            };
+            out(Response::StatusPosted { result });
         }
     }
 }

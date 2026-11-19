@@ -493,6 +493,7 @@
 "Parallel connections" = "Conexiones simultáneas"
 "SteamInRust measures Steam's content servers and uses the fastest one, reuses unchanged parts of games when updating, and checks every piece as it arrives." = "SteamInRust mide los servidores de contenido de Steam y usa el más rápido, reaprovecha las partes de los juegos que no cambian al actualizar y comprueba cada fragmento al recibirlo."
 "{name} is ready to play" = "{name} está listo para jugar"
+"{name} is already installed in {folder}" = "{name} ya está instalado en {folder}"
 "Download failed: {error}" = "La descarga falló: {error}"
 "Added to downloads" = "Añadido a descargas"
 
@@ -2513,3 +2514,16 @@
 "Drag to change its place in your wishlist" = "Arrastra para cambiar su lugar en tu lista de deseados"
 "Type a number to move it to that place" = "Escribe un número para moverlo a ese lugar"
 "Couldn't save your wishlist's order. Try again in a moment." = "No se pudo guardar el orden de tu lista de deseados. Vuelve a intentarlo en un momento."
+
+# --- Community: post a status ---
+"Post a status for your friends…" = "Publica un estado para tus amigos…"
+"Tag with game" = "Etiquetar un juego"
+"No game" = "Sin juego"
+"Find a game" = "Buscar un juego"
+"Post|status" = "Publicar"
+"Status posted" = "Estado publicado"
+"Couldn't post your status: {error}" = "No se pudo publicar el estado: {error}"
+"Your friends see what you post here." = "Tus amigos verán lo que publiques aquí."
+"The status is empty" = "El estado está vacío"
+"Sign in to post a status" = "Inicia sesión para publicar un estado"
+"Posting status updates is unavailable right now" = "Ahora no se pueden publicar estados"

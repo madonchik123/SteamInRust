@@ -493,6 +493,7 @@
 "Parallel connections" = "Параллельные соединения"
 "SteamInRust measures Steam's content servers and uses the fastest one, reuses unchanged parts of games when updating, and checks every piece as it arrives." = "SteamInRust сам выбирает самый быстрый сервер Steam, при обновлении повторно использует неизменившиеся части игры и проверяет каждый загруженный фрагмент."
 "{name} is ready to play" = "{name} готова к игре"
+"{name} is already installed in {folder}" = "{name} уже установлена в {folder}"
 "Download failed: {error}" = "Не удалось загрузить: {error}"
 "Added to downloads" = "Добавлено в загрузки"
 
@@ -2513,3 +2514,16 @@
 "Drag to change its place in your wishlist" = "Перетащите, чтобы изменить место в списке желаемого"
 "Type a number to move it to that place" = "Введите число, чтобы переместить игру на это место"
 "Couldn't save your wishlist's order. Try again in a moment." = "Не удалось сохранить порядок списка желаемого. Попробуйте ещё раз чуть позже."
+
+# --- Community: post a status ---
+"Post a status for your friends…" = "Напишите что-нибудь для друзей…"
+"Tag with game" = "Отметить игру"
+"No game" = "Без игры"
+"Find a game" = "Найти игру"
+"Post|status" = "Опубликовать"
+"Status posted" = "Запись опубликована"
+"Couldn't post your status: {error}" = "Не удалось опубликовать запись: {error}"
+"Your friends see what you post here." = "Это увидят ваши друзья."
+"The status is empty" = "Запись пустая"
+"Sign in to post a status" = "Войдите, чтобы опубликовать запись"
+"Posting status updates is unavailable right now" = "Публикация записей сейчас недоступна"

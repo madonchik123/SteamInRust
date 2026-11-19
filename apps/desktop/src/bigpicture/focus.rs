@@ -41,6 +41,9 @@ pub struct Focus {
     /// Ring position (animated) and where it's heading.
     ring: Option<Rect>,
     ring_target: Option<(Rect, f32)>,
+    /// No ring this frame (a full-page viewer: a box around the whole page
+    /// only gets in the way).
+    no_ring: bool,
     /// A move with nowhere to go: the ring nudges that way.
     bump: Option<(Dir, f64)>,
     /// Focus last frame, and when it last changed (for the tile sheen).
@@ -68,6 +71,7 @@ impl Focus {
         self.press = press;
         self.moved = false;
         self.ring_target = None;
+        self.no_ring = false;
         let now = ui.input(|i| i.time);
         // The mouse takes focus only when it really moves (not when a page
         // scrolls under it, nor right as the screen opens).
@@ -134,6 +138,11 @@ impl Focus {
     }
 
     /// Ring around a different shape than the item (a grown tile, a pill).
+    /// Hide the ring this frame.
+    pub fn hide_ring(&mut self) {
+        self.no_ring = true;
+    }
+
     pub fn ring_around(&mut self, rect: Rect, radius: f32) {
         self.ring_target = Some((rect, radius));
     }
@@ -167,6 +176,10 @@ impl Focus {
 
     /// Paint the ring: glides to the focused item, glows and breathes.
     pub fn paint_ring(&mut self, ui: &Ui, t: &Theme, s: f32, radius: f32) {
+        if self.no_ring {
+            self.ring = None;
+            return;
+        }
         let Some((target, r_override)) = self.ring_target.or_else(|| self.focused().map(|f| (f.0, 0.0))) else {
             self.ring = None;
             return;

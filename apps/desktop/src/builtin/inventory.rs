@@ -163,8 +163,10 @@ impl Extension for Inventory {
             self.selected = None;
             self.search.clear();
             self.tags.clear();
-            self.view = View::Items;
         }
+        // Someone's items (yours without an owner), whatever showed before:
+        // the Market or trades opened last mustn't stay.
+        self.view = View::Items;
         if let Some(app) = app {
             self.want_app = Some(app);
             self.app = None;
@@ -778,5 +780,22 @@ fn skeleton_grid(ui: &mut Ui, t: &Theme) {
             }
         });
         ui.add_space(4.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use extensions::Extension;
+
+    /// "Inventory" from the name menu shows your items even right after the
+    /// Market or trades were open.
+    #[test]
+    fn opens_items_after_the_market() {
+        let mut inv = super::Inventory::default();
+        for before in ["market", "trades"] {
+            inv.on_navigate("inventory", Some(before));
+            inv.on_navigate("inventory", None);
+            assert!(inv.view == super::View::Items && inv.owner.is_none(), "{before}");
+        }
     }
 }

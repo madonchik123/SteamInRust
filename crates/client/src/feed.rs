@@ -199,3 +199,72 @@ pub fn fill_from_details(p: &mut Post, creator: SteamId, file_type: u32, title: 
         p.kind = k;
     }
 }
+
+/// What [`post_status`] sends: Steam's activity page posts this form to
+/// `/profiles/<you>/ajaxpostuserstatus/` (`Blotter_PostStatus`). `app` 0 =
+/// not tagged with a game.
+pub fn status_request(me: SteamId, session_id: &str, text: &str, app: model::AppId) -> Result<(String, Vec<(&'static str, String)>), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("The status is empty".into());
+    }
+    if me == 0 {
+        return Err("Sign in to post a status".into());
+    }
+    let url = format!("{COMMUNITY}/profiles/{me}/ajaxpostuserstatus/");
+    Ok((url, vec![("sessionid", session_id.to_string()), ("status_text", text.to_string()), ("appid", app.to_string())]))
+}
+
+/// Steam's answer to a posted status: `{"success":true,"blotter_html":…}`,
+/// or `{"success":false,"message":"…"}`.
+pub fn status_answer(body: &str) -> Result<(), String> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|_| "Posting status updates is unavailable right now".to_string())?;
+    if v.get("success").and_then(|s| s.as_bool()) == Some(true) {
+        return Ok(());
+    }
+    let message = v.get("message").and_then(|m| m.as_str()).map(crate::hub::strip_tags).filter(|m| !m.is_empty());
+    Err(message.unwrap_or_else(|| "Posting status updates is unavailable right now".into()))
+}
+
+/// Post a status for your friends (public to them, under your name).
+pub async fn post_status(web: &Web, me: SteamId, text: &str, app: model::AppId) -> Result<(), String> {
+    let (url, form) = status_request(me, &web.session_id, text, app)?;
+    let r = web
+        .http
+        .post(&url)
+        .header("Referer", format!("{COMMUNITY}/profiles/{me}/home/"))
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = r.status();
+    let body = r.text().await.map_err(|e| e.to_string())?;
+    match status_answer(&body) {
+        Err(_) if !status.is_success() => Err(format!("Steam answered {status}")),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn builds_the_status_post() {
+        let (url, form) = status_request(76561197960265729, "abc123", "  gg, one more?  ", 570).unwrap();
+        assert_eq!(url, "https://steamcommunity.com/profiles/76561197960265729/ajaxpostuserstatus/");
+        assert_eq!(form, vec![("sessionid", "abc123".to_string()), ("status_text", "gg, one more?".to_string()), ("appid", "570".to_string())]);
+        // Not tagged with a game: appid 0, like Steam's page.
+        let (_, form) = status_request(76561197960265729, "s", "hi", 0).unwrap();
+        assert_eq!(form[2], ("appid", "0".to_string()));
+        assert!(status_request(76561197960265729, "s", "   ", 0).is_err());
+        assert!(status_request(0, "s", "hi", 0).is_err());
+    }
+
+    #[test]
+    fn reads_the_answer() {
+        assert_eq!(status_answer(r#"{"success":true,"timestart":1,"blotter_html":"<div></div>"}"#), Ok(()));
+        assert_eq!(status_answer(r#"{"success":false,"message":"You've been posting too frequently"}"#), Err("You've been posting too frequently".into()));
+        assert!(status_answer("<html>sign in</html>").is_err());
+    }
+}

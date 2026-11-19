@@ -26,6 +26,7 @@ use extensions::{Ctx, Extension, Manifest, PageSpec};
 use i18n::t;
 use model::{AppId, art};
 use std::collections::HashSet;
+use ui::widgets::EditMenu;
 use ui::{Theme, icons, widgets as w};
 
 /// The page's id.
@@ -150,6 +151,26 @@ pub struct CommunityHome {
     bar_search: String,
     /// Scroll back to the top on the next frame.
     to_top: bool,
+    /// The status you're writing for your friends.
+    status: StatusBox,
+}
+
+/// The "post a status" box at the top of your friends' activity, like
+/// Steam's activity page has.
+#[derive(Default)]
+struct StatusBox {
+    text: String,
+    /// The game it's tagged with.
+    game: Option<(AppId, String)>,
+    /// Typed in the game menu's search.
+    game_search: String,
+    /// Waiting for Steam; the post to show once it's in.
+    sending: Option<Post>,
+    error: Option<String>,
+    /// What you posted, at the top of the feed until Steam's feed has it.
+    posted: Vec<Post>,
+    /// Reading the feed again after a post: `posted` goes once it's back.
+    refreshing: bool,
 }
 
 impl CommunityHome {
@@ -204,10 +225,20 @@ impl Extension for CommunityHome {
         }
     }
 
-    fn on_event(&mut self, event: &Event, _ctx: &mut Ctx) {
-        // Signed in again (or as someone else): load the feeds afresh.
-        if let Event::LoggedIn { .. } = event {
-            self.asked.clear();
+    fn on_event(&mut self, event: &Event, ctx: &mut Ctx) {
+        match event {
+            // Signed in again (or as someone else): load the feeds afresh.
+            Event::LoggedIn { .. } => self.asked.clear(),
+            Event::Hub(client::hub::Response::StatusPosted { result }) => {
+                if self.status_answered(result) {
+                    ctx.toast(t!("Status posted"));
+                }
+            }
+            Event::Hub(client::hub::Response::Activity { start: 0, result: Ok(_) }) if self.status.refreshing => {
+                self.status.refreshing = false;
+                self.status.posted.clear();
+            }
+            _ => {}
         }
     }
 
@@ -431,15 +462,20 @@ impl CommunityHome {
     // ----- friends -----
 
     fn friends(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        if ctx.state.steam_id != 0 {
+            self.status_box(ui, t, ctx);
+        }
         let options: Vec<(FriendFilter, String)> = FriendFilter::ALL.iter().map(|f| (*f, f.label())).collect();
         Self::filter_row(ui, t, &mut self.friend_filter, &options, |_| {});
         if ctx.state.steam_id == 0 {
             w::empty(ui, t, icons::USERS, t!("Sign in to see your friends"), t!("Your friends' screenshots, reviews and achievements show here."));
             return;
         }
+        // What you just posted, on top until Steam's feed has it.
+        let mine: Vec<Post> = self.status.posted.iter().rev().filter(|p| self.friend_filter.keeps(p)).cloned().collect();
         // Day pages, newest first, until we have the days asked for.
         let lang = i18n::language().steam_name().to_string();
-        let mut posts: Vec<&Post> = Vec::new();
+        let mut posts: Vec<&Post> = mine.iter().collect();
         let mut seen = HashSet::new();
         let mut start = 0u64;
         let mut loading = false;
@@ -507,6 +543,153 @@ impl CommunityHome {
                     self.days += FIRST_DAYS;
                 }
             });
+        }
+    }
+
+    /// "Post a status for your friends…": your avatar, the text, a game to
+    /// tag it with, and Post (Steam's activity page has the same).
+    fn status_box(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        let me = ctx.state.persona(ctx.state.steam_id);
+        let sending = self.status.sending.is_some();
+        let mut submit = false;
+        w::post_card(t).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = t.spacing.md;
+                w::avatar(ui, t, &art::avatar(me.avatar_hash.as_deref()), 40.0, None);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = t.spacing.sm;
+                    let input = &t.components.input;
+                    w::component_frame(t, input).inner_margin(egui::Margin::symmetric(t.padding_of(input).x as i8, t.spacing.sm as i8 + 2)).show(ui, |ui| {
+                        // Ctrl+Enter posts, like sending a message (taken
+                        // before the field would make it a new line).
+                        let id = egui::Id::unique("community-status-text");
+                        if ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)) {
+                            submit = true;
+                        }
+                        ui.add_enabled(
+                            !sending,
+                            egui::TextEdit::multiline(&mut self.status.text)
+                                .id(id)
+                                .hint_text(w::body_m(t, t!("Post a status for your friends…"), t.text_dim))
+                                .font(t.typography.body_m.font())
+                                .text_color(t.text)
+                                .frame(egui::Frame::NONE)
+                                .desired_rows(2)
+                                .char_limit(1000)
+                                .desired_width(f32::INFINITY),
+                        )
+                        .with_edit_menu();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = t.spacing.sm;
+                        self.game_menu(ui, t, ctx.state);
+                        ui.label(w::body_s(t, t!("Your friends see what you post here."), t.text_faint));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let ready = !self.status.text.trim().is_empty() && !sending;
+                            let label = if sending { t!("Posting…") } else { t!("Post|status") };
+                            let posted = ui.add_enabled_ui(ready, |ui| w::button(ui, t, Some(icons::SEND), label, w::Kind::Primary, w::Size::Md).clicked()).inner;
+                            submit |= posted;
+                        });
+                    });
+                    if let Some(e) = &self.status.error {
+                        ui.label(w::body_s(t, e, t.danger));
+                    }
+                });
+            });
+        });
+        if submit {
+            self.post_status(ctx);
+        }
+    }
+
+    /// "Tag with game": your games, with a search.
+    fn game_menu(&mut self, ui: &mut Ui, t: &Theme, state: &State) {
+        let label = match &self.status.game {
+            Some((_, name)) => name.clone(),
+            None => t!("Tag with game").to_string(),
+        };
+        let r = w::dropdown(ui, t, &label, 180.0);
+        egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(280.0).show(|ui| {
+            let width = ui.available_width();
+            w::search(ui, t, &mut self.status.game_search, t!("Find a game"), width);
+            ui.add_space(t.spacing.xs);
+            if w::menu_item(ui, t, icons::X, t!("No game")).clicked() {
+                self.status.game = None;
+                ui.close();
+            }
+            let q = self.status.game_search.trim().to_lowercase();
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for (app, name) in my_games(state).into_iter().filter(|(_, n)| q.is_empty() || n.to_lowercase().contains(&q)).take(40) {
+                    if w::menu_item(ui, t, icons::CONTROLLER, &name).clicked() {
+                        self.status.game = Some((app, name));
+                        ui.close();
+                    }
+                }
+            });
+        });
+    }
+
+    /// Send the status (in `--demo`, it's only added here).
+    fn post_status(&mut self, ctx: &mut Ctx) {
+        let demo = std::env::args().any(|a| a == "--demo");
+        if let Some(req) = self.submit(ctx.state, demo) {
+            ctx.send(Command::Hub(req));
+        }
+    }
+
+    /// Take the status as written: in the demo it's posted here at once;
+    /// else it waits for Steam and the request to send comes back.
+    fn submit(&mut self, state: &State, demo: bool) -> Option<Request> {
+        let text = self.status.text.trim().to_string();
+        if text.is_empty() || self.status.sending.is_some() {
+            return None;
+        }
+        let me = state.persona(state.steam_id);
+        let (app_id, game) = self.status.game.clone().unwrap_or_default();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let post = Post {
+            kind: PostKind::Status,
+            author: state.steam_id,
+            author_name: me.name.clone(),
+            avatar: Some(art::avatar(me.avatar_hash.as_deref())),
+            app_id,
+            game: game.clone(),
+            action: if app_id != 0 { t!("posted a status about {game}", game = game) } else { String::new() },
+            text: text.clone(),
+            when: t!("Today").to_string(),
+            time: now,
+            ..Default::default()
+        };
+        self.status.error = None;
+        if demo {
+            self.status.posted.push(post);
+            self.status.text.clear();
+            self.status.game = None;
+            return None;
+        }
+        self.status.sending = Some(post);
+        Some(Request::PostStatus { text, app_id })
+    }
+
+    /// Steam answered a posted status. True when it's in.
+    fn status_answered(&mut self, result: &Result<(), String>) -> bool {
+        let post = self.status.sending.take();
+        match result {
+            Ok(()) => {
+                self.status.posted.extend(post);
+                self.status.text.clear();
+                self.status.game = None;
+                self.status.error = None;
+                // Steam's feed has it now: read it again.
+                self.status.refreshing = true;
+                self.asked.retain(|k| !k.starts_with("activity:"));
+                true
+            }
+            Err(e) => {
+                self.status.error = Some(t!("Couldn't post your status: {error}", error = i18n::tr_dyn(e)));
+                false
+            }
         }
     }
 
@@ -794,6 +977,51 @@ fn error(ui: &mut Ui, t: &Theme, msg: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn signed_in() -> State {
+        let mut state = State::default();
+        state.steam_id = 76561197960265729;
+        state
+    }
+
+    #[test]
+    fn a_demo_status_shows_at_once() {
+        let mut home = CommunityHome::default();
+        home.status.text = "  one more round?  ".into();
+        home.status.game = Some((570, "Dota 2".into()));
+        assert!(home.submit(&signed_in(), true).is_none());
+        assert_eq!(home.status.posted.len(), 1);
+        let p = &home.status.posted[0];
+        assert_eq!((p.kind, p.app_id, p.text.as_str(), p.author), (PostKind::Status, 570, "one more round?", 76561197960265729));
+        assert!(home.status.text.is_empty() && home.status.game.is_none());
+        // Nothing to post: nothing happens.
+        assert!(home.submit(&signed_in(), true).is_none());
+        assert_eq!(home.status.posted.len(), 1);
+    }
+
+    #[test]
+    fn a_status_waits_for_steam() {
+        let mut home = CommunityHome::default();
+        home.status.text = "gg".into();
+        match home.submit(&signed_in(), false) {
+            Some(Request::PostStatus { text, app_id }) => assert_eq!((text.as_str(), app_id), ("gg", 0)),
+            other => panic!("expected a post, got {other:?}"),
+        }
+        // Sent once, kept until Steam answers.
+        assert!(home.submit(&signed_in(), false).is_none());
+        assert!(home.status.posted.is_empty() && home.status.text == "gg");
+        // A refusal keeps the text and says why.
+        assert!(!home.status_answered(&Err("You've been posting too frequently".into())));
+        assert_eq!(home.status.text, "gg");
+        assert!(home.status.error.is_some());
+        // Then it goes through: on top of the feed, the feed read again.
+        home.asked.insert("activity:0".into());
+        assert!(home.submit(&signed_in(), false).is_some());
+        assert!(home.status_answered(&Ok(())));
+        assert_eq!(home.status.posted.len(), 1);
+        assert!(home.status.text.is_empty() && home.status.refreshing);
+        assert!(!home.asked.contains("activity:0"));
+    }
 
     #[test]
     fn friend_filters_sort_posts() {

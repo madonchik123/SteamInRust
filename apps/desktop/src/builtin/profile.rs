@@ -111,8 +111,12 @@ impl Extension for Profile {
             self.edit.section = edit::Section::from_arg(rest.trim_start_matches('/'));
             return;
         }
-        let mut parts = arg.unwrap_or_default().split('/');
-        self.viewing = parts.next().and_then(|a| a.parse().ok());
+        // "<id>/<part>", or just "<part>" ("friends", "badges"…) for your own.
+        let mut parts = arg.unwrap_or_default().split('/').peekable();
+        self.viewing = parts.peek().and_then(|a| a.parse().ok());
+        if self.viewing.is_some() || parts.peek() == Some(&"") {
+            parts.next();
+        }
         self.sub = match parts.next() {
             Some("games") => Sub::Games,
             Some("friends") => Sub::Friends,
@@ -128,10 +132,6 @@ impl Extension for Profile {
             Some("inventory") => Sub::Inventory,
             _ => Sub::None,
         };
-        // Just "badges": your own.
-        if arg == Some("badges") {
-            self.sub = Sub::Badges;
-        }
         self.badge_open = None;
         // "<id>/badges/<app>": that game's badge.
         if let (Some(id), Some(app)) = (self.viewing, parts.next().and_then(|a| a.parse::<u32>().ok())) {
@@ -1433,4 +1433,23 @@ pub(crate) fn paint_profile_background(ui: &Ui, t: &Theme, rect: Rect, still: Op
         return true;
     }
     still.is_some_and(|s| w::paint_cover(ui, area, s, CornerRadius::ZERO))
+}
+
+#[cfg(test)]
+mod tests {
+    use extensions::Extension;
+
+    /// The top bar's name menu opens your own parts with no id.
+    #[test]
+    fn own_parts_without_an_id() {
+        let mut p = super::Profile::default();
+        for (arg, sub) in [("friends", super::Sub::Friends), ("badges", super::Sub::Badges), ("games", super::Sub::Games), ("inventory", super::Sub::Inventory)] {
+            p.on_navigate("profile", Some(arg));
+            assert!(p.viewing.is_none() && p.sub == sub, "{arg}");
+        }
+        p.on_navigate("profile", Some("76561197960265729/friends"));
+        assert!(p.viewing == Some(76561197960265729) && p.sub == super::Sub::Friends);
+        p.on_navigate("profile", None);
+        assert!(p.viewing.is_none() && p.sub == super::Sub::None);
+    }
 }

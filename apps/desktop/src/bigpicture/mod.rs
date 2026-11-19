@@ -138,6 +138,16 @@ pub struct BigPicture {
     shot_since: (f64, f32),
     /// The on-screen key pressed last, and when (it pops).
     key_pop: Option<(Id, f64)>,
+    /// Mouse wheel turned in the screenshot viewer, not yet a flip.
+    shot_wheel: f32,
+    /// Chat: whose conversation is open, whether it sticks to the newest
+    /// message, a pending up/down scroll, whether the keyboard is up, and
+    /// whether the history is at its (top, bottom).
+    chat_for: Option<SteamId>,
+    chat_follow: bool,
+    chat_nudge: f32,
+    chat_keys: bool,
+    chat_edges: (bool, bool),
 }
 
 impl BigPicture {
@@ -145,19 +155,27 @@ impl BigPicture {
         let flag = std::env::args().find(|a| a == "--bigpicture" || a.starts_with("--bigpicture="));
         let mut bp = Self {
             active: flag.is_some(),
-            windowed: flag.as_deref() == Some("--bigpicture=window"),
+            // An off-screen preview never goes fullscreen (it would land on
+            // the real screen).
+            windowed: flag.as_deref() == Some("--bigpicture=window") || crate::app::offscreen(),
             pad: Some(input::spawn(ctx.clone())),
             slide: 0.0,
             ..Default::default()
         };
-        // `--bp-page=store:<app>|game:<app>|install:<app>|library` opens a
-        // page right away (previews and checks).
+        // `--bp-page=store:<app>|game:<app>|install:<app>|shots:<app>|
+        // chat:<steam id>|library` opens a page right away (previews and checks).
         if let Some(arg) = std::env::args().find_map(|a| a.strip_prefix("--bp-page=").map(String::from)) {
             let (kind, id) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+            let wide: u64 = id.parse().unwrap_or(0);
             let id = id.parse().unwrap_or(0);
             match kind {
                 "library" => bp.tab = Tab::Library,
                 "store" => bp.stack.push(Page::StoreApp(id)),
+                "shots" => bp.stack.extend([Page::StoreApp(id), Page::Shots(id, 0)]),
+                "chat" => {
+                    bp.tab = Tab::Friends;
+                    bp.stack.extend([Page::Friend(wide), Page::Chat(wide)]);
+                }
                 "game" => bp.stack.push(Page::Game(id)),
                 "install" => bp.stack.push(Page::Install(id)),
                 _ => {}
@@ -394,6 +412,8 @@ impl BigPicture {
                     Press::A if typing && from_keys && chat && !self.message.trim().is_empty() => self.send_now = true,
                     Press::A if typing && from_keys && !chat && self.query.trim() != self.submitted => submit = true,
                     Press::A => press = true,
+                    // Chat with the keyboard up: B puts it away first.
+                    Press::B if chat && self.chat_keys => self.focus.current = Some(screens::chat_history_id()),
                     Press::B => self.back(now),
                     Press::X => x = true,
                     Press::Y => y = true,
@@ -426,6 +446,15 @@ impl BigPicture {
             dir = None;
             press = false;
         }
+        // Chat: up/down on the history scroll it; past its ends they move on.
+        if let (Page::Chat(_), Some(d @ (Dir::Up | Dir::Down))) = (self.page(), dir) {
+            let (at_top, at_bottom) = self.chat_edges;
+            let leave = (d == Dir::Up && at_top) || (d == Dir::Down && at_bottom);
+            if self.focus.current == Some(screens::chat_history_id()) && !leave {
+                self.chat_nudge += if d == Dir::Up { -1.0 } else { 1.0 };
+                dir = None;
+            }
+        }
         // The screenshot viewer pages with left/right.
         if let (Page::Shots(app_id, i), Some(d @ (Dir::Left | Dir::Right))) = (self.page(), dir) {
             let n = screens::shot_count(app, actions, app_id);
@@ -437,7 +466,14 @@ impl BigPicture {
             dir = None;
         }
         let menu_open = self.menu.is_some();
+        let before = self.focus.current;
         self.focus.begin(ui, if menu_open { None } else { dir }, press && !menu_open);
+        // Up from a page into the tab bar lands on this page's tab (the
+        // nearest one could be another tab, which would switch pages).
+        let is_tab = |id: Id| TABS.iter().any(|t| tab_id(*t) == id);
+        if self.focus.moved && before.is_some_and(|b| !is_tab(b)) && self.focus.current.is_some_and(is_tab) {
+            self.focus.current = Some(tab_id(self.tab));
+        }
 
         // ---- draw ----
         let top_h = 104.0 * s;

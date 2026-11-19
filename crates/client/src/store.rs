@@ -134,6 +134,29 @@ fn path() -> PathBuf {
     config_dir().join("accounts.json")
 }
 
+fn libraries_path() -> PathBuf {
+    config_dir().join("libraries.txt")
+}
+
+/// Library folders games were installed into that Steam's own list
+/// (`libraryfolders.vdf`) may not have: scanned along with Steam's.
+pub fn extra_libraries() -> Vec<PathBuf> {
+    local::read_library_list(&libraries_path())
+}
+
+/// Remember a library folder a game is installed into, so the library
+/// finds the game there from now on.
+pub fn remember_library(lib: &std::path::Path) {
+    if let Err(e) = local::add_to_library_list(&libraries_path(), lib) {
+        tracing::warn!("couldn't remember the library {}: {e}", lib.display());
+    }
+}
+
+/// The local Steam state: Steam's libraries plus the ones remembered here.
+pub fn load_local(steam_root: Option<PathBuf>) -> local::Result<local::LocalState> {
+    local::load_with(steam_root, &extra_libraries())
+}
+
 /// The saved accounts, without credentials (see [`credentials`]).
 pub fn load() -> Vec<SavedAccount> {
     let mut list: Vec<SavedAccount> = std::fs::read_to_string(path())

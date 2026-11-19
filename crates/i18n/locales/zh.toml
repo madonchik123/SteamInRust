@@ -493,6 +493,7 @@
 "Parallel connections" = "并行连接数"
 "SteamInRust measures Steam's content servers and uses the fastest one, reuses unchanged parts of games when updating, and checks every piece as it arrives." = "SteamInRust 会测量 Steam 的内容服务器并使用最快的一台，更新时复用游戏中未改变的部分，并在每个数据块到达时进行校验。"
 "{name} is ready to play" = "{name} 已准备就绪"
+"{name} is already installed in {folder}" = "{name} 已安装在 {folder}"
 "Download failed: {error}" = "下载失败：{error}"
 "Added to downloads" = "已添加到下载"
 
@@ -2513,3 +2514,16 @@
 "Drag to change its place in your wishlist" = "拖动以更改它在愿望单中的位置"
 "Type a number to move it to that place" = "输入数字即可将它移到该位置"
 "Couldn't save your wishlist's order. Try again in a moment." = "无法保存愿望单的顺序。请稍后再试。"
+
+# --- Community: post a status ---
+"Post a status for your friends…" = "发布动态给你的好友…"
+"Tag with game" = "标记游戏"
+"No game" = "不标记游戏"
+"Find a game" = "查找游戏"
+"Post|status" = "发布"
+"Status posted" = "动态已发布"
+"Couldn't post your status: {error}" = "无法发布动态：{error}"
+"Your friends see what you post here." = "你的好友会看到你在这里发布的内容。"
+"The status is empty" = "动态为空"
+"Sign in to post a status" = "登录以发布动态"
+"Posting status updates is unavailable right now" = "目前无法发布动态"
