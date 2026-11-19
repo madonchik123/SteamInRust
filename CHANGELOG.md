@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.11.0](https://github.com/madonchik123/SteamInRust/compare/v0.10.0...v0.11.0) (2026-11-19)
+
+
+### New
+
+* a Community home with friends' activity, Explore and news from developers ([99e7a1b](https://github.com/madonchik123/SteamInRust/commit/99e7a1b439106238348c7a0146b7c9f5315521ad))
+* a new look based on Juxtopposed's Steam Redesign, and themes you can make yourself ([99e7a1b](https://github.com/madonchik123/SteamInRust/commit/99e7a1b439106238348c7a0146b7c9f5315521ad))
+* game item definitions, F12 screenshots and an in-game FPS counter ([#99](https://github.com/madonchik123/SteamInRust/issues/99)) ([94dcaab](https://github.com/madonchik123/SteamInRust/commit/94dcaab204b69db6c6f39be59a7beca66b544831))
+* group chats, thread replies, group pages and market history ([#98](https://github.com/madonchik123/SteamInRust/issues/98)) ([d5e8407](https://github.com/madonchik123/SteamInRust/commit/d5e8407484f8e3645144f9597daad52a014dbb51))
+* new SteamInRust logo in the app, icons and tray ([#97](https://github.com/madonchik123/SteamInRust/issues/97)) ([7fa3db0](https://github.com/madonchik123/SteamInRust/commit/7fa3db0d2dc39002b16da57a914b10eef818dbd6))
+* one Friends & Chat window with the chat beside your friends list ([99e7a1b](https://github.com/madonchik123/SteamInRust/commit/99e7a1b439106238348c7a0146b7c9f5315521ad))
+* Steam-style profile editing, animated profile backgrounds and friend actions on profiles ([99e7a1b](https://github.com/madonchik123/SteamInRust/commit/99e7a1b439106238348c7a0146b7c9f5315521ad))
+* the Points Shop and the discovery feed's new picks ([99e7a1b](https://github.com/madonchik123/SteamInRust/commit/99e7a1b439106238348c7a0146b7c9f5315521ad))
+
+
+### Fixes
+
+* bound GNS ack_frame/received, hub parse_topics, cloud glob, and inline image decoding ([#93](https://github.com/madonchik123/SteamInRust/issues/93)) ([7f05e96](https://github.com/madonchik123/SteamInRust/commit/7f05e96415c272da8ce84658c7f5977be97051fa))
+* bound VDF recursion, CM/depot decompression, MP4/HLS/VideoToolbox/range OOM, and P2P reassembly ([#86](https://github.com/madonchik123/SteamInRust/issues/86)) ([4b34829](https://github.com/madonchik123/SteamInRust/commit/4b34829539107f8da8bec819a745498fdda89cce))
+* enforce depot path confinement, HTTPS-only CDN, and mandatory SHA-1 checks ([#79](https://github.com/madonchik123/SteamInRust/issues/79)) ([dcadb81](https://github.com/madonchik123/SteamInRust/commit/dcadb8165bfc6b4d208f376fb41ca6c879d7724c))
+* enforce folder name validation, symlink unlink, and canonical containment on uninstall ([#83](https://github.com/madonchik123/SteamInRust/issues/83)) ([9461dca](https://github.com/madonchik123/SteamInRust/commit/9461dcae28fdd100f290ffcac6e61fd526bf5747))
+* enforce http/https URL validation, remove egui_extras FileLoader, and type rich::Click ([#85](https://github.com/madonchik123/SteamInRust/issues/85)) ([814f1e4](https://github.com/madonchik123/SteamInRust/commit/814f1e41587821805095a111075193cf032f5d4c))
+* enforce HTTPS-only transport and SHA-1 integrity in Workshop, Cloud, and PICS ([#90](https://github.com/madonchik123/SteamInRust/issues/90)) ([1ad74fd](https://github.com/madonchik123/SteamInRust/commit/1ad74fd791a2dd78d4e260f057aac581269c0b2b))
+* enforce modular 32-bit sequence math and bounds checks in PseudoTcp ([#80](https://github.com/madonchik123/SteamInRust/issues/80)) ([324cb22](https://github.com/madonchik123/SteamInRust/commit/324cb225bcd1fb38fa733cfe5963ade71f33319c))
+* enforce SaveRule matching, OS root gating, and symlink checks on Cloud downloads ([#82](https://github.com/madonchik123/SteamInRust/issues/82)) ([16a15b2](https://github.com/madonchik123/SteamInRust/commit/16a15b284e9847498a3678891ef602e02fa7b822))
+* enforce W^X protections on 32-bit steamclient trampoline pages ([#92](https://github.com/madonchik123/SteamInRust/issues/92)) ([413e7cf](https://github.com/madonchik123/SteamInRust/commit/413e7cff75f80466d0361c15dc017c86915c9b50))
+* harden local link/IPC bounds, CSPRNG tokens, and verified updater staging ([#88](https://github.com/madonchik123/SteamInRust/issues/88)) ([c548d9b](https://github.com/madonchik123/SteamInRust/commit/c548d9b7723b9f59f7b3cd5a0803b5b6a97345cd))
+* harden plugin Rhai sandbox, permission consent persistence, and resource caps ([#84](https://github.com/madonchik123/SteamInRust/issues/84)) ([98b19a7](https://github.com/madonchik123/SteamInRust/commit/98b19a71adfa6e4defedc082df356ea190315a89))
+* harden Steam web cookies, URL validation, and image cache SSRF/size limits ([#89](https://github.com/madonchik123/SteamInRust/issues/89)) ([0e3bd1b](https://github.com/madonchik123/SteamInRust/commit/0e3bd1b744c066aba65e2df6001b54554d50d772))
+* harden steamclient server list FFI filter parsing and list cancellation ([#87](https://github.com/madonchik123/SteamInRust/issues/87)) ([dc0f817](https://github.com/madonchik123/SteamInRust/commit/dc0f817f21ad567d4d576946256f6781aa87562b))
+* isolate remote invite connect args from launch options ([#78](https://github.com/madonchik123/SteamInRust/issues/78)) ([942bedd](https://github.com/madonchik123/SteamInRust/commit/942beddc0cc5e0e62e8c2d07ebcd0bef52fb9dea))
+* redact secrets from Debug impls and enforce private local file/temp hygiene ([#91](https://github.com/madonchik123/SteamInRust/issues/91)) ([f3fa6de](https://github.com/madonchik123/SteamInRust/commit/f3fa6dedd04a2c7da8ffa528221e6724997e7251))
+* the picked logo shows on the taskbar button, and applies at startup ([99e7a1b](https://github.com/madonchik123/SteamInRust/commit/99e7a1b439106238348c7a0146b7c9f5315521ad))
+
+
+### Faster
+
+* an idle window stops redrawing ([99e7a1b](https://github.com/madonchik123/SteamInRust/commit/99e7a1b439106238348c7a0146b7c9f5315521ad))
+
 ## [0.10.0](https://github.com/madonchik123/SteamInRust/compare/v0.9.0...v0.10.0) (2026-11-17)
 
 
