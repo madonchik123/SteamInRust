@@ -488,6 +488,10 @@ impl Extension for Store {
     }
 
     fn on_event(&mut self, event: &client::Event, ctx: &mut Ctx) {
+        // Steam's wishlist (after a move, or anything else) replaces the order shown.
+        if let client::Event::Wishlist(_) = event {
+            self.wish.pending = None;
+        }
         if let client::Event::DiscoveryQueue(_) = event {
             self.discovery_wait = false;
             self.discovery_asked = None;

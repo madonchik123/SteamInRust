@@ -2508,3 +2508,8 @@
 "Top right" = "Справа вверху"
 "Bottom left" = "Слева внизу"
 "Bottom right" = "Справа внизу"
+
+# --- Wishlist order ---
+"Drag to change its place in your wishlist" = "Перетащите, чтобы изменить место в списке желаемого"
+"Type a number to move it to that place" = "Введите число, чтобы переместить игру на это место"
+"Couldn't save your wishlist's order. Try again in a moment." = "Не удалось сохранить порядок списка желаемого. Попробуйте ещё раз чуть позже."

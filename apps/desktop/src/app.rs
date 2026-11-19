@@ -842,7 +842,8 @@ impl eframe::App for SteamApp {
     /// Previews of an `--offscreen` copy can't be pointed at with the real
     /// mouse: `--pointer=x,y` keeps a pretend pointer there (hover states),
     /// and `--click=x,y` clicks there once, 4 seconds in (or
-    /// `--click-after=<seconds>`).
+    /// `--click-after=<seconds>`); `--type=text` then types into what was
+    /// clicked, and `--drag=x1,y1,x2,y2` drags.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if !offscreen() || raw_input.viewport_id != egui::ViewportId::ROOT {
             return;
@@ -869,7 +870,49 @@ impl eframe::App for SteamApp {
                 raw_input.events.push(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers });
                 raw_input.events.push(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers });
             }
+            // `--type=text`: half a second after the click, type it and press Enter.
+            if let Some(text) = std::env::args().find_map(|a| a.strip_prefix("--type=").map(String::from)) {
+                let typed = ctx.data(|d| d.get_temp::<bool>(egui::Id::unique("preview-typed"))).unwrap_or(false);
+                if time > after + 0.5 && !typed {
+                    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("preview-typed"), true));
+                    // Replace what's there, like typing over a selection.
+                    raw_input.events.push(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+                    raw_input.events.push(egui::Event::Text(text));
+                    raw_input.events.push(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+                }
+            }
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        // `--drag=x1,y1,x2,y2`: press at the first point (`--click-after`
+        // seconds in), glide to the second over a second and a half, then let
+        // go after `--drag-hold` more seconds (default 1; `never` to keep
+        // holding, for a picture mid-drag).
+        if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--drag=").map(String::from)) {
+            let n: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+            if let [x1, y1, x2, y2] = n[..] {
+                let after = std::env::args().find_map(|a| a.strip_prefix("--click-after=").and_then(|v| v.parse::<f64>().ok())).unwrap_or(4.0);
+                let hold = std::env::args().find_map(|a| a.strip_prefix("--drag-hold=").map(String::from)).unwrap_or_else(|| "1".into());
+                let release = hold.parse::<f64>().ok().map(|h| after + 1.5 + h);
+                let modifiers = egui::Modifiers::NONE;
+                let step = ctx.data(|d| d.get_temp::<u8>(egui::Id::unique("preview-drag"))).unwrap_or(0);
+                let (a, b) = (egui::pos2(x1, y1), egui::pos2(x2, y2));
+                if time > after {
+                    let k = ((time - after) / 1.5).clamp(0.0, 1.0) as f32;
+                    let p = a + (b - a) * k;
+                    if step == 0 {
+                        raw_input.events.push(egui::Event::PointerMoved(a));
+                        raw_input.events.push(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers });
+                        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("preview-drag"), 1u8));
+                    } else if step == 1 {
+                        raw_input.events.push(egui::Event::PointerMoved(p));
+                        if release.is_some_and(|r| time > r) {
+                            raw_input.events.push(egui::Event::PointerButton { pos: b, button: egui::PointerButton::Primary, pressed: false, modifiers });
+                            ctx.data_mut(|d| d.insert_temp(egui::Id::unique("preview-drag"), 2u8));
+                        }
+                    }
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(30));
+            }
         }
     }
 

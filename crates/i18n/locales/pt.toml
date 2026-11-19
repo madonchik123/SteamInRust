@@ -2508,3 +2508,8 @@
 "Top right" = "Canto superior direito"
 "Bottom left" = "Canto inferior esquerdo"
 "Bottom right" = "Canto inferior direito"
+
+# --- Wishlist order ---
+"Drag to change its place in your wishlist" = "Arraste para mudar a posição na sua lista de desejos"
+"Type a number to move it to that place" = "Digite um número para movê-lo para essa posição"
+"Couldn't save your wishlist's order. Try again in a moment." = "Não foi possível salvar a ordem da sua lista de desejos. Tente de novo daqui a pouco."

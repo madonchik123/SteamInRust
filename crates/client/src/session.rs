@@ -1245,6 +1245,7 @@ async fn online(
                     sink(Event::AppIgnored { app_id, ignore, result });
                 }),
                 Some(Command::WishlistRemove { app_id }) => st.wishlist_change(app_id, false, sink),
+                Some(Command::WishlistMove { app_id, to }) => st.wishlist_move(app_id, to, sink),
                 Some(Command::LoadCart) => st.load_cart(sink),
                 Some(Command::CartAdd { package_id, gift, gift_to }) => st.cart_add(package_id, gift, gift_to, sink),
                 Some(Command::CartModify { line_item_id, gift, gift_to }) => st.cart_modify(line_item_id, gift, gift_to, sink),
@@ -2001,8 +2002,34 @@ impl Online {
         tokio::spawn(async move {
             use proto::webui::*;
             match conn.call::<_, CWishlistGetWishlistResponse>("Wishlist.GetWishlist#1", &CWishlistGetWishlistRequest { steamid: Some(me) }).await {
-                Ok(r) => sink(Event::Wishlist(r.items.iter().map(|i| (i.appid(), i.date_added() as u64)).collect())),
+                Ok(r) => sink(Event::Wishlist(wishlist_in_order(&r.items))),
                 Err(e) => sink(Event::StoreError(e.to_string())),
+            }
+        });
+    }
+
+    /// Move a game in the wishlist's order the way Steam's wishlist page
+    /// does: read the current priorities, renumber, send what changed.
+    /// Steam's list is sent again afterwards either way.
+    fn wishlist_move(&self, app_id: AppId, to: usize, sink: &Sink) {
+        let (conn, me) = (self.conn.clone(), self.me);
+        self.with_web(sink, move |web, sink| async move {
+            use proto::webui::*;
+            let current = conn.call::<_, CWishlistGetWishlistResponse>("Wishlist.GetWishlist#1", &CWishlistGetWishlistRequest { steamid: Some(me) }).await;
+            let saved = match (&web, &current) {
+                (Ok(w), Ok(r)) => {
+                    let ranked: Vec<crate::wishlist::Ranked> = r.items.iter().map(|i| crate::wishlist::Ranked { app_id: i.appid(), priority: i.priority(), added: i.date_added() as u64 }).collect();
+                    crate::wishlist::reorder(w, &crate::wishlist::move_updates(&ranked, app_id, to)).await
+                }
+                (Err(e), _) => Err(e.clone()),
+                (_, Err(e)) => Err(e.to_string()),
+            };
+            if let Err(e) = saved {
+                tracing::warn!("wishlist order: {e}");
+                sink(Event::StoreError("Couldn't save your wishlist's order. Try again in a moment.".into()));
+            }
+            if let Ok(r) = conn.call::<_, CWishlistGetWishlistResponse>("Wishlist.GetWishlist#1", &CWishlistGetWishlistRequest { steamid: Some(me) }).await {
+                sink(Event::Wishlist(wishlist_in_order(&r.items)));
             }
         });
     }
@@ -2037,7 +2064,7 @@ impl Online {
                 }
             }
             if let Ok(r) = conn.call::<_, CWishlistGetWishlistResponse>("Wishlist.GetWishlist#1", &CWishlistGetWishlistRequest { steamid: Some(me) }).await {
-                sink(Event::Wishlist(r.items.iter().map(|i| (i.appid(), i.date_added() as u64)).collect()));
+                sink(Event::Wishlist(wishlist_in_order(&r.items)));
             }
         });
     }
@@ -3457,4 +3484,11 @@ mod support_url_tests {
         }
         assert!(super::validate_support_ticket_url("https://help.steampowered.com/en/wizard/HelpRequest/HT-1234").is_ok());
     }
+}
+
+/// The wishlist in its own order ("Your rank"), as (game, date added).
+fn wishlist_in_order(items: &[proto::webui::CWishlistGetWishlistResponseWishlistItem]) -> Vec<(AppId, u64)> {
+    let mut ranked: Vec<crate::wishlist::Ranked> = items.iter().map(|i| crate::wishlist::Ranked { app_id: i.appid(), priority: i.priority(), added: i.date_added() as u64 }).collect();
+    crate::wishlist::sort(&mut ranked);
+    ranked.into_iter().map(|r| (r.app_id, r.added)).collect()
 }

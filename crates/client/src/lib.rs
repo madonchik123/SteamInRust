@@ -26,6 +26,7 @@ pub mod cloud;
 pub mod collections;
 pub mod friends_add;
 pub mod discovery;
+pub mod wishlist;
 pub mod installscript;
 pub mod reviews;
 pub mod regions;
@@ -278,6 +279,8 @@ pub enum Command {
     /// "Not interested" in a game (`ignore: false` undoes it).
     IgnoreApp { app_id: AppId, ignore: bool },
     WishlistRemove { app_id: AppId },
+    /// Move a game to `to` (0-based) in the wishlist's own order ("Your rank").
+    WishlistMove { app_id: AppId, to: usize },
     LoadCart,
     /// Add a package to the cart, optionally as a gift for a friend.
     /// Add a copy to the cart: for this account, or as a gift (optionally
@@ -396,6 +399,7 @@ impl std::fmt::Debug for Command {
             Command::LoadWishlist => f.write_str("LoadWishlist"),
             Command::WishlistAdd { app_id } => f.debug_struct("WishlistAdd").field("app_id", app_id).finish(),
             Command::WishlistRemove { app_id } => f.debug_struct("WishlistRemove").field("app_id", app_id).finish(),
+            Command::WishlistMove { app_id, to } => f.debug_struct("WishlistMove").field("app_id", app_id).field("to", to).finish(),
             Command::LoadDiscoveryQueue { rebuild } => f.debug_struct("LoadDiscoveryQueue").field("rebuild", rebuild).finish(),
             Command::DiscoverySeen { app_id } => f.debug_struct("DiscoverySeen").field("app_id", app_id).finish(),
             Command::LoadMyReview { app_id } => f.debug_struct("LoadMyReview").field("app_id", app_id).finish(),

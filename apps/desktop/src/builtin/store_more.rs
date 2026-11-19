@@ -58,6 +58,16 @@ pub struct WishView {
     /// In cents.
     pub max_price: Option<u64>,
     pub on_sale: bool,
+    /// Rows can be dragged and renumbered (sorted by "Your rank", as a list).
+    reorderable: bool,
+    /// The game being dragged.
+    drag: Option<AppId>,
+    /// This frame's rows: (game, its rank from 0, where it is), for dropping.
+    rows: Vec<(AppId, usize, Rect)>,
+    /// A rank being typed in: (game, the text, just opened: take the keyboard).
+    rank_edit: Option<(AppId, String, bool)>,
+    /// The order just chosen here, shown until Steam sends the list back.
+    pub pending: Option<Vec<AppId>>,
 }
 
 /// The browse page's tabs (Figma `660:10019`): a sort, or a filter.
@@ -419,7 +429,19 @@ impl Store {
         let c = &t.components.store_card;
         let pad = t.dense(10.0);
         let h = t.dense(152.0);
+        // Wishlist rows in "Your rank" order can be dragged to a new place.
+        let reorder = rank.is_some() && self.wish.reorderable;
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
+        if let (true, Some((n, _))) = (reorder, rank) {
+            self.wish.rows.push((it.app_id, n, rect));
+            // Dragging is its own thing (it never takes a click), so clicks
+            // still go to the row, its number and its buttons.
+            let drag = ui.interact(rect, ui.scope_id().with(("wish-row-drag", it.app_id)), Sense::drag());
+            if drag.drag_started() {
+                self.wish.drag = Some(it.app_id);
+                self.wish.rank_edit = None;
+            }
+        }
         if !ui.is_rect_visible(rect) {
             return false;
         }
@@ -429,12 +451,9 @@ impl Store {
         // picture and price column, so the middle keeps room for tags.
         let compact = rect.width() < t.dense(980.0);
         let mut left = rect.left() + pad;
-        if let Some((n, _)) = rank {
-            let col = Rect::from_min_size(pos2(left, rect.top()), vec2(t.dense(26.0), h));
-            ui.painter().text(col.center() - vec2(0.0, t.dense(16.0)), Align2::CENTER_CENTER, "=", t.typography.body_l.font(), t.text_dim);
-            let num = Rect::from_center_size(col.center() + vec2(0.0, t.dense(22.0)), vec2(t.dense(24.0), t.dense(24.0)));
-            ui.painter().rect_filled(num, t.corner_small(), t.chrome);
-            ui.painter().text(num.center(), Align2::CENTER_CENTER, (n + 1).to_string(), t.typography.body_s.font(), t.text_dim);
+        if let (true, Some((n, _))) = (reorder, rank) {
+            let col = Rect::from_min_size(pos2(left, rect.top()), vec2(t.dense(30.0), h));
+            self.rank_column(ui, t, ctx, it.app_id, n, col);
             left = col.right() + t.dense(8.0);
         }
         let img_h = h - pad * 2.0 - if compact { t.dense(20.0) } else { 0.0 };
@@ -567,6 +586,63 @@ impl Store {
         opened
     }
 
+    /// A wishlist row's handle (drag it) and its number (click it and type
+    /// a position to move the game there, like Steam's).
+    fn rank_column(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, app: AppId, n: usize, col: Rect) {
+        let handle = Rect::from_center_size(col.center() - vec2(0.0, t.dense(16.0)), vec2(col.width(), t.dense(28.0)));
+        let hr = ui.interact(handle, ui.scope_id().with(("wish-handle", app)), Sense::drag());
+        let hover = ui.ctx().animate_bool_with_time(hr.id, hr.hovered() || self.wish.drag == Some(app), 0.1);
+        ui.painter().text(handle.center(), Align2::CENTER_CENTER, icons::LIST, t.typography.body_l.font(), w::mix(t.text_dim, t.accent, hover));
+        if hr.drag_started() {
+            self.wish.drag = Some(app);
+            self.wish.rank_edit = None;
+        }
+        hr.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text(t!("Drag to change its place in your wishlist"));
+        let num = Rect::from_center_size(col.center() + vec2(0.0, t.dense(22.0)), vec2(col.width(), t.dense(26.0)));
+        let edit_id = ui.scope_id().with(("wish-rank", app));
+        if let Some((_, text, fresh)) = self.wish.rank_edit.as_mut().filter(|(a, _, _)| *a == app) {
+            let te = ui.put(
+                num,
+                egui::TextEdit::singleline(text)
+                    .id(edit_id)
+                    .hint_text((n + 1).to_string())
+                    .font(t.typography.body_s.font())
+                    .align(egui::Align2::CENTER_CENTER)
+                    .char_limit(5)
+                    .margin(vec2(2.0, 4.0)),
+            );
+            // The box exists now: give it the keyboard (asked for earlier,
+            // egui would have dropped the focus of a widget it hadn't seen).
+            if std::mem::take(fresh) {
+                te.request_focus();
+            } else if te.lost_focus() {
+                let entered = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let target = text.trim().parse::<usize>().ok().filter(|v| *v > 0);
+                self.wish.rank_edit = None;
+                if let (true, Some(v)) = (entered, target) {
+                    let order: Vec<AppId> = self.wish_order(ctx);
+                    self.wish_move(ctx, &order, app, v - 1);
+                }
+            }
+            return;
+        }
+        let nr = ui.interact(num, ui.scope_id().with(("wish-rank-box", app)), Sense::click());
+        let hover = ui.ctx().animate_bool_with_time(nr.id, nr.hovered(), 0.1);
+        ui.painter().rect_filled(num, t.corner_small(), w::mix(t.chrome, t.surface_hover, hover));
+        ui.painter().text(num.center(), Align2::CENTER_CENTER, (n + 1).to_string(), t.typography.body_s.font(), w::mix(t.text_dim, t.text, hover));
+        if nr.on_hover_cursor(egui::CursorIcon::Text).on_hover_text(t!("Type a number to move it to that place")).clicked() {
+            self.wish.rank_edit = Some((app, String::new(), true));
+        }
+    }
+
+    /// The wishlist's own order as shown (with a move just made here).
+    fn wish_order(&self, ctx: &Ctx) -> Vec<AppId> {
+        match &self.wish.pending {
+            Some(p) => p.clone(),
+            None => ctx.state.wishlist.as_ref().map(|l| l.iter().map(|(a, _)| *a).collect()).unwrap_or_default(),
+        }
+    }
+
     // ---------- wishlist ----------
 
     /// The wishlist (Figma "wishlist" `300:321`).
@@ -582,15 +658,26 @@ impl Store {
             });
         });
         ui.add_space(t.dense(20.0));
-        let Some(list) = ctx.state.wishlist.clone() else {
+        let Some(mut list) = ctx.state.wishlist.clone() else {
             w::loading(ui, t, t!("Loading…"));
             return;
         };
+        // A move made here shows right away, until Steam's list comes back.
+        if let Some(p) = &self.wish.pending {
+            let same = p.len() == list.len() && list.iter().all(|(a, _)| p.contains(a));
+            if same {
+                list.sort_by_key(|(a, _)| p.iter().position(|x| x == a));
+            } else {
+                self.wish.pending = None;
+            }
+        }
         if list.is_empty() {
             w::empty(ui, t, icons::HEART, t!("Your wishlist is empty"), t!("Add games from their store pages and you'll be told when they go on sale."));
             return;
         }
-        let ids: Vec<AppId> = list.iter().map(|x| x.0).collect();
+        // Which games, whatever their order: moving one doesn't load them again.
+        let mut ids: Vec<AppId> = list.iter().map(|x| x.0).collect();
+        ids.sort_unstable();
         if self.wish_items.as_ref().is_none_or(|(k, _)| *k != ids) {
             let (api, ids2) = (self.api.clone(), ids.clone());
             let slot = self.fetch(async move { api.items(&ids2).await });
@@ -640,7 +727,7 @@ impl Store {
         };
         // Counts beside each choice: how many pass with it and the other filters.
         let count = |f: &dyn Fn(&mut WishView)| -> usize {
-            let mut probe = WishView { sort: v.sort, query: v.query.clone(), grid: v.grid, platform: v.platform, max_price: v.max_price, on_sale: v.on_sale };
+            let mut probe = WishView { sort: v.sort, query: v.query.clone(), grid: v.grid, platform: v.platform, max_price: v.max_price, on_sale: v.on_sale, ..Default::default() };
             f(&mut probe);
             items.iter().filter(|i| passes_others(i, &probe)).count()
         };
@@ -688,7 +775,7 @@ impl Store {
                     });
                 });
                 if reset {
-                    *v = WishView { sort: v.sort, grid: v.grid, ..Default::default() };
+                    *v = WishView { sort: v.sort, grid: v.grid, pending: v.pending.take(), ..Default::default() };
                 }
             });
             ui.vertical(|ui| {
@@ -701,9 +788,99 @@ impl Store {
                     w::empty(ui, t, icons::FUNNEL, t!("Nothing matches"), t!("Try fewer filters."));
                 }
                 let ranks: Vec<(usize, u64)> = shown.iter().map(|i| rank_of(i.app_id)).collect();
+                // Like Steam: games move only in their own order, as a list.
+                self.wish.reorderable = self.wish.sort == WishSort::Rank && !self.wish.grid && ctx.state.steam_id != 0;
+                if !self.wish.reorderable {
+                    self.wish.drag = None;
+                    self.wish.rank_edit = None;
+                }
+                self.wish.rows.clear();
                 self.list_or_grid(ui, t, ctx, &shown, Some(&ranks));
+                let order: Vec<AppId> = list.iter().map(|(a, _)| *a).collect();
+                self.wish_drag(ui, t, ctx, &order);
+                self.wish.reorderable = false;
             });
         });
+    }
+
+    /// Move a game to `to` (0-based) in the wishlist's own order: shown at
+    /// once, saved on Steam (the way its wishlist page saves it).
+    fn wish_move(&mut self, ctx: &mut Ctx, order: &[AppId], app_id: AppId, to: usize) {
+        let mut v = order.to_vec();
+        let Some(from) = v.iter().position(|a| *a == app_id) else { return };
+        let to = to.min(v.len() - 1);
+        if from == to {
+            return;
+        }
+        let a = v.remove(from);
+        v.insert(to, a);
+        self.wish.pending = Some(v);
+        ctx.send(Command::WishlistMove { app_id, to });
+    }
+
+    /// While a row is dragged: where it would land (a line between rows),
+    /// the game's name under the pointer, the list scrolling near the edges;
+    /// letting go moves it there.
+    fn wish_drag(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, order: &[AppId]) {
+        let Some(app) = self.wish.drag else { return };
+        let rows = std::mem::take(&mut self.wish.rows);
+        let (Some(pos), Some(from)) = (ui.ctx().pointer_latest_pos(), order.iter().position(|a| *a == app)) else {
+            self.wish.drag = None;
+            return;
+        };
+        if rows.is_empty() {
+            self.wish.drag = None;
+            return;
+        }
+        // Before the first row whose middle is below the pointer, else after the last.
+        let gap = t.dense(8.0);
+        let (to, line_y) = match rows.iter().find(|(_, _, r)| pos.y < r.center().y) {
+            Some((_, n, r)) => (if from < *n { n - 1 } else { *n }, r.top() - gap / 2.0),
+            None => {
+                let (_, last, r) = rows[rows.len() - 1];
+                (if from <= last { last } else { last + 1 }, r.bottom() + gap / 2.0)
+            }
+        };
+        let clip = ui.clip_rect();
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("wishlist-drop"))).with_clip_rect(clip);
+        // The dragged row, dimmed where it was.
+        if let Some((_, _, r)) = rows.iter().find(|(a, _, _)| *a == app) {
+            painter.rect_filled(*r, t.corner(), t.overlay_dark(2));
+        }
+        // Where it goes: a line in the accent, with a dot at its start.
+        if to != from {
+            let x = rows[0].2.x_range();
+            let thick = t.dense(3.0);
+            painter.rect_filled(Rect::from_min_max(pos2(x.min, line_y - thick / 2.0), pos2(x.max, line_y + thick / 2.0)), egui::CornerRadius::same(2), t.accent);
+            painter.circle_filled(pos2(x.min, line_y), thick * 2.0, t.accent);
+        }
+        // The game's name, following the pointer.
+        let name = self.wish_items.as_ref().and_then(|(_, s)| snapshot(s)).and_then(|r| r.ok()).and_then(|v| v.into_iter().find(|i| i.app_id == app)).map(|i| i.name).unwrap_or_default();
+        let label = format!("{}  {}  ·  #{}", icons::LIST, name, to + 1);
+        let g = painter.layout_no_wrap(label, t.typography.body_m.font(), t.text);
+        let pad = vec2(t.spacing.md, t.spacing.sm);
+        let tag = Rect::from_min_size(pos + vec2(t.dense(14.0), t.dense(10.0)), g.size() + pad * 2.0);
+        painter.rect_filled(tag, t.corner_small(), t.raised);
+        painter.rect_stroke(tag, t.corner_small(), Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+        painter.galley(tag.min + pad, g, t.text);
+        // Near the top or bottom: scroll, faster the closer it gets.
+        let zone = t.dense(80.0);
+        let pull = if pos.y < clip.top() + zone {
+            (clip.top() + zone - pos.y) / zone
+        } else if pos.y > clip.bottom() - zone {
+            -(pos.y - (clip.bottom() - zone)) / zone
+        } else {
+            0.0
+        };
+        if pull != 0.0 {
+            ui.scroll_with_delta(vec2(0.0, pull.clamp(-1.0, 1.0) * t.dense(22.0)));
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        ui.ctx().request_repaint();
+        if !ui.input(|i| i.pointer.primary_down()) {
+            self.wish.drag = None;
+            self.wish_move(ctx, order, app, to);
+        }
     }
 
     // ---------- cart ----------
