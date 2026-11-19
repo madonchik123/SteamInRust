@@ -348,7 +348,7 @@ fn review_box(ui: &mut Ui, t: &Theme, p: &Post) {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = t.spacing.xs;
                 ui.add_space(t.spacing.xs);
-                ui.label(w::body_m(t, if up { t!("Recommended") } else { t!("Not Recommended") }, t.text));
+                ui.label(w::body_m(t, if up { t!("Recommended|verdict") } else { t!("Not Recommended") }, t.text));
                 if !p.hours.is_empty() {
                     ui.label(w::body_m(t, &p.hours, t.text_dim));
                 }
