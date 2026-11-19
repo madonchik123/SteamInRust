@@ -8,6 +8,7 @@
 use client::Event;
 use client::feed::{ExploreQuery, Feed, Post, PostKind, Section};
 use client::hub::{News, Response};
+use i18n::t;
 use model::art;
 
 const BASE: u64 = 76561197960265728;
@@ -31,19 +32,20 @@ pub fn events() -> Vec<Event> {
         when: when.into(),
         ..Default::default()
     };
-    let today = "Today";
-    let yesterday = "Yesterday";
+    // Steam writes these lines in the reader's language: so does the demo.
+    let today: &str = t!("Today");
+    let yesterday: &str = t!("Yesterday");
     let friends = vec![
-        Post { title: "Found the cake. It was a lie".into(), votes_up: 12, comments: 3, file_id: 1001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=1001".into(), ..post(PostKind::Screenshot, friend(0), 620, "posted a screenshot of Portal 2", "", vec![art::hero(620)], today) },
+        Post { title: "Found the cake. It was a lie".into(), votes_up: 12, comments: 3, file_id: 1001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=1001".into(), ..post(PostKind::Screenshot, friend(0), 620, &t!("posted a screenshot of {game}", game = "Portal 2"), "", vec![art::hero(620)], today) },
         Post {
             recommended: Some(true),
-            hours: "1,204.5 hrs on record".into(),
+            hours: t!("{h} hrs on record", h = hours(1204.5)),
             votes_up: 37,
             funny: 6,
             comments: 4,
-            ..post(PostKind::Review, friend(1), 570, "reviewed Dota 2", "Ten years in and I still learn something every match.\n\nThe new hero is a blast. Matchmaking is quicker than it used to be, and the patch notes are worth reading.\n\n10/10 would lose to a courier again.", vec![], today)
+            ..post(PostKind::Review, friend(1), 570, &t!("reviewed {game}", game = "Dota 2"), "Ten years in and I still learn something every match.\n\nThe new hero is a blast. Matchmaking is quicker than it used to be, and the patch notes are worth reading.\n\n10/10 would lose to a courier again.", vec![], today)
         },
-        Post { votes_up: 4, ..post(PostKind::Achievement, friend(2), 1145360, "Pixel achieved Hades:", "Is There No Escape?\nEscape the Underworld for the first time.", vec![art::capsule(1145360)], today) },
+        Post { votes_up: 4, ..post(PostKind::Achievement, friend(2), 1145360, &t!("{name} achieved {game}", name = "Pixel", game = "Hades"), "Is There No Escape?\nEscape the Underworld for the first time.", vec![art::capsule(1145360)], today) },
         // Several at once: four listed, the rest counted ("+N more").
         Post {
             more: 12,
@@ -51,18 +53,18 @@ pub fn events() -> Vec<Event> {
                 PostKind::Achievement,
                 friend(5),
                 413150,
-                "Marlow achieved Stardew Valley:",
+                &t!("{name} achieved {game}", name = "Marlow", game = "Stardew Valley"),
                 "Greenhorn\nEarn 15,000g.\n\nCowpoke\nEarn 50,000g.\n\nHomesteader\nEarn 250,000g.\n\nMother Catch\nCatch 100 fish.\n\nGofer\nComplete 10 Help Wanted requests.\n\nA Big Help\nComplete 40 Help Wanted requests.",
                 vec![art::capsule(413150), art::header(413150), art::capsule(413150), art::header(413150), art::capsule(413150), art::header(413150)],
                 today,
             )
         },
-        Post { title: "Autumn on the farm".into(), votes_up: 58, comments: 9, file_id: 1001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=1001".into(), ..post(PostKind::Artwork, friend(3), 413150, "published artwork for Stardew Valley", "Painted over a weekend, all in pixels.", vec![art::hero(413150)], today) },
-        post(PostKind::Status, friend(0), 0, "Ferris and Nova are now friends.", "", vec![], yesterday),
-        Post { app_id: 292030, ..post(PostKind::Purchase, friend(4), 292030, "now owns The Witcher 3: Wild Hunt", "You are Geralt of Rivia, mercenary monster slayer. Before you stands a war-torn, monster-infested continent you can explore at will.", vec![], yesterday) },
-        Post { votes_up: 2, ..post(PostKind::Status, friend(5), 440, "posted a status about Team Fortress 2", "Anyone up for a few rounds of Payload tonight? Bring snacks.", vec![], yesterday) },
-        Post { title: "Cozy Cottage Interiors".into(), votes_up: 21, comments: 2, file_id: 1001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=1001".into(), ..post(PostKind::Workshop, friend(1), 413150, "published a Workshop item for Stardew Valley", "Warm lights and more furniture for every house upgrade.", vec![art::capsule(413150)], yesterday) },
-        post(PostKind::Status, friend(3), 1145360, "Quartz has added Hades to their wishlist.", "", vec![], yesterday),
+        Post { title: "Autumn on the farm".into(), votes_up: 58, comments: 9, file_id: 1001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=1001".into(), ..post(PostKind::Artwork, friend(3), 413150, &t!("published artwork for {game}", game = "Stardew Valley"), "Painted over a weekend, all in pixels.", vec![art::hero(413150)], today) },
+        post(PostKind::Status, friend(0), 0, &t!("{a} and {b} are now friends.", a = "Ferris", b = "Nova"), "", vec![], yesterday),
+        Post { app_id: 292030, ..post(PostKind::Purchase, friend(4), 292030, &t!("now owns {game}", game = "The Witcher 3: Wild Hunt"), "You are Geralt of Rivia, mercenary monster slayer. Before you stands a war-torn, monster-infested continent you can explore at will.", vec![], yesterday) },
+        Post { votes_up: 2, ..post(PostKind::Status, friend(5), 440, &t!("posted a status about {game}", game = "Team Fortress 2"), "Anyone up for a few rounds of Payload tonight? Bring snacks.", vec![], yesterday) },
+        Post { title: "Cozy Cottage Interiors".into(), votes_up: 21, comments: 2, file_id: 1001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=1001".into(), ..post(PostKind::Workshop, friend(1), 413150, &t!("published a Workshop item for {game}", game = "Stardew Valley"), "Warm lights and more furniture for every house upgrade.", vec![art::capsule(413150)], yesterday) },
+        post(PostKind::Status, friend(3), 1145360, &t!("{name} has added {game} to their wishlist.", name = "Quartz", game = "Hades"), "", vec![], yesterday),
         Post {
             kind: PostKind::Announcement,
             app_id: 1145360,
@@ -86,12 +88,12 @@ pub fn events() -> Vec<Event> {
             author: friend(4),
             avatar: avatar.clone(),
             recommended: Some(true),
-            hours: "2,130.2 hrs on record (2,069.9 hrs at review time)".into(),
+            hours: format!("{} ({})", t!("{h} hrs on record", h = hours(2130.2)), t!("{h} hrs at review time", h = hours(2069.9))),
             text: "It's fine i guess lol\n\nedit: 10/10\nedit 2: 100/10\nedit 3: 1000/10".into(),
             votes_up: 374,
             funny: 6,
             comments: 2,
-            when: "Posted: 12 September".into(),
+            time: now - 86_400 * 67,
             ..Default::default()
         },
         Post { kind: PostKind::Broadcast, app_id: 1145360, game: "Hades".into(), author_name: "Pixel".into(), author: friend(2), avatar: avatar.clone(), title: "Hades".into(), images: vec![art::hero(1145360)], views: 50_600, live: true, ..Default::default() },
@@ -118,11 +120,11 @@ pub fn events() -> Vec<Event> {
             app_id: 1145360,
             author: friend(3),
             avatar: avatar.clone(),
-            action: "General Discussions".into(),
+            action: t!("General Discussions").into(),
             title: "Best keepsake for the final boss?".into(),
             text: "I keep switching between the cube and the owl. What do you all take into the last room?".into(),
             comments: 31,
-            when: "3 hr ago".into(),
+            when: t!("{n} hr ago", n = 3),
             url: "https://steamcommunity.com/app/1145360/discussions/0/3001/".into(),
             ..Default::default()
         },
@@ -232,4 +234,24 @@ pub fn events() -> Vec<Event> {
         },
     ]);
     out
+}
+
+/// Hours the way the reader writes numbers ("1,204.5", "1 204,5").
+fn hours(h: f32) -> String {
+    let (thousands, decimal) = match i18n::language().steam_name() {
+        "english" | "schinese" => (",", "."),
+        "russian" | "french" => ("\u{a0}", ","),
+        _ => (".", ","),
+    };
+    let whole = h.trunc() as u64;
+    let tenth = ((h - h.trunc()) * 10.0).round() as u64;
+    let digits = whole.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push_str(thousands);
+        }
+        out.push(c);
+    }
+    format!("{out}{decimal}{tenth}")
 }
