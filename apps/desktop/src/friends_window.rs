@@ -213,7 +213,7 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         .with_inner_size(size_flag().unwrap_or([width, 720.0]))
         .with_min_inner_size([if has_pane { list_w + t.dense(360.0) } else { list_w }, 420.0])
         .with_decorations(crate::chrome::SYSTEM_FRAME)
-        .with_icon(std::sync::Arc::new(egui::IconData { rgba: ui::brand::icon_rgba(64), width: 64, height: 64 }));
+        .with_icon(crate::window_icon::icon_data(app.prefs.tray_icon, 64));
     // A preview copy keeps it off the screen too, beside the main window.
     if crate::app::offscreen() {
         // Created hidden: Windows can put a new window at its default spot

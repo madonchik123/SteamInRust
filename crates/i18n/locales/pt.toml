@@ -2055,8 +2055,8 @@
 "Desktop shortcut: off" = "Atalho na área de trabalho: não"
 
 # --- Tray icon (Settings → Appearance) ---
-"Tray icon" = "Ícone da bandeja"
-"The logo SteamInRust shows in the system tray." = "O logotipo que o SteamInRust mostra na bandeja do sistema."
+"App icon" = "Ícone do aplicativo"
+"The logo SteamInRust shows on the taskbar and in the system tray." = "O logotipo que o SteamInRust mostra na barra de tarefas e na bandeja do sistema."
 "Purple" = "Roxo"
 "Classic" = "Clássico"
 "Black" = "Preto"

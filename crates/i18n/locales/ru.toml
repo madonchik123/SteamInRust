@@ -2055,8 +2055,8 @@
 "Desktop shortcut: off" = "Ярлык на рабочем столе: выкл."
 
 # --- Tray icon (Settings → Appearance) ---
-"Tray icon" = "Значок в трее"
-"The logo SteamInRust shows in the system tray." = "Логотип, который SteamInRust показывает в системном трее."
+"App icon" = "Значок приложения"
+"The logo SteamInRust shows on the taskbar and in the system tray." = "Логотип, который SteamInRust показывает на панели задач и в системном трее."
 "Purple" = "Фиолетовый"
 "Classic" = "Классический"
 "Black" = "Чёрный"

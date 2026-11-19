@@ -2055,8 +2055,8 @@
 "Desktop shortcut: off" = "Acceso directo: no"
 
 # --- Tray icon (Settings → Appearance) ---
-"Tray icon" = "Icono de la bandeja"
-"The logo SteamInRust shows in the system tray." = "El logotipo que SteamInRust muestra en la bandeja del sistema."
+"App icon" = "Icono de la aplicación"
+"The logo SteamInRust shows on the taskbar and in the system tray." = "El logotipo que SteamInRust muestra en la barra de tareas y en la bandeja del sistema."
 "Purple" = "Morado"
 "Classic" = "Clásico"
 "Black" = "Negro"

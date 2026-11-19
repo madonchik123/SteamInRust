@@ -728,7 +728,7 @@ impl Settings {
                 }
             }, |_| {});
         });
-        group(ui, t, t!("Tray icon"), |ui| tray_icon_picker(ui, t, &self.flags));
+        group(ui, t, t!("App icon"), |ui| tray_icon_picker(ui, t, &self.flags));
     }
 }
 
@@ -776,7 +776,7 @@ fn theme_card(ui: &mut Ui, t: &Theme, preset: &Theme, selected: bool) -> egui::R
 /// color, like the theme cards.
 fn tray_icon_picker(ui: &mut Ui, t: &Theme, flags: &SharedFlags) {
     use ui::brand::Logo;
-    ui.label(w::body_m(t, t!("The logo SteamInRust shows in the system tray."), t.text_dim));
+    ui.label(w::body_m(t, t!("The logo SteamInRust shows on the taskbar and in the system tray."), t.text_dim));
     ui.add_space(t.spacing.sm);
     let mut current = flags.lock().unwrap().tray_icon;
     ui.horizontal_wrapped(|ui| {

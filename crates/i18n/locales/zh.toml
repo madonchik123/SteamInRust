@@ -2055,8 +2055,8 @@
 "Desktop shortcut: off" = "桌面快捷方式：关"
 
 # --- Tray icon (Settings → Appearance) ---
-"Tray icon" = "托盘图标"
-"The logo SteamInRust shows in the system tray." = "SteamInRust 在系统托盘中显示的标志。"
+"App icon" = "应用图标"
+"The logo SteamInRust shows on the taskbar and in the system tray." = "SteamInRust 在任务栏和系统托盘中显示的标志。"
 "Purple" = "紫色"
 "Classic" = "经典"
 "Black" = "黑色"

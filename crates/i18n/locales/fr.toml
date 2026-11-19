@@ -2055,8 +2055,8 @@
 "Desktop shortcut: off" = "Raccourci sur le bureau : non"
 
 # --- Tray icon (Settings → Appearance) ---
-"Tray icon" = "Icône de la zone de notification"
-"The logo SteamInRust shows in the system tray." = "Le logo que SteamInRust affiche dans la zone de notification."
+"App icon" = "Icône de l'application"
+"The logo SteamInRust shows on the taskbar and in the system tray." = "Le logo que SteamInRust affiche dans la barre des tâches et dans la zone de notification."
 "Purple" = "Violet"
 "Classic" = "Classique"
 "Black" = "Noir"

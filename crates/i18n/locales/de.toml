@@ -2055,8 +2055,8 @@
 "Desktop shortcut: off" = "Desktopverknüpfung: aus"
 
 # --- Tray icon (Settings → Appearance) ---
-"Tray icon" = "Infobereichssymbol"
-"The logo SteamInRust shows in the system tray." = "Das Logo, das SteamInRust im Infobereich der Taskleiste zeigt."
+"App icon" = "App-Symbol"
+"The logo SteamInRust shows on the taskbar and in the system tray." = "Das Logo, das SteamInRust in der Taskleiste und im Infobereich zeigt."
 "Purple" = "Lila"
 "Classic" = "Klassisch"
 "Black" = "Schwarz"
