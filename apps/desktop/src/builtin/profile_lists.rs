@@ -20,11 +20,12 @@ impl Profile {
 
     /// Someone's friends list.
     pub(super) fn friends_page(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, id: SteamId, mine: bool) {
-        if self.lists_requested.insert((id, "friends")) {
+        if !mine && self.lists_requested.insert((id, "friends")) {
             ctx.send(Command::LoadProfileFriends { steam_id: id });
         }
         let title = if mine { t!("Your friends") } else { t!("Friends") };
-        let ids = match ctx.state.profile_friends.get(&id).cloned() {
+        let yours = mine.then(|| Ok(ctx.state.friend_list().iter().map(|p| p.steam_id).collect::<Vec<_>>()));
+        let ids = match yours.or_else(|| ctx.state.profile_friends.get(&id).cloned()) {
             None => return section(ui, t, title, "", |ui| loading_rows(ui, t, 8, t.dense(56.0))),
             Some(Err(e)) => return section(ui, t, title, "", |ui| Self::hidden(ui, t, &e, t!("These friends are hidden"))),
             Some(Ok(ids)) => ids,

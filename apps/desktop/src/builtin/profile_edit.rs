@@ -13,6 +13,7 @@ use egui::{Align, Align2, CornerRadius, Layout, Rect, Sense, Stroke, Ui, pos2, v
 use extensions::Ctx;
 use i18n::t;
 use model::{ProfileEdit, ProfileItemChoice, ProfileSave, art};
+use super::themes::{self, SteamTheme};
 use ui::{Theme, icons, widgets as w};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -62,27 +63,6 @@ pub(super) struct EditState {
 
 fn lang() -> String {
     i18n::language().steam_name().to_string()
-}
-
-/// Steam's profile themes as color swatches (their own colors, like a
-/// picture from Steam): the two ends of each theme's gradient.
-fn theme_colors(id: &str) -> [egui::Color32; 2] {
-    let rgb = |c: u32| egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
-    let id = id.to_lowercase();
-    let (a, b) = if id.contains("summer") {
-        (0xE07B39, 0x8E2C2C)
-    } else if id.contains("midnight") {
-        (0x3B2F6B, 0x110E26)
-    } else if id.contains("steel") {
-        (0x66737F, 0x2C3238)
-    } else if id.contains("cosmic") {
-        (0x9A4FD1, 0x2A1446)
-    } else if id.contains("dark") {
-        (0x2B2B2B, 0x0B0B0B)
-    } else {
-        (0x2A475E, 0x1B2838)
-    };
-    [rgb(a), rgb(b)]
 }
 
 impl EditState {
@@ -368,7 +348,7 @@ impl Profile {
         settings::group(ui, t, t!("Profile Background"), |ui| {
             let width = ui.available_width();
             let (r, _) = ui.allocate_exact_size(vec2(width, (width * 0.42).min(t.dense(420.0))), Sense::hover());
-            profile_preview(ui, t, r, chosen.as_ref(), d.background_full, None, &preview);
+            profile_preview(ui, t, r, chosen.as_ref(), d.background_full, themes::get(&d.theme), &preview);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = t.spacing.sm;
                 ui.add_enabled_ui(chosen.is_some(), |ui| {
@@ -463,22 +443,33 @@ impl Profile {
         let preview = Preview::of(ctx, self.edit.draft.as_ref());
         let Some(d) = self.edit.draft.as_mut() else { return };
         let background = d.backgrounds.iter().find(|i| i.id == d.equipped[0]).cloned();
-        // Steam's list, with Default first.
-        let mut themes = d.themes.clone();
-        if !themes.iter().any(|(id, _)| id.is_empty()) {
-            themes.insert(0, (String::new(), t!("Default").to_string()));
-        }
+        // Steam's list (only themes we know the colors of), Default first.
+        let mut list: Vec<(String, String)> = vec![(String::new(), String::new())];
+        list.extend(d.themes.iter().filter(|(id, _)| !id.is_empty() && !id.eq_ignore_ascii_case("Default") && themes::get(id).is_some()).cloned());
         settings::group(ui, t, t!("Theme"), |ui| {
             ui.add(egui::Label::new(w::body_m(t, t!("The colors of your profile page on Steam."), t.text_dim)).wrap());
             let width = ui.available_width();
             let (r, _) = ui.allocate_exact_size(vec2(width, (width * 0.42).min(t.dense(420.0))), Sense::hover());
-            profile_preview(ui, t, r, background.as_ref(), d.background_full, Some(theme_colors(&d.theme)), &preview);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(t.spacing.lg, t.spacing.md);
-                for (id, title) in &themes {
-                    if swatch(ui, t, title, theme_colors(id), *id == d.theme) {
-                        d.theme = id.clone();
-                    }
+            profile_preview(ui, t, r, background.as_ref(), d.background_full, themes::get(&d.theme), &preview);
+            ui.add_space(t.spacing.md);
+            // Three to a row like Steam's picker (two in a narrow window).
+            w::component_frame(t, &t.components.profile_inset).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let cols = if ui.available_width() < t.dense(420.0) { 2 } else { 3 };
+                let cell = ui.available_width() / cols as f32;
+                let items: Vec<&(String, String)> = list.iter().filter(|(id, _)| themes::get(id).is_some()).collect();
+                for row in items.chunks(cols) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for (id, title) in row {
+                            let Some(colors) = themes::get(id) else { continue };
+                            let on = id == &d.theme || (id.is_empty() && d.theme.eq_ignore_ascii_case("Default"));
+                            if swatch(ui, t, &themes::name(id, title), colors, on, cell) {
+                                d.theme = id.clone();
+                            }
+                        }
+                    });
+                    ui.add_space(t.spacing.lg);
                 }
             });
         });
@@ -852,7 +843,7 @@ impl Preview {
 
 /// Your profile in miniature in front of a background (and in a theme's
 /// colors): what Steam's edit pages show above the lists.
-fn profile_preview(ui: &mut Ui, t: &Theme, r: Rect, bg: Option<&ProfileItemChoice>, full: bool, colors: Option<[egui::Color32; 2]>, p: &Preview) {
+fn profile_preview(ui: &mut Ui, t: &Theme, r: Rect, bg: Option<&ProfileItemChoice>, full: bool, theme: Option<SteamTheme>, p: &Preview) {
     let painter = ui.painter_at(r);
     painter.rect_filled(r, t.corner(), t.chrome);
     let still = bg.map(|b| if b.large.is_empty() { b.image.as_str() } else { b.large.as_str() });
@@ -862,24 +853,13 @@ fn profile_preview(ui: &mut Ui, t: &Theme, r: Rect, bg: Option<&ProfileItemChoic
     if !super::paint_profile_background(&child, t, r, still, video, full) {
         w::paint_background(&mut child, t, r, "profile");
     }
-    // The profile's panel, in the theme's colors when previewing one.
+    // The profile's panel in the theme's colors (as Steam paints it: the
+    // panel color with tints from the left and right).
     let panel = Rect::from_center_size(pos2(r.center().x, r.center().y + r.height() * 0.06), vec2(r.width() * 0.66, r.height() * 0.82));
-    match colors {
-        Some([a, b]) => {
-            let mut mesh = egui::Mesh::default();
-            let (ta, tb) = (a.gamma_multiply(0.92), b.gamma_multiply(0.92));
-            mesh.colored_vertex(panel.left_top(), ta);
-            mesh.colored_vertex(panel.right_top(), ta);
-            mesh.colored_vertex(panel.right_bottom(), tb);
-            mesh.colored_vertex(panel.left_bottom(), tb);
-            mesh.add_triangle(0, 1, 2);
-            mesh.add_triangle(0, 2, 3);
-            painter.add(mesh);
-        }
-        None => {
-            painter.rect_filled(panel, CornerRadius::ZERO, t.overlay_dark(2));
-        }
-    }
+    // The mock in the app's colors, then Steam's theme overlay on top
+    // (its picker draws the preview the same way).
+    painter.rect_filled(panel, CornerRadius::ZERO, t.surface);
+    let (box_l, box_r, row) = (t.raised, t.raised, t.raised);
     let pad = panel.width() * 0.04;
     let av = Rect::from_min_size(panel.min + vec2(pad, pad), egui::Vec2::splat(panel.height() * 0.3));
     avatar_with_frame(ui, t, av, &p.avatar, p.frame.as_deref());
@@ -891,19 +871,38 @@ fn profile_preview(ui: &mut Ui, t: &Theme, r: Rect, bg: Option<&ProfileItemChoic
         painter.circle_stroke(c, t.dense(15.0), Stroke::new(t.dense(2.0), t.text_dim));
         painter.text(c, Align2::CENTER_CENTER, level.to_string(), t.typography.body_m.font(), t.text);
     }
-    // Stand-ins for the profile's sections.
+    // Stand-ins for the profile's sections: header bars in the theme's
+    // showcase colors, the side column's rows in its button color.
     let top = av.bottom() + pad;
     let main = Rect::from_min_max(pos2(panel.left() + pad, top), pos2(panel.left() + panel.width() * 0.68, panel.bottom() - pad));
     let side = Rect::from_min_max(pos2(main.right() + pad, top), pos2(panel.right() - pad, panel.bottom() - pad));
     for (i, h) in [0.42f32, 0.3].iter().enumerate() {
         let y = main.top() + main.height() * if i == 0 { 0.0 } else { 0.5 };
-        painter.rect_filled(Rect::from_min_size(pos2(main.left(), y), vec2(main.width(), main.height() * h)), t.corner_small(), t.overlay_dark(1));
+        let section = Rect::from_min_size(pos2(main.left(), y), vec2(main.width(), main.height() * h));
+        painter.rect_filled(section, t.corner_small(), t.overlay_dark(0));
+        let bar = Rect::from_min_size(section.min, vec2(section.width(), (section.height() * 0.28).min(t.dense(18.0))));
+        gradient(&painter, bar, box_l, box_r);
     }
-    let row = side.height() / 6.0;
+    let step = side.height() / 6.0;
     for i in 0..5 {
-        let y = side.top() + row * i as f32;
-        painter.rect_filled(Rect::from_min_size(pos2(side.left(), y), vec2(side.width(), row * 0.7)), t.corner_small(), t.overlay_dark(1));
+        let y = side.top() + step * i as f32;
+        painter.rect_filled(Rect::from_min_size(pos2(side.left(), y), vec2(side.width(), step * 0.7)), t.corner_small(), row);
     }
+    if let Some(s) = theme {
+        painter.add(s.preview_overlay(panel));
+    }
+}
+
+/// A left-to-right gradient filling `r`.
+fn gradient(painter: &egui::Painter, r: Rect, left: egui::Color32, right: egui::Color32) {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(r.left_top(), left);
+    mesh.colored_vertex(r.right_top(), right);
+    mesh.colored_vertex(r.right_bottom(), right);
+    mesh.colored_vertex(r.left_bottom(), left);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(mesh);
 }
 
 /// The mini profile card, as Steam shows it on hover: the background, your
@@ -947,17 +946,20 @@ fn mini_preview(ui: &mut Ui, t: &Theme, r: Rect, bg: Option<&ProfileItemChoice>,
     }
 }
 
-/// A round swatch of a profile theme with its name; true when clicked.
-fn swatch(ui: &mut Ui, t: &Theme, name: &str, colors: [egui::Color32; 2], on: bool) -> bool {
-    let d = t.dense(56.0);
-    let label_h = t.typography.body_m.size + t.spacing.sm;
-    let (rect, resp) = ui.allocate_exact_size(vec2(d + t.spacing.xl, d + t.spacing.sm + label_h), Sense::click());
-    let c = pos2(rect.center().x, rect.top() + d / 2.0);
+/// A theme in Steam's picker: a big circle drawn as Steam draws it, with
+/// the name under it. `width` is the cell's width. True when clicked.
+fn swatch(ui: &mut Ui, t: &Theme, name: &str, s: SteamTheme, on: bool, width: f32) -> bool {
+    let d = (width * 0.62).clamp(t.dense(56.0), t.dense(136.0));
+    let font = t.typography.body_l.font();
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, d + t.spacing.lg + font.size + t.spacing.sm), Sense::click());
+    let c = pos2(rect.center().x, rect.top() + d / 2.0 + t.dense(4.0));
     let p = ui.painter();
-    p.circle_filled(c, d / 2.0, colors[1]);
-    p.circle_filled(c - vec2(0.0, d * 0.12), d * 0.34, colors[0]);
-    let ring = if on { Stroke::new(t.dense(3.0), t.accent) } else if resp.hovered() { Stroke::new(t.dense(2.0), t.text_dim) } else { Stroke::new(1.0, t.surface_hover) };
-    p.circle_stroke(c, d / 2.0 + t.dense(3.0), ring);
-    p.text(pos2(c.x, rect.bottom()), Align2::CENTER_BOTTOM, name, t.typography.body_m.font(), if on { t.accent } else { t.text });
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    p.add(s.swatch_shape(c, d / 2.0));
+    let ring = if on { Stroke::new(t.dense(3.0), t.accent) } else if resp.hovered() { Stroke::new(t.dense(3.0), t.text_dim) } else { Stroke::new(t.dense(3.0), t.raised) };
+    p.circle_stroke(c, d / 2.0 + t.dense(1.5), ring);
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), font, if on { t.accent } else { t.text_dim });
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width - t.spacing.sm);
+    let g = p.layout_job(job);
+    p.galley(pos2(c.x - g.size().x / 2.0, rect.bottom() - g.size().y), g, t.text);
+    resp.on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
