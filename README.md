@@ -30,7 +30,7 @@ and talks to Steam's servers directly. Free, open source (MIT) and unofficial.
 The official client is a Chromium app: a dozen `steamwebhelper.exe` processes
 drawing web pages. SteamInRust draws everything itself on the GPU with
 [egui](https://github.com/emilk/egui), so its window is up in about two and a half
-seconds and it idles at about 160 MB.
+seconds and it idles at about 115 MB.
 
 Its look is based on [Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign) by
 **Juxtopposed**, a concept for a cleaner Steam shared on Figma Community. The
@@ -125,35 +125,36 @@ Everything below is in the current release. Area-by-area status:
 
 <p align="center"><img src="docs/media/en/bigpicture.gif" alt="Big Picture: the home screen and library, driven with the keyboard" width="720"></p>
 
-<sub>Screenshots from <code>--demo</code> mode, which uses sample account data, in the SteamInRust theme. The start-up race was recorded before the redesign.</sub>
+<sub>Screenshots from <code>--demo</code> mode, which uses sample account data, in the SteamInRust theme.</sub>
 
 ## Performance
 
 **SteamInRust shows its window about 2.5 times sooner than Steam, has your
-library fully drawn about 3 times sooner, and uses about a sixth of the
-memory**, on the same PC, account and network. Measured on 17 November 2026 on
-a Ryzen 5 5600 with 16 GB of RAM, Windows 11, SteamInRust 0.7.1 against Steam
-11.23.65.88. Both clients started on the library. Every figure is the middle
-result of 3 runs:
+library fully drawn about twice as soon, and uses about a ninth of the
+memory**, on the same PC, account and network. Measured on 19 November 2026 on
+a Ryzen 5 5600 with 16 GB of RAM, Windows 11, SteamInRust 0.10.0 with the new
+look against Steam 11.23.65.88. Both clients started on the library. Every
+figure is the middle result of 3 runs:
 
 | | Steam | SteamInRust |
 | --- | ---: | ---: |
-| Start → first window | 6.4 s | 2.6 s |
-| Start → main window | 9.0 s | 2.4 s |
-| Start → library fully drawn | 14.7 s | 4.8 s |
-| Memory when idle (private bytes) | 1,019 MB | 163 MB |
-| CPU when idle | 7.6 % of a core | 0.00 % |
+| Start → first window | 6.3 s | 2.5 s |
+| Start → main window | 11.4 s | 2.4 s |
+| Start → library fully drawn | 19.1 s | 9.6 s |
+| Memory when idle (private bytes) | 1,016 MB | 115 MB |
+| CPU when idle | 7.7 % of a core | 0.08 % |
 | Processes | 8 | 1 |
-| Program size | 1,084 MB | 29.8 MB |
-| Open the Store | 1.33 s | 0.75 s |
-| Open a game page in the library | 0.70 s | 0.05 s |
-| Open Friends & Chat | 1.20 s | 0.06 s |
+| Program size | 1,084 MB | 34.8 MB |
+| Open the Store | 1.84 s | 0.81 s |
+| Open a game page in the library | 0.75 s | 0.03 s |
+| Open Friends & Chat | 1.21 s | 0.05 s |
 
-Start times are cold starts (nothing in the file cache). 0.7.1 also cut
-SteamInRust's own idle memory from 253 MB to 163 MB and its idle CPU to zero,
-compared with 0.7.0 on the same run. Method, ranges, warm starts and what was
-left out: [docs/benchmarks.md](docs/benchmarks.md). These numbers are from
-before the redesign; they'll be measured again for the release that brings it.
+Start times are cold starts (nothing in the file cache). Compared with the
+previous run (0.7.1, before the redesign), SteamInRust uses less memory of its
+own (163 → 115 MB), and its library takes longer to be fully drawn
+(4.8 → 9.6 s): in this run it opened on a grid of game covers, which all
+download at start-up. Method, ranges, warm starts and what was left out:
+[docs/benchmarks.md](docs/benchmarks.md).
 
 ## Download
 

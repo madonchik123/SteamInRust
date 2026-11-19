@@ -1,40 +1,56 @@
 # SteamInRust vs Steam: benchmarks
 
-Measured on 17 November 2026 on one PC, signed in to the same account, on the
+Measured on 19 November 2026 on one PC, signed in to the same account, on the
 same network. Every number is the **middle result of 3 runs**, with the lowest
-and highest run in brackets. Three clients were measured in turn: Steam,
-SteamInRust 0.7.0 as released, and SteamInRust 0.7.1, which adds the memory and
-CPU fixes described under [What changed in 0.7.1](#what-changed-in-071). The
-measuring scripts were removed from the repo to keep it all Rust; they're kept
-in its history at
+and highest run in brackets. Two clients were measured in turn: Steam, and
+SteamInRust 0.10.0 with the redesign (the new look, in its default theme). The
+last column is the previous run (17 November, SteamInRust 0.7.1, before the
+redesign) for comparison; it was a different day, so small differences are
+noise. The measuring scripts were removed from the repo to keep it all Rust;
+they're kept in its history at
 [`tools/bench/` (commit 29d9fa1)](https://github.com/madonchik123/SteamInRust/tree/29d9fa1/tools/bench).
 
 **Short version:** SteamInRust shows its first window about 2.5 times sooner
-than Steam, has the library fully drawn about 3 times sooner, and uses about a
-sixth of the memory and almost no CPU while idle.
+than Steam, has the library fully drawn about twice as soon, opens pages many
+times faster, and uses about a ninth of the memory and almost no CPU while
+idle.
 
-| | Steam | SteamInRust 0.7.0 | SteamInRust 0.7.1 |
+| | Steam | SteamInRust 0.10.0 (redesign) | SteamInRust 0.7.1, 17 Nov |
 |---|---|---|---|
-| **Cold start → first window on screen** | 6.4 s (1.7–6.4) | 3.0 s (2.6–3.1) | **2.6 s** (2.5–2.6) |
-| Cold start → full-size main window | 9.0 s (8.9–10.5) | 3.0 s (2.9–5.0) | 2.4 s (2.4–4.9) |
-| **Cold start → library fully drawn** | 14.7 s (14.3–16.5) | 6.4 s (6.4–6.6) | **4.8 s** (4.8–6.3) |
-| Warm start → first window on screen | 5.8 s (5.8–5.8) | 2.5 s (2.5–2.6) | 2.5 s (2.5–2.5) |
-| Warm start → full-size main window | 8.5 s (7.9–8.9) | 3.6 s (2.4–4.4) | 4.4 s (2.4–4.9) |
-| Warm start → library fully drawn | 14.5 s (13.6–14.5) | 5.0 s (4.7–5.7) | 5.8 s (4.8–6.4) |
-| **Memory while idle** (private bytes) | **1019 MB** (1003–1126) | 253 MB (244–257) | **163 MB** (153–163) |
-| Memory while idle (working set) | 977 MB (953–1085) | 228 MB (220–231) | 134 MB (126–135) |
-| **CPU while idle**, % of one core | **7.6 %** (7.2–9.4) | 0.10 % (0.08–0.21) | **0.00 %** (0.00–0.05) |
+| **Cold start → first window on screen** | 6.3 s (5.7–8.8) | **2.5 s** (2.5–3.1) | 2.6 s (2.5–2.6) |
+| Cold start → full-size main window | 11.4 s (8.1–24.9) | 2.4 s (2.4–4.9) | 2.4 s (2.4–4.9) |
+| **Cold start → library fully drawn** | 19.1 s (14.4–32.5) | **9.6 s** (4.7–10.5) | 4.8 s (4.8–6.3) |
+| Warm start → first window on screen | 5.7 s (5.3–5.7) | 2.5 s (2.4–2.5) | 2.5 s (2.5–2.5) |
+| Warm start → full-size main window | 8.2 s (8.1–9.8) | 2.4 s (2.4–2.4) | 4.4 s (2.4–4.9) |
+| Warm start → library fully drawn | 14.5 s (14.3–15.8) | 6.4 s (3.8–8.2) | 5.8 s (4.8–6.4) |
+| **Memory while idle** (private bytes) | **1016 MB** (1014–1452) | **115 MB** (113–120) | 163 MB (153–163) |
+| Memory while idle (working set) | 956 MB (951–1387) | 185 MB (184–188) | 134 MB (126–135) |
+| **CPU while idle**, % of one core | **7.7 %** (7.3–37.8) | **0.08 %** (0.03–0.21) | 0.00 % (0.00–0.05) |
 | Processes | 8 (steam.exe + 7 × steamwebhelper.exe) | 1 | 1 |
-| Program size | 1084 MB, plus ~0.6 GB web cache in `%LOCALAPPDATA%\Steam` | 29.8 MB | 29.8 MB |
-| Open the Store (click → settled) | 1.33 s (1.25–2.90) | not measured | 0.75 s (0.59–2.76) |
-| Open a game page in the library | 0.70 s (0.69–1.05) | not measured | 0.05 s (0.04–0.85) |
-| Open Friends & Chat | 1.20 s (1.19–1.21) | not measured | 0.06 s (0.05–0.08) |
-| First visible reaction to a click: Store / game page / Friends | 0.06 / 0.11 / 0.62 s | not measured | 0.05 / 0.02 / 0.05 s |
+| Program size | 1084 MB (measured 17 Nov), plus ~0.6 GB web cache in `%LOCALAPPDATA%\Steam` | 34.8 MB | 29.8 MB |
+| Open the Store (click → settled) | 1.84 s (0.10–3.39) | 0.81 s (0.50–2.12) | 0.75 s (0.59–2.76) |
+| Open a game page in the library | 0.75 s (0.73–1.59) | 0.03 s (0.03–1.68) | 0.05 s (0.04–0.85) |
+| Open Friends & Chat | 1.21 s (1.20–1.22) | 0.05 s (0.05–0.08) | 0.06 s (0.05–0.08) |
+| First visible reaction to a click: Store / game page / Friends | 0.07 / 0.09 / 0.62 s | 0.05 / 0.03 / 0.05 s | 0.05 / 0.02 / 0.05 s |
 
-The click tests were only run for Steam and 0.7.1: the two SteamInRust builds
-draw the same pages the same way, and the changes in 0.7.1 don't touch them.
+## What changed with the redesign
 
-## What changed in 0.7.1
+- **Less memory, more of it shared.** SteamInRust's own memory while idle went
+  down from 163 MB to 115 MB. Its working set (which also counts memory shared
+  with Windows, like the graphics driver's and the font files) went up from
+  134 MB to 185 MB.
+- **The library takes longer to be fully drawn: 4.8 s → 9.6 s.** The window
+  is up just as fast (2.4–2.5 s); the rest is pictures arriving over the
+  network. In this run the library opened in the cover grid, about twenty game
+  covers at once, all downloaded at start-up. The wide range (4.7–10.5 s) is
+  the network. It's still about twice as fast as Steam.
+- **Idle CPU: 0.08 % of a core**, against 0.00 % before: both well under a
+  tenth of a percent. An idle window doesn't redraw (loading placeholders stop
+  pulsing once nothing is loading).
+- **The program is 5 MB bigger** (29.8 → 34.8 MB): the theme system, the
+  built-in themes and the new pages.
+
+## What changed in 0.7.1 (17 November)
 
 Measuring 0.7.0 against the last benchmark (0.4.0, 8 November) showed that
 memory had stayed about the same but **CPU use while idle had gone up from
@@ -72,9 +88,10 @@ working set from 228 MB to 134 MB.
   (0.59–2.76 s vs 1.25–2.90 s), because both wait on the same servers.
 - The first time a game page opens, SteamInRust has to fetch its art too (up to
   0.85 s). The 0.05 s middle result is for pages whose art was already loaded.
-- **Steam itself got faster since 8 November**: its library was fully drawn in
-  14.7 s, against 19.2 s then (Steam 11.23.65.88 now, 11.15.70.27 then). Its
-  memory went down too (1019 MB vs 1126 MB).
+- **Steam varies a lot from run to run.** The same Steam version (11.23.65.88)
+  had its library fully drawn in 14.7 s on 17 November and 19.1 s now, with one
+  cold start this time taking 32.5 s (its main window took 24.9 s to appear).
+  Its idle CPU also had one run at 37.8 % of a core.
 
 ## Setup
 
@@ -83,13 +100,12 @@ working set from 228 MB to 134 MB.
 | PC | AMD Ryzen 5 5600 (6 cores / 12 threads), 16 GB RAM, NVIDIA RTX 3060 |
 | OS | Windows 11 Home 10.0.26300 |
 | Steam | steam.exe 11.23.65.88, unmodified |
-| SteamInRust 0.7.0 | release build of tag `v0.7.0` |
-| SteamInRust 0.7.1 | release build of the change that adds the fixes above |
-| Network | the same connection for all three |
+| SteamInRust 0.10.0 (redesign) | release build of the redesign, version 0.10.0 (the latest release, so no update prompt) |
+| Network | the same connection for both |
 
 Other apps were open, as on a normal day. Each trial waited until total CPU
-load was under 25 % for 4 seconds before starting, and the order of the three
-clients rotated every round, so all saw the same conditions.
+load was under 25 % for 4 seconds before starting, and the order of the
+clients rotated every round, so both saw the same conditions.
 
 ## Method
 
@@ -161,6 +177,19 @@ isn't counted here.
 
 ### Mistakes caught along the way
 
+On 19 November:
+
+- **The click test clicked the old layout.** Its click spots were made for the
+  look before the redesign (the Friends & Chat button used to be in a bar at
+  the bottom, which the new look doesn't have), so SteamInRust's first click
+  tests opened the wrong pages and never found the Friends window. The spots
+  were moved to the new top bar and SteamInRust's click tests were run again;
+  the numbers above are from that second set.
+- **The race recording got a path Windows couldn't read**, so SteamInRust's
+  first race take recorded nothing. It was recorded again.
+
+On 17 November:
+
 - **An update prompt in the first 0.7.1 runs.** The first set of 0.7.1 runs
   used a build that still called itself 0.6.0, so it showed the "SteamInRust
   0.7.0 is available" dialog over the library. That made its start-up times
@@ -176,8 +205,9 @@ disappearance made Steam look about 5 s slower than it is.
 
 ## Videos
 
-Recorded after the 8 November benchmark (SteamInRust 0.4.0), at 1080p and 30 fps, with English and
-Russian captions. The full videos are kept out of git in `media/`:
+The full videos were recorded after the 8 November benchmark (SteamInRust
+0.4.0, before the redesign), at 1080p and 30 fps, with English and Russian
+captions. They're kept out of git in `media/`:
 
 | File | What it shows |
 |---|---|
@@ -186,14 +216,15 @@ Russian captions. The full videos are kept out of git in `media/`:
 | `steaminrust-tour-{en,ru}.mp4` | SteamInRust's store, a trailer, the library, the Shift+Tab overlay, inventory and market, listings, chat and profile, in `--demo` mode with sample data |
 
 [`docs/media/en/startup-race.gif`](media/en/startup-race.gif) and
-[`docs/media/ru/startup-race.gif`](media/ru/startup-race.gif) are 760 px cuts of
-the race for the README.
+[`docs/media/ru/startup-race.gif`](media/ru/startup-race.gif), the race in the
+README, were recorded in this run (19 November), with the redesign.
 
 Each client was recorded on its own, never both at once. In the race video the
 two launches are lined up using a marker the harness shows at the moment of
 launch. A recorded take is a single run, so its time can differ from the middle result.
-The SteamInRust take in the race video took 5.1 s, against a middle result of 10.0 s;
-the end card shows the middle results.
+In the README's race, the SteamInRust take took 4.8 s and Steam's 16.2 s,
+against middle results of 9.6 s and 19.1 s; the end card shows the middle
+results.
 
 Privacy: the account name, avatar, wallet balance and profile tab are blurred in
 both clients, and so is the whole frame until each client's main window is up,
@@ -207,9 +238,11 @@ The scripts live in the repo's history: check out
 `cargo build --release -p steam-rs`, and run `bash tools/bench/full.sh`. It runs
 the start-up rounds (`python -I run_all.py 3` for 3 rounds), the click tests and
 the recordings, and needs Python 3. `python -I tools/bench/analyze.py` then
-prints the table. For this run the harness got two small additions that aren't
-in that commit: entries for two SteamInRust builds side by side (each matched
-by its own exe path, with the order of clients rotating every round), and the
-first-window time in the table (it was already recorded as `first_pixels_s`).
+prints the table. Since that commit the harness got a few small additions:
+entries for SteamInRust builds side by side (each matched by its own exe path,
+with the order of clients rotating every round), the first-window time in the
+table (it was already recorded as `first_pixels_s`), and the redesign's click
+spots in `nav.py` (Store `(162, 24)`, Library `(521, 24)`, first game
+`(110, 120)`, Home `(60, 74)`, Friends `(694, 24)` in the 1280×800 window).
 Steam has to sign in without the account picker, and the mouse and screen must
-be left alone while it runs (about 40 minutes for 3 rounds of three clients).
+be left alone while it runs (about 40 minutes for 3 rounds).
