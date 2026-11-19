@@ -34,6 +34,27 @@ pub enum TexOp {
     Free(u64),
 }
 
+/// F12 asked for a screenshot; the next frame drawn through our hook takes it.
+pub static SHOT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The screenshot key (F12, like Steam's): the game takes it when it hooked
+/// screenshots, else we copy the next frame.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn screenshot_key() {
+    if !crate::screenshots::game_takes_them() {
+        SHOT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    crate::screenshots::requested_by_key();
+}
+
+/// Tell the app something (dropped when it isn't connected).
+pub fn tell_app(m: wire::FromGame) {
+    #[cfg(windows)]
+    shared::tell(m);
+    #[cfg(not(windows))]
+    let _ = m;
+}
+
 /// Start the overlay for a game SteamInRust started (once per process).
 pub fn start() {
     #[cfg(windows)]
@@ -134,6 +155,19 @@ mod shared {
 
     pub fn cursor() -> u8 {
         with(|s| s.cursor)
+    }
+
+    /// Queue a message for the app, if it's connected.
+    pub fn tell(m: FromGame) {
+        let queued = with(|s| {
+            if s.connected {
+                s.out.push(m);
+            }
+            s.connected
+        });
+        if queued {
+            WAKE.notify_one();
+        }
     }
 
     pub fn take_for_present() -> (Vec<TexOp>, Option<Arc<Frame>>) {

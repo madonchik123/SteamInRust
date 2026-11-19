@@ -184,6 +184,9 @@ struct Renderer {
     vb: Option<(ID3D11Buffer, usize)>,
     ib: Option<(ID3D11Buffer, usize)>,
     rtv: Option<ID3D11RenderTargetView>,
+    /// Frames since `fps_since`.
+    frames: u32,
+    fps_since: Instant,
     /// The render target stores linear light (sRGB view or float), so
     /// egui's gamma-space colors are converted in the shader.
     linear_out: bool,
@@ -250,6 +253,24 @@ unsafe fn present_inner(this: *mut c_void) {
         if desc.OutputWindow != r.hwnd {
             r.hwnd = desc.OutputWindow;
             super::input::attach(r.hwnd);
+        }
+    }
+    // Frames per second, for the app's FPS counter.
+    r.frames += 1;
+    let elapsed = r.fps_since.elapsed().as_secs_f32();
+    if elapsed >= 1.0 {
+        super::tell_app(crate::overlay::wire::FromGame::Fps((r.frames as f32 / elapsed).round() as u32));
+        r.frames = 0;
+        r.fps_since = Instant::now();
+    }
+    // The game's own frame, before the overlay is drawn on it.
+    if super::SHOT.swap(false, Ordering::Relaxed) {
+        match unsafe { r.capture(sc) } {
+            Ok((rgb, w, h)) => crate::screenshots::save_frame(rgb, w, h),
+            Err(e) => {
+                crate::log!("overlay: screenshot copy failed: {e}");
+                crate::screenshots::capture_window();
+            }
         }
     }
     let (ops, frame) = shared::take_for_present();
@@ -383,6 +404,8 @@ impl Renderer {
                 vb: None,
                 ib: None,
                 rtv: None,
+                frames: 0,
+                fps_since: Instant::now(),
                 linear_out: false,
                 size: (desc.BufferDesc.Width, desc.BufferDesc.Height),
                 textures: HashMap::new(),
@@ -442,6 +465,55 @@ impl Renderer {
                     }
                 }
             },
+        }
+    }
+
+    /// The back buffer as RGB (8 bits per channel), for a screenshot.
+    unsafe fn capture(&self, sc: &IDXGISwapChain) -> windows::core::Result<(Vec<u8>, u32, u32)> {
+        unsafe {
+            let bb: ID3D11Texture2D = sc.GetBuffer(0)?;
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            bb.GetDesc(&mut desc);
+            let kind = pixel_kind(desc.Format).ok_or_else(|| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, "unsupported back buffer format"))?;
+            // Multisampled buffers are resolved into a plain texture first.
+            let source: ID3D11Texture2D = if desc.SampleDesc.Count > 1 {
+                let mut d = desc;
+                d.SampleDesc = DXGI_SAMPLE_DESC { Count: 1, Quality: 0 };
+                d.BindFlags = 0;
+                d.CPUAccessFlags = 0;
+                d.MiscFlags = 0;
+                d.Usage = D3D11_USAGE_DEFAULT;
+                let mut t = None;
+                self.device.CreateTexture2D(&d, None, Some(&mut t))?;
+                let t = out(t)?;
+                self.ctx.ResolveSubresource(&t, 0, &bb, 0, typed(desc.Format));
+                t
+            } else {
+                bb
+            };
+            let mut d = desc;
+            d.SampleDesc = DXGI_SAMPLE_DESC { Count: 1, Quality: 0 };
+            d.Usage = D3D11_USAGE_STAGING;
+            d.BindFlags = 0;
+            d.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            d.MiscFlags = 0;
+            d.MipLevels = 1;
+            d.ArraySize = 1;
+            let mut staging = None;
+            self.device.CreateTexture2D(&d, None, Some(&mut staging))?;
+            let staging = out(staging)?;
+            self.ctx.CopySubresourceRegion(&staging, 0, 0, 0, 0, &source, 0, None);
+            let mut map = D3D11_MAPPED_SUBRESOURCE::default();
+            self.ctx.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut map))?;
+            let (w, h) = (desc.Width, desc.Height);
+            let bpp = if kind == PixelKind::Half { 8 } else { 4 };
+            let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+            for y in 0..h as usize {
+                let row = std::slice::from_raw_parts((map.pData as *const u8).add(y * map.RowPitch as usize), w as usize * bpp);
+                to_rgb(kind, row, &mut rgb);
+            }
+            self.ctx.Unmap(&staging, 0);
+            Ok((rgb, w, h))
         }
     }
 
@@ -700,3 +772,89 @@ impl Saved {
         }
     }
 }
+
+/// How a back buffer's pixels are laid out, for screenshots.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PixelKind {
+    Rgba8,
+    Bgra8,
+    Rgb10a2,
+    /// 16-bit float RGBA, linear (HDR or scRGB): converted to sRGB.
+    Half,
+}
+
+fn pixel_kind(f: DXGI_FORMAT) -> Option<PixelKind> {
+    Some(match f {
+        DXGI_FORMAT_R8G8B8A8_TYPELESS | DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => PixelKind::Rgba8,
+        DXGI_FORMAT_B8G8R8A8_TYPELESS | DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB | DXGI_FORMAT_B8G8R8X8_UNORM => PixelKind::Bgra8,
+        DXGI_FORMAT_R10G10B10A2_TYPELESS | DXGI_FORMAT_R10G10B10A2_UNORM => PixelKind::Rgb10a2,
+        DXGI_FORMAT_R16G16B16A16_TYPELESS | DXGI_FORMAT_R16G16B16A16_FLOAT => PixelKind::Half,
+        _ => return None,
+    })
+}
+
+/// A typed format for resolving a typeless one.
+fn typed(f: DXGI_FORMAT) -> DXGI_FORMAT {
+    match f {
+        DXGI_FORMAT_R8G8B8A8_TYPELESS => DXGI_FORMAT_R8G8B8A8_UNORM,
+        DXGI_FORMAT_B8G8R8A8_TYPELESS => DXGI_FORMAT_B8G8R8A8_UNORM,
+        DXGI_FORMAT_R10G10B10A2_TYPELESS => DXGI_FORMAT_R10G10B10A2_UNORM,
+        DXGI_FORMAT_R16G16B16A16_TYPELESS => DXGI_FORMAT_R16G16B16A16_FLOAT,
+        other => other,
+    }
+}
+
+/// One row of pixels to RGB.
+fn to_rgb(kind: PixelKind, row: &[u8], out: &mut Vec<u8>) {
+    match kind {
+        PixelKind::Rgba8 => row.chunks_exact(4).for_each(|p| out.extend_from_slice(&p[..3])),
+        PixelKind::Bgra8 => row.chunks_exact(4).for_each(|p| out.extend_from_slice(&[p[2], p[1], p[0]])),
+        PixelKind::Rgb10a2 => row.chunks_exact(4).for_each(|p| {
+            let v = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+            out.extend_from_slice(&[((v & 0x3FF) >> 2) as u8, (((v >> 10) & 0x3FF) >> 2) as u8, (((v >> 20) & 0x3FF) >> 2) as u8]);
+        }),
+        PixelKind::Half => row.chunks_exact(8).for_each(|p| {
+            for c in 0..3 {
+                out.push(linear_to_srgb8(half(u16::from_le_bytes([p[c * 2], p[c * 2 + 1]]))));
+            }
+        }),
+    }
+}
+
+/// IEEE half float to f32.
+fn half(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = ((h >> 10) & 0x1F) as i32;
+    let frac = (h & 0x3FF) as f32;
+    sign * match exp {
+        0 => frac * 2f32.powi(-24),
+        31 => f32::INFINITY,
+        _ => (1.0 + frac / 1024.0) * 2f32.powi(exp - 15),
+    }
+}
+
+fn linear_to_srgb8(v: f32) -> u8 {
+    let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+    let s = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (s * 255.0 + 0.5) as u8
+}
+
+#[cfg(test)]
+mod shot_tests {
+    use super::*;
+
+    #[test]
+    fn converts_back_buffer_pixels() {
+        let mut out = Vec::new();
+        to_rgb(PixelKind::Rgba8, &[1, 2, 3, 255], &mut out);
+        to_rgb(PixelKind::Bgra8, &[1, 2, 3, 255], &mut out);
+        // 10-bit red 1023, green 0, blue 512.
+        to_rgb(PixelKind::Rgb10a2, &(1023u32 | (512 << 20)).to_le_bytes(), &mut out);
+        // Half floats: 1.0 (0x3C00), 0.0, 0.5 (0x3800).
+        to_rgb(PixelKind::Half, &[0x00, 0x3C, 0x00, 0x00, 0x00, 0x38, 0x00, 0x3C], &mut out);
+        assert_eq!(out, vec![1, 2, 3, 3, 2, 1, 255, 0, 128, 255, 0, 188]);
+        assert_eq!(pixel_kind(DXGI_FORMAT_B8G8R8A8_UNORM_SRGB), Some(PixelKind::Bgra8));
+        assert_eq!(pixel_kind(DXGI_FORMAT_D32_FLOAT), None);
+    }
+}
+

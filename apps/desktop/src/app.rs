@@ -56,6 +56,8 @@ pub struct Prefs {
     /// The one-time "try the new look" question has been answered (or
     /// wasn't needed: a new install starts on the new look).
     pub new_look_offered: bool,
+    /// The in-game FPS counter's corner (or off).
+    pub fps_corner: crate::builtin::settings::FpsCorner,
 }
 
 /// `--offscreen`: keep the window far off the screen (previews and
@@ -133,6 +135,7 @@ impl Default for Prefs {
             bigpicture_start: false,
             tray_icon: ui::brand::Logo::default(),
             new_look_offered: false,
+            fps_corner: Default::default(),
         }
     }
 }
@@ -280,6 +283,7 @@ impl SteamApp {
             toast_messages: prefs.toast_messages,
             toast_notifications: prefs.toast_notifications,
             tray_icon: prefs.tray_icon,
+            fps_corner: prefs.fps_corner,
         }));
         let mut registry = crate::builtin::registry(rt.handle().clone(), cc.egui_ctx.clone(), flags.clone());
         for id in &prefs.disabled {
@@ -910,6 +914,7 @@ impl eframe::App for SteamApp {
             self.prefs.auto_updates = f.auto_updates;
             self.prefs.toast_messages = f.toast_messages;
             self.prefs.toast_notifications = f.toast_notifications;
+            self.prefs.fps_corner = f.fps_corner;
             if self.prefs.tray_icon != f.tray_icon {
                 self.prefs.tray_icon = f.tray_icon;
                 self.tray.set_icon(f.tray_icon);

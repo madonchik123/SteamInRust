@@ -206,10 +206,40 @@ async fn digest(conn: &Connection, app_id: AppId) -> Option<String> {
     }
 }
 
+/// The digest from Steam's web API, signed in with the web session's access
+/// token. Steam answers this one without the game running.
+async fn web_digest(access_token: &str, app_id: AppId) -> Option<String> {
+    let v: serde_json::Value = reqwest::Client::new()
+        .get("https://api.steampowered.com/IInventoryService/GetItemDefMeta/v1/")
+        .query(&[("appid", app_id.to_string()), ("access_token", access_token.to_string())])
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    meta_digest(&v)
+}
+
+/// The digest in a `GetItemDefMeta` answer (none when the game has no items).
+fn meta_digest(v: &serde_json::Value) -> Option<String> {
+    let d = v.get("response")?.get("digest")?.as_str()?.trim();
+    (!d.is_empty() && d.bytes().all(|b| b.is_ascii_hexdigit())).then(|| d.to_string())
+}
+
 /// The game's item definitions (the archive is public, keyed by its digest).
-pub async fn item_defs(conn: &Connection, app_id: AppId) -> Reply {
+/// `access_token` is the web session's, used when Steam won't give the digest
+/// to the game's own session.
+pub async fn item_defs(conn: &Connection, app_id: AppId, access_token: Option<String>) -> Reply {
     let empty = Reply::ItemDefs { defs: Vec::new() };
-    let Some(digest) = digest(conn, app_id).await else { return empty };
+    let digest = match digest(conn, app_id).await {
+        Some(d) => Some(d),
+        None => match access_token {
+            Some(t) if !t.is_empty() => web_digest(&t, app_id).await,
+            _ => None,
+        },
+    };
+    let Some(digest) = digest else { return empty };
     let url = format!("https://api.steampowered.com/IGameInventory/GetItemDefArchive/v0001?appid={app_id}&digest={digest}");
     match reqwest::get(&url).await {
         Ok(r) if r.status().is_success() => match r.text().await {
@@ -238,6 +268,9 @@ mod tests {
         assert_eq!((it[0].id, it[0].def, it[0].quantity, it[0].flags), (1001, 10, 3, 0));
         assert!(it[0].props.contains(&("origin".to_string(), "playtime".to_string())));
         assert_eq!((it[1].id, it[1].flags), (77, 0x100));
+        assert_eq!(meta_digest(&serde_json::json!({"response": {"modified": 1, "digest": "97D170E1550EEE4AFC0AF065B78CDA302A97674C"}})).as_deref(), Some("97D170E1550EEE4AFC0AF065B78CDA302A97674C"));
+        assert_eq!(meta_digest(&serde_json::json!({"response": {}})), None);
+        assert_eq!(meta_digest(&serde_json::json!({"response": {"digest": "../x"}})), None);
         let d = defs("[{\"itemdefid\":10,\"name\":\"Hat\",\"tradable\":true}]\0");
         assert_eq!(d[0].0, 10);
         assert!(d[0].1.contains(&("tradable".to_string(), "true".to_string())));

@@ -486,14 +486,55 @@ fn ingame_frame(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Actio
     // Opened or closed here (tray, a game's dialog request): tell the game.
     s.set_open(app.overlay.open);
     let active = app.overlay.open;
-    let draw = active || app.overlay.any_pinned();
+    let corner = app.prefs.fps_corner;
+    let fps = s.fps.filter(|_| corner != crate::builtin::settings::FpsCorner::Off);
+    let shot = s.shot.filter(|(_, at)| at.elapsed() < SHOT_NOTICE);
+    let draw = active || app.overlay.any_pinned() || fps.is_some() || shot.is_some();
     let mut close = false;
-    s.run(ctx, draw, |ui| close |= content(app, ui, &t, actions, active));
+    s.run(ctx, draw, |ui| {
+        close |= content(app, ui, &t, actions, active);
+        ingame_extras(ui, &t, corner, fps, shot);
+    });
     if close {
         app.overlay.open = false;
     }
     s.set_open(app.overlay.open);
     app.overlay.ingame = Some(s);
+}
+
+/// How long "Screenshot saved" shows in the game.
+const SHOT_NOTICE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The FPS counter and the screenshot notice, drawn over the game.
+fn ingame_extras(ui: &mut Ui, t: &Theme, corner: crate::builtin::settings::FpsCorner, fps: Option<u32>, shot: Option<(bool, Instant)>) {
+    use crate::builtin::settings::FpsCorner;
+    let ctx = ui.ctx().clone();
+    if let Some(n) = fps {
+        let (align, offset) = match corner {
+            FpsCorner::TopLeft | FpsCorner::Off => (Align2::LEFT_TOP, vec2(12.0, 12.0)),
+            FpsCorner::TopRight => (Align2::RIGHT_TOP, vec2(-12.0, 12.0)),
+            FpsCorner::BottomLeft => (Align2::LEFT_BOTTOM, vec2(12.0, -12.0)),
+            FpsCorner::BottomRight => (Align2::RIGHT_BOTTOM, vec2(-12.0, -12.0)),
+        };
+        egui::Area::new(egui::Id::unique("ingame-fps")).order(egui::Order::Foreground).anchor(align, offset).interactable(false).show(&ctx, |ui| {
+            egui::Frame::new().fill(Color32::from_black_alpha(150)).corner_radius(CornerRadius::same(4)).inner_margin(Margin::symmetric(6, 2)).show(ui, |ui| {
+                ui.label(w::text_bold(n.to_string(), 14.0, Color32::from_rgb(120, 230, 120)));
+            });
+        });
+    }
+    if let Some((ok, at)) = shot {
+        let (icon, text) = if ok { (icons::CAMERA, t!("Screenshot saved")) } else { (icons::WARNING, t!("Couldn't save the screenshot")) };
+        egui::Area::new(egui::Id::unique("ingame-shot")).order(egui::Order::Foreground).anchor(Align2::CENTER_TOP, vec2(0.0, 24.0)).interactable(false).show(&ctx, |ui| {
+            egui::Frame::new().fill(t.surface).stroke(Stroke::new(1.0, t.border)).corner_radius(t.corner()).inner_margin(Margin::symmetric(14, 8)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(w::text(icon, 16.0, if ok { t.accent } else { t.danger }));
+                    ui.label(w::text_semibold(text, 14.0, t.text));
+                });
+            });
+        });
+        // Come back to take it away.
+        ctx.request_repaint_after(SHOT_NOTICE.saturating_sub(at.elapsed()) + std::time::Duration::from_millis(50));
+    }
 }
 
 /// eframe runs the main window's frames at most every 100 ms while it's

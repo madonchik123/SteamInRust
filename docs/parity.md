@@ -18,8 +18,8 @@ Steam's website" still works; it just isn't native yet.
 | Community | 0.75 | Starting a new discussion topic, and joining or leaving a group, open Steam's website |
 | Inventory and Market | 1 | |
 | Steam Cloud | 1 | |
-| Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers; inventory item definitions |
-| Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser or screenshots |
+| Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers |
+| Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | Seven languages (Steam has about 30); no Linux version; Mac builds aren't signed with an Apple developer ID |
 | Big Picture | 0.75 | Buying and most settings move to the normal window |
@@ -177,7 +177,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | `ISteamNetworkingSockets` / `ISteamNetworkingMessages` with players on the official client | Partly: Valve's protocol (Steam-signed certificates, rendezvous, encrypted SNP) over direct ICE connections, which official players allow for friends. No Steam Datagram Relay, which the official client uses for strangers. Not yet tested against an official player |
 | `ISteamNetworkingSockets`, `ISteamNetworkingMessages` between SteamInRust players | Done, on Valve's protocol over ICE (P2P; connecting by IP to dedicated servers isn't possible) |
 | Workshop (`ISteamUGC`): queries, subscriptions, votes, favorites, downloads | Done. Publishing items isn't supported |
-| Inventory (`ISteamInventory`): items, drops, promos, crafting, properties | Done. Item definitions don't load yet; no purchases |
+| Inventory (`ISteamInventory`): items, drops, promos, crafting, properties | Done, including item definitions (through the web session when Steam won't give them to the game's session). No purchases |
 | Server browser (`ISteamMatchmakingServers`): internet and LAN lists, ping, players, rules | Done |
 | Screenshots (`ISteamScreenshots`) into the Steam screenshot folder | Done. Not uploaded |
 | Steam Input on Xbox-style pads with the game's bindings | Done on Windows. No gyro, trackpads or binding panel; no controllers in games on a Mac yet |
@@ -195,7 +195,8 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Pin windows over the game with adjustable opacity | Done |
 | Games with anti-cheat | They start through the official client, so they get Steam's own overlay |
 | Game invites in chat show as cards with a Join button (Steam's `[gameinvite]` markup). Friend menus offer "Invite to lobby" or "Invite to game" from what the game reports, else "Invite to play", all sent as real Steam invites | Done |
-| In-game web browser, screenshots (F12), FPS counter | Not yet |
+| Screenshots with F12 into Steam's screenshot folder, with a "Screenshot saved" notice; FPS counter in a corner you pick (Settings → In game) | Done for games the overlay is drawn inside (D3D11). The frame is copied before the overlay is drawn on it; games that take their own screenshots get Steam's request instead. Not tested in a real game yet |
+| In-game web browser | Not yet |
 
 ## Notifications and tray
 
