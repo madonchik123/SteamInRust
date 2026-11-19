@@ -58,8 +58,10 @@ fn rollup_line(line: &str, when: &str) -> Option<Post> {
     let tail = line.split_once("</span>").map(|x| x.1).unwrap_or_default();
     let images: Vec<String> = img_srcs(tail).into_iter().filter(|s| !s.contains("avatars.")).collect();
     let names: Vec<String> = tail.split("<img").skip(1).filter_map(|t| attr(t.split('>').next().unwrap_or_default(), "title")).map(|t| t.trim().to_string()).collect();
+    // Achievement icons only come with achievements: that tells them in any
+    // language (the words are the reader's).
     let lower = action.to_lowercase();
-    let kind = if span.contains("achievement") || lower.contains("achieved") || lower.contains("unlocked") {
+    let kind = if images.iter().any(|s| s.contains("/images/apps/")) || span.contains("achievement") || lower.contains("achieved") || lower.contains("unlocked") {
         PostKind::Achievement
     } else if lower.contains("now owns") || lower.contains("purchased") {
         PostKind::Purchase
@@ -67,10 +69,12 @@ fn rollup_line(line: &str, when: &str) -> Option<Post> {
         PostKind::Status
     };
     let url = links(span).into_iter().find(|l| l.contains("/app/") || l.contains("filedetails")).unwrap_or_default();
-    let text = names.join("
-
-");
-    Some(Post { kind, author, author_name, avatar, app_id: app_link(span), action, text, images, url, when: when.to_string(), ..Default::default() })
+    let names = names.join("\n\n");
+    // "+18": more achievements than the icons shown.
+    let more = div_inner(tail, "rollup_plus").map(|m| first_number(&text(m))).unwrap_or(0);
+    // The game's name, from its link.
+    let game = span.split("<a ").skip(1).find(|a| a.contains("/app/")).and_then(|a| between(a, ">", "</a>")).map(text).unwrap_or_default();
+    Some(Post { kind, author, author_name, avatar, app_id: app_link(span), game, action, text: names, images, url, more, when: when.to_string(), ..Default::default() })
 }
 
 fn blotter_block(block: &str, when: &str) -> Option<Post> {

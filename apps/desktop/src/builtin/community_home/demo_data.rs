@@ -44,6 +44,19 @@ pub fn events() -> Vec<Event> {
             ..post(PostKind::Review, friend(1), 570, "reviewed Dota 2", "Ten years in and I still learn something every match.\n\nThe new hero is a blast. Matchmaking is quicker than it used to be, and the patch notes are worth reading.\n\n10/10 would lose to a courier again.", vec![], today)
         },
         Post { votes_up: 4, ..post(PostKind::Achievement, friend(2), 1145360, "Pixel achieved Hades:", "Is There No Escape?\nEscape the Underworld for the first time.", vec![art::capsule(1145360)], today) },
+        // Several at once: four listed, the rest counted ("+N more").
+        Post {
+            more: 12,
+            ..post(
+                PostKind::Achievement,
+                friend(5),
+                413150,
+                "Marlow achieved Stardew Valley:",
+                "Greenhorn\nEarn 15,000g.\n\nCowpoke\nEarn 50,000g.\n\nHomesteader\nEarn 250,000g.\n\nMother Catch\nCatch 100 fish.\n\nGofer\nComplete 10 Help Wanted requests.\n\nA Big Help\nComplete 40 Help Wanted requests.",
+                vec![art::capsule(413150), art::header(413150), art::capsule(413150), art::header(413150), art::capsule(413150), art::header(413150)],
+                today,
+            )
+        },
         Post { title: "Autumn on the farm".into(), votes_up: 58, comments: 9, file_id: 1001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=1001".into(), ..post(PostKind::Artwork, friend(3), 413150, "published artwork for Stardew Valley", "Painted over a weekend, all in pixels.", vec![art::hero(413150)], today) },
         post(PostKind::Status, friend(0), 0, "Ferris and Nova are now friends.", "", vec![], yesterday),
         Post { app_id: 292030, ..post(PostKind::Purchase, friend(4), 292030, "now owns The Witcher 3: Wild Hunt", "You are Geralt of Rivia, mercenary monster slayer. Before you stands a war-torn, monster-infested continent you can explore at will.", vec![], yesterday) },

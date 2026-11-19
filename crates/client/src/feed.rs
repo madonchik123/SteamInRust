@@ -77,6 +77,9 @@ pub struct Post {
     pub live: bool,
     /// The Workshop / screenshot id, when it's a shared file.
     pub file_id: u64,
+    /// How many more there are than listed (achievements: Steam lists a
+    /// few icons, then "+18").
+    pub more: u32,
 }
 
 /// Sections of the community-wide feed, as on Steam's community home.
