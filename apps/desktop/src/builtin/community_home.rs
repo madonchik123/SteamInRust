@@ -440,6 +440,7 @@ impl CommunityHome {
         // Day pages, newest first, until we have the days asked for.
         let lang = i18n::language().steam_name().to_string();
         let mut posts: Vec<&Post> = Vec::new();
+        let mut seen = HashSet::new();
         let mut start = 0u64;
         let mut loading = false;
         let mut failed: Option<String> = None;
@@ -459,7 +460,12 @@ impl CommunityHome {
                     break;
                 }
                 Some(Ok(feed)) => {
-                    posts.extend(feed.posts.iter().filter(|p| self.friend_filter.keeps(p)));
+                    // Steam can list the same event on two days' pages: once here.
+                    for p in feed.posts.iter().filter(|p| self.friend_filter.keeps(p)) {
+                        if seen.insert(post::key(p)) {
+                            posts.push(p);
+                        }
+                    }
                     shown_days += 1;
                     if feed.next == 0 {
                         more = false;

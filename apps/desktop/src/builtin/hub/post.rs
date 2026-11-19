@@ -121,23 +121,43 @@ fn guess_height(t: &Theme, p: &Post, width: f32) -> f32 {
 
 /// One post, `width` wide.
 /// `show_game`: the game's name and links on top (not inside its own hub).
-pub fn card(ui: &mut Ui, t: &Theme, state: &State, p: &Post, width: f32, show_game: bool) -> Option<Click> {
+/// `id`: the card's own (see [`post_ids`]); it must differ between cards.
+pub fn card(ui: &mut Ui, t: &Theme, state: &State, p: &Post, width: f32, show_game: bool, id: egui::Id) -> Option<Click> {
     let mut click = None;
     let pad = t.padding_of(&t.components.post_card).x;
     let inner = (width - pad * 2.0).max(60.0);
-    let id = egui::Id::unique(("post-card", &p.url, p.file_id, &p.title, &p.action, p.author));
-    let (_, frame) = w::hover_frame(ui, t, &t.components.post_card, id, None, |ui| {
+    // Everything inside takes its ids from this card's own.
+    let (_, frame) = ui.push_id(id, |ui| w::hover_frame(ui, t, &t.components.post_card, id, None, |ui| {
         ui.set_width(inner);
         ui.spacing_mut().item_spacing.y = t.spacing.lg;
         let game = game_name(state, p);
         // The game, with links to its hub and store page.
         if show_game && p.app_id != 0 && !game.is_empty() {
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = t.spacing.xs + 1.0;
-                let r = ui.add(egui::Label::new(w::heading_s(t, &game, t.text)).truncate().sense(Sense::click()));
-                if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                ui.spacing_mut().item_spacing.x = t.spacing.sm;
+                // The game's picture, its name (cut to fit), its hub and store.
+                let (pic, pr) = ui.allocate_exact_size(vec2(62.0, 29.0), Sense::click());
+                if ui.is_rect_visible(pic) && !w::paint_cover(ui, pic, &art::header(p.app_id), t.corner_small()) {
+                    // Some games have no such picture: a plain tile then.
+                    if w::image_state(ui, &art::header(p.app_id)) == w::ImageState::Missing {
+                        ui.painter().rect_filled(pic, t.corner_small(), t.raised);
+                        w::icon_centered(ui.painter(), pic.center(), icons::CONTROLLER, 16.0, t.text_dim);
+                    } else {
+                        w::skeleton(ui, t, pic, t.corner_small());
+                    }
+                }
+                if pr.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     click = Some(Click::Hub(p.app_id));
                 }
+                let buttons = 2.0 * t.height_of(&t.components.icon_button, 36.0) + t.spacing.sm * 2.0;
+                let room = (ui.available_width() - buttons).max(40.0);
+                ui.allocate_ui_with_layout(vec2(room, 29.0), Layout::left_to_right(Align::Center), |ui| {
+                    let r = ui.add(egui::Label::new(w::heading_s(t, &game, t.text)).truncate().sense(Sense::click()));
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        click = Some(Click::Hub(p.app_id));
+                    }
+                });
+                ui.spacing_mut().item_spacing.x = t.spacing.xs + 1.0;
                 if w::icon_button(ui, t, icons::GLOBE, t!("Community hub"), false, 0).clicked() {
                     click = Some(Click::Hub(p.app_id));
                 }
@@ -155,7 +175,8 @@ pub fn card(ui: &mut Ui, t: &Theme, state: &State, p: &Post, width: f32, show_ga
         if let Some(c) = footer(ui, t, p) {
             click = Some(c);
         }
-    });
+    }))
+    .inner;
     // Anywhere else on the card opens the post.
     if click.is_none() && frame.clicked() {
         click = open_target(p);
@@ -224,32 +245,49 @@ fn body(ui: &mut Ui, t: &Theme, p: &Post, width: f32) -> Option<Click> {
             }
         }
         PostKind::Achievement => {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(t.spacing.md, t.spacing.sm);
-                for (i, img) in p.images.iter().enumerate() {
-                    let (r, resp) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
-                    w::image_or_skeleton(ui, t, r, img, t.corner_small());
-                    if let Some(name) = p.text.split("\n\n").nth(i) {
-                        resp.on_hover_text(name);
-                    }
+            // Steam lists up to about ten, plus "+N": a few here, the rest counted.
+            const SHOWN: usize = 4;
+            let names: Vec<&str> = p.text.split("\n\n").map(str::trim).filter(|s| !s.is_empty()).collect();
+            let count = p.images.len().max(names.len());
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = t.spacing.sm;
+                for i in 0..count.min(SHOWN) {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = t.spacing.md;
+                        let (r, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
+                        match p.images.get(i) {
+                            Some(img) if ui.is_rect_visible(r) => w::image_or_skeleton(ui, t, r, img, t.corner_small()),
+                            Some(_) => {}
+                            None => {
+                                ui.painter().rect_filled(r, t.corner_small(), t.raised);
+                                w::icon_centered(ui.painter(), r.center(), icons::TROPHY, 20.0, t.text_dim);
+                            }
+                        }
+                        let entry = names.get(i).copied().unwrap_or_default();
+                        let mut lines = entry.lines();
+                        let name = lines.next().unwrap_or_default().to_string();
+                        let desc = lines.collect::<Vec<_>>().join(" ");
+                        ui.allocate_ui_with_layout(vec2(ui.available_width(), 40.0), Layout::top_down(Align::Min), |ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            if !name.is_empty() {
+                                ui.add(egui::Label::new(w::body_m(t, name, t.text)).wrap());
+                            }
+                            if !desc.is_empty() {
+                                ui.add(egui::Label::new(w::body_s(t, desc, t.text_dim)).wrap());
+                            }
+                        });
+                    });
+                }
+                let hidden = count.saturating_sub(SHOWN) as u32 + p.more;
+                if hidden > 0 {
+                    ui.label(w::body_s(t, t!("+{n} more", n = hidden), t.text_dim));
                 }
             });
-            if let Some(first) = p.text.split("\n\n").next().filter(|s| !s.is_empty()) {
-                let mut lines = first.lines();
-                if let Some(name) = lines.next() {
-                    ui.label(w::body_l(t, name, t.text));
-                }
-                let rest: Vec<&str> = lines.collect();
-                if !rest.is_empty() {
-                    ui.add_space(-t.spacing.md);
-                    ui.label(w::body_m(t, rest.join(" "), t.text_dim));
-                }
-            }
         }
         _ => {
             if let Some((url, h)) = picture(p, width) {
                 let (r, resp) = ui.allocate_exact_size(vec2(width, h), Sense::click());
-                if !w::paint_cover(ui, r, &url, t.corner_small()) {
+                if ui.is_rect_visible(r) && !w::paint_cover(ui, r, &url, t.corner_small()) {
                     w::skeleton(ui, t, r, t.corner_small());
                 }
                 if matches!(p.kind, PostKind::Video | PostKind::Broadcast) {
@@ -415,26 +453,51 @@ fn caption_link(ui: &mut Ui, t: &Theme, caption: &str) -> bool {
     r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
+/// A post's own key: what it is, where it links, who and what.
+pub fn key(p: &Post) -> String {
+    format!("{:?}|{}|{}|{}|{}|{}|{}|{}", p.kind, p.url, p.file_id, p.title, p.action, p.author, p.when, p.images.first().map(String::as_str).unwrap_or_default())
+}
+
+/// Ids for a list of posts: from each post's key, so they stay put while
+/// the list grows, with the n-th repeat of the same key told apart. Never
+/// two the same, however Steam repeats an event.
+pub fn post_ids(salt: &str, posts: &[&Post]) -> Vec<egui::Id> {
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    posts
+        .iter()
+        .map(|p| {
+            let k = key(p);
+            let n = seen.entry(k.clone()).or_insert(0);
+            *n += 1;
+            egui::Id::unique(("feed-post", salt, k, *n))
+        })
+        .collect()
+}
+
 /// Posts in two columns (one when narrow), each going under the shorter
-/// column, like a social feed. Heights come from the last frame.
+/// column, like a social feed. Heights come from the last frame; a card
+/// off the screen only takes its space (its pictures aren't fetched until
+/// it's near).
 pub fn masonry(ui: &mut Ui, t: &Theme, state: &State, posts: &[&Post], salt: &str, show_game: bool) -> Option<Click> {
     let gap = t.spacing.xl - t.spacing.xs;
     let total = ui.available_width();
     let cols = if total >= 900.0 { 2 } else { 1 };
     let col_w = ((total - gap * (cols as f32 - 1.0)) / cols as f32).floor();
-    let id = egui::Id::unique(("feed-heights", salt));
-    let mut heights: std::collections::HashMap<String, f32> = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    let key = |p: &Post| format!("{:?}{}{}{}{}{}", p.kind, p.url, p.file_id, p.title, p.action, p.author);
+    let store = egui::Id::unique(("feed-heights", salt, col_w as u32));
+    let mut heights: std::collections::HashMap<egui::Id, f32> = ui.data(|d| d.get_temp(store)).unwrap_or_default();
+    let ids = post_ids(salt, posts);
     // Which column each post goes in.
     let mut fill = vec![0.0f32; cols];
     let mut columns: Vec<Vec<usize>> = vec![Vec::new(); cols];
     for (i, p) in posts.iter().enumerate().filter(|(_, p)| showable(p)) {
-        let h = heights.get(&key(p)).copied().unwrap_or_else(|| guess_height(t, p, col_w));
+        let h = heights.get(&ids[i]).copied().unwrap_or_else(|| guess_height(t, p, col_w));
         let c = (0..cols).min_by(|a, b| fill[*a].total_cmp(&fill[*b])).unwrap_or(0);
         fill[c] += h + gap;
         columns[c].push(i);
     }
     let mut click = None;
+    // A screen's worth above and below what shows is drawn for real.
+    let near = ui.clip_rect().expand2(vec2(0.0, ui.clip_rect().height()));
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
         for col in &columns {
@@ -444,21 +507,45 @@ pub fn masonry(ui: &mut Ui, t: &Theme, state: &State, posts: &[&Post], salt: &st
                 for &i in col {
                     let p = posts[i];
                     let top = ui.cursor().top();
-                    if let Some(c) = card(ui, t, state, p, col_w, show_game) {
+                    if let Some(h) = heights.get(&ids[i]).copied() {
+                        let span = egui::Rect::from_min_size(egui::pos2(ui.cursor().left(), top), vec2(col_w, h));
+                        if !near.intersects(span) {
+                            ui.allocate_space(vec2(col_w, h));
+                            continue;
+                        }
+                    }
+                    if let Some(c) = card(ui, t, state, p, col_w, show_game, ids[i]) {
                         click = Some(c);
                     }
-                    heights.insert(key(p), ui.cursor().top() - top - gap);
+                    heights.insert(ids[i], ui.cursor().top() - top - gap);
                 }
             });
         }
     });
-    ui.data_mut(|d| d.insert_temp(id, heights));
+    ui.data_mut(|d| d.insert_temp(store, heights));
     click
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_post_gets_its_own_id() {
+        // Steam repeats an event (the same achievement on two days' pages):
+        // the ids still differ, and building them again gives the same ones.
+        let ach = Post { kind: PostKind::Achievement, author: 7, action: "Ferris achieved Hades".into(), images: vec!["https://x/a.jpg".into()], when: "17 Nov".into(), ..Default::default() };
+        let other = Post { kind: PostKind::Achievement, author: 7, action: "Ferris achieved Hades".into(), images: vec!["https://x/b.jpg".into()], when: "17 Nov".into(), ..Default::default() };
+        let status = Post { kind: PostKind::Status, author: 8, action: "Nova and Pixel are now friends.".into(), ..Default::default() };
+        let posts = [&ach, &ach, &other, &status, &status, &ach];
+        let first = post_ids("friends", &posts);
+        let unique: std::collections::HashSet<_> = first.iter().collect();
+        assert_eq!(unique.len(), posts.len());
+        assert_eq!(first, post_ids("friends", &posts));
+        // Another feed with the same posts doesn't share them either.
+        let explore = post_ids("explore", &posts);
+        assert!(explore.iter().all(|id| !first.contains(id)));
+    }
 
     #[test]
     fn numbers_get_thousands_separators() {

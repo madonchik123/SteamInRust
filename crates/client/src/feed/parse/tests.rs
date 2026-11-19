@@ -474,3 +474,36 @@ fn file_details_tell_the_kind() {
     super::super::fill_from_details(&mut g, 5, 0, "Theirs", 0);
     assert_eq!((g.kind, g.title.as_str()), (PostKind::Guide, "Mine"));
 }
+
+#[test]
+fn reads_several_achievements_in_another_language() {
+    let html = r##"<div class="blotter_day" id="blotter_day_1">
+	<div class="blotter_day_header"><div class="blotter_day_header_date">17 нояб.</div></div>
+	<div class="blotter_block">
+<div class="blotter_daily_rollup">
+	<div class="blotter_daily_rollup_line">
+		<div class="blotter_rollup_avatar"><img src="https://avatars.akamai.steamstatic.com/ffff.jpg" data-miniprofile="1006"></div>
+		<span>
+		<a href="https://steamcommunity.com/profiles/76561197960266734" data-miniprofile="1006">Пример</a> получает достижение в <a href="https://steamcommunity.com/app/620">Portal 2</a>:				</span>
+		<img src="https://shared.akamai.steamstatic.com/community_assets/images/apps/620/a.jpg" width="32" height="32"
+title="Первое
+Описание первого.">
+		<img src="https://shared.akamai.steamstatic.com/community_assets/images/apps/620/b.jpg" width="32" height="32"
+title="Второе
+Описание второго.">
+		<div class="rollup_plus">+18</div>
+		<div style="clear: inline-start;"></div>
+	</div>
+</div>
+	</div>
+</div>"##;
+    let posts = parse_blotter(html);
+    assert_eq!(posts.len(), 1);
+    let p = &posts[0];
+    assert_eq!(p.kind, PostKind::Achievement);
+    assert_eq!((p.app_id, p.game.as_str(), p.more, p.author), (620, "Portal 2", 18, BASE_ID + 1006));
+    assert_eq!(p.images.len(), 2);
+    assert_eq!(p.text, "Первое\nОписание первого.\n\nВторое\nОписание второго.");
+    assert_eq!(p.avatar.as_deref(), Some("https://avatars.akamai.steamstatic.com/ffff.jpg"));
+    assert_eq!(p.when, "17 нояб.");
+}
