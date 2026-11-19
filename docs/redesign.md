@@ -1,17 +1,25 @@
-# The redesign: shared foundation
+# The redesign
 
-SteamInRust's look follows the Figma file "Steam Redesign (Community)". This
-page is for whoever restyles a page: what the shared parts are, what each
-one is for, how to call it, and which code draws which screen today.
+SteamInRust's default look follows [Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign) by
+**Juxtopposed**, shared on Figma Community. This page is for whoever works
+on a page: the rules, what the shared parts are, what each one is for, how to
+call it, and which code draws which screen.
 
-The design itself lives outside the repository (it's never committed):
+The design isn't in the repository. Open the Figma file above to see it. For
+exact numbers, a local export of the file is handy (never commit it; the
+repository's `.gitignore` already keeps `Steam_Redesign_Full_AI_Export/` and
+`media/` out):
 
-- `C:\SteamInRust\Steam_Redesign_Full_AI_Export\` is the full Figma export.
-  `pages/style-guide.md` lists the style guide frames; `decoded/nodes.jsonl`
-  and `decoded/all_nodes.csv` have exact sizes, paddings, radii and colors per
-  node; `decoded/frame_inventory.csv` lists every screen.
-- `C:\SteamInRust\media\Steam Redesign (Community)\` has full-size renders of
-  the screens (`library home.png`, `client store.png`, `store page.png`…).
+- In the export, `pages/style-guide.md` lists the style guide frames;
+  `decoded/nodes.jsonl` and `decoded/all_nodes.csv` have exact sizes,
+  paddings, radii and colors per node; `decoded/frame_inventory.csv` lists
+  every screen.
+- Renders of the screens (`library home.png`, `client store.png`,
+  `store page.png`…) can be exported from Figma next to it.
+
+The design is drawn on a 1920 px canvas at a large size, so the default
+theme shows it at 85% (`scale = 0.85` in its `[layout]`). Keep the Figma
+numbers in the theme as they are; the scale does the rest.
 
 Node IDs below (`84:791`) are Figma's. In the export, a node's fill can come
 from a shared style (`styleIdForFill`); the style's color wins over the
@@ -300,12 +308,12 @@ previews, `--friends` opens it and `--friends=chat`, `=group`, `=add`,
 Big Picture (`apps/desktop/src/bigpicture`) keeps its own look; it only picks
 up the theme's colors.
 
-## Screens and who restyles them
+## Screens and the code that draws them
 
 From `decoded/frame_inventory.csv` (the UI page, `18:946`). "Today" is the
 code that draws the closest screen now.
 
-### Store session
+### Store
 
 | Frame | Node | Today |
 | --- | --- | --- |
@@ -318,7 +326,7 @@ code that draws the closest screen now.
 | browse | `660:10019` | `builtin/store_more.rs` (`browse_page`) |
 | point shop | `317:1001` | nothing yet (new screen) |
 
-### Library session
+### Library and Downloads
 
 | Frame | Node | Today |
 | --- | --- | --- |
@@ -335,7 +343,7 @@ code that draws the closest screen now.
 
 The game's Properties window (`library_props.rs`) has no frame in the design.
 
-Restyled (the library session): the page bar, the game list, the home,
+Restyled: the page bar, the game list, the home,
 grid and list views, collections, a game's page and Downloads. Pieces other
 pages can use too: `w::game_card_info` / `w::game_tile_info` (the card's
 hover state from `363:5954`: title, Play or Install, last played and time
@@ -345,7 +353,7 @@ New components: `game_row` (the library's list), `shelf` (its blocks and list
 rows) and `download_row`. `--no-friends-panel` starts a preview without the
 friends list, at the design's width.
 
-### Community session
+### Community
 
 | Frame | Node | Today |
 | --- | --- | --- |
@@ -363,7 +371,7 @@ friends list, at the design's width.
 Groups (`hub/group.rs`), achievements (`hub/achievements.rs`) and the
 inventory (`inventory.rs`, `inventory_trades.rs`) have no frame of their own.
 
-### Profile and settings session
+### Profile, settings, friends
 
 | Frame | Node | Today |
 | --- | --- | --- |

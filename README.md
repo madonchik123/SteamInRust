@@ -7,6 +7,7 @@
   <a href="#performance"><b>Benchmarks</b></a> ·
   <a href="docs/parity.md"><b>Parity</b></a> ·
   <a href="docs/steam-compatibility.md"><b>Games and anti-cheat</b></a> ·
+  <a href="docs/themes.md"><b>Themes</b></a> ·
   <a href="CONTRIBUTING.md"><b>Contributing</b></a> ·
   <a href="README.ru.md"><b>Русский</b></a>
 </p>
@@ -31,6 +32,11 @@ drawing web pages. SteamInRust draws everything itself on the GPU with
 [egui](https://github.com/emilk/egui), so its window is up in about two and a half
 seconds and it idles at about 160 MB.
 
+Its look is based on [Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign) by
+**Juxtopposed**, a concept for a cleaner Steam shared on Figma Community. The
+whole look is a theme, so the old one is still there as **Classic**, and you
+can make your own.
+
 <p align="center">
   <img src="docs/media/en/store.png" alt="A store page in SteamInRust with the Hades trailer playing" width="100%">
 </p>
@@ -44,7 +50,8 @@ Everything below is in the current release. Area-by-area status:
   pages play trailers natively. Prices are in your wallet's currency, and games
   you own are marked. You can gift a game, even one you own, and SteamInRust
   checks first whether Steam will deliver it to that friend's region. Payment
-  happens on Steam's website, as Steam requires.
+  happens on Steam's website, as Steam requires. Also the discovery feed and
+  the Points Shop.
 - **Library.** Every game you own, collections (your Steam Favorites and Hidden
   included), non-Steam games, filters, achievements and full Properties:
   launch options, language, betas, DLC, Steam Cloud, verify files.
@@ -52,10 +59,17 @@ Everything below is in the current release. Area-by-area status:
   resume, and downloads that survive a restart. It shows network and disk
   speed separately, and picks the fastest of Steam's download regions.
 - **Friends and chat.** Live status with the game and rich presence, chat with
-  history, and a separate Friends window. Right-click a friend to join their
+  history and group chats, all in one Friends & Chat window like Steam's: the
+  open chat sits beside your friends list. Right-click a friend to join their
   game or look up their server.
-- **Community.** Profiles, comments, game hubs, Workshop pages, guides and
+- **Community.** A Community home built around players: your friends'
+  activity (screenshots, artwork, reviews, achievements), Explore, and news
+  from the developers of your games. Plus game hubs, Workshop pages, guides and
   discussions, all inside the app.
+- **Profiles.** Profiles with their backgrounds (animated ones play), Steam's
+  profile themes, badges, showcases and comments. Add friends from a profile.
+  Edit your own profile like on Steam: avatar and frame, background, mini
+  profile, theme and the full privacy settings.
 - **Workshop.** Browse a game's Workshop with its own tag filters. Subscribing
   downloads the item right away, and missing or updated items download before
   the game starts, like in Steam.
@@ -85,6 +99,11 @@ Everything below is in the current release. Area-by-area status:
   keyboard: home, library, game pages, store with an on-screen keyboard,
   downloads and friends. Open it from the menu, with the controller's Guide
   button, or start with `--bigpicture`.
+- **Themes.** A theme sets the whole look: colors, fonts, pictures, icons,
+  how each control looks and the layout (navigation on top or on the left,
+  where the friends list docks, compact or roomy). **SteamInRust** (the new
+  look) and **Classic** are built in, and a theme is just a folder you can
+  make yourself: [docs/themes.md](docs/themes.md).
 - **Plugins.** Small [Rhai](https://rhai.rs) scripts can add pages,
   buttons on game pages, items in friends' menus, timers, notifications and
   web requests to the sites they list, with only the permissions you approve.
@@ -93,18 +112,20 @@ Everything below is in the current release. Area-by-area status:
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/media/en/library.png" alt="The library: game grid, collections in the sidebar"></td>
-    <td width="50%"><img src="docs/media/en/inventory.png" alt="Inventory: a Dota 2 item with its market price and price chart"></td>
+    <td width="50%"><img src="docs/media/en/library.png" alt="The library: what's new, recent games and the games list"></td>
+    <td width="50%"><img src="docs/media/en/community.png" alt="The Community home: friends' activity with screenshots and reviews"></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/media/en/profile.png" alt="A profile: level, recent activity, most played and comments"></td>
-    <td width="50%"><img src="docs/media/en/startup-race.gif" alt="SteamInRust and Steam starting side by side"></td>
+    <td width="50%"><img src="docs/media/en/profile.png" alt="A profile: level, badges, game collection and links"></td>
+    <td width="50%"><img src="docs/media/en/inventory.png" alt="Inventory: a Dota 2 item with its market price and price chart"></td>
   </tr>
 </table>
 
+<p align="center"><img src="docs/media/en/startup-race.gif" alt="SteamInRust and Steam starting side by side" width="720"></p>
+
 <p align="center"><img src="docs/media/en/bigpicture.gif" alt="Big Picture: the home screen and library, driven with the keyboard" width="720"></p>
 
-<sub>Screenshots from <code>--demo</code> mode, which uses sample account data.</sub>
+<sub>Screenshots from <code>--demo</code> mode, which uses sample account data, in the SteamInRust theme. The start-up race was recorded before the redesign.</sub>
 
 ## Performance
 
@@ -131,7 +152,8 @@ result of 3 runs:
 Start times are cold starts (nothing in the file cache). 0.7.1 also cut
 SteamInRust's own idle memory from 253 MB to 163 MB and its idle CPU to zero,
 compared with 0.7.0 on the same run. Method, ranges, warm starts and what was
-left out: [docs/benchmarks.md](docs/benchmarks.md).
+left out: [docs/benchmarks.md](docs/benchmarks.md). These numbers are from
+before the redesign; they'll be measured again for the release that brings it.
 
 ## Download
 
@@ -253,7 +275,7 @@ crates/
   plugins        Rhai plugins
   extensions     the interface every page implements
   i18n           translations (locales/ru.toml)
-  ui             theme, fonts, widgets
+  ui             themes (packages in ui/themes), fonts, shared controls
   proto          Steam's .proto files, compiled with protox
   vdf, model     KeyValues parser, shared types
 ```
@@ -291,6 +313,9 @@ work are in [docs/parity.md](docs/parity.md).
 
 ## Credits
 
+Design: [Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign) by **Juxtopposed**, shared on Figma
+Community ([the video about it](https://youtu.be/cDY2p1CTkPo)). SteamInRust's default theme follows
+it; the code, the theme system and any mistakes in the port are ours.
 Fonts: [Inter](https://rsms.me/inter/) (OFL). Icons: [Phosphor](https://phosphoricons.com) (MIT).
 Protocol definitions: [SteamDatabase/Protobufs](https://github.com/SteamDatabase/Protobufs).
 Price history: [IsThereAnyDeal](https://isthereanydeal.com).

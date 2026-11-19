@@ -1,7 +1,7 @@
 # Steam parity
 
 How much of the official Steam desktop client SteamInRust covers, area by
-area. Last checked against the code on 18 November 2026 (v0.7.0 and the changes after it).
+area. Last checked against the code on 19 November 2026 (v0.7.0, the changes after it and the redesign).
 
 Scores: **0** not started · **0.25** started · **0.5** usable, big parts
 missing · **0.75** mostly there · **1** complete. Anything marked "opens
@@ -100,7 +100,9 @@ All native, no web view.
 | Mature content warning with "View page" and "Don't ask again" (switch back in store settings) | Done |
 | Trailers | Native player (`crates/video`): HLS streaming, full screen, quality and volume. Decoded with Media Foundation on Windows and VideoToolbox/AudioToolbox on a Mac |
 | Prices in your wallet's currency, "In library" marks | Done |
-| Cart (the same cart as the website), Steam's "Added to your cart" popup, discount price tags, product keys, wallet balance | Done |
+| Cart (the same cart as the website), Steam's "Added to your cart" popup, discount price tags, product keys, wallet balance | Done. Each copy is for your account or a gift to a friend you pick, then one Checkout button |
+| Points Shop: your points, items by category (avatars, frames, backgrounds, mini-profile backgrounds, stickers, chat effects, emoticons…) and items from your games | Done (browsing). Buying with points opens Steam's website |
+| Discovery feed: the queue as a feed, "New picks" for a fresh queue | Done. "New picks" wasn't tested on a real account |
 | Gifts, including games you already own, with a check that Steam will deliver to the friend's region | Done |
 | Price history | Through IsThereAnyDeal, with your own free key |
 | Checkout | Opens Steam's website. Steam only takes payment there |
@@ -114,7 +116,7 @@ All native, no web view.
 | --- | --- |
 | Friends list with live status, the game being played and rich presence | Done |
 | One-to-one chat with history, typing indicator and unread counts | Done |
-| Separate Friends & Chat window that works while the main window is in the tray | Done |
+| One Friends & Chat window, like Steam's: the friends list docked on the right, the open chat beside it on the left, conversations switched inside it. It works while the main window is in the tray | Done. It replaced the friends panel, the hover preview and the friends page in Community |
 | Right-click menu: join game, view server info (live A2S query), watch game, view game info, invite to play, nickname, favorites, remove, block | Done |
 | Add friends: friend code, Quick Invite links (make, copy, or open someone's), search profiles by name; accept or ignore requests | Done |
 | Group chats: your groups with unread marks, rooms, history, sending, live messages, who's online in a members list | Done, in the app. Text only: pictures, polls, and creating or managing rooms aren't there yet |
@@ -124,7 +126,10 @@ All native, no web view.
 
 | | |
 | --- | --- |
-| Profiles: background, avatar frame, level, badges, showcases, comments (read and post) | Done |
+| Community home with three sections: **Friends activity** (Steam's activity feed: screenshots, artwork, reviews, achievements, new games, posts), **Explore** (artwork, screenshots, broadcasts, guides, Workshop) and **Developers** (news from games you own) | Done |
+| Profiles: background (animated ones play), avatar frame, level, badges, showcases, comments (read and post), Steam's profile themes | Done. Animated avatar frames show as still pictures |
+| On someone's profile: Add friend (or accept, cancel, remove), Message, and a More menu (copy the link, view on Steam, inventory, remove friend, block, report on Steam) | Done. Adding, removing and blocking weren't tested on a real account |
+| Edit your profile: General, Avatar (animated avatars and frames), Profile background (full screen or original size), Mini profile, Theme, Featured badge, and Steam's full Privacy page with its checkboxes | Done, with a preview before saving. The Showcase Manager isn't there yet. Saving wasn't tested on a real account |
 | Someone's games, inventory, screenshots, artwork, videos, Workshop items and guides | Done |
 | Community hub per game: screenshots, artwork, videos, news | Done |
 | Workshop item pages: media, description, required items, change notes, comments; subscribe, rate, favorite | Done. Rating and favoriting weren't tested on a real account |
@@ -197,14 +202,16 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | | |
 | --- | --- |
 | All Steam notification types with game art or avatars, toasts | Done |
-| Tray icon with Steam's menu, close to tray | Done |
+| Tray icon with Steam's menu (drawn in the current theme), close to tray | Done |
+| Pick the app icon (taskbar, window and tray) from the SteamInRust logos | Done |
 
 ## Settings, languages, updates
 
 | | |
 | --- | --- |
 | Settings: account, friends, security, notifications, interface, appearance, store, library, downloads, storage, cloud, in game, accessibility, plugins | Done |
-| Themes, accent color, UI scale | Done |
+| Themes: full skins with their own colors, fonts, images, icons, control styles and layout. Built in: **SteamInRust** (the default, after [Juxtopposed's Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign)) and **Classic** (the look before it). Your own themes load from a folder ([docs/themes.md](themes.md)) | Done. People upgrading are asked once whether to try the new look. There's no theme store yet |
+| Accent color, UI scale | Done |
 | English, Russian, Simplified Chinese, Spanish, Brazilian Portuguese, German and French, picked from the system language | Done. Japanese, Korean, Traditional Chinese, Polish, Turkish and others aren't translated yet |
 | Installer, uninstaller, background updates checked with SHA-256 | Done. One download at a time; it continues after a restart or a dropped connection, and old installers are deleted. On a Mac: a disk image, and the app replaces itself on update |
 | Copy, cut and paste in every text field, with a right-click menu | Done |

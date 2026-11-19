@@ -31,6 +31,12 @@ installed copies of the app update themselves from it.
 - Never add anything that touches games' anti-cheat. Games with VAC, EAC or
   BattlEye always run through the official Steam client.
 - Payments stay on Steam's website.
+- The look comes from the theme. Pages use theme tokens and the shared
+  controls in `crates/ui`, never their own colors, sizes or fonts, so every
+  theme (and Classic) keeps working. The rules and the screen-by-screen map
+  are in [docs/redesign.md](docs/redesign.md); how themes work is in
+  [docs/themes.md](docs/themes.md). Check a page in both built-in themes
+  (`--theme=classic`).
 
 ## Translations
 
