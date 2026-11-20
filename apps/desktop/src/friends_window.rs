@@ -28,6 +28,8 @@ pub enum Pane {
     Add,
     Invites,
     Blocked,
+    /// Making a new group chat.
+    NewGroup,
 }
 
 impl Pane {
@@ -145,6 +147,7 @@ impl FriendsWindow {
             "add" => self.show(Pane::Add),
             "invites" => self.show(Pane::Invites),
             "blocked" => self.show(Pane::Blocked),
+            "newgroup" => self.show(Pane::NewGroup),
             "activity" => {
                 self.tab = ListTab::Activity;
                 self.raise();
@@ -728,21 +731,18 @@ fn group_chats(app: &mut SteamApp, ui: &mut Ui, t: &Theme, filter: &str) {
     // Lit while the pointer is on it (where it was drawn last frame).
     let id = egui::Id::unique("fw-group-title");
     let lit = ui.data(|d| d.get_temp::<Rect>(id)).is_some_and(|r| ui.rect_contains_pointer(r));
-    // The title, and "+" for a new group chat at the row's end.
-    let title = crate::builtin::friends::ends(
-        ui,
-        |ui| {
-            let (r, resp) = ui.allocate_exact_size(vec2(t.dense(24.0), t.dense(24.0)), Sense::click());
-            let c = &t.components.icon_button;
-            let look = t.look(c, w::interact(ui, &resp, false));
-            w::paint_box(ui, t, r, c, &look, 0.0);
-            w::icon_centered(ui.painter(), r.center(), icons::PLUS, t.dense(14.0), look.icon);
-            if resp.on_hover_text(t!("New group chat")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                app.friends_window.new_group = Some(NewGroup::default());
-            }
-        },
-        |ui| ui.add(egui::Label::new(w::body_m(t, text, if lit { t.text } else { t.text_dim })).sense(Sense::click())),
-    );
+    let title = ui
+        .horizontal(|ui| {
+            let title = ui.add(egui::Label::new(w::body_m(t, text, if lit { t.text } else { t.text_dim })).sense(Sense::click()));
+            // Steam's "+": make a new group chat.
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if w::icon_button(ui, t, icons::PLUS, t!("Create a group chat"), false, 0).clicked() {
+                    app.friends_window.convs.show(Pane::NewGroup);
+                }
+            });
+            title
+        })
+        .inner;
     ui.data_mut(|d| d.insert_temp(id, title.rect));
     if title.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         app.friends_window.groups_hidden = !hidden;

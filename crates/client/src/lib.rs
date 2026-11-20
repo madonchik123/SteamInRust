@@ -44,6 +44,7 @@ mod pics;
 mod session;
 pub mod state;
 pub mod store;
+pub mod chat_admin;
 
 pub use auth::Guard;
 pub use launch::{LaunchArgs, LaunchMode, mode as launch_mode, mode_cached as launch_mode_cached, mode_peek as launch_mode_peek, safe_connect_args};
@@ -315,6 +316,8 @@ pub enum Command {
     InviteToChatGroup { group: u64, friend: SteamId },
     LeaveChatGroup { group: u64 },
     LogOut,
+    /// Manage a group chat (`group` 0 for a new one): see [`model::chat_admin::AdminOp`].
+    ChatAdmin { group: u64, op: model::chat_admin::AdminOp },
 }
 
 /// A conversation: one-to-one with a friend, or a room of a group chat.
@@ -455,6 +458,7 @@ impl std::fmt::Debug for Command {
             Command::InviteToChatGroup { group, friend } => f.debug_struct("InviteToChatGroup").field("group", group).field("friend", friend).finish(),
             Command::LeaveChatGroup { group } => f.debug_struct("LeaveChatGroup").field("group", group).finish(),
             Command::LogOut => f.write_str("LogOut"),
+            Command::ChatAdmin { group, op } => f.debug_struct("ChatAdmin").field("group", group).field("op", op).finish(),
         }
     }
 }
@@ -663,6 +667,8 @@ pub enum Event {
     ChatGroupCreated(Result<u64, String>),
     /// Inviting into, or leaving, a group chat failed.
     ChatGroupFailed(String),
+    /// What a [`Command::ChatAdmin`] came back with.
+    ChatAdmin(model::chat_admin::AdminEvent),
 }
 
 /// How the client is connected to Steam right now.

@@ -123,6 +123,7 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
         effects: ["confetti", "fireworks"].iter().map(|n| owned(n)).collect(),
     }));
     events.extend(group_chat(me, ferris, now));
+    events.extend(owned_group_chat(me, ferris, now));
     events.push(Event::Personas(friend_requests().iter().map(|(id, name, _)| Persona { steam_id: *id, name: (*name).into(), state: PersonaState::Online, ..Default::default() }).collect()));
     events.extend(inventory(me, now));
     events.extend(crate::builtin::hub::demo::events());
@@ -460,4 +461,61 @@ pub fn cloud_conflict(app_id: model::AppId) -> Event {
         ..Default::default()
     };
     Event::CloudReport { report, held_launch: Some(client::LaunchArgs::default()) }
+}
+
+/// A made-up group chat you own, with channels (one voice), roles, invite
+/// links, an invited account and a ban, for the group settings dialogs.
+/// Co-op Night (Ferris's) shows what a member without rights sees.
+fn owned_group_chat(me: u64, ferris: u64, now: u64) -> Vec<Event> {
+    use model::chat_admin::{AdminEvent, GroupAdmin, InviteLink, Listed, Member, Notify, Role, RolePerms};
+    use model::{ChatGroup, ChatRoom, GroupMessage};
+    const BASE: u64 = 76561197960265728;
+    let group = 4_200_002;
+    let (nova, pixel, quartz) = (ferris + 1, ferris + 2, ferris + 3);
+    let rooms = vec![
+        ChatRoom { id: 21, name: "Home".into(), sort: 0, ..Default::default() },
+        ChatRoom { id: 22, name: "links".into(), sort: 1, ..Default::default() },
+        ChatRoom { id: 23, name: "games (free or on sale)".into(), sort: 2, ..Default::default() },
+        ChatRoom { id: 24, name: "Lounge".into(), voice: true, sort: 3, ..Default::default() },
+    ];
+    let hello = GroupMessage { group, room: 21, sender: nova, text: "welcome everyone :)".into(), time: (now - 7200) as u32, ordinal: 0, reactions: Vec::new() };
+    let everyone = RolePerms { chat: true, mention_all: true, broadcasts: true, invite: true, change_details: true, channels: true, view_history: true, ..Default::default() };
+    let moderators = RolePerms { kick: true, ban: true, assign_roles: true, ..everyone };
+    let admin = GroupAdmin {
+        group,
+        owner: me,
+        default_role: 1,
+        roles: vec![Role { id: 1, name: "Everyone".into(), ordinal: 0, perms: everyone }, Role { id: 2, name: "Moderators".into(), ordinal: 1, perms: moderators }],
+        members: [me, ferris, nova, pixel, quartz].iter().map(|m| Member { steam_id: *m, roles: if *m == nova { vec![2] } else { vec![] } }).collect(),
+        notify: Notify::All,
+        room_notify: vec![(22, Notify::Mentions)],
+        dms_allowed: true,
+        links: vec![
+            InviteLink { code: "Z0uG8hG0".into(), creator: me, expires: (now + 86_400 - 600) as u32, room: 0 },
+            InviteLink { code: "pQ7xR2mK".into(), creator: nova, expires: 0, room: 22 },
+        ],
+        invited: vec![Listed { steam_id: BASE + 201, by: me, time: (now - 3600) as u32, reason: String::new() }],
+        bans: vec![Listed { steam_id: BASE + 204, by: nova, time: (now - 86_400 * 3) as u32, reason: String::new() }],
+    };
+    vec![
+        Event::ChatAdmin(AdminEvent::GroupCreated {
+            group: ChatGroup { id: group, name: "Odyssey of Friends".into(), tagline: "Cheap games and good company".into(), default_room: 21, active_members: 4, rooms, ..Default::default() },
+            members: vec![me, ferris, nova, pixel, quartz],
+        }),
+        Event::ChatAdmin(AdminEvent::Loaded { group, result: Ok(admin) }),
+        Event::GroupHistory { group, room: 21, result: Ok((vec![hello], false)), older: false },
+        // Co-op Night is Ferris's: you're a member with the default role.
+        Event::ChatAdmin(AdminEvent::Loaded {
+            group: 4_200_001,
+            result: Ok(GroupAdmin {
+                group: 4_200_001,
+                owner: ferris,
+                default_role: 1,
+                roles: vec![Role { id: 1, name: "Everyone".into(), ordinal: 0, perms: RolePerms { chat: true, view_history: true, ..Default::default() } }],
+                members: [me, ferris, nova, quartz].iter().map(|m| Member { steam_id: *m, roles: vec![] }).collect(),
+                notify: Notify::Mentions,
+                ..Default::default()
+            }),
+        }),
+    ]
 }

@@ -135,6 +135,9 @@ pub struct State {
     pub offline_playtime: HashMap<AppId, (u64, u64)>,
     /// Games whose Steam Cloud upload waits for a connection.
     pub cloud_pending: std::collections::HashSet<AppId>,
+    /// Group chats' roles, invites, bans and your settings for them (the
+    /// group settings and notifications dialogs).
+    pub chat_admin: HashMap<u64, Result<model::chat_admin::GroupAdmin, String>>,
 }
 
 fn now() -> u64 {
@@ -551,6 +554,7 @@ impl State {
             Event::OfflinePlaytime(list) => self.offline_playtime = list.iter().map(|&(a, total, pending)| (a, (total, pending))).collect(),
             Event::CloudPending(list) => self.cloud_pending = list.iter().copied().collect(),
             Event::CloudSkipped { .. } => {}
+            Event::ChatAdmin(e) => crate::chat_admin::apply(self, e),
         }
     }
 

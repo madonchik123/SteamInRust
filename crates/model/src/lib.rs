@@ -2617,3 +2617,6 @@ mod steam_id_tests {
         assert_eq!(fallback.join_args().as_deref(), Some("+connect_lobby 42"));
     }
 }
+
+/// Managing group chats (roles, invites, bans, notifications).
+pub mod chat_admin;

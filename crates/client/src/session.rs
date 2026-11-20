@@ -62,6 +62,11 @@ pub async fn run(mut cmds: Cmds, sink: Sink) {
                 store::remove(&account);
                 continue;
             }
+            // Signed out (the demo): group chat changes just happen.
+            Command::ChatAdmin { group, op } => {
+                crate::chat_admin::offline(group, op, 0, &sink);
+                continue;
+            }
             _ => continue,
         };
         // A saved login that can't reach Steam isn't a failed login: offer
@@ -1380,6 +1385,14 @@ async fn online(
                             })
                             .await;
                     });
+                }
+                Some(Command::ChatAdmin { group, op }) => {
+                    let (conn, me) = (st.conn.clone(), st.me);
+                    if matches!(op, model::chat_admin::AdminOp::SetAvatar { .. }) {
+                        st.with_web(sink, move |web, sink| crate::chat_admin::run(conn, Some(web), me, group, op, sink));
+                    } else {
+                        tokio::spawn(crate::chat_admin::run(conn, None, me, group, op, sink.clone()));
+                    }
                 }
                 Some(other) => tracing::debug!("ignored while signed in: {other:?}"),
             },

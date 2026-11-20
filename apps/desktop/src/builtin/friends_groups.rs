@@ -83,9 +83,7 @@ impl Friends {
                     if w::icon_button(ui, t, icons::X, t!("Close conversation"), false, 0).clicked() {
                         convs.close(Pane::Group(group, room));
                     }
-                    if w::icon_button(ui, t, icons::SIGN_OUT, t!("Leave group chat"), false, 0).clicked() {
-                        self.leave_confirm = Some(group);
-                    }
+                    self.admin.header_buttons(ui, t, ctx, &g);
                     let wide = ui.max_rect().width() > t.dense(700.0);
                     if !wide && w::icon_button(ui, t, icons::USERS, t!("Members"), self.members, 0).clicked() {
                         self.members = !self.members;
@@ -100,8 +98,7 @@ impl Friends {
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = t.spacing.xs;
                             ui.add(egui::Label::new(w::heading_s(t, &name, t.text)).truncate());
-                            let members = ctx.state.chat_group_members.get(&group).map(|m| m.len()).unwrap_or(0);
-                            let mut sub = t!("{n} members", n = members).to_string();
+                            let mut sub = super::admin::counts(ctx.state, group);
                             if !g.tagline.is_empty() {
                                 sub = format!("{sub} · {}", g.tagline);
                             }
@@ -115,8 +112,11 @@ impl Friends {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(t.spacing.xs + 2.0, t.spacing.xs + 2.0);
                     for r in &g.rooms {
-                        let label = format!("# {}", if r.name.is_empty() { t!("general").to_string() } else { r.name.clone() });
-                        let resp = w::chip(ui, t, &label, r.id == room);
+                        let label = format!("{} {}", if r.voice { icons::MICROPHONE } else { "#" }, if r.name.is_empty() { t!("general").to_string() } else { r.name.clone() });
+                        let mut resp = w::chip(ui, t, &label, r.id == room);
+                        if r.voice {
+                            resp = resp.on_hover_text(t!("Voice chat isn't supported in SteamInRust yet"));
+                        }
                         if r.unread && r.id != room {
                             ui.painter().circle_filled(resp.rect.right_top() + vec2(-4.0, 4.0), 4.0, t.accent);
                         }
@@ -166,11 +166,12 @@ impl Friends {
                     w::component_frame(t, &t.components.friends_box).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.set_min_height(height - t.spacing.xl);
-                        member_list(ui, t, ctx, group);
+                        member_list(ui, t, ctx, group, &mut self.admin);
                     });
                 });
             }
         });
+        self.admin.dialogs(ui, t, ctx, convs, &g, &name);
     }
 
 }
@@ -204,7 +205,7 @@ impl Friends {
 }
 
 /// Who's in a group: in game, online, then offline.
-fn member_list(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, group: u64) {
+fn member_list(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, group: u64, admin: &mut super::admin::Admin) {
     let state = ctx.state;
     let mut people: Vec<model::Persona> = state.chat_group_members.get(&group).map(|m| m.iter().map(|id| state.persona(*id)).collect()).unwrap_or_default();
     people.sort_by_key(|p| (!p.in_game(), p.state == PersonaState::Offline, p.name.to_lowercase()));
@@ -228,6 +229,7 @@ fn member_list(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, group: u64) {
                     ui.add(egui::Label::new(w::body_s(t, crate::shell::status_text(state, p), color)).truncate());
                 }
             });
+            admin.member_menu(&resp, t, ctx, group, p.steam_id);
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Profile")).clicked() {
                 open = Some(p.steam_id);
             }
