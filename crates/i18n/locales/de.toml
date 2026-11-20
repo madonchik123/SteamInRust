@@ -2529,3 +2529,6 @@
 "The status is empty" = "Der Status ist leer"
 "Sign in to post a status" = "Melde dich an, um einen Status zu posten"
 "Posting status updates is unavailable right now" = "Status können gerade nicht gepostet werden"
+
+# --- Store search suggestions ---
+"See all results for “{q}”" = "Alle Ergebnisse für „{q}“"

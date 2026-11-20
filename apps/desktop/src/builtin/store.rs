@@ -32,6 +32,8 @@ mod home;
 mod store_page;
 #[path = "store_points.rs"]
 mod points;
+#[path = "store_suggest.rs"]
+pub(crate) mod suggest;
 #[path = "store_demo.rs"]
 pub mod demo;
 
@@ -148,6 +150,8 @@ pub struct Store {
     specs: specs::Specs,
     /// Text in the page bar's search.
     bar_query: String,
+    /// Games suggested while typing in a search box.
+    suggest: suggest::Suggest,
     /// The Points Shop's list and loaded pages.
     points: points::Points,
     /// The wishlist's sorting and filters.
@@ -208,6 +212,7 @@ impl Store {
             reviews_list: Default::default(),
             specs: Default::default(),
             bar_query: String::new(),
+            suggest: Default::default(),
             points: Default::default(),
             wish: Default::default(),
             search: None,

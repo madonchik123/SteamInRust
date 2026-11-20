@@ -2529,3 +2529,6 @@
 "The status is empty" = "动态为空"
 "Sign in to post a status" = "登录以发布动态"
 "Posting status updates is unavailable right now" = "目前无法发布动态"
+
+# --- Store search suggestions ---
+"See all results for “{q}”" = "查看“{q}”的全部结果"

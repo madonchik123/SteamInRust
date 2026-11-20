@@ -2529,3 +2529,6 @@
 "The status is empty" = "O status está vazio"
 "Sign in to post a status" = "Entre para publicar um status"
 "Posting status updates is unavailable right now" = "No momento não é possível publicar status"
+
+# --- Store search suggestions ---
+"See all results for “{q}”" = "Ver todos os resultados para “{q}”"
