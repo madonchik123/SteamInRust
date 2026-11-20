@@ -96,16 +96,33 @@ impl StoreClient {
 
     /// Localized names for all store tags.
     pub async fn tag_names(&self) -> Result<HashMap<u32, String>> {
+        // In the interface language; English when Steam has no list for it
+        // (it answers an unknown language with an empty one) or the request
+        // fails, and English names fill any gaps.
+        let local = self.tag_list(&self.language).await;
+        if self.language == "english" {
+            return local;
+        }
+        let mut names = self.tag_list("english").await.unwrap_or_default();
+        match local {
+            Ok(l) => names.extend(l),
+            Err(e) if names.is_empty() => return Err(e),
+            Err(_) => {}
+        }
+        Ok(names)
+    }
+
+    async fn tag_list(&self, language: &str) -> Result<HashMap<u32, String>> {
         let resp: Envelope<RawTags> = self
             .http
             .get(format!("{API}/IStoreService/GetTagList/v1/"))
-            .query(&[("language", self.language.as_str())])
+            .query(&[("language", language)])
             .send()
             .await?
             .error_for_status()?
             .json()
             .await?;
-        Ok(resp.response.tags.into_iter().map(|t| (t.tagid, t.name)).collect())
+        Ok(resp.response.tags.into_iter().filter(|t| !t.name.trim().is_empty()).map(|t| (t.tagid, t.name)).collect())
     }
 
     /// How many people are playing a game on Steam right now (Steam's own

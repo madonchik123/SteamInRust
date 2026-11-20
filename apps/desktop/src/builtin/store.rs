@@ -89,6 +89,8 @@ pub struct Store {
     /// Up and down votes of the last 30 days, per game.
     recent: HashMap<AppId, Shared<(u64, u64)>>,
     tags: Option<Shared<HashMap<u32, String>>>,
+    /// When the tag names were last asked for (to ask again if that failed).
+    tags_asked: Option<std::time::Instant>,
     /// (country, language) the caches were loaded with.
     locale: (String, String),
     /// Content descriptors per app, for the mature content filter.
@@ -179,6 +181,7 @@ impl Store {
             players: HashMap::new(),
             recent: HashMap::new(),
             tags: None,
+            tags_asked: None,
             locale: ("us".into(), "english".into()),
             ratings: Default::default(),
             ratings_pending: Vec::new(),
@@ -314,14 +317,31 @@ impl Store {
     }
 
     fn tag_name(&mut self, id: u32) -> Option<String> {
-        if self.tags.is_none() {
-            let api = self.api.clone();
-            self.tags = Some(self.fetch(async move { api.tag_names().await }));
-        }
+        self.tag_names_ready();
         match &*self.tags.as_ref()?.lock().unwrap() {
             Load::Ready(m) => m.get(&id).cloned(),
             _ => None,
         }
+    }
+
+    /// Steam's tag names, asked for once; asked again a little later when
+    /// the answer failed or came back empty. True once they're here.
+    fn tag_names_ready(&mut self) -> bool {
+        const RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+        let state = self.tags.as_ref().map(|s| match &*s.lock().unwrap() {
+            Load::Ready(m) if !m.is_empty() => Some(true),
+            Load::Loading => None,
+            _ => Some(false),
+        });
+        let retry = matches!(state, Some(Some(false))) && self.tags_asked.is_none_or(|a| a.elapsed() >= RETRY);
+        if self.tags.is_none() || retry {
+            let api = self.api.clone();
+            self.tags = Some(self.fetch(async move { api.tag_names().await }));
+            self.tags_asked = Some(std::time::Instant::now());
+        } else if matches!(state, Some(Some(false))) {
+            self.egui.request_repaint_after(RETRY);
+        }
+        matches!(state, Some(Some(true)))
     }
 
     /// Follow the wallet's country (prices) and the interface language.

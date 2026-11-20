@@ -2532,3 +2532,9 @@
 
 # --- Store search suggestions ---
 "See all results for “{q}”" = "Alle Ergebnisse für „{q}“"
+
+# --- Store filters ---
+"Clear ({n})" = "Zurücksetzen ({n})"
+"Turn every filter off" = "Alle Filter ausschalten"
+"No filters are on" = "Keine Filter aktiv"
+"View|layout" = "Ansicht"

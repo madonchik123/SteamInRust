@@ -2532,3 +2532,9 @@
 
 # --- Store search suggestions ---
 "See all results for “{q}”" = "查看“{q}”的全部结果"
+
+# --- Store filters ---
+"Clear ({n})" = "清除（{n}）"
+"Turn every filter off" = "关闭所有筛选"
+"No filters are on" = "没有开启任何筛选"
+"View|layout" = "视图"
