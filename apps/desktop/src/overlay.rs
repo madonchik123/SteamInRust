@@ -108,7 +108,14 @@ impl Overlay {
         }));
         // A game's in-game overlay sent something: run the UI.
         let main = ctx.clone();
-        client::ingame::set_waker(move || crate::ingame::wake(&main, std::time::Duration::ZERO));
+        client::ingame::set_waker(move || {
+            // A new game is picked up by the main window; after that its
+            // input only wakes the overlay's helper window.
+            if client::ingame::has_new() {
+                main.request_repaint();
+            }
+            crate::ingame::wake(&main, std::time::Duration::ZERO);
+        });
         let closed = WinState { open: false, pinned: false, opacity: 0.85 };
         let mut wins = [closed; 7];
         // Like Steam: the game overview and friends open by default.
@@ -561,12 +568,14 @@ fn keep_ticking(app: &mut SteamApp, ctx: &egui::Context) {
     let builder = egui::ViewportBuilder::default()
         .with_title("SteamInRust overlay timer")
         .with_decorations(false)
-        .with_transparent(true)
+        // Opaque and off the screen, so Windows never has to blend it with
+        // the game's frames (it was a see-through window on the game).
+        .with_transparent(false)
         .with_taskbar(false)
         .with_active(false)
         .with_resizable(false)
         .with_mouse_passthrough(true)
-        .with_position(egui::pos2(0.0, 0.0))
+        .with_position(egui::Pos2::from(crate::app::OFFSCREEN_POS))
         .with_inner_size(egui::vec2(1.0, 1.0));
     ctx.show_viewport_deferred(crate::ingame::tick(), builder, move |ui, _| {
         // SAFETY: eframe calls a deferred viewport's callback on the UI

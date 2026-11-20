@@ -14,7 +14,7 @@ use super::{Frame, TexOp, shared};
 use crate::overlay::wire::VERTEX_SIZE;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use windows::Win32::Foundation::{HMODULE, HWND, RECT};
@@ -124,19 +124,99 @@ unsafe fn find_vtable() -> Option<(*mut usize, bool, bool)> {
 }
 
 unsafe extern "system" fn present(this: *mut c_void, sync: u32, flags: u32) -> HRESULT {
+    let t0 = Instant::now();
     if flags & DXGI_PRESENT_TEST.0 == 0 {
         on_present(this);
     }
+    let t1 = Instant::now();
     let real: PresentFn = unsafe { std::mem::transmute(REAL_PRESENT.load(Ordering::Acquire)) };
-    unsafe { real(this, sync, flags) }
+    let hr = unsafe { real(this, sync, flags) };
+    stats::frame(t0, t1, Instant::now());
+    hr
 }
 
 unsafe extern "system" fn present1(this: *mut c_void, sync: u32, flags: u32, params: *const c_void) -> HRESULT {
+    let t0 = Instant::now();
     if flags & DXGI_PRESENT_TEST.0 == 0 {
         on_present(this);
     }
+    let t1 = Instant::now();
     let real: Present1Fn = unsafe { std::mem::transmute(REAL_PRESENT1.load(Ordering::Acquire)) };
-    unsafe { real(this, sync, flags, params) }
+    let hr = unsafe { real(this, sync, flags, params) };
+    stats::frame(t0, t1, Instant::now());
+    hr
+}
+
+/// Frame timing, logged once a second when the DLL log is on
+/// (`STEAMINRUST_STEAMCLIENT_LOG`): how long the game's frames take, how
+/// much of that is our hook, and how long the real Present blocks.
+pub(super) mod stats {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    struct Window {
+        start: Instant,
+        last: Option<Instant>,
+        frames: u32,
+        gap_sum: Duration,
+        gap_max: Duration,
+        hook_sum: Duration,
+        hook_max: Duration,
+        present_sum: Duration,
+        present_max: Duration,
+    }
+
+    static W: Mutex<Option<Window>> = Mutex::new(None);
+    /// Texture bytes uploaded and app frames drawn, since the last line.
+    pub static TEX_BYTES: AtomicU64 = AtomicU64::new(0);
+    pub static TEX_OPS: AtomicU64 = AtomicU64::new(0);
+    pub static APP_FRAMES: AtomicU64 = AtomicU64::new(0);
+    pub static UPLOADS: AtomicU64 = AtomicU64::new(0);
+
+    fn on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os(crate::protocol::ENV_LOG).is_some())
+    }
+
+    pub fn frame(t0: Instant, t1: Instant, t2: Instant) {
+        if !on() {
+            return;
+        }
+        let Ok(mut g) = W.lock() else { return };
+        let w = g.get_or_insert_with(|| Window { start: t0, last: None, frames: 0, gap_sum: Duration::ZERO, gap_max: Duration::ZERO, hook_sum: Duration::ZERO, hook_max: Duration::ZERO, present_sum: Duration::ZERO, present_max: Duration::ZERO });
+        if let Some(last) = w.last {
+            let gap = t0 - last;
+            w.gap_sum += gap;
+            w.gap_max = w.gap_max.max(gap);
+        }
+        w.last = Some(t0);
+        w.frames += 1;
+        w.hook_sum += t1 - t0;
+        w.hook_max = w.hook_max.max(t1 - t0);
+        w.present_sum += t2 - t1;
+        w.present_max = w.present_max.max(t2 - t1);
+        if t0 - w.start >= Duration::from_secs(1) {
+            let n = w.frames.max(1);
+            let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+            crate::log!(
+                "overlay stats: {} fps, frame avg {:.1} ms max {:.1} ms, our hook avg {:.2} ms max {:.2} ms, real Present avg {:.2} ms max {:.2} ms, open {}, app frames {}, uploads {}, textures {} ({} KB)",
+                n,
+                ms(w.gap_sum) / (n.saturating_sub(1).max(1)) as f64,
+                ms(w.gap_max),
+                ms(w.hook_sum) / n as f64,
+                ms(w.hook_max),
+                ms(w.present_sum) / n as f64,
+                ms(w.present_max),
+                super::super::input::is_open(),
+                APP_FRAMES.swap(0, Ordering::Relaxed),
+                UPLOADS.swap(0, Ordering::Relaxed),
+                TEX_OPS.swap(0, Ordering::Relaxed),
+                TEX_BYTES.swap(0, Ordering::Relaxed) / 1024,
+            );
+            *g = Some(Window { start: t0, last: Some(t0), frames: 0, gap_sum: Duration::ZERO, gap_max: Duration::ZERO, hook_sum: Duration::ZERO, hook_max: Duration::ZERO, present_sum: Duration::ZERO, present_max: Duration::ZERO });
+        }
+    }
 }
 
 unsafe extern "system" fn resize(this: *mut c_void, count: u32, w: u32, h: u32, format: i32, flags: u32) -> HRESULT {
@@ -192,6 +272,8 @@ struct Renderer {
     linear_out: bool,
     size: (u32, u32),
     textures: HashMap<u64, Tex>,
+    /// The frame (and target size, color mode) whose triangles are in the buffers.
+    uploaded: Option<(Arc<Frame>, (u32, u32), bool)>,
     last_present: Instant,
 }
 
@@ -409,6 +491,7 @@ impl Renderer {
                 linear_out: false,
                 size: (desc.BufferDesc.Width, desc.BufferDesc.Height),
                 textures: HashMap::new(),
+                uploaded: None,
                 last_present: Instant::now(),
             })
         }
@@ -420,6 +503,8 @@ impl Renderer {
                 self.textures.remove(&id);
             }
             TexOp::Set(t) => unsafe {
+                stats::TEX_OPS.fetch_add(1, Ordering::Relaxed);
+                stats::TEX_BYTES.fetch_add(t.rgba.len() as u64, Ordering::Relaxed);
                 let [w, h] = t.size;
                 if w == 0 || h == 0 {
                     return;
@@ -585,7 +670,7 @@ impl Renderer {
         Ok(())
     }
 
-    unsafe fn draw(&mut self, sc: &IDXGISwapChain, frame: &Frame) -> windows::core::Result<()> {
+    unsafe fn draw(&mut self, sc: &IDXGISwapChain, frame: &Arc<Frame>) -> windows::core::Result<()> {
         unsafe {
             self.ensure_target(sc)?;
             let vbytes: usize = frame.meshes.iter().map(|m| m.vertices.len()).sum();
@@ -593,16 +678,24 @@ impl Renderer {
             if vbytes == 0 || ibytes == 0 {
                 return Ok(());
             }
+            let grew = self.vb.as_ref().is_none_or(|(_, cap)| *cap < vbytes) || self.ib.as_ref().is_none_or(|(_, cap)| *cap < ibytes);
             let vb = Self::buffer(&self.device, &mut self.vb, vbytes, D3D11_BIND_VERTEX_BUFFER)?;
             let ib = Self::buffer(&self.device, &mut self.ib, ibytes, D3D11_BIND_INDEX_BUFFER)?;
-            self.upload(&vb, &mut frame.meshes.iter().map(|m| m.vertices.as_slice()))?;
-            let idx: Vec<&[u8]> = frame.meshes.iter().map(|m| std::slice::from_raw_parts(m.indices.as_ptr() as *const u8, m.indices.len() * 4)).collect();
-            self.upload(&ib, &mut idx.into_iter())?;
             let ppp = frame.pixels_per_point.max(0.1);
             let (w, h) = (self.size.0 as f32, self.size.1 as f32);
-            let constants = [w / ppp, h / ppp, if self.linear_out { 1.0 } else { 0.0 }, 0.0f32];
-            let cb_bytes = std::slice::from_raw_parts(constants.as_ptr() as *const u8, 16);
-            self.upload(&self.constants, &mut std::iter::once(cb_bytes))?;
+            // The game presents far more often than the app sends frames:
+            // upload a frame's triangles once, not on every Present.
+            let same = !grew && self.uploaded.as_ref().is_some_and(|(f, size, linear)| Arc::ptr_eq(f, frame) && *size == self.size && *linear == self.linear_out);
+            if !same {
+                self.upload(&vb, &mut frame.meshes.iter().map(|m| m.vertices.as_slice()))?;
+                let idx: Vec<&[u8]> = frame.meshes.iter().map(|m| std::slice::from_raw_parts(m.indices.as_ptr() as *const u8, m.indices.len() * 4)).collect();
+                self.upload(&ib, &mut idx.into_iter())?;
+                let constants = [w / ppp, h / ppp, if self.linear_out { 1.0 } else { 0.0 }, 0.0f32];
+                let cb_bytes = std::slice::from_raw_parts(constants.as_ptr() as *const u8, 16);
+                self.upload(&self.constants, &mut std::iter::once(cb_bytes))?;
+                self.uploaded = Some((frame.clone(), self.size, self.linear_out));
+                stats::UPLOADS.fetch_add(1, Ordering::Relaxed);
+            }
 
             let saved = Saved::take(&self.ctx);
             let c = &self.ctx;

@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicUsi
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::Input::{GetRegisteredRawInputDevices, RAWINPUTDEVICE, RIDEV_REMOVE, RegisterRawInputDevices};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCSTR, w};
 
@@ -64,7 +65,135 @@ pub fn attach(hwnd: HWND) {
         }
         let prev = set_wndproc(hwnd, wndproc as *const () as usize as isize);
         REAL_WNDPROC.store(prev, Ordering::Release);
+        hook_thread_messages(hwnd);
         crate::log!("overlay: listening to the game's window");
+    }
+}
+
+static MSG_HOOK: AtomicIsize = AtomicIsize::new(0);
+static MSG_HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
+
+/// Watch every message the window's thread takes from its queue. Engines
+/// often read input in their own message loop before (or instead of)
+/// passing it to the window procedure, and input can arrive at other
+/// windows of the game (a parent, a child). Here it's caught for all of them.
+fn hook_thread_messages(hwnd: HWND) {
+    let thread = unsafe { GetWindowThreadProcessId(hwnd, None) };
+    if thread == 0 || MSG_HOOK_THREAD.load(Ordering::Acquire) == thread {
+        return;
+    }
+    unsafe {
+        let old = MSG_HOOK.swap(0, Ordering::AcqRel);
+        if old != 0 {
+            let _ = UnhookWindowsHookEx(HHOOK(old as *mut c_void));
+        }
+        match SetWindowsHookExW(WH_GETMESSAGE, Some(getmsg_hook), None, thread) {
+            Ok(h) => {
+                MSG_HOOK.store(h.0 as isize, Ordering::Release);
+                MSG_HOOK_THREAD.store(thread, Ordering::Release);
+            }
+            Err(e) => crate::log!("overlay: no message hook on the game's thread: {e}"),
+        }
+    }
+}
+
+fn is_input(msg: u32) -> bool {
+    (WM_KEYFIRST..=WM_KEYLAST).contains(&msg) || (WM_MOUSEFIRST..=WM_MOUSELAST).contains(&msg) || msg == WM_INPUT || msg == WM_MOUSELEAVE_ || (WM_NCMOUSEMOVE..=WM_NCXBUTTONDBLCLK).contains(&msg)
+}
+
+unsafe extern "system" fn getmsg_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if code >= 0 && lp.0 != 0 {
+        let m = unsafe { &mut *(lp.0 as *mut MSG) };
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { take_input(m, wp.0 == PM_REMOVE.0 as usize) }));
+    }
+    unsafe { CallNextHookEx(None, code, wp, lp) }
+}
+
+/// While the overlay is open, input becomes the overlay's and the game gets
+/// a no-op message instead. `removed`: the game is taking the message out of
+/// the queue (a peek that leaves it there is only hidden, not handled).
+unsafe fn take_input(m: &mut MSG, removed: bool) {
+    let target = HWND(HWND_NOW.load(Ordering::Acquire) as *mut c_void);
+    if !OPEN.load(Ordering::Acquire) {
+        // Shift+Tab opens it whichever window has the keyboard.
+        if removed && m.message == WM_KEYDOWN && m.wParam.0 as u16 == VK_TAB.0 && m.lParam.0 & (1 << 30) == 0 && unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0 && unsafe { GetKeyState(VK_CONTROL.0 as i32) } >= 0 && shared::with(|s| s.connected) {
+            shared::set_open(true, true, true);
+            m.message = WM_NULL;
+        }
+        return;
+    }
+    if !is_input(m.message) {
+        return;
+    }
+    if removed {
+        match m.message {
+            // Windows frees raw input data when the message is handled.
+            WM_INPUT => unsafe {
+                DefWindowProcW(m.hwnd, m.message, m.wParam, m.lParam);
+            },
+            _ => {
+                // Characters for the overlay's text fields: the game will
+                // translate our no-op message, not this key.
+                if m.message == WM_KEYDOWN || m.message == WM_SYSKEYDOWN {
+                    let _ = unsafe { TranslateMessage(m) };
+                }
+                // Mouse positions are relative to the window they were for.
+                let mut lp = m.lParam;
+                if (WM_MOUSEFIRST..=WM_MOUSELAST).contains(&m.message) && m.message != WM_MOUSEWHEEL && m.message != WM_MOUSEHWHEEL && m.hwnd != target && !target.is_invalid() {
+                    let mut p = POINT { x: lo(lp), y: hi(lp) };
+                    unsafe {
+                        let _ = windows::Win32::Graphics::Gdi::ClientToScreen(m.hwnd, &mut p);
+                        let _ = windows::Win32::Graphics::Gdi::ScreenToClient(target, &mut p);
+                    }
+                    lp = LPARAM(((p.y as u16 as isize) << 16) | (p.x as u16 as isize));
+                }
+                let hwnd = if target.is_invalid() { m.hwnd } else { target };
+                let _ = unsafe { ours(hwnd, m.message, m.wParam, lp) };
+            }
+        }
+    }
+    m.message = WM_NULL;
+}
+
+/// The game's raw input registrations, removed while the overlay is open.
+struct RawList(Vec<RAWINPUTDEVICE>);
+// SAFETY: window handles are plain identifiers, fine on any thread.
+unsafe impl Send for RawList {}
+static SAVED_RAW: std::sync::Mutex<RawList> = std::sync::Mutex::new(RawList(Vec::new()));
+
+/// Stop all raw input (mouse, keyboard, controllers read as HID) to the
+/// game while the overlay is open, wherever the game reads it from.
+fn raw_input_off() {
+    unsafe {
+        let mut n = 0u32;
+        let size = size_of::<RAWINPUTDEVICE>() as u32;
+        let _ = GetRegisteredRawInputDevices(None, &mut n, size);
+        if n == 0 {
+            return;
+        }
+        let mut list = vec![RAWINPUTDEVICE::default(); n as usize];
+        let got = GetRegisteredRawInputDevices(Some(list.as_mut_ptr()), &mut n, size);
+        if got == u32::MAX {
+            return;
+        }
+        list.truncate(got as usize);
+        let remove: Vec<RAWINPUTDEVICE> = list.iter().map(|d| RAWINPUTDEVICE { usUsagePage: d.usUsagePage, usUsage: d.usUsage, dwFlags: RIDEV_REMOVE, hwndTarget: HWND::default() }).collect();
+        if RegisterRawInputDevices(&remove, size).is_ok() {
+            crate::log!("overlay: raw input paused for {} device kinds", list.len());
+            SAVED_RAW.lock().unwrap_or_else(|e| e.into_inner()).0 = list;
+        }
+    }
+}
+
+fn raw_input_on() {
+    let list = std::mem::take(&mut SAVED_RAW.lock().unwrap_or_else(|e| e.into_inner()).0);
+    if list.is_empty() {
+        return;
+    }
+    // A window the game closed meanwhile can't get input any more.
+    let list: Vec<RAWINPUTDEVICE> = list.into_iter().filter(|d| d.hwndTarget.is_invalid() || unsafe { IsWindow(Some(d.hwndTarget)) }.as_bool()).collect();
+    if let Err(e) = unsafe { RegisterRawInputDevices(&list, size_of::<RAWINPUTDEVICE>() as u32) } {
+        crate::log!("overlay: couldn't give the game its raw input back: {e}");
     }
 }
 
@@ -79,6 +208,11 @@ unsafe fn set_wndproc(hwnd: HWND, proc: isize) -> isize {
 
 /// Take or give back the input. Cursor visibility is per thread, so that
 /// part runs on the window's thread (a message to our window procedure).
+/// The overlay has the input right now.
+pub fn is_open() -> bool {
+    OPEN.load(Ordering::Acquire)
+}
+
 pub fn capture(open: bool) {
     OPEN.store(open, Ordering::Release);
     if open {
@@ -98,6 +232,7 @@ unsafe fn apply_capture(hwnd: HWND, open: bool) {
         let real_show: ShowCursorFn = std::mem::transmute(real(H_SHOW_CURSOR, ShowCursor as *const () as usize));
         let real_clip: ClipCursorFn = std::mem::transmute(real(H_CLIP_CURSOR, ClipCursor as *const () as usize));
         if open {
+            raw_input_off();
             let mut clip = RECT::default();
             let _ = GetClipCursor(&mut clip);
             *SAVED_CLIP.lock().unwrap_or_else(|e| e.into_inner()) = Some(clip);
@@ -117,6 +252,7 @@ unsafe fn apply_capture(hwnd: HWND, open: bool) {
             let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut c);
             push_pointer(hwnd, c.x, c.y, None);
         } else {
+            raw_input_on();
             for _ in 0..SHOWN.swap(0, Ordering::Relaxed) {
                 real_show(BOOL(0));
             }

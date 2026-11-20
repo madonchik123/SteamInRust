@@ -27,6 +27,9 @@ pub struct Session {
     /// The last frame sent drew nothing.
     sent_empty: bool,
     pixels_per_point: f32,
+    stats: Stats,
+    /// Hash of the last frame sent, to skip identical ones.
+    last_sent: Option<u64>,
     theme: Option<ui::Theme>,
     /// Frames per second the game last reported.
     pub fps: Option<u32>,
@@ -66,6 +69,8 @@ impl Session {
             last_run: None,
             sent_empty: false,
             pixels_per_point: 1.0,
+            stats: Stats::default(),
+            last_sent: None,
             theme: Some(theme.clone()),
             fps: None,
             shot: None,
@@ -80,10 +85,14 @@ impl Session {
             match self.conn.from_game.try_recv() {
                 Ok(FromGame::Opened(open)) => {
                     self.game_open = open;
+                    // The game dropped what it was drawing: send the next frame even
+                    // if it looks the same.
+                    self.last_sent = None;
                     opened = Some(open);
                     self.wake_now();
                 }
                 Ok(FromGame::Resize { width, height }) => {
+                    self.last_sent = None;
                     self.size = (width, height);
                     self.wake_now();
                 }
@@ -131,6 +140,7 @@ impl Session {
     pub fn set_open(&mut self, open: bool) {
         if self.game_open != open {
             self.game_open = open;
+            self.last_sent = None;
             self.conn.send(&ToGame::SetOpen(open));
             self.wake_now();
         }
@@ -210,10 +220,12 @@ impl Session {
     /// Run the overlay UI with the game's input and send the frame. `draw`
     /// is false when nothing should show (closed, nothing pinned).
     pub fn run(&mut self, main: &egui::Context, draw: bool, ui: impl FnMut(&mut egui::Ui)) {
+        self.stats.pass(main.viewport_id());
         if !draw {
             if !self.sent_empty {
                 self.conn.send(&ToGame::Frame { pixels_per_point: self.pixels_per_point, cursor: wire::cursor::ARROW, set: vec![], free: vec![], meshes: vec![] });
                 self.sent_empty = true;
+                self.last_sent = None;
             }
             self.events.clear();
             return;
@@ -305,7 +317,22 @@ impl Session {
                 _ => None,
             })
             .collect();
-        self.conn.send(&ToGame::Frame { pixels_per_point: out.pixels_per_point, cursor, set, free, meshes });
+        let frame = ToGame::Frame { pixels_per_point: out.pixels_per_point, cursor, set, free, meshes }.encode();
+        // The pointer moving over nothing changes nothing: don't send (and
+        // make the game upload) the same frame again.
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            frame.hash(&mut h);
+            h.finish()
+        };
+        if self.last_sent == Some(hash) {
+            self.stats.record(main.viewport_id(), self.last_run.map(|t| t.elapsed()).unwrap_or_default(), 0);
+            return;
+        }
+        self.last_sent = Some(hash);
+        self.stats.record(main.viewport_id(), self.last_run.map(|t| t.elapsed()).unwrap_or_default(), frame.len());
+        self.conn.send_encoded(frame);
     }
 }
 
@@ -397,9 +424,60 @@ pub fn tick() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("steaminrust-ingame-tick")
 }
 
-/// Ask for an in-game overlay frame after `delay`: on the helper window, and
-/// on the main window (which runs it when the helper can't).
+/// Ask for an in-game overlay frame after `delay`, on the helper window.
+/// Only when there's no helper (embedded viewports) the main window does
+/// it: repainting the main window too redrew the whole app for every
+/// overlay frame and every mouse move in the game.
 pub fn wake(main: &egui::Context, delay: Duration) {
-    main.request_repaint_after_for(delay, tick());
-    main.request_repaint_after_for(delay, egui::ViewportId::ROOT);
+    let target = if main.embed_viewports() { egui::ViewportId::ROOT } else { tick() };
+    main.request_repaint_after_for(delay, target);
+}
+
+/// How hard the in-game overlay works, logged once a second at debug level
+/// (`RUST_LOG=steam_rs::ingame=debug`): UI runs, their time, bytes sent, and
+/// which window's frames drove them.
+#[derive(Default)]
+struct Stats {
+    since: Option<Instant>,
+    runs: u32,
+    from_helper: u32,
+    busy: Duration,
+    bytes: usize,
+    passes_helper: u32,
+    passes_main: u32,
+}
+
+impl Stats {
+    fn pass(&mut self, viewport: egui::ViewportId) {
+        if viewport == tick() {
+            self.passes_helper += 1;
+        } else {
+            self.passes_main += 1;
+        }
+    }
+
+    fn record(&mut self, viewport: egui::ViewportId, took: Duration, bytes: usize) {
+        let since = *self.since.get_or_insert_with(Instant::now);
+        self.runs += 1;
+        self.from_helper += (viewport == tick()) as u32;
+        self.busy += took;
+        self.bytes += bytes;
+        if since.elapsed() >= Duration::from_secs(1) {
+            if std::env::var_os("STEAMINRUST_STEAMCLIENT_LOG").is_none() {
+                *self = Stats { since: Some(Instant::now()), ..Default::default() };
+                return;
+            }
+            tracing::info!(
+                "in-game overlay: {} passes/s ({} helper, {} main window), {} UI runs/s ({} from the helper window), {:.1} ms each, {} KB/s sent",
+                self.passes_helper + self.passes_main,
+                self.passes_helper,
+                self.passes_main,
+                self.runs,
+                self.from_helper,
+                self.busy.as_secs_f64() * 1000.0 / self.runs as f64,
+                self.bytes / 1024
+            );
+            *self = Stats { since: Some(Instant::now()), ..Default::default() };
+        }
+    }
 }

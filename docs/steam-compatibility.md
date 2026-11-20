@@ -104,7 +104,9 @@ While developing, the launcher also finds
 - **In-game overlay**: in D3D11 games our steamclient draws SteamInRust's
   Shift+Tab overlay inside the game, like Steam's, and sends the game
   `GameOverlayActivated_t` when it opens and closes. While it's open the game
-  doesn't get mouse or keyboard input. Other games get a separate overlay
+  doesn't get mouse, keyboard or controller input: input messages for any of
+  its windows go to the overlay, its raw input is paused, and XInput reports a
+  neutral controller. The Guide (Xbox) button opens and closes it. Other games get a separate overlay
   window. Set `STEAMINRUST_NO_INGAME_OVERLAY=1` to turn the in-game one off.
 - **Invites**: the game's lobby and its rich presence `connect` decide what
   the friend menus offer ("Invite to lobby", "Invite to game", or just

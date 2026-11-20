@@ -20,6 +20,10 @@ pub mod wire;
 mod d3d11;
 #[cfg(windows)]
 mod input;
+#[cfg(windows)]
+mod hook;
+#[cfg(windows)]
+mod pad;
 
 use wire::{Mesh, TexSet};
 
@@ -148,6 +152,11 @@ mod shared {
     pub fn push_input(modifiers: u8, e: Input) {
         with(|s| {
             s.modifiers = modifiers;
+            // Only the latest pointer position matters: a fast mouse sends
+            // hundreds of moves a second, and each would wake the app.
+            if let (Input::Move { .. }, Some(Input::Move { .. })) = (&e, s.input.last()) {
+                s.input.pop();
+            }
             s.input.push(e);
         });
         WAKE.notify_one();
@@ -241,11 +250,15 @@ mod shared {
         wire::write_message(&mut &*f, &FromGame::Hello { token: token.into(), pid: std::process::id(), width, height }.encode())?;
         with(|s| s.connected = true);
         crate::log!("overlay: connected to the app");
+        super::pad::hook_loaded();
+        let mut guide = super::pad::Guide::new();
+        let (mut last_pad, mut last_hook) = (std::time::Instant::now(), std::time::Instant::now());
         loop {
             while available(f)? >= 4 {
                 let msg = wire::read_message(&mut &*f)?;
                 match ToGame::decode(&msg)? {
                     ToGame::Frame { pixels_per_point, cursor, set, free, meshes } => with(|s| {
+                        super::d3d11::stats::APP_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         s.tex_ops.extend(set.into_iter().map(TexOp::Set));
                         s.tex_ops.extend(free.into_iter().map(TexOp::Free));
                         s.cursor = cursor;
@@ -260,6 +273,20 @@ mod shared {
             }
             if !input.is_empty() {
                 wire::write_message(&mut &*f, &FromGame::Input { modifiers, events: input }.encode())?;
+            }
+            // The Guide button opens and closes the overlay (B closes it).
+            if last_pad.elapsed() >= Duration::from_millis(50) {
+                last_pad = std::time::Instant::now();
+                if last_hook.elapsed() >= Duration::from_secs(2) {
+                    last_hook = last_pad;
+                    super::pad::hook_loaded();
+                }
+                let open = with(|s| s.open);
+                match guide.poll(open) {
+                    Some(true) => set_open(!open, true, true),
+                    Some(false) => set_open(false, true, true),
+                    None => {}
+                }
             }
             // Wake right away for input, else check the pipe every few ms.
             let g = lock();

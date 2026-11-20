@@ -29,6 +29,11 @@ impl Conn {
         self.to_game.send(m.encode()).is_ok()
     }
 
+    /// Queue an already encoded message.
+    pub fn send_encoded(&self, body: Vec<u8>) -> bool {
+        self.to_game.send(body).is_ok()
+    }
+
     pub fn is_closed(&self) -> bool {
         self.to_game.is_closed()
     }
@@ -53,6 +58,11 @@ fn wake() {
 /// Connections made since the last call.
 pub fn take_new() -> Vec<Conn> {
     std::mem::take(&mut *NEW.lock().unwrap())
+}
+
+/// A game connected and nobody picked it up yet.
+pub fn has_new() -> bool {
+    !NEW.lock().unwrap().is_empty()
 }
 
 /// Accept overlay connections on `<pipe>-overlay`. `app_for` checks a

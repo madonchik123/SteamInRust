@@ -190,7 +190,8 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Opens over the running game with Shift+Tab, only while the game's window is in front | Done |
 | Drawn inside the game, like Steam's, so it works in exclusive full screen and the game keeps focus | Done for D3D11 games SteamInRust starts with its steamclient (32- and 64-bit). D3D9, D3D12, OpenGL and Vulkan games get the window overlay, which shows over windowed and borderless games only |
 | On a Mac | A window over the game that also works over full-screen games. Shift+Tab needs the Input Monitoring permission; SteamInRust explains it on first start |
-| Mouse and keyboard go to the overlay while it's open; the cursor shows and the game gets `GameOverlayActivated_t` | Done |
+| While it's open the game gets no mouse, keyboard or controller input (window messages on any of its windows, raw input, XInput) and can't hide or lock the cursor; it gets `GameOverlayActivated_t` | Done. DirectInput and Windows.Gaming.Input controllers still reach the game |
+| Open and close with a controller: the Guide (Xbox) button, like Steam; B also closes it | Done for XInput controllers. Windows' Game Bar may open on the Guide button too unless it's turned off for controllers |
 | Game overview, achievements, friends, chat, notes, guides, discussions, hub, store page | Done, in floating windows |
 | Pin windows over the game with adjustable opacity | Done |
 | Games with anti-cheat | They start through the official client, so they get Steam's own overlay |
