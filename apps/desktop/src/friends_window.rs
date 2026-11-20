@@ -28,6 +28,8 @@ pub enum Pane {
     Add,
     Invites,
     Blocked,
+    /// Making a new group chat.
+    NewGroup,
 }
 
 impl Pane {
@@ -135,6 +137,7 @@ impl FriendsWindow {
             "add" => self.show(Pane::Add),
             "invites" => self.show(Pane::Invites),
             "blocked" => self.show(Pane::Blocked),
+            "newgroup" => self.show(Pane::NewGroup),
             "activity" => {
                 self.tab = ListTab::Activity;
                 self.raise();
@@ -654,7 +657,7 @@ fn friend_menu(app: &mut SteamApp, resp: &egui::Response, t: &Theme, persona: &P
 /// title folds them away).
 fn group_chats(app: &mut SteamApp, ui: &mut Ui, t: &Theme, filter: &str) {
     let groups = match &app.state.chat_groups {
-        Some(Ok(g)) if !g.is_empty() => g.clone(),
+        Some(Ok(g)) => g.clone(),
         Some(Err(e)) => {
             ui.add(egui::Label::new(w::body_s(t, t!("Couldn't load your group chats: {error}", error = i18n::tr_dyn(e)), t.text_faint)).wrap());
             return;
@@ -662,7 +665,7 @@ fn group_chats(app: &mut SteamApp, ui: &mut Ui, t: &Theme, filter: &str) {
         _ => return,
     };
     let shown: Vec<_> = groups.iter().filter(|g| filter.is_empty() || group_name(&app.state, g).to_lowercase().contains(filter)).collect();
-    if shown.is_empty() {
+    if shown.is_empty() && !filter.is_empty() {
         return;
     }
     let hidden = app.friends_window.groups_hidden;
@@ -670,7 +673,18 @@ fn group_chats(app: &mut SteamApp, ui: &mut Ui, t: &Theme, filter: &str) {
     // Lit while the pointer is on it (where it was drawn last frame).
     let id = egui::Id::unique("fw-group-title");
     let lit = ui.data(|d| d.get_temp::<Rect>(id)).is_some_and(|r| ui.rect_contains_pointer(r));
-    let title = ui.add(egui::Label::new(w::body_m(t, text, if lit { t.text } else { t.text_dim })).sense(Sense::click()));
+    let title = ui
+        .horizontal(|ui| {
+            let title = ui.add(egui::Label::new(w::body_m(t, text, if lit { t.text } else { t.text_dim })).sense(Sense::click()));
+            // Steam's "+": make a new group chat.
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if w::icon_button(ui, t, icons::PLUS, t!("Create a group chat"), false, 0).clicked() {
+                    app.friends_window.convs.show(Pane::NewGroup);
+                }
+            });
+            title
+        })
+        .inner;
     ui.data_mut(|d| d.insert_temp(id, title.rect));
     if title.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         app.friends_window.groups_hidden = !hidden;

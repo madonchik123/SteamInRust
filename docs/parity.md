@@ -120,6 +120,7 @@ All native, no web view.
 | Right-click menu: join game, view server info (live A2S query), watch game, view game info, invite to play, nickname, favorites, remove, block | Done |
 | Add friends: friend code, Quick Invite links (make, copy, or open someone's), search profiles by name; accept or ignore requests | Done |
 | Group chats: your groups with unread marks, rooms, history, sending, live messages, who's online in a members list | Done, in the app. Text only: pictures, polls, and creating or managing rooms aren't there yet |
+| Group chat management, like Steam's: notifications per group and per channel, invite links and inviting friends, the settings window (name, tagline, icon, channels, roles and what they allow, invite links, invited accounts, bans, leave), a member's right-click Manage menu (roles, make admin, kick, ban), making and deleting group chats | Done. Everything you're not allowed to do is greyed out with the reason. Voice channels are listed but can't be joined |
 | Voice chat | Not yet |
 
 ## Community

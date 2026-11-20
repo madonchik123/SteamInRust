@@ -19,6 +19,8 @@ use ui::{Theme, icons, widgets as w};
 
 #[path = "friends_groups.rs"]
 mod groups;
+#[path = "group_settings.rs"]
+mod admin;
 pub(crate) use groups::{group_name, paint_group_avatar};
 
 #[derive(Default)]
@@ -48,6 +50,8 @@ pub struct Friends {
     finding: bool,
     /// Invites sent from the search results this session.
     invited: HashSet<SteamId>,
+    /// Group chat management: its dialogs and the new group page.
+    admin: admin::Admin,
 }
 
 impl Extension for Friends {
@@ -86,6 +90,7 @@ impl Extension for Friends {
                     (r, found) => *found = Some(r.clone()),
                 }
             }
+            client::Event::ChatAdmin(e) => self.admin.on_event(e, ctx),
             _ => {}
         }
     }
@@ -123,6 +128,7 @@ impl Friends {
             Pane::Chat(id) => self.conversation(ui, &t, ctx, convs, id),
             Pane::Group(g, room) => self.group_conversation(ui, &t, ctx, convs, g, room),
             Pane::Add | Pane::Invites | Pane::Blocked => self.manage(ui, &t, ctx, convs, pane),
+            Pane::NewGroup => self.admin.new_group(ui, &t, ctx),
         }
     }
 

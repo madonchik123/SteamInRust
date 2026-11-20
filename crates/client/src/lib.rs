@@ -43,6 +43,7 @@ mod pics;
 mod session;
 pub mod state;
 pub mod store;
+pub mod chat_admin;
 
 pub use auth::Guard;
 pub use launch::{LaunchArgs, LaunchMode, mode as launch_mode, mode_cached as launch_mode_cached, mode_peek as launch_mode_peek, safe_connect_args};
@@ -293,6 +294,8 @@ pub enum Command {
     /// Community pages: Workshop items, guides, discussions, hub, achievements.
     Hub(hub::Request),
     LogOut,
+    /// Manage a group chat (`group` 0 for a new one): see [`model::chat_admin::AdminOp`].
+    ChatAdmin { group: u64, op: model::chat_admin::AdminOp },
 }
 
 impl std::fmt::Debug for Command {
@@ -417,6 +420,7 @@ impl std::fmt::Debug for Command {
             Command::Hub(hub::Request::PostStatus { app_id, .. }) => f.debug_struct("HubPostStatus").field("app_id", app_id).finish_non_exhaustive(),
             Command::Hub(req) => f.debug_tuple("Hub").field(req).finish(),
             Command::LogOut => f.write_str("LogOut"),
+            Command::ChatAdmin { group, op } => f.debug_struct("ChatAdmin").field("group", group).field("op", op).finish(),
         }
     }
 }
@@ -611,6 +615,8 @@ pub enum Event {
     Error(String),
     /// Answer to a [`Command::Hub`] request.
     Hub(hub::Response),
+    /// What a [`Command::ChatAdmin`] came back with.
+    ChatAdmin(model::chat_admin::AdminEvent),
 }
 
 /// How the client is connected to Steam right now.
