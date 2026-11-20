@@ -66,6 +66,11 @@ pub fn offscreen() -> bool {
     std::env::args().any(|a| a == "--offscreen")
 }
 
+/// `--demo`: a made-up account and library, nothing saved.
+pub fn demo() -> bool {
+    std::env::args().any(|a| a == "--demo")
+}
+
 /// Where an `--offscreen` window sits: left of any monitor.
 pub const OFFSCREEN_POS: [f32; 2] = [-12000.0, 40.0];
 
@@ -263,6 +268,8 @@ impl SteamApp {
         // Pictures come from the disk cache when possible (added after the
         // standard loaders, so it's asked first).
         crate::image_cache::ImageCache::install(&cc.egui_ctx, rt.handle().clone());
+        // Custom artwork from disk (only from the art folders).
+        crate::builtin::library::shortcuts::ArtLoader::install(&cc.egui_ctx);
         let (tx, events) = mpsc::channel();
         let demo_tx = tx.clone();
         let repaint = cc.egui_ctx.clone();
@@ -785,6 +792,8 @@ impl SteamApp {
         for raw in std::mem::take(&mut self.pending_links) {
             let nav = |page: &str, arg: Option<String>| Action::Navigate { page: page.into(), arg };
             match crate::links::parse(&raw) {
+                // A non-Steam game: the library knows how to start it.
+                Some(Link::Run(id)) if id & 0x8000_0000 != 0 => actions.push(nav("library", Some(format!("play:{id}")))),
                 // The demo never starts anything: it asks the sample Steam
                 // Cloud question a real launch can ask.
                 Some(Link::Run(id)) if self.demo_events.is_some() && self.state.app_name(id).is_some() => {

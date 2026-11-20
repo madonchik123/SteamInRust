@@ -7,6 +7,7 @@ use egui::{Align, Layout, Margin, Sense, Ui, vec2};
 use extensions::{Action, Ctx};
 use i18n::t;
 use model::{AppId, InstalledGame, OwnedApp, art};
+use super::shortcuts::{self, ArtKind, ArtSource, Pin, is_shortcut};
 use std::sync::{Arc, Mutex};
 use store::events::WorkshopItem as RemoteItem;
 use ui::{Theme, icons, widgets as w};
@@ -23,7 +24,12 @@ pub enum PropTab {
     Workshop,
     Privacy,
     Customization,
+    /// A non-Steam game's name, program, folder and options.
+    Shortcut,
 }
+
+/// A non-Steam game's tabs, like Steam's.
+const SHORTCUT_TABS: [(PropTab, &str); 3] = [(PropTab::Shortcut, "Shortcut"), (PropTab::Privacy, "Privacy"), (PropTab::Customization, "Customization")];
 
 const TABS: [(PropTab, &str); 9] = [
     (PropTab::General, "General"),
@@ -61,30 +67,11 @@ pub enum WsSort {
     Size,
 }
 
-/// Custom art the user picked for a game (capsule, hero, logo).
-pub fn custom_art(app: AppId, kind: &str) -> Option<String> {
-    let dir = client::store::config_dir().join("custom-art").join(app.to_string());
-    ["png", "jpg", "jpeg", "webp"]
-        .iter()
-        .map(|ext| dir.join(format!("{kind}.{ext}")))
-        .find(|p| p.exists())
-        .map(|p| format!("file://{}", p.display().to_string().replace('\\', "/")))
-}
-
-pub fn capsule(app: AppId) -> String {
-    custom_art(app, "capsule").unwrap_or_else(|| art::capsule(app))
-}
-pub fn hero(app: AppId) -> String {
-    custom_art(app, "hero").unwrap_or_else(|| art::hero(app))
-}
-pub fn logo(app: AppId) -> String {
-    custom_art(app, "logo").unwrap_or_else(|| art::logo(app))
-}
-
 impl Library {
     pub(super) fn properties_window(&mut self, ui: &Ui, t: &Theme, ctx: &mut Ctx) {
         let Some(app_id) = self.props.as_ref().map(|p| p.app) else { return };
-        let name = ctx.state.app_name(app_id).map(String::from).or_else(|| ctx.local.games.iter().find(|g| g.app_id == app_id).map(|g| g.name.clone())).unwrap_or_default();
+        let name = self.shortcut(app_id).map(|g| g.name.clone()).or_else(|| ctx.state.app_name(app_id).map(String::from)).or_else(|| ctx.local.games.iter().find(|g| g.app_id == app_id).map(|g| g.name.clone())).unwrap_or_default();
+        let tabs: &[(PropTab, &str)] = if is_shortcut(app_id) { &SHORTCUT_TABS } else { &TABS };
         let installed = ctx.local.games.iter().find(|g| g.app_id == app_id).cloned();
         let owned = ctx.state.apps.as_ref().and_then(|a| a.get(&app_id)).cloned();
         let mut builder = egui::ViewportBuilder::default().with_title(&name).with_inner_size([860.0, 620.0]).with_min_inner_size([700.0, 480.0]);
@@ -118,7 +105,7 @@ impl Library {
                 .frame(egui::Frame::new().fill(t.chrome).inner_margin(Margin::same(14)))
                 .show(ui, |ui| {
                     let current = self.props.as_ref().map(|p| p.tab).unwrap_or_default();
-                    for (tab, label) in TABS {
+                    for &(tab, label) in tabs {
                         let r = ui.add(egui::Button::selectable(current == tab, w::body_m(t, i18n::tr_dyn(label), t.text)).min_size(vec2(ui.available_width(), 34.0)));
                         if r.clicked() {
                             if let Some(p) = &mut self.props {
@@ -130,7 +117,7 @@ impl Library {
             egui::CentralPanel::default().frame(egui::Frame::new().fill(t.bg).inner_margin(Margin::same(22))).show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let tab = self.props.as_ref().map(|p| p.tab).unwrap_or_default();
-                    ui.label(w::heading_m(t, i18n::tr_dyn(TABS.iter().find(|x| x.0 == tab).map(|x| x.1).unwrap_or("")), t.text));
+                    ui.label(w::heading_m(t, i18n::tr_dyn(tabs.iter().find(|x| x.0 == tab).map(|x| x.1).unwrap_or("")), t.text));
                     ui.add_space(10.0);
                     match tab {
                         PropTab::General => {
@@ -145,6 +132,7 @@ impl Library {
                         PropTab::Workshop => self.tab_workshop(ui, t, ctx, app_id, installed.as_ref()),
                         PropTab::Privacy => self.tab_privacy(ui, t, app_id),
                         PropTab::Customization => self.tab_custom(ui, t, app_id),
+                        PropTab::Shortcut => self.tab_shortcut(ui, t, ctx, app_id),
                     }
                 });
             });
@@ -829,54 +817,179 @@ impl Library {
         });
     }
 
+    /// Custom artwork, like Steam's: each picture with Change and Clear, and
+    /// where the logo sits on the background.
     fn tab_custom(&mut self, ui: &mut Ui, t: &Theme, app: AppId) {
-        for (kind, title, body, size) in [
-            ("capsule", t!("Capsule"), t!("Shown in the library grid and collections. Best at 600 × 900."), vec2(100.0, 150.0)),
-            ("hero", t!("Background"), t!("Shown at the top of the game's page. Best at 3840 × 1240."), vec2(220.0, 71.0)),
-            ("logo", t!("Logo"), t!("Shown over the background. Transparent PNG works best."), vec2(220.0, 80.0)),
-        ] {
+        ui.label(w::body_m(t, t!("Pictures you pick are copied into SteamInRust's own folder. Pictures set in Steam show here too."), t.text_dim));
+        ui.add_space(t.spacing.sm);
+        for kind in ArtKind::ALL {
+            let (title, body, size) = art_info(kind);
             w::panel(t).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
+                    let current = shortcuts::custom_art_from(app, kind);
                     let url = match kind {
-                        "capsule" => capsule(app),
-                        "hero" => hero(app),
-                        _ => logo(app),
+                        ArtKind::Capsule => shortcuts::capsule(app),
+                        ArtKind::Hero => shortcuts::hero(app),
+                        ArtKind::Logo => shortcuts::logo(app),
+                        ArtKind::Header => shortcuts::header(app),
+                        ArtKind::Icon => current.as_ref().map(|c| c.0.clone()).unwrap_or_default(),
                     };
                     let (r, _) = ui.allocate_exact_size(size, Sense::hover());
-                    if !w::paint_cover(ui, r, &url, t.corner_small()) {
+                    let shown = if kind == ArtKind::Logo { w::paint_contain(ui, r, &url, egui::Align2::CENTER_CENTER) } else { w::paint_cover(ui, r, &url, t.corner_small()) };
+                    if !shown {
                         w::placeholder(ui, t, r, "", t.corner_small());
                     }
                     ui.vertical(|ui| {
-                        ui.label(w::body_m(t, title, t.text));
+                        ui.label(w::body_l(t, title, t.text));
                         ui.add(egui::Label::new(w::body_s(t, body, t.text_dim)).wrap());
-                        ui.horizontal(|ui| {
-                            if w::button(ui, t, Some(icons::IMAGE), t!("Change"), w::Kind::Secondary, w::Size::Sm).clicked() {
-                                if let Some(src) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "webp"]).pick_file() {
-                                    let dir = client::store::config_dir().join("custom-art").join(app.to_string());
-                                    let _ = std::fs::create_dir_all(&dir);
-                                    for ext in ["png", "jpg", "jpeg", "webp"] {
-                                        let _ = std::fs::remove_file(dir.join(format!("{kind}.{ext}")));
-                                    }
-                                    let ext = src.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "png".into());
-                                    let _ = std::fs::copy(&src, dir.join(format!("{kind}.{ext}")));
-                                    ui.ctx().forget_all_images();
-                                }
+                        let from = match current.as_ref().map(|c| c.1) {
+                            Some(ArtSource::Ours) => t!("Your picture"),
+                            Some(ArtSource::Steam) => t!("Set in Steam"),
+                            None if is_shortcut(app) => t!("None yet"),
+                            None => t!("Steam's picture"),
+                        };
+                        ui.label(w::body_s(t, from, t.text_faint));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(t.spacing.sm, t.spacing.sm);
+                            if w::button(ui, t, Some(icons::IMAGE), t!("Change…"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                                pick_art(ui.ctx(), app, kind);
                             }
-                            let has_custom = custom_art(app, kind).is_some();
-                            if ui.add_enabled_ui(has_custom, |ui| w::button(ui, t, None, t!("Reset"), w::Kind::Ghost, w::Size::Sm)).inner.clicked() {
-                                let dir = client::store::config_dir().join("custom-art").join(app.to_string());
-                                for ext in ["png", "jpg", "jpeg", "webp"] {
-                                    let _ = std::fs::remove_file(dir.join(format!("{kind}.{ext}")));
-                                }
-                                ui.ctx().forget_all_images();
+                            if ui.add_enabled_ui(current.is_some(), |ui| w::button(ui, t, Some(icons::X), t!("Clear"), w::Kind::Ghost, w::Size::Sm)).inner.clicked() {
+                                shortcuts::clear_art(app, kind);
                             }
                         });
                     });
                 });
+                if kind == ArtKind::Logo {
+                    ui.add_space(t.spacing.sm);
+                    logo_position_editor(ui, t, app);
+                }
             });
-            ui.add_space(8.0);
+            ui.add_space(t.spacing.sm);
         }
+    }
+
+    /// A non-Steam game's details, like Steam's shortcut properties: name,
+    /// program ("Target"), the folder it starts in, launch options, icon.
+    fn tab_shortcut(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, app: AppId) {
+        let Some(i) = self.custom.iter().position(|g| g.id == app) else {
+            ui.label(w::body_m(t, t!("This game isn't in your library any more."), t.text_dim));
+            return;
+        };
+        let mut remove = false;
+        {
+            let g = &mut self.custom[i];
+            ui.horizontal(|ui| {
+                let (r, resp) = ui.allocate_exact_size(vec2(64.0, 64.0), Sense::click());
+                let icon = shortcuts::icon(app, None, Some(&g.icon));
+                if !icon.as_deref().is_some_and(|u| w::paint_cover(ui, r, u, t.corner_small())) {
+                    ui.painter().rect_filled(r, t.corner_small(), t.surface_hover);
+                    w::icon_centered(ui.painter(), r.center(), icons::CONTROLLER, 40.0, t.text_dim);
+                }
+                if resp.on_hover_text(t!("Change the icon")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    pick_art(ui.ctx(), app, ArtKind::Icon);
+                }
+                ui.vertical(|ui| {
+                    ui.label(w::body_s(t, t!("Name"), t.text_dim));
+                    ui.add(egui::TextEdit::singleline(&mut g.name).desired_width(ui.available_width()).margin(vec2(10.0, 8.0))).with_edit_menu();
+                });
+            });
+            ui.add_space(t.spacing.md);
+            let field = |ui: &mut Ui, label: &str, value: &mut String, hint: &str, folder: bool| {
+                ui.label(w::body_s(t, label, t.text_dim));
+                ui.horizontal(|ui| {
+                    let bw = button_w(ui, t, t!("Browse…")) + t.spacing.md;
+                    ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width((ui.available_width() - bw).max(120.0)).margin(vec2(10.0, 8.0))).with_edit_menu();
+                    if w::button(ui, t, Some(icons::FOLDER), t!("Browse…"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                        let picked = if folder { rfd::FileDialog::new().pick_folder() } else { rfd::FileDialog::new().pick_file() };
+                        if let Some(p) = picked {
+                            *value = p.display().to_string();
+                        }
+                    }
+                });
+                ui.add_space(t.spacing.sm);
+            };
+            field(ui, t!("Target"), &mut g.exe, t!("Path to the game's .exe"), false);
+            field(ui, t!("Start in"), &mut g.start_dir, t!("The program's own folder"), true);
+            ui.label(w::body_s(t, t!("Launch options"), t.text_dim));
+            ui.add(egui::TextEdit::singleline(&mut g.args).hint_text("-novid -fullscreen").desired_width(f32::INFINITY).margin(vec2(10.0, 8.0))).with_edit_menu();
+            ui.add_space(t.spacing.lg);
+            if g.from_steam {
+                ui.label(w::body_s(t, t!("Added in Steam. Changes here stay in SteamInRust; Steam's own list isn't changed."), t.text_faint));
+                ui.add_space(t.spacing.sm);
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(t.spacing.sm, t.spacing.sm);
+                if let Some(dir) = g.work_dir().filter(|d| d.is_dir()) {
+                    if w::button(ui, t, Some(icons::FOLDER), t!("Browse local files"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                        local::open_folder(&dir);
+                    }
+                }
+                if w::button(ui, t, Some(icons::TRASH), t!("Remove from library"), w::Kind::Danger, w::Size::Sm).clicked() {
+                    remove = true;
+                }
+            });
+        }
+        if remove {
+            self.remove_shortcut(ctx, app);
+            self.props = None;
+        }
+    }
+}
+
+/// A picture kind's title, note and preview size in Customization.
+fn art_info(kind: ArtKind) -> (&'static str, &'static str, egui::Vec2) {
+    match kind {
+        ArtKind::Capsule => (t!("Cover"), t!("Shown in the library grid and collections. Best at 600 × 900."), vec2(100.0, 150.0)),
+        ArtKind::Hero => (t!("Background"), t!("Shown at the top of the game's page. Best at 3840 × 1240."), vec2(220.0, 71.0)),
+        ArtKind::Logo => (t!("Logo"), t!("Shown over the background. Transparent PNG works best."), vec2(220.0, 80.0)),
+        ArtKind::Header => (t!("Wide header"), t!("Shown in the list view and recent games. Best at 920 × 430."), vec2(184.0, 86.0)),
+        ArtKind::Icon => (t!("Icon"), t!("Shown in the game list. A square picture, 256 × 256 or smaller."), vec2(48.0, 48.0)),
+    }
+}
+
+/// Pick a picture file and use it.
+pub(super) fn pick_art(ctx: &egui::Context, app: AppId, kind: ArtKind) {
+    let Some(src) = rfd::FileDialog::new().add_filter(t!("Pictures"), &["png", "jpg", "jpeg", "webp", "ico"]).pick_file() else { return };
+    if let Err(e) = shortcuts::set_art(app, kind, &src) {
+        tracing::warn!("custom art for {app}: {e}");
+    }
+    ctx.request_repaint();
+}
+
+/// Where the logo sits: Steam's five spots and its size.
+fn logo_position_editor(ui: &mut Ui, t: &Theme, app: AppId) {
+    let saved = shortcuts::logo_position(app);
+    let mut pos = saved.unwrap_or_default();
+    ui.label(w::body_s(t, t!("Logo position"), t.text_dim));
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(t.spacing.xs + 2.0, t.spacing.xs + 2.0);
+        for pin in Pin::ALL {
+            let label = match pin {
+                Pin::BottomLeft => t!("Bottom left"),
+                Pin::UpperLeft => t!("Top left"),
+                Pin::CenterCenter => t!("Center"),
+                Pin::UpperCenter => t!("Top center"),
+                Pin::BottomCenter => t!("Bottom center"),
+            };
+            if w::chip(ui, t, label, saved.is_some() && pos.pin == pin).clicked() {
+                pos.pin = pin;
+                changed = true;
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(w::body_s(t, t!("Size"), t.text_dim));
+        changed |= ui.add(egui::Slider::new(&mut pos.width_pct, 10.0..=80.0).suffix("%")).changed();
+        if saved.is_some() && w::button(ui, t, None, t!("Reset"), w::Kind::Ghost, w::Size::Sm).clicked() {
+            shortcuts::set_logo_position(app, None);
+        }
+    });
+    if changed {
+        pos.height_pct = (pos.width_pct * 1.7).min(90.0);
+        shortcuts::set_logo_position(app, Some(pos));
     }
 }
 

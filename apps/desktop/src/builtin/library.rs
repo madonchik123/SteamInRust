@@ -10,6 +10,9 @@ mod news;
 mod props;
 #[path = "library_views.rs"]
 mod views;
+#[path = "library_shortcuts.rs"]
+pub(crate) mod shortcuts;
+use shortcuts::{CustomGame, is_shortcut};
 use client::Command;
 use egui::{Align, Align2, Color32, Layout, Margin, Rect, Sense, Stroke, Ui, pos2, vec2};
 use extensions::{Ctx, Extension, Manifest, PageSpec};
@@ -116,15 +119,6 @@ struct CloudHold {
     report: model::CloudReport,
 }
 
-/// A game added by hand (not from Steam).
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct CustomGame {
-    name: String,
-    exe: String,
-    args: String,
-}
-
 /// The page bar's tabs.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
@@ -153,6 +147,8 @@ struct Saved {
     favorites: BTreeSet<AppId>,
     hidden: BTreeSet<AppId>,
     custom: Vec<CustomGame>,
+    /// Non-Steam games from Steam's list that were removed here.
+    removed_steam: BTreeSet<AppId>,
     collections: Vec<Collection>,
     /// Kept across restarts so a shortcut still appears if the app was
     /// closed during the download.
@@ -188,6 +184,10 @@ enum MenuAct {
     Update,
     /// Open the Downloads page.
     Downloads,
+    /// Properties → Customization.
+    CustomArt,
+    /// Take a non-Steam game out of the library.
+    RemoveShortcut,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -257,7 +257,8 @@ pub struct Library {
     show_hidden: bool,
     custom: Vec<CustomGame>,
     /// Index into `custom` when a non-Steam game is open.
-    custom_selected: Option<usize>,
+    /// Non-Steam games from Steam's list that were removed here.
+    removed_steam: BTreeSet<AppId>,
     adding: Option<CustomGame>,
     selected: Option<AppId>,
     search: String,
@@ -331,7 +332,6 @@ impl Extension for Library {
     }
 
     fn on_navigate(&mut self, _page: &str, arg: Option<&str>) {
-        self.custom_selected = None;
         self.dialog = None;
         self.reader = None;
         // Links can ask for an action: "install:ID", "uninstall:ID", "verify:ID", "play:ID".
@@ -409,6 +409,7 @@ impl Extension for Library {
         if !self.uninstalling.is_empty() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
+        self.sync_steam_shortcuts(ctx);
         self.downloading = ctx.state.downloads.values().filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)).map(|d| (d.app_id, d.paused)).collect();
         self.queued = ctx.state.download_queue.iter().copied().collect();
         if self.tile == 0.0 {
@@ -450,6 +451,7 @@ impl Extension for Library {
             favorites: self.favorites.clone(),
             hidden: self.hidden.clone(),
             custom: self.custom.clone(),
+            removed_steam: self.removed_steam.clone(),
             collections: self.collections.clone(),
             pending_shortcuts: self.shortcut_after_install.clone(),
             steam_base: self.steam_base.clone(),
@@ -469,6 +471,11 @@ impl Extension for Library {
         self.favorites = saved.favorites;
         self.hidden = saved.hidden;
         self.custom = saved.custom;
+        // Saved before non-Steam games had ids: give them Steam's.
+        for g in self.custom.iter_mut().filter(|g| g.id == 0) {
+            g.id = shortcuts::shortcut_id(&g.exe, &g.name);
+        }
+        self.removed_steam = saved.removed_steam;
         self.collections = saved.collections;
         self.shortcut_after_install = saved.pending_shortcuts;
         self.steam_base = saved.steam_base;
@@ -479,6 +486,16 @@ impl Library {
     /// Act on a link request once the library knows the game.
     fn run_pending(&mut self, ctx: &mut Ctx) {
         let (Some(action), Some(id)) = (self.pending.clone(), self.selected) else { return };
+        if is_shortcut(id) {
+            self.pending = None;
+            match action.as_str() {
+                "play" => self.launch_shortcut(ctx, id),
+                "props" => self.props = Some(props::Props { app: id, tab: props::PropTab::Shortcut, ..Default::default() }),
+                "art" => self.props = Some(props::Props { app: id, tab: props::PropTab::Customization, ..Default::default() }),
+                _ => {}
+            }
+            return;
+        }
         if ctx.state.apps.is_none() && ctx.local.games.iter().all(|g| g.app_id != id) {
             return; // wait for the library to load
         }
@@ -491,6 +508,7 @@ impl Library {
             ("update", Some(g)) => self.queue_install(ctx, id, Some(g.library.clone())),
             ("play", Some(g)) => self.launch_game(ctx, id, g.install_dir.clone()),
             ("props", _) => self.props = Some(props::Props { app: id, tab: props::PropTab::General, ..Default::default() }),
+            ("art", _) => self.props = Some(props::Props { app: id, tab: props::PropTab::Customization, ..Default::default() }),
             ("news", _) => self.reader = Some(Reader { app: id, index: 0 }),
             ("resetargs", _) => {
                 if let Some(s) = self.games.get_mut(&id) {
@@ -525,14 +543,16 @@ impl Library {
         let mut now = Collections::new();
         // Favorites and Hidden always exist; an empty one Steam doesn't have
         // yet needn't be made.
+        // Non-Steam games stay here: Steam's copy only has Steam games.
+        let steam_only = |s: &BTreeSet<AppId>| s.iter().copied().filter(|id| !is_shortcut(*id)).collect::<BTreeSet<AppId>>();
         if !self.favorites.is_empty() || self.steam_base.contains_key("favorite") {
-            now.insert("favorite".into(), (name_of("favorite", "Favorites"), self.favorites.clone()));
+            now.insert("favorite".into(), (name_of("favorite", "Favorites"), steam_only(&self.favorites)));
         }
         if !self.hidden.is_empty() || self.steam_base.contains_key("hidden") {
-            now.insert("hidden".into(), (name_of("hidden", "Hidden"), self.hidden.clone()));
+            now.insert("hidden".into(), (name_of("hidden", "Hidden"), steam_only(&self.hidden)));
         }
         for c in &self.collections {
-            now.insert(c.steam_id.clone().expect("set above"), (c.name.clone(), c.games.clone()));
+            now.insert(c.steam_id.clone().expect("set above"), (c.name.clone(), steam_only(&c.games)));
         }
         now
     }
@@ -545,7 +565,17 @@ impl Library {
     fn merge_steam_collections(&mut self, list: &[model::SteamCollection]) {
         self.dynamic = list.iter().filter(|c| c.dynamic).filter_map(|c| Some((c.name.clone(), client::collections::DynamicFilter::parse(c.filter.as_deref()?)?))).collect();
         let steam: Collections = list.iter().filter(|c| !c.dynamic).map(|c| (c.id.clone(), (c.name.clone(), c.games.iter().copied().collect()))).collect();
+        // The non-Steam games in each list, put back after following Steam.
+        let local_only = |s: &BTreeSet<AppId>| s.iter().copied().filter(|id| is_shortcut(*id)).collect::<BTreeSet<AppId>>();
+        let mut kept: HashMap<String, BTreeSet<AppId>> = HashMap::new();
+        kept.insert("favorite".into(), local_only(&self.favorites));
+        kept.insert("hidden".into(), local_only(&self.hidden));
         let ours = self.collections_now();
+        for c in &self.collections {
+            if let Some(id) = &c.steam_id {
+                kept.insert(id.clone(), local_only(&c.games));
+            }
+        }
         let first = self.steam_base.is_empty();
         let ids: BTreeSet<&String> = steam.keys().chain(ours.keys()).chain(self.steam_base.keys()).collect();
         let mut merged = Collections::new();
@@ -565,8 +595,15 @@ impl Library {
                 merged.insert(id.clone(), v);
             }
         }
+        for (id, (_, games)) in merged.iter_mut() {
+            if let Some(k) = kept.get(id) {
+                games.extend(k.iter().copied());
+            }
+        }
         self.favorites = merged.get("favorite").map(|(_, g)| g.clone()).unwrap_or_default();
         self.hidden = merged.get("hidden").map(|(_, g)| g.clone()).unwrap_or_default();
+        self.favorites.extend(kept.get("favorite").into_iter().flatten().copied());
+        self.hidden.extend(kept.get("hidden").into_iter().flatten().copied());
         // Keep the order collections are listed in; new ones go at the end.
         let mut rest = merged;
         rest.remove("favorite");
@@ -642,7 +679,6 @@ impl Library {
                         self.collections.push(Collection { name, games: game.into_iter().collect(), steam_id: None });
                         self.tab = Tab::Collections;
                         self.selected = None;
-                        self.custom_selected = None;
                     }
                 }
             }
@@ -787,6 +823,10 @@ impl Library {
 
     /// Right-click menu for a game anywhere in the library, like Steam's.
     fn game_menu(&mut self, t: &Theme, resp: &egui::Response, id: AppId, installed: bool, running: bool) {
+        if is_shortcut(id) {
+            self.shortcut_menu(t, resp, id);
+            return;
+        }
         let fav = self.favorites.contains(&id);
         let hid = self.hidden.contains(&id);
         let pick = std::cell::Cell::new(None);
@@ -847,6 +887,7 @@ impl Library {
             ui.separator();
             item(ui, icons::STORE, t!("Store page"), MenuAct::Store);
             item(ui, icons::INFO, t!("Get help with this game"), MenuAct::Help);
+            item(ui, icons::IMAGE, t!("Set custom artwork…"), MenuAct::CustomArt);
             item(ui, icons::SLIDERS, t!("Properties…"), MenuAct::Properties);
         });
         if let Some(act) = pick.get() {
@@ -855,6 +896,9 @@ impl Library {
     }
 
     fn apply_menu(&mut self, ctx: &mut Ctx, id: AppId, act: MenuAct) {
+        if is_shortcut(id) && self.apply_shortcut_menu(ctx, id, act) {
+            return;
+        }
         let local = ctx.local.games.iter().find(|g| g.app_id == id).cloned();
         match act {
             MenuAct::Play => {
@@ -897,9 +941,10 @@ impl Library {
             }
             MenuAct::Uninstall => {
                 self.selected = Some(id);
-                self.custom_selected = None;
                 self.dialog = Some(Dialog::Uninstall);
             }
+            MenuAct::CustomArt => self.props = Some(props::Props { app: id, tab: props::PropTab::Customization, ..Default::default() }),
+            MenuAct::RemoveShortcut => {}
             MenuAct::Store => ctx.navigate("store", Some(format!("app:{id}"))),
             MenuAct::Help => ctx.navigate("support", Some(format!("game:{id}"))),
             MenuAct::Properties => self.props = Some(props::Props { app: id, tab: props::PropTab::General, ..Default::default() }),
@@ -936,7 +981,9 @@ impl Library {
     }
 
     pub fn new(rt: tokio::runtime::Handle, egui: egui::Context, flags: super::settings::SharedFlags) -> Self {
-        Self { rt: Some(rt), egui: Some(egui), tile: TILE, flags: Some(flags), ..Default::default() }
+        // The demo has a non-Steam game of its own (it never loads the user's).
+        let custom = if crate::app::demo() { vec![Self::demo_shortcut()] } else { Vec::new() };
+        Self { rt: Some(rt), egui: Some(egui), tile: TILE, flags: Some(flags), custom, ..Default::default() }
     }
 
     /// Like Steam: queue games that need an update, unless auto-updates are
@@ -969,19 +1016,20 @@ impl Library {
     /// in the chosen order.
     fn filtered_in<'a>(&self, state: &'a client::State, local: &'a local::LocalState, filter: Filter) -> Vec<Entry<'a>> {
         let mut items = entries(state, local);
+        items.extend(self.custom.iter().map(|g| Entry { app_id: g.id, name: shortcuts::intern(&g.name), installed: None, owned: None }));
         let q = self.search.to_lowercase();
         items.retain(|e| {
             (q.is_empty() || e.name.to_lowercase().contains(&q))
                 && match filter {
                     Filter::All => true,
-                    Filter::Installed => e.installed.is_some(),
+                    Filter::Installed => e.installed.is_some() || is_shortcut(e.app_id),
                 }
                 && (self.show_hidden || !self.hidden.contains(&e.app_id))
                 && self.adv_match(state, e)
         });
         match self.sort {
             Sort::Name => items.sort_by_key(|e| e.name.to_lowercase()),
-            Sort::Recent => items.sort_by_key(|e| std::cmp::Reverse(e.installed.and_then(|g| g.last_played))),
+            Sort::Recent => items.sort_by_key(|e| std::cmp::Reverse(e.installed.and_then(|g| g.last_played).or_else(|| self.shortcut_played(e.app_id)))),
             Sort::Playtime => items.sort_by_key(|e| std::cmp::Reverse(e.installed.and_then(|g| g.playtime_minutes))),
             Sort::Size => items.sort_by_key(|e| std::cmp::Reverse(e.installed.map(|g| g.size_on_disk))),
         }
@@ -1003,10 +1051,11 @@ impl Library {
                 _ => None,
             })
             .unwrap_or(0);
+        let ready = e.installed.is_some() || is_shortcut(e.app_id);
         let play_ok = f.play.is_empty()
             || f.play.iter().any(|p| match p {
-                0 => e.installed.is_some(),
-                1 => e.installed.is_none(),
+                0 => ready,
+                1 => !ready,
                 2 => minutes > 0,
                 _ => minutes == 0,
             });
@@ -1134,52 +1183,17 @@ impl Library {
         });
         if add {
             let g = self.adding.take().unwrap();
-            ctx.toast(t!("{name} was added to your library", name = g.name));
-            self.custom.push(g);
-            self.custom_selected = Some(self.custom.len() - 1);
-            self.selected = None;
+            let g = CustomGame { start_dir: g.start_dir, ..CustomGame::new(g.name.trim().to_string(), g.exe.trim().to_string(), g.args) };
+            if self.custom.iter().any(|c| c.id == g.id) {
+                ctx.toast(t!("{name} is already in your library", name = g.name));
+            } else {
+                ctx.toast(t!("{name} was added to your library", name = g.name));
+                self.removed_steam.remove(&g.id);
+                self.custom.push(g.clone());
+            }
+            self.selected = Some(g.id);
         } else if close {
             self.adding = None;
-        }
-    }
-
-    fn custom_page(&mut self, i: usize, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
-        let Some(g) = self.custom.get(i).cloned() else {
-            self.custom_selected = None;
-            return;
-        };
-        let mut remove = false;
-        ui.add_space(t.spacing.xl + t.spacing.xs);
-        w::centered(ui, 900.0, t.spacing.xl + t.spacing.sm, |ui| {
-            ui.label(w::body_s(t, t!("Non-Steam game").to_uppercase(), t.text_dim));
-            ui.label(w::styled(&g.name, ui::theme::TextStyle::new(t.typography.heading_l.size * 1.25, t.typography.heading_l.weight), t.text));
-            ui.label(w::body_m(t, &g.exe, t.text_faint).monospace());
-            ui.add_space(t.spacing.lg);
-            ui.horizontal(|ui| {
-                if w::play_button(ui, t, t!("Play")).clicked() {
-                    let exe = std::path::PathBuf::from(&g.exe);
-                    let mut cmd = std::process::Command::new(&exe);
-                    cmd.args(g.args.split_whitespace());
-                    if let Some(dir) = exe.parent() {
-                        cmd.current_dir(dir);
-                    }
-                    if let Err(e) = cmd.spawn() {
-                        ctx.toast(e.to_string());
-                    }
-                }
-                if let Some(dir) = std::path::Path::new(&g.exe).parent() {
-                    if w::button(ui, t, Some(icons::FOLDER), t!("Browse local files"), w::Kind::Secondary, w::Size::Lg).clicked() {
-                        local::open_folder(dir);
-                    }
-                }
-                if w::button(ui, t, Some(icons::TRASH), t!("Remove from library"), w::Kind::Danger, w::Size::Lg).clicked() {
-                    remove = true;
-                }
-            });
-        });
-        if remove {
-            self.custom.remove(i);
-            self.custom_selected = None;
         }
     }
 
@@ -1197,7 +1211,7 @@ impl Library {
                 let width = ui.available_width();
                 let (rect, resp) = ui.allocate_exact_size(vec2(width, t.dense(300.0)), Sense::click());
                 let r = t.corner();
-                if !w::paint_cover_first(ui, rect, &[&art::hero(g.app_id), &art::header(g.app_id)], r) {
+                if !w::paint_cover_first(ui, rect, &[&shortcuts::hero(g.app_id), &shortcuts::header(g.app_id)], r) {
                     w::skeleton(ui, t, rect, r);
                 }
                 w::fade_right(ui, rect, t.overlay_dark(3), 0.65);
@@ -1206,7 +1220,7 @@ impl Library {
                 ui.painter().text(inner.left_top(), Align2::LEFT_TOP, t!("CONTINUE PLAYING"), t.typography.caption.font(), t.accent);
                 let btn_h = (t.height_of(&t.components.button_play, 40.0) * 1.325).round();
                 let logo = Rect::from_min_max(inner.left_top() + vec2(0.0, t.spacing.xl + t.spacing.xs), inner.left_bottom() + vec2(380.0, -btn_h - t.spacing.lg));
-                if !w::paint_contain(ui, logo, &art::logo(g.app_id), Align2::LEFT_BOTTOM) {
+                if !w::paint_contain(ui, logo, &shortcuts::logo(g.app_id), Align2::LEFT_BOTTOM) {
                     ui.painter().text(logo.left_bottom(), Align2::LEFT_BOTTOM, &g.name, egui::FontId::new(t.typography.heading_l.size * 1.3, t.typography.heading_l.weight.family()), t.text);
                 }
                 let btn = Rect::from_min_size(inner.left_bottom() - vec2(0.0, btn_h), vec2(600.0, btn_h));
@@ -1836,6 +1850,22 @@ mod collection_sync_tests {
         assert_eq!(l.collections.len(), 2);
         // What Steam lacks is still to be sent.
         assert_ne!(l.collections_now(), l.steam_base);
+    }
+
+    #[test]
+    fn non_steam_games_stay_here_and_are_never_sent() {
+        let ns = shortcuts::shortcut_id("C:\\Games\\x.exe", "X");
+        let mut l = Library::default();
+        l.merge_steam_collections(&steam(&[("favorite", "Favorites", &[1]), ("uc-a", "A", &[3])]));
+        l.favorites.insert(ns);
+        l.collections[0].games.insert(ns);
+        // Steam's copy never has them...
+        let now = l.collections_now();
+        assert!(now.values().all(|(_, g)| !g.contains(&ns)));
+        // ...and they survive Steam sending its lists again.
+        l.merge_steam_collections(&steam(&[("favorite", "Favorites", &[1, 2]), ("uc-a", "A", &[3])]));
+        assert!(l.favorites.contains(&ns) && l.favorites.contains(&2));
+        assert!(l.collections[0].games.contains(&ns));
     }
 
     #[test]
