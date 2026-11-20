@@ -1,7 +1,7 @@
 # Steam parity
 
 How much of the official Steam desktop client SteamInRust covers, area by
-area. Last checked against the code on 19 November 2026 (v0.7.0, the changes after it and the redesign).
+area. Last checked against the code on 21 November 2026 (v0.13.0 and the chat changes after it).
 
 Scores: **0** not started · **0.25** started · **0.5** usable, big parts
 missing · **0.75** mostly there · **1** complete. Anything marked "opens
@@ -14,7 +14,7 @@ Steam's website" still works; it just isn't native yet.
 | Library | 0.75 | Dynamic collections show and stay up to date, but their filters can only be changed in Steam |
 | Downloads and installs | 1 | |
 | Store | 1 | Checkout happens on Steam's website (Steam requires it) |
-| Friends and chat | 0.75 | No voice chat; group chats are text only (no pictures, polls or managing rooms) |
+| Friends and chat | 0.75 | No voice chat; no polls in group chats |
 | Community | 0.75 | Starting a new discussion topic, and joining or leaving a group, open Steam's website |
 | Inventory and Market | 1 | |
 | Steam Cloud | 1 | |
@@ -64,7 +64,8 @@ Steam's website" still works; it just isn't native yet.
 | Home with recent games and shelves, game page with art, play bar, news and achievements | Done |
 | Collections, including your Steam Favorites and Hidden | Done, in step with Steam both ways. Edits made before Steam answers (or offline) are kept and sent once it does |
 | Dynamic collections (made in Steam from filters) | Shown with their games worked out from Steam's filters, so they stay up to date. Their filters are changed in Steam. Filters on friends who own a game, languages and subscriptions aren't checked, so such a collection can show a few extra games |
-| Non-Steam games | Done |
+| Non-Steam games: the same right-click menu as Steam games, collections, a game page with the play bar, and Steam's shortcut properties (name, target, start in, launch options, icon) | Done. Games added in Steam (`shortcuts.vdf`) show up too |
+| Custom artwork for any game, like Steam's: icon, cover, background (hero), logo with its position, and wide header, picked from files on disk | Done. Steam's own custom art in `config/grid` shows up too |
 | Install states everywhere: list row with progress, game page, right-click menu, Properties | Done |
 | Properties: general, launch options, language, updates, installed files, versions and betas (with private beta codes), DLC, Steam Cloud, Workshop, controller, privacy | Done |
 | Verify files, uninstall, desktop shortcuts, browse local files (also while installing) | Done. Uninstalling also removes the game's Workshop items and unused download manifests, like Steam |
@@ -103,6 +104,8 @@ All native, no web view.
 | Cart (the same cart as the website), Steam's "Added to your cart" popup, discount price tags, product keys, wallet balance | Done. Each copy is for your account or a gift to a friend you pick, then one Checkout button |
 | Points Shop: your points, items by category (avatars, frames, backgrounds, mini-profile backgrounds, stickers, chat effects, emoticons…) and items from your games | Done (browsing). Buying with points opens Steam's website |
 | Discovery feed: the queue as a feed, "New picks" for a fresh queue | Done. "New picks" wasn't tested on a real account |
+| Search suggestions while you type (picture, name, price), with the arrow keys and Enter | Done |
+| Wishlist in your order: drag games by the handle or type a place, saved to Steam, when sorted by "Your rank" | Done. Saving wasn't tested on a real wishlist |
 | Gifts, including games you already own, with a check that Steam will deliver to the friend's region | Done |
 | Price history | Through IsThereAnyDeal, with your own free key |
 | Checkout | Opens Steam's website. Steam only takes payment there |
@@ -119,7 +122,9 @@ All native, no web view.
 | One Friends & Chat window, like Steam's: the friends list docked on the right, the open chat beside it on the left, conversations switched inside it. It works while the main window is in the tray | Done. It replaced the friends panel, the hover preview and the friends page in Community |
 | Right-click menu: join game, view server info (live A2S query), watch game, view game info, invite to play, nickname, favorites, remove, block | Done |
 | Add friends: friend code, Quick Invite links (make, copy, or open someone's), search profiles by name; accept or ignore requests | Done |
-| Group chats: your groups with unread marks, rooms, history, sending, live messages, who's online in a members list | Done, in the app. Text only: pictures, polls, and creating or managing rooms aren't there yet |
+| Group chats: your groups with unread marks, rooms, history, sending, live messages, who's online in a members list | Done, in the app. Polls aren't there yet |
+| Chat like Steam's: Steam emoticons and emoji with a picker (recent, emoticons, stickers, effects, search), slash commands (`/me`, `/code`, `/pre`, `/quote`, `/spoiler`, `/random`, `/flip`, `/store`), reactions, a menu on each message (copy, select, react, quote, report), cards for Store, Workshop and community links, pictures shown in the chat and opened large | Done |
+| Sending more than text: a picture, your latest screenshot, your trade offer link; inviting a friend into the conversation | Done. These weren't tried on a real account |
 | Group chat management, like Steam's: notifications per group and per channel, invite links and inviting friends, the settings window (name, tagline, icon, channels, roles and what they allow, invite links, invited accounts, bans, leave), a member's right-click Manage menu (roles, make admin, kick, ban), making and deleting group chats | Done. Everything you're not allowed to do is greyed out with the reason. Voice channels are listed but can't be joined |
 | Voice chat | Not yet |
 
@@ -127,6 +132,7 @@ All native, no web view.
 
 | | |
 | --- | --- |
+| Post a status for your friends from Friends activity, tagged with a game, like Steam's activity page | Done. Posting wasn't tried on a real account |
 | Community home with three sections: **Friends activity** (Steam's activity feed: screenshots, artwork, reviews, achievements, new games, posts), **Explore** (artwork, screenshots, broadcasts, guides, Workshop) and **Developers** (news from games you own) | Done |
 | Profiles: background (animated ones play), avatar frame, level, badges, showcases, comments (read and post), Steam's profile themes | Done. Animated avatar frames show as still pictures |
 | On someone's profile: Add friend (or accept, cancel, remove), Message, and a More menu (copy the link, view on Steam, inventory, remove friend, block, report on Steam) | Done. Adding, removing and blocking weren't tested on a real account |
@@ -157,7 +163,7 @@ All native, no web view.
 | | |
 | --- | --- |
 | Per-game toggle, sync before launch and after quit, usage | Done |
-| Conflicts, with a local backup before anything is replaced | Done |
+| Conflicts, with a local backup before anything is replaced | Done. The question brings the window forward even when a game starts from a desktop shortcut while SteamInRust is in the tray |
 | Saves changed offline upload by themselves once online | Done |
 
 ## Steam features inside games
@@ -230,7 +236,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Home: continue playing, recently played, what's new | Done |
 | Library: cover grid with Installed and All games | Done |
 | Game page: Play, Install, Update, Pause and Resume, play time, size, achievements | Done |
-| Store: front page, sections, search with an on-screen keyboard (English and Russian), store pages with screenshots, wishlist | Done. Buying moves to the normal window, because Steam only takes payment on its website |
+| Store: front page, sections, search with an on-screen keyboard (English and Russian), store pages with screenshots you can flip with the mouse wheel, wishlist | Done. Buying moves to the normal window, because Steam only takes payment on its website |
 | Downloads: progress, pause, resume, cancel, queue | Done |
-| Friends | Done: a page per friend (join their game, invite to yours, profile) and chat with the on-screen keyboard or a real one |
+| Friends | Done: a page per friend (join their game, invite to yours, profile) and a full-screen chat that scrolls, with the on-screen keyboard sliding up when you type, or a real keyboard (Backspace only deletes) |
 | Settings | Interface size, start in Big Picture, language. Everything else moves to the normal window |

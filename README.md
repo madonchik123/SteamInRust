@@ -50,22 +50,29 @@ Everything below is in the current release. Area-by-area status:
   pages play trailers natively. Prices are in your wallet's currency, and games
   you own are marked. You can gift a game, even one you own, and SteamInRust
   checks first whether Steam will deliver it to that friend's region. Payment
-  happens on Steam's website, as Steam requires. Also the discovery feed and
-  the Points Shop.
+  happens on Steam's website, as Steam requires. Search suggests games as you
+  type, and you can reorder your wishlist by dragging. Also the discovery feed
+  and the Points Shop.
 - **Library.** Every game you own, collections (your Steam Favorites and Hidden
-  included), non-Steam games, filters, achievements and full Properties:
-  launch options, language, betas, DLC, Steam Cloud, verify files.
+  included), filters, achievements and full Properties: launch options,
+  language, betas, DLC, Steam Cloud, verify files. Non-Steam games get the same
+  menu and page as Steam games, and any game can have your own artwork (icon,
+  cover, background, logo), like in Steam.
 - **Downloads.** SteamInRust's own depot downloader. It has a queue, pause and
   resume, and downloads that survive a restart. It shows network and disk
   speed separately, and picks the fastest of Steam's download regions.
 - **Friends and chat.** Live status with the game and rich presence, chat with
   history and group chats, all in one Friends & Chat window like Steam's: the
-  open chat sits beside your friends list. Right-click a friend to join their
-  game or look up their server.
+  open chat sits beside your friends list. Steam emoticons and emoji with a
+  picker, slash commands (`/me`, `/code`, `/spoiler`, `/random`, `/store`…),
+  reactions, link cards and pictures. Manage your group chats like in Steam:
+  notifications, invite links, channels, roles, bans. Right-click a friend to
+  join their game or look up their server.
 - **Community.** A Community home built around players: your friends'
   activity (screenshots, artwork, reviews, achievements), Explore, and news
-  from the developers of your games. Plus game hubs, Workshop pages, guides and
-  discussions, all inside the app.
+  from the developers of your games, and you can post a status for your
+  friends. Plus game hubs, Workshop pages, guides and discussions, all inside
+  the app.
 - **Profiles.** Profiles with their backgrounds (animated ones play), Steam's
   profile themes, badges, showcases and comments. Add friends from a profile.
   Edit your own profile like on Steam: avatar and frame, background, mini
@@ -91,8 +98,9 @@ Everything below is in the current release. Area-by-area status:
   ([how](docs/steam-compatibility.md)).
 - **Overlay.** Shift+Tab in the running game opens friends, chat,
   achievements, guides and notes. Like Steam's, it's drawn inside the game
-  (D3D11 games), so it works in full screen. You can pin any of them over the
-  game.
+  (D3D11 games), so it works in full screen, and the game gets no input while
+  it's open. The controller's Guide button opens it too. You can pin any of
+  them over the game, take screenshots with F12 and show an FPS counter.
 - **Offline mode.** It works like Steam's. If the connection drops, SteamInRust
   reconnects without signing you out, and your running games keep going.
 - **Big Picture.** A full-screen mode for the TV, driven by a controller or the
