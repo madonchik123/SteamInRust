@@ -37,11 +37,16 @@ struct View {
     theme: ui::Theme,
     close: bool,
     stop: bool,
+    /// "Choose" was clicked: show the main window, where a question waits.
+    show_main: bool,
 }
 
 #[derive(Clone)]
 enum ShownStage {
     Launching,
+    /// The launch waits on a question in the main window, which is in the
+    /// tray or minimized (put back there while the question was up).
+    Waiting,
     Running,
     Failed(String),
 }
@@ -49,8 +54,20 @@ enum ShownStage {
 static VIEW: std::sync::LazyLock<std::sync::Arc<std::sync::Mutex<View>>> = std::sync::LazyLock::new(Default::default);
 
 pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
-    let Some(p) = &app.launch_popup else { return };
     let now = ctx.input(|i| i.time);
+    // A question (a Steam Cloud conflict) holds the launch: it's asked in
+    // the main window, brought to the front for it. This always-on-top
+    // window would cover it, so it steps aside, and comes back (counting
+    // its time from then) once the question is answered.
+    let main_visible = !app.hidden && !ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+    let waiting = app.launch_popup.as_ref().is_some_and(|p| app.launch_question == Some(p.app_id) && matches!(p.stage, Stage::Launching));
+    if waiting && let Some(p) = app.launch_popup.as_mut() {
+        p.since = now;
+        if main_visible {
+            return;
+        }
+    }
+    let Some(p) = &app.launch_popup else { return };
     // Close a moment after the game is up, or if nothing happened for a while.
     let done = match &p.stage {
         Stage::Running(at) => now - at > 2.5,
@@ -63,11 +80,12 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
     }
     let (app_id, name) = (p.app_id, p.name.clone());
     let stage = match &p.stage {
+        Stage::Launching if waiting => ShownStage::Waiting,
         Stage::Launching => ShownStage::Launching,
         Stage::Running(_) => ShownStage::Running,
         Stage::Failed(e) => ShownStage::Failed(e.clone()),
     };
-    let (close, stop) = {
+    let (close, stop, show_main) = {
         let mut v = VIEW.lock().unwrap();
         if v.app_id != app_id {
             *v = View::default();
@@ -76,8 +94,11 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
         v.name = name.clone();
         v.stage = Some(stage);
         v.theme = app.prefs.theme.clone();
-        (std::mem::take(&mut v.close), std::mem::take(&mut v.stop))
+        (std::mem::take(&mut v.close), std::mem::take(&mut v.stop), std::mem::take(&mut v.show_main))
     };
+    if show_main {
+        app.show_window(ctx);
+    }
     if stop {
         app.client.send(Command::StopGame { app_id });
     }
@@ -96,7 +117,7 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
         let mut v = view.lock().unwrap();
         let t = v.theme.clone();
         let (app_id, name, stage) = (v.app_id, v.name.clone(), v.stage.clone());
-        let (mut close, mut stop) = (false, false);
+        let (mut close, mut stop, mut show_main) = (false, false, false);
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(t.chrome).stroke(Stroke::new(1.0, t.border)).inner_margin(Margin::same(18)))
             .show(ui, |ui| {
@@ -113,6 +134,9 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
                                     ui.label(w::text(t!("Preparing to launch…"), 13.5, t.text_dim));
                                 });
                             }
+                            Some(ShownStage::Waiting) => {
+                                ui.add(egui::Label::new(w::text(format!("{}  {}", icons::CLOUD_CHECK, t!("Steam Cloud conflict: pick which saves to keep.")), 13.0, t.away)).wrap());
+                            }
                             Some(ShownStage::Running) => {
                                 ui.label(w::text(format!("{}  {}", icons::CHECK, t!("Running")), 13.5, t.play));
                             }
@@ -128,6 +152,9 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
                         if w::button(ui, &t, None, t!("Close"), w::Kind::Ghost, w::Size::Sm).clicked() {
                             close = true;
                         }
+                        if matches!(stage, Some(ShownStage::Waiting)) && w::button(ui, &t, Some(icons::CLOUD_CHECK), t!("Choose"), w::Kind::Primary, w::Size::Sm).clicked() {
+                            show_main = true;
+                        }
                         let launching = matches!(stage, Some(ShownStage::Launching | ShownStage::Running));
                         if launching && w::button(ui, &t, Some(icons::STOP), t!("Cancel"), w::Kind::Danger, w::Size::Sm).clicked() {
                             stop = true;
@@ -138,6 +165,7 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
             });
         v.close |= close;
         v.stop |= stop;
+        v.show_main |= show_main;
         let _ = Color32::TRANSPARENT;
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
     });

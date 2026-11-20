@@ -433,7 +433,8 @@ impl Extension for Library {
         self.install_window(ui, &t, ctx);
         self.properties_window(ui, &t, ctx);
         self.run_pending(ctx);
-        self.cloud_conflict_dialog(ui, &t, ctx);
+        // The Steam Cloud question is drawn by the app on every page (and
+        // in Big Picture), see `background_dialogs`.
         self.naming_dialog(ui, &t);
         if let Some((id, act)) = self.menu_request.take() {
             self.apply_menu(ctx, id, act);
@@ -1574,11 +1575,18 @@ impl Library {
         self.hidden.contains(&id)
     }
 
-    /// Questions the library may need answered while another screen is up
-    /// (a Steam Cloud conflict before a game starts).
+    /// Questions the library may need answered whatever page is open (a
+    /// Steam Cloud conflict before a game starts): the app draws these
+    /// every frame, so a launch from a shortcut, a plugin or another page
+    /// isn't left waiting on a dialog that isn't shown.
     pub(crate) fn background_dialogs(&mut self, ui: &mut Ui, ctx: &mut Ctx) {
         let t = ctx.theme.clone();
         self.cloud_conflict_dialog(ui, &t, ctx);
+    }
+
+    /// The game whose launch waits on an answer (a Steam Cloud conflict).
+    pub(crate) fn launch_question(&self) -> Option<AppId> {
+        self.cloud_hold.as_ref().map(|h| h.app)
     }
 
     /// Is a newer build of the installed version out? (Cached: it reads the

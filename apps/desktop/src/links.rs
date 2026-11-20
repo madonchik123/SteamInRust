@@ -239,6 +239,15 @@ fn forward_with(addr: SocketAddr, token_file: &Path, arg: &str) -> bool {
 
 /// Try to hand `arg` to an already-running copy. Returns true if it did.
 pub fn forward_to_running(arg: &str) -> bool {
+    // This copy was just started by the user (a desktop shortcut, a
+    // link): Windows lets it hand its right to come to the front to the
+    // running copy, which may need it to show the window or a question
+    // (a Steam Cloud conflict) the launch waits on.
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
+        AllowSetForegroundWindow(ASFW_ANY);
+    }
     forward_with(SocketAddr::from(([127, 0, 0, 1], PORT)), &token_path(), arg)
 }
 

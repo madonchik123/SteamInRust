@@ -409,3 +409,17 @@ fn friend_requests() -> [(u64, &'static str, Relationship); 6] {
         (BASE + 205, "xX_NoScope_Xx", Relationship::Ignored),
     ]
 }
+
+/// A sample Steam Cloud conflict holding a game's launch (the demo's
+/// stand-in for starting a game from a link or a desktop shortcut).
+pub fn cloud_conflict(app_id: model::AppId) -> Event {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let conflict = |name: &str, local_ago: u64, cloud_ago: u64, size: u64| model::CloudConflict { name: name.into(), local_time: now - local_ago, cloud_time: now - cloud_ago, local_size: size, cloud_size: size + 2_048 };
+    let report = model::CloudReport {
+        app_id,
+        conflicts: vec![conflict("%WinMyDocuments%My Games/Demo/save1.sav", 3_600, 7_200, 148_224), conflict("%WinMyDocuments%My Games/Demo/settings.cfg", 3_600, 5_400, 2_048)],
+        finished: now,
+        ..Default::default()
+    };
+    Event::CloudReport { report, held_launch: Some(client::LaunchArgs::default()) }
+}

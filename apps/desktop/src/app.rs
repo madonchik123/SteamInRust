@@ -201,7 +201,16 @@ pub struct SteamApp {
     /// window shows, like Steam (the library stays in the Dock / tray).
     launch_only: bool,
     /// Main window is hidden in the tray.
-    hidden: bool,
+    pub(crate) hidden: bool,
+    /// The game whose launch waits on a question (a Steam Cloud conflict).
+    pub launch_question: Option<model::AppId>,
+    /// Where the main window was when that question brought it up.
+    question_raised: Option<crate::launch_question::WindowWas>,
+    /// When the raised window stops being kept above other windows.
+    question_on_top_until: Option<f64>,
+    /// `--demo`: feeds made-up events in (a link's "start this game" shows
+    /// a sample Steam Cloud conflict instead of starting anything).
+    demo_events: Option<mpsc::Sender<Event>>,
     applied_theme: Option<Theme>,
     /// The look as last written to disk, and a change waiting to settle.
     saved_look: Option<String>,
@@ -354,6 +363,10 @@ impl SteamApp {
             launch_only: link.as_deref().is_some_and(|l| matches!(crate::links::parse(l), Some(crate::links::Link::Run(_)))),
             pending_links: link.into_iter().collect(),
             hidden: false,
+            launch_question: None,
+            question_raised: None,
+            question_on_top_until: None,
+            demo_events: demo.then(|| demo_tx.clone()),
             applied_theme: None,
             saved_look: None,
             look_pending: None,
@@ -687,7 +700,67 @@ impl SteamApp {
         self.hidden = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        // An off-screen test copy never takes the keyboard from the desktop.
+        if !offscreen() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
+
+    /// A launch waiting on a question (a Steam Cloud conflict) shows it:
+    /// the main window comes back from the tray or the taskbar, goes on top
+    /// and flashes, and once answered goes back where it was. See
+    /// `launch_question`.
+    fn keep_launch_question_visible(&mut self, ctx: &egui::Context) {
+        use crate::launch_question::{Step, WindowWas, step};
+        self.launch_question = None;
+        if self.state.phase == Phase::LoggedIn {
+            let mut actions = Vec::new();
+            let env = Env { state: &self.state, local: &self.local, theme: &self.prefs.theme, zoom: self.prefs.zoom, client: &self.client, actions: &mut actions };
+            self.launch_question = self.registry.with_ext::<crate::builtin::library::Library, _>("library", env, |lib, _| lib.launch_question()).flatten();
+        }
+        let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+        match step(self.launch_question.is_some(), self.question_raised, self.hidden, minimized) {
+            Step::Raise(was) => {
+                self.question_raised = Some(was);
+                self.show_window(ctx);
+                // In front of the desktop, a browser or a game launcher,
+                // even when Windows won't hand over the keyboard focus: on
+                // top for a moment (then in front like any window, so it
+                // doesn't cover everything while you decide), and flashing
+                // on the taskbar.
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                if !offscreen() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Critical));
+                }
+                self.question_on_top_until = Some(ctx.input(|i| i.time) + 1.5);
+                ctx.request_repaint();
+            }
+            Step::PutBack(was) => {
+                self.question_raised = None;
+                if self.question_on_top_until.take().is_some() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Reset));
+                match was {
+                    WindowWas::Tray => {
+                        self.hidden = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    }
+                    WindowWas::Minimized => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+                    WindowWas::Shown => {}
+                }
+            }
+            Step::Nothing => {}
+        }
+        if let Some(until) = self.question_on_top_until {
+            let now = ctx.input(|i| i.time);
+            if now >= until {
+                self.question_on_top_until = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(until - now));
+            }
+        }
     }
 
     fn handle_links(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
@@ -712,13 +785,28 @@ impl SteamApp {
         for raw in std::mem::take(&mut self.pending_links) {
             let nav = |page: &str, arg: Option<String>| Action::Navigate { page: page.into(), arg };
             match crate::links::parse(&raw) {
+                // The demo never starts anything: it asks the sample Steam
+                // Cloud question a real launch can ask.
+                Some(Link::Run(id)) if self.demo_events.is_some() && self.state.app_name(id).is_some() => {
+                    let now = ctx.input(|i| i.time);
+                    let name = self.state.app_name(id).unwrap_or_default().to_string();
+                    self.launch_popup = Some(crate::launch_popup::LaunchPopup::new(id, name, now));
+                    if let Some(tx) = &self.demo_events {
+                        let _ = tx.send(crate::demo::cloud_conflict(id));
+                        ctx.request_repaint_after(std::time::Duration::from_millis(30));
+                    }
+                }
                 Some(Link::Run(id)) => match self.local.games.iter().find(|g| g.app_id == id) {
                     Some(g) => {
                         let now = ctx.input(|i| i.time);
                         self.launch_popup = Some(crate::launch_popup::LaunchPopup::new(id, g.name.clone(), now));
                         self.client.send(Command::Launch { app_id: id, install_dir: g.install_dir.clone(), args: client::LaunchArgs::default() });
                     }
-                    None => actions.push(nav("library", Some(format!("install:{id}")))),
+                    // Not installed: the install dialog needs the window.
+                    None => {
+                        self.show_window(ctx);
+                        actions.push(nav("library", Some(format!("install:{id}"))));
+                    }
                 },
                 Some(Link::Install(id)) => actions.push(nav("library", Some(format!("install:{id}")))),
                 Some(Link::Uninstall(id)) => actions.push(nav("library", Some(format!("uninstall:{id}")))),
@@ -1020,6 +1108,7 @@ impl eframe::App for SteamApp {
         crate::bigpicture::poll(self, &ctx);
         self.handle_tray(&ctx, &mut actions);
         self.handle_links(&ctx, &mut actions);
+        self.keep_launch_question_visible(&ctx);
 
         // Closing the window hides it in the tray (like Steam) unless "Exit" was chosen.
         let signed_in_now = self.state.phase == Phase::LoggedIn;
@@ -1106,6 +1195,12 @@ impl eframe::App for SteamApp {
             crate::tray::show(self, &ctx);
         } else if signed_in {
             crate::shell::show(self, ui, &mut actions);
+            // A question a launch waits on, whatever page is open (Big
+            // Picture draws it itself).
+            {
+                let env = Env { state: &self.state, local: &self.local, theme: &self.prefs.theme, zoom: self.prefs.zoom, client: &self.client, actions: &mut actions };
+                self.registry.with_ext::<crate::builtin::library::Library, _>("library", env, |lib, cx| lib.background_dialogs(ui, cx));
+            }
             crate::shell::activate_dialog(self, &ctx);
             crate::shell::friend_dialogs(self, &ctx);
             crate::shell::new_look_prompt(self, &ctx, &mut actions);

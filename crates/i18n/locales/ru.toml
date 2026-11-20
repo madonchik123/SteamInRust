@@ -964,6 +964,8 @@
 "ON THIS PC" = "НА ЭТОМ ПК"
 "IN STEAM CLOUD" = "В STEAM CLOUD"
 "and {n} more files" = "и ещё файлов: {n}"
+"Steam Cloud conflict: pick which saves to keep." = "Конфликт Steam Cloud: выберите, какие сохранения оставить."
+"Choose" = "Выбрать"
 "Use the cloud's saves" = "Взять сохранения из облака"
 "Keep this PC's saves" = "Оставить сохранения этого ПК"
 "Play without syncing" = "Играть без синхронизации"

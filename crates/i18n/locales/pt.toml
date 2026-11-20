@@ -964,6 +964,8 @@
 "ON THIS PC" = "NESTE PC"
 "IN STEAM CLOUD" = "NO STEAM CLOUD"
 "and {n} more files" = "e mais {n} arquivos"
+"Steam Cloud conflict: pick which saves to keep." = "Conflito no Steam Cloud: escolha quais salvamentos manter."
+"Choose" = "Escolher"
 "Use the cloud's saves" = "Usar os saves da nuvem"
 "Keep this PC's saves" = "Manter os saves deste PC"
 "Play without syncing" = "Jogar sem sincronizar"

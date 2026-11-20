@@ -964,6 +964,8 @@
 "ON THIS PC" = "此电脑上"
 "IN STEAM CLOUD" = "STEAM 云中"
 "and {n} more files" = "以及另外 {n} 个文件"
+"Steam Cloud conflict: pick which saves to keep." = "Steam 云冲突：请选择要保留的存档。"
+"Choose" = "选择"
 "Use the cloud's saves" = "使用云端存档"
 "Keep this PC's saves" = "保留此电脑的存档"
 "Play without syncing" = "不同步直接游戏"

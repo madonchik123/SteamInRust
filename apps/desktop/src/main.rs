@@ -11,6 +11,7 @@ mod image_cache;
 mod sized_images;
 mod ingame;
 mod launch_popup;
+mod launch_question;
 mod links;
 mod login;
 #[cfg(target_os = "macos")]
