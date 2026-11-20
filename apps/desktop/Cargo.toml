@@ -16,6 +16,7 @@ plugins.workspace = true
 store.workspace = true
 video.workspace = true
 local.workspace = true
+vdf.workspace = true
 model.workspace = true
 ui.workspace = true
 i18n.workspace = true

@@ -80,7 +80,9 @@ pub fn parse(url: &str) -> Option<Link> {
     let rest = rest.strip_prefix("steam://")?.trim_end_matches('/');
     let mut parts = rest.split('/');
     let verb = parts.next()?.to_lowercase();
-    let id = || parts.clone().next().and_then(|p| p.parse::<u32>().ok());
+    // An app id, or Steam's 64-bit game id (a non-Steam game's has its id
+    // in the top half, e.g. what Steam puts in its desktop shortcuts).
+    let id = || parts.clone().next().and_then(|p| p.parse::<u64>().ok()).and_then(|n| if n > u64::from(u32::MAX) { Some((n >> 32) as u32) } else { u32::try_from(n).ok() });
     Some(match verb.as_str() {
         "rungameid" | "run" | "launch" => Link::Run(id()?),
         "install" => Link::Install(id()?),
@@ -647,6 +649,8 @@ mod tests {
     #[test]
     fn parses_links() {
         assert_eq!(parse("steam://rungameid/570"), Some(Link::Run(570)));
+        // A non-Steam game's 64-bit game id: its id is the top half.
+        assert_eq!(parse("steam://rungameid/12659522671722102784"), Some(Link::Run(2_947_524_812)));
         assert_eq!(parse("\"steam://launch/730/\""), Some(Link::Run(730)));
         assert_eq!(parse("steam://install/440"), Some(Link::Install(440)));
         assert_eq!(parse("steam://store/620"), Some(Link::Store(620)));

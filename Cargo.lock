@@ -5080,6 +5080,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "ui",
+ "vdf",
  "video",
  "windows",
  "windows-sys 0.61.2",

@@ -3,7 +3,8 @@
 //! the game list beside the page, the grid and list views, collections and
 //! a game's page.
 
-use super::{Entry, Filter, Library, MainAction, MenuAct, Setup, Sort, Tab, View, entries, facts, props, setup_state};
+use super::{Entry, Filter, Library, MainAction, MenuAct, Setup, Sort, Tab, View, entries, facts, props, setup_state, shortcuts};
+use super::shortcuts::is_shortcut;
 use egui::{Align, Align2, Layout, Margin, Rect, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use extensions::Ctx;
 use i18n::t;
@@ -31,8 +32,8 @@ impl Library {
     }
 
     /// What the bar's buttons change.
-    fn bar_state(&self) -> (Tab, View, bool, Filter, Option<AppId>, Option<usize>, usize) {
-        (self.tab, self.view, self.recent, self.filter, self.selected, self.custom_selected, self.adv.count())
+    fn bar_state(&self) -> (Tab, View, bool, Filter, Option<AppId>, usize) {
+        (self.tab, self.view, self.recent, self.filter, self.selected, self.adv.count())
     }
 
     fn bar_inner(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
@@ -81,7 +82,6 @@ impl Library {
     fn open_tab(&mut self, tab: Tab) {
         self.tab = tab;
         self.selected = None;
-        self.custom_selected = None;
     }
 
     /// Filters (a popup), recent games and ready to play; off Windows also
@@ -137,7 +137,7 @@ impl Library {
     /// Library home, grid or list (Figma "icon select" `346:2628`).
     fn view_buttons(&mut self, ui: &mut Ui, t: &Theme) {
         for (view, icon, tip) in [(View::Home, icons::SQUARE, t!("Library home")), (View::Grid, icons::GRID, t!("Grid view")), (View::List, icons::LIST, t!("List view"))] {
-            let on = self.view == view && self.selected.is_none() && self.custom_selected.is_none() && self.tab == Tab::Home;
+            let on = self.view == view && self.selected.is_none() && self.tab == Tab::Home;
             if w::icon_box(ui, t, icon, tip, on).clicked() {
                 self.view = view;
                 self.open_tab(Tab::Home);
@@ -201,10 +201,10 @@ impl Library {
                 }
                 if self.recent {
                     // Grouped by the month last played, newest first (Figma `727:40268`).
-                    items.sort_by_key(|e| std::cmp::Reverse(last_played(state, e)));
+                    items.sort_by_key(|e| std::cmp::Reverse(last_played(state, e).or_else(|| self.shortcut_played(e.app_id))));
                     let mut month = None;
                     for e in &items {
-                        let m = last_played(state, e).map(month_of);
+                        let m = last_played(state, e).or_else(|| self.shortcut_played(e.app_id)).map(month_of);
                         if m != month || (month.is_none() && e.app_id == items[0].app_id) {
                             month = m;
                             ui.add_space(t.spacing.xs);
@@ -220,21 +220,6 @@ impl Library {
                 }
             }
             ui.add_space(t.spacing.md);
-            if !self.custom.is_empty() {
-                w::caption(ui, t, &t!("Non-Steam — {n}", n = self.custom.len()));
-                for i in 0..self.custom.len() {
-                    let name = self.custom[i].name.clone();
-                    let sel = self.custom_selected == Some(i);
-                    let (r, icon_rect) = self.row_box(ui, t, width, sel);
-                    w::icon_centered(ui.painter(), icon_rect.center(), icons::CONTROLLER, icon_rect.height(), t.text_dim);
-                    row_text(ui, t, r.rect, icon_rect, &name, if sel { t.text } else { t.text_dim });
-                    if r.clicked() {
-                        self.custom_selected = Some(i);
-                        self.selected = None;
-                    }
-                }
-                ui.add_space(t.spacing.md);
-            }
             if !self.hidden.is_empty() {
                 w::check(ui, t, &mut self.show_hidden, w::body_s(t, t!("Show hidden games"), t.text_faint));
             }
@@ -259,23 +244,26 @@ impl Library {
     /// and name, dim when not installed, a bar along the bottom while it
     /// installs, a dot while you play it.
     fn side_row(&mut self, ui: &mut Ui, t: &Theme, ctx: &Ctx, e: &Entry, width: f32) {
-        let sel = self.selected == Some(e.app_id) && self.custom_selected.is_none();
+        let sel = self.selected == Some(e.app_id);
         let (resp, icon) = self.row_box(ui, t, width, sel);
         let rect = resp.rect;
         if ui.is_rect_visible(rect) {
-            let url = e.owned.and_then(|o| o.icon.as_deref()).map(|h| art::icon(e.app_id, h));
+            let url = shortcuts::icon(e.app_id, e.owned.and_then(|o| o.icon.as_deref()), self.shortcut(e.app_id).map(|g| g.icon.as_str()));
             // The big header only when the game has no icon at all.
-            let header = art::header(e.app_id);
-            let urls: Vec<&str> = url.as_deref().into_iter().chain([header.as_str()]).collect();
+            let header = shortcuts::header(e.app_id);
+            let urls: Vec<&str> = url.as_deref().into_iter().chain([header.as_str()]).filter(|u| !u.is_empty()).collect();
             if !w::paint_cover_first(ui, icon, &urls, t.corner_small()) {
                 ui.painter().rect_filled(icon, t.corner_small(), t.surface_hover);
+                if is_shortcut(e.app_id) {
+                    w::icon_centered(ui.painter(), icon.center(), icons::CONTROLLER, icon.height() * 0.8, t.text_dim);
+                }
             }
             let setup = setup_state(ctx, e.app_id, e.installed.is_some());
             let busy = matches!(setup, Setup::Downloading(_) | Setup::Queued);
             let s = w::interact(ui, &resp, sel);
             let look = t.look(&t.components.game_row, s);
             // Not installed: dim, brightening under the pointer.
-            let color = if busy { t.accent } else if e.installed.is_some() || sel { look.text } else { w::mix(t.text_dim, look.text, s.hover) };
+            let color = if busy { t.accent } else if ready(e) || sel { look.text } else { w::mix(t.text_dim, look.text, s.hover) };
             row_text(ui, t, rect, icon, e.name, color);
             if ctx.state.playing == Some(e.app_id) {
                 ui.painter().circle_filled(rect.right_center() - vec2(t.spacing.md, 0.0), t.spacing.xs, t.in_game);
@@ -292,7 +280,6 @@ impl Library {
         self.game_menu(t, &resp, id, e.installed.is_some(), ctx.state.playing == Some(id));
         if resp.clicked() {
             self.selected = Some(id);
-            self.custom_selected = None;
         }
     }
 
@@ -399,12 +386,12 @@ impl Library {
     /// What the page shows: a game, a tab's overview or the library home in
     /// the chosen view.
     pub(super) fn main(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
-        match (self.custom_selected, self.selected, self.tab) {
-            (Some(i), _, _) => self.custom_page(i, ui, t, ctx),
-            (None, Some(id), _) => self.game_page(id, ui, t, ctx),
-            (None, None, Tab::Collections) => self.collections_page(ui, t, ctx),
-            (None, None, Tab::News) => self.news_page(ui, t, ctx),
-            (None, None, Tab::Home) => match self.view {
+        match (self.selected, self.tab) {
+            (Some(id), _) if is_shortcut(id) => self.shortcut_page(id, ui, t, ctx),
+            (Some(id), _) => self.game_page(id, ui, t, ctx),
+            (None, Tab::Collections) => self.collections_page(ui, t, ctx),
+            (None, Tab::News) => self.news_page(ui, t, ctx),
+            (None, Tab::Home) => match self.view {
                 View::Home => self.home(ui, t, ctx),
                 View::Grid | View::List => self.all_games(ui, t, ctx),
             },
@@ -509,16 +496,15 @@ impl Library {
             MainAction::StorePage => (Some(icons::STORE), t!("Store page"), Some(MenuAct::Store)),
             _ => (None, "", None),
         };
-        let last = last_played(ctx.state, e).map(ui::date);
+        let last = last_played(ctx.state, e).or_else(|| self.shortcut_played(e.app_id)).map(ui::date);
         let played = minutes_played(ctx.state, e).filter(|m| *m > 0).map(ui::playtime);
         let info = w::TileInfo { action: icon, action_tip: tip, last_played: last.as_deref(), playtime: played.as_deref() };
-        let (r, clicked) = w::game_card_info(ui, t, &art::capsule(id), &art::header(id), e.name, e.installed.is_some(), width, &info);
+        let (r, clicked) = w::game_card_info(ui, t, &shortcuts::capsule(id), &shortcuts::header(id), e.name, ready(e), width, &info);
         self.game_menu(t, &r, id, e.installed.is_some(), ctx.state.playing == Some(id));
         if clicked {
             self.menu_request = act.map(|a| (id, a));
         } else if r.clicked() {
             self.selected = Some(id);
-            self.custom_selected = None;
         }
     }
 
@@ -541,8 +527,8 @@ impl Library {
             // The design's 363 × 106 picture, narrower on a narrow window.
             let img_w = ((h - pad * 2.0) * 363.0 / 106.0).min(rect.width() * 0.28).round();
             let img = Rect::from_min_size(rect.min + Vec2::splat(pad), vec2(img_w, h - pad * 2.0));
-            w::image_or_title(ui, t, img, &art::header(id), e.name, t.corner_small());
-            if e.installed.is_none() {
+            w::image_or_title(ui, t, img, &shortcuts::header(id), e.name, t.corner_small());
+            if !ready(e) {
                 ui.painter().rect_filled(img, t.corner_small(), t.overlay_dark(1));
             }
             let body = Rect::from_min_max(pos2(img.right() + t.spacing.lg + 2.0, rect.top() + t.spacing.lg), rect.max - vec2(t.spacing.lg, t.spacing.lg));
@@ -571,7 +557,7 @@ impl Library {
                 ui.set_clip_rect(ui.clip_rect().intersect(Rect::from_min_max(pos2(buttons.left(), rect.top()), pos2(buttons.left() + room, rect.bottom()))));
                 // The facts, most important first, while they fit whole.
                 let mut facts = vec![
-                    Fact::new(icons::CALENDAR, t!("Last played"), last_played(ctx.state, e).map(ui::date).unwrap_or_else(|| t!("Never").to_string())),
+                    Fact::new(icons::CALENDAR, t!("Last played"), last_played(ctx.state, e).or_else(|| self.shortcut_played(e.app_id)).map(ui::date).unwrap_or_else(|| t!("Never").to_string())),
                     Fact::new(icons::CLOCK, t!("Play time"), minutes_played(ctx.state, e).map(ui::playtime).unwrap_or_else(|| "—".into())),
                 ];
                 if let Some((got, total)) = achievements(ctx.state, id) {
@@ -592,7 +578,6 @@ impl Library {
             self.game_menu(t, &resp, id, e.installed.is_some(), ctx.state.playing == Some(id));
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && self.menu_request.is_none() {
                 self.selected = Some(id);
-                self.custom_selected = None;
             }
             ui.add_space(t.spacing.lg - ui.spacing().item_spacing.y);
         }
@@ -713,17 +698,7 @@ impl Library {
         let side = (t.spacing.xl + t.spacing.sm + 2.0).round();
         egui::ScrollArea::vertical().id_salt(("game", id)).auto_shrink([false, false]).show(ui, |ui| {
             // The hero, fading into the page.
-            let full = ui.available_width();
-            let (hero, _) = ui.allocate_exact_size(vec2(full, t.dense(330.0)), Sense::hover());
-            let art = Rect::from_min_size(hero.min, vec2(full, hero.height() + t.spacing.xl * 4.0));
-            if !w::paint_cover_fade(ui, art, &[&props::hero(id), &art::header(id)], 0.6) {
-                w::skeleton(ui, t, hero, egui::CornerRadius::ZERO);
-            }
-            let logo = Rect::from_min_max(hero.left_top() + vec2(side + t.spacing.xl, t.spacing.xl * 2.0), hero.left_bottom() + vec2(side + 440.0, -t.spacing.xl * 2.5));
-            if !w::paint_contain(ui, logo, &props::logo(id), Align2::LEFT_BOTTOM) {
-                let size = t.typography.heading_l.size * 1.5;
-                ui.painter().text(logo.left_bottom(), Align2::LEFT_BOTTOM, &name, egui::FontId::new(size, t.typography.heading_l.weight.family()), t.text);
-            }
+            self.hero(ui, t, id, &name, side);
 
             // The play bar (Figma "Group 60" `370:15515`).
             egui::Frame::new().inner_margin(Margin { left: (side - 10.0) as i8 + 18, right: side as i8, top: 0, bottom: 0 }).show(ui, |ui| {
@@ -1167,6 +1142,11 @@ impl Library {
         recent.sort_by_key(|g| std::cmp::Reverse(g.1));
         recent.into_iter().map(|g| g.0).collect()
     }
+}
+
+/// Ready to play: installed, or a non-Steam game.
+pub(super) fn ready(e: &Entry) -> bool {
+    e.installed.is_some() || is_shortcut(e.app_id)
 }
 
 /// The name in a list row, cut short with "…" when it doesn't fit.

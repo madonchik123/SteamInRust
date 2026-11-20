@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/madonchik123/SteamInRust/compare/v0.12.1...v0.13.0) (2026-11-20)
+
+
+### New
+
+* non-Steam games like Steam's, and custom artwork for every game ([#117](https://github.com/madonchik123/SteamInRust/issues/117)) ([7c3c374](https://github.com/madonchik123/SteamInRust/commit/7c3c37474a2ca74ac008b8d09e7a94252c15d8da))
+
+
+### Fixes
+
+* Backspace in Big Picture only deletes, never goes back ([#115](https://github.com/madonchik123/SteamInRust/issues/115)) ([49d9ec6](https://github.com/madonchik123/SteamInRust/commit/49d9ec6339d18c9cea6ac52ad387a33360e60c2a))
+* store search suggests games as you type; Browse shows tag names and a clear Clear button ([#116](https://github.com/madonchik123/SteamInRust/issues/116)) ([918e2b2](https://github.com/madonchik123/SteamInRust/commit/918e2b2684937fd710be3e709b0509958499d0ce))
+
 ## [0.12.1](https://github.com/madonchik123/SteamInRust/compare/v0.12.0...v0.12.1) (2026-11-20)
 
 
