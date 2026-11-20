@@ -6,15 +6,15 @@
 //! It's an extension without pages so it gets events (Quick Invite links,
 //! profile search results) and a [`Ctx`] like any page.
 
+use crate::builtin::chat;
 use crate::friends_window::{Conversations, Pane};
-use client::{Client, Command, State};
+use client::{Command, State};
 use egui::{Align, Key, Layout, Margin, Rect, RichText, Sense, Ui, pos2, vec2};
 use extensions::{Action, Ctx, Extension, Manifest, PageSpec};
 use i18n::t;
 use model::{SteamId, art};
 use std::collections::{HashMap, HashSet};
 use ui::theme::{TextStyle, Weight};
-use ui::widgets::EditMenu;
 use ui::{Theme, icons, widgets as w};
 
 #[path = "friends_groups.rs"]
@@ -30,6 +30,8 @@ pub struct Friends {
     group_input: String,
     /// Show a group's members beside its chat even when the window is narrow.
     members: bool,
+    /// The group chat "Leave" asks about.
+    leave_confirm: Option<u64>,
     groups_asked: bool,
     history_asked: HashSet<(u64, u64)>,
     /// The newest message time told to Steam as read, per room.
@@ -121,7 +123,10 @@ impl Friends {
         let Some(pane) = convs.open else { return };
         match pane {
             Pane::Chat(id) => self.conversation(ui, &t, ctx, convs, id),
-            Pane::Group(g, room) => self.group_conversation(ui, &t, ctx, convs, g, room),
+            Pane::Group(g, room) => {
+                self.group_conversation(ui, &t, ctx, convs, g, room);
+                self.leave_dialog(ui, &t, ctx, convs);
+            }
             Pane::Add | Pane::Invites | Pane::Blocked => self.manage(ui, &t, ctx, convs, pane),
         }
     }
@@ -254,7 +259,11 @@ impl Friends {
         egui::Frame::new().inner_margin(Margin { left: x, right: x, top: 0, bottom: t.spacing.lg as i8 }).show(ui, |ui| {
             let h = ui.available_height();
             let input = self.inputs.entry(id).or_default();
-            if let Some(a) = chat_body(ui, t, ctx.state, &CtxSender(ctx), id, input, h) {
+            let msgs: Vec<chat::Msg> = ctx.state.chats.get(&id).map(|c| c.iter().map(chat::Msg::friend).collect()).unwrap_or_default();
+            let sender = CtxSender(ctx);
+            let env = chat::Env { state: ctx.state, client: &sender, steam_root: Some(&ctx.local.steam_root), language: i18n::language().steam_name().to_string() };
+            let acts = chat::conversation(ui, t, &env, client::ChatTarget::Friend(id), &msgs, input, h, None, false);
+            for a in acts {
                 ctx.act(a);
             }
         });
@@ -301,189 +310,24 @@ impl Friends {
     }
 }
 
-/// Extensions reach the client through `Ctx::send`; chat_body takes a
-/// sender so the overlay can pass its `Client`.
-pub struct CtxSender<'a, 'b>(&'a Ctx<'b>);
+/// Extensions reach the client through `Ctx::send`.
+pub struct CtxSender<'a, 'b>(pub &'a Ctx<'b>);
 
-pub trait Sender {
-    fn send(&self, cmd: Command);
-}
+pub use crate::builtin::chat::Sender;
+
 impl Sender for CtxSender<'_, '_> {
     fn send(&self, cmd: Command) {
         self.0.send(cmd);
     }
 }
-impl Sender for Client {
-    fn send(&self, cmd: Command) {
-        Client::send(self, cmd);
-    }
-}
 
-/// Message list plus composer. Used by the Friends & Chat window and the
-/// overlay. Returns a game invite the user chose to join.
-pub fn chat_body(ui: &mut Ui, t: &Theme, state: &State, client: &impl Sender, friend: SteamId, input: &mut String, height: f32) -> Option<Action> {
-    let empty = Vec::new();
-    let msgs = state.chats.get(&friend).unwrap_or(&empty);
-    let mut join = None;
-    // The messages get exactly what the composer (measured last frame)
-    // leaves, so the whole thing never needs more than `height`. Inside a
-    // resizable window, needing even a little more made it grow every frame.
-    let composer_id = ui.scope_id().with(("chat-composer", friend));
-    let composer = ui.data(|d| d.get_temp::<f32>(composer_id)).unwrap_or(46.0);
-    let gap = t.spacing.sm;
-    let spacing = ui.spacing().item_spacing.y;
-    let list = (height - composer - gap - spacing).floor().max(40.0);
-    egui::ScrollArea::vertical()
-        .id_salt(("chat", friend))
-        .max_height(list)
-        .min_scrolled_height(list)
-        .auto_shrink([false, false])
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            if msgs.is_empty() {
-                w::empty(ui, t, icons::CHAT, t!("No messages yet"), t!("Say hi!"));
-            }
-            let mut last: Option<(SteamId, u64)> = None;
-            // Nothing to show (e.g. markup we don't draw): skip it.
-            for m in msgs.iter().filter(|m| !m.text.is_empty() || m.invite.is_some()) {
-                let new_group = last.is_none_or(|(from, time)| from != m.from || m.time.saturating_sub(time) > 300);
-                let name = {
-                    let p = state.persona(m.from);
-                    if p.name.is_empty() { t!("You").to_string() } else { p.display_name() }
-                };
-                message_block(ui, t, state, m.from, &name, m.time, new_group, |ui, join| message(ui, t, state, m, join), &mut join);
-                last = Some((m.from, m.time));
-            }
-            if state.is_typing(friend) {
-                ui.add_space(t.spacing.sm);
-                ui.label(w::body_s(t, t!("{name} is typing…", name = state.persona(friend).name), t.text_faint).italics());
-                ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
-            }
-        });
-    ui.add_space(gap);
-    let hint = t!("Message {name}", name = state.persona(friend).name).to_string();
-    let r = composer_box(ui, t, input, &hint, |text| {
-        client.send(Command::SendMessage { to: friend, text });
-    }, |started| {
-        if started {
-            client.send(Command::Typing { to: friend });
-        }
-    });
-    let measured = r.height();
-    if (measured - composer).abs() > 0.5 {
-        ui.data_mut(|d| d.insert_temp(composer_id, measured));
-        ui.ctx().request_repaint();
-    }
-    join
-}
-
-/// One message, or the first of a run from the same person: their avatar,
-/// name and time, then the message.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn message_block(ui: &mut Ui, t: &Theme, state: &State, from: SteamId, name: &str, time: u64, first: bool, body: impl FnOnce(&mut Ui, &mut Option<Action>), join: &mut Option<Action>) {
-    let av = t.dense(34.0);
-    if first {
-        ui.add_space(t.spacing.md);
-        let p = state.persona(from);
-        ui.horizontal_top(|ui| {
-            w::presence_avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), av, None);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                ui.horizontal(|ui| {
-                    let me = from == state.steam_id;
-                    ui.label(strong(t, name, if me { t.accent } else { crate::shell::status_color(t, &p) }));
-                    ui.label(w::body_s(t, format_time(time), t.text_faint));
-                });
-                body(ui, join);
-            });
-        });
-    } else {
-        ui.horizontal_top(|ui| {
-            ui.add_space(av + ui.spacing().item_spacing.x);
-            ui.vertical(|ui| body(ui, join));
-        });
-    }
-}
-
-/// The message box at the bottom of a chat, with its send button. `send`
-/// gets the text to send; `typed` is told when typing starts in an empty
-/// box. Returns the box's rect.
-pub(crate) fn composer_box(ui: &mut Ui, t: &Theme, input: &mut String, hint: &str, send: impl FnOnce(String), typed: impl FnOnce(bool)) -> Rect {
-    let c = &t.components.input;
-    let pad = t.padding_of(c);
-    let frame = w::component_frame(t, c).inner_margin(Margin::symmetric(pad.x.max(t.spacing.md) as i8, t.spacing.sm as i8));
-    frame
-        .show(ui, |ui| {
-            let row = t.height_of(&t.components.icon_button, 36.0);
-            ui.allocate_ui_with_layout(vec2(ui.available_width(), row), Layout::left_to_right(Align::Center), |ui| {
-                let before = input.len();
-                let r = ui
-                    .add(
-                        egui::TextEdit::singleline(input)
-                            .hint_text(w::body_m(t, hint, t.text_faint))
-                            .font(egui::FontId::new(t.typography.body_m.size, t.typography.body_m.weight.family()))
-                            .text_color(t.text)
-                            .frame(egui::Frame::NONE)
-                            .align(egui::Align2::LEFT_CENTER)
-                            .min_size(vec2(0.0, row))
-                            .desired_width(ui.available_width() - t.dense(48.0)),
-                    )
-                    .with_edit_menu();
-                typed(input.len() > before && before == 0);
-                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                let clicked = w::icon_button(ui, t, icons::SEND, t!("Send"), false, 0).clicked();
-                if (enter || clicked) && !input.trim().is_empty() {
-                    send(input.trim().to_string());
-                    input.clear();
-                    r.request_focus();
-                }
-            });
-        })
-        .response
-        .rect
-}
-
-/// One message: its text, and a game invite as a card.
-pub(crate) fn message(ui: &mut Ui, t: &Theme, state: &State, m: &model::ChatMessage, join: &mut Option<Action>) {
-    let Some(inv) = &m.invite else {
-        ui.add(egui::Label::new(w::body_m(t, &m.text, t.text)).wrap());
-        return;
-    };
-    // Steam's invites are only markup; old SteamInRust ones were the link text.
-    if !m.text.is_empty() && !m.text.contains("steam://run/") {
-        ui.add(egui::Label::new(w::body_m(t, &m.text, t.text)).wrap());
-    }
-    let mine = m.from == state.steam_id;
-    let name = state.app_name(inv.app_id).map(String::from).unwrap_or_else(|| t!("App {id}", id = inv.app_id).to_string());
-    let width = ui.available_width().min(t.dense(380.0));
-    let card = &t.components.card;
-    w::component_frame(t, card).inner_margin(Margin::same(t.spacing.sm as i8)).show(ui, |ui| {
-        ui.set_width((width - t.spacing.lg).max(0.0));
-        ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(vec2(t.dense(107.0), t.dense(50.0)), Sense::hover());
-            w::image_or_title(ui, t, r, &art::header(inv.app_id), &name, t.corner_small());
-            ui.add_space(t.spacing.xs);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                let head = if mine { t!("YOU SENT A GAME INVITE") } else { t!("INVITED YOU TO PLAY") };
-                ui.label(w::caption_text(t, head));
-                ui.add(egui::Label::new(strong(t, &name, t.text)).truncate());
-                if !mine {
-                    let label = if inv.connect.is_empty() { t!("Play") } else { t!("Join game") };
-                    if w::button(ui, t, Some(icons::PLAY), label, w::Kind::Primary, w::Size::Sm).clicked() {
-                        *join = Some(Action::JoinGame { app_id: inv.app_id, connect: inv.connect.clone() });
-                    }
-                }
-            });
-        });
-    });
-}
-
-fn format_time(unix: u64) -> String {
-    if unix == 0 {
-        return String::new();
-    }
-    ui::ago(unix)
+/// A one-to-one chat: its messages and the message box, `height` tall. The
+/// overlay shows it too. Returns what the app should do (join a game, open
+/// a page).
+pub fn chat_body(ui: &mut Ui, t: &Theme, state: &State, client: &impl Sender, friend: SteamId, input: &mut String, height: f32) -> Vec<Action> {
+    let msgs: Vec<chat::Msg> = state.chats.get(&friend).map(|c| c.iter().map(chat::Msg::friend).collect()).unwrap_or_default();
+    let env = chat::Env { state, client, steam_root: None, language: i18n::language().steam_name().to_string() };
+    chat::conversation(ui, t, &env, client::ChatTarget::Friend(friend), &msgs, input, height, None, false)
 }
 
 impl Friends {
@@ -886,7 +730,7 @@ mod tests {
         let t = Theme::default();
         let mut state = State::default();
         let friend: SteamId = 76561197960287930;
-        state.chats.insert(friend, (0..30).map(|i| model::ChatMessage { friend, from: friend, text: format!("message {i}"), time: 1_700_000_000 + i * 600, invite: (i % 7 == 0).then(|| model::GameInvite { app_id: 477160, connect: "+connect_lobby 1".into() }) }).collect());
+        state.chats.insert(friend, (0..30).map(|i| model::ChatMessage { friend, from: friend, text: format!("message {i}"), time: 1_700_000_000 + i * 600, invite: (i % 7 == 0).then(|| model::GameInvite { app_id: 477160, connect: "+connect_lobby 1".into() }), ..Default::default() }).collect());
         let mut input = String::new();
         let mut heights = Vec::new();
         for frame in 0..40 {

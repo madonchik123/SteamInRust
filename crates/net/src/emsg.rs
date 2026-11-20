@@ -33,6 +33,9 @@ pub const CLIENT_PICS_ACCESS_TOKEN_REQUEST: u32 = 8905;
 pub const CLIENT_PICS_ACCESS_TOKEN_RESPONSE: u32 = 8906;
 pub const SERVICE_METHOD_CALL_FROM_CLIENT_NON_AUTHED: u32 = 9804;
 pub const CLIENT_HELLO: u32 = 9805;
+/// Ask for your chat emoticons, stickers and effects (answered with 9331).
+pub const CLIENT_GET_EMOTICON_LIST: u32 = 9330;
+pub const CLIENT_EMOTICON_LIST: u32 = 9331;
 
 /// Human-readable name for logs, using the generated enum.
 pub fn name(emsg: u32) -> String {

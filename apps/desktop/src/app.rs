@@ -473,6 +473,14 @@ impl SteamApp {
                 }
                 // Store actions that failed (they used to be silent).
                 Event::StoreError(e) => self.toast(now, i18n::tr_dyn(e), ""),
+                // Chat results worth a word.
+                Event::ChatImageSent { result: Ok(()), .. } => self.toast(now, i18n::t!("Picture sent"), ""),
+                Event::ChatImageSent { result: Err(e), .. } => self.toast(now, i18n::t!("The picture wasn't sent"), e.clone()),
+                Event::MessageReported(Ok(())) => self.toast(now, i18n::t!("Report sent"), i18n::t!("Thanks. Steam's moderators will look at it.")),
+                Event::MessageReported(Err(e)) => self.toast(now, i18n::t!("The report wasn't sent"), e.clone()),
+                Event::ChatGroupCreated(Ok(id)) => self.friends_window.show(crate::friends_window::Pane::Group(*id, 0)),
+                Event::ChatGroupCreated(Err(e)) => self.toast(now, i18n::t!("The group chat wasn't made"), e.clone()),
+                Event::ChatGroupFailed(e) => self.toast(now, i18n::tr_dyn(e), ""),
                 // Additions show in the store's "Added to your cart!" popup.
                 Event::Cart(lines) => {
                     self.cart_count = Some(lines.len());

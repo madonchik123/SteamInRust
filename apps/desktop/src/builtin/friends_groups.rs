@@ -2,13 +2,13 @@
 //! its messages (paging back), sending, members, unread marks and game
 //! invites, like Steam's Friends & Chat. (No voice.)
 
-use super::{Friends, composer_box, message, message_block, strong};
+use super::{Friends, strong};
 use crate::friends_window::{Conversations, Pane};
 use client::Command;
 use egui::{Align, Layout, Margin, Rect, Sense, Ui, vec2};
-use extensions::{Action, Ctx};
+use extensions::Ctx;
 use i18n::t;
-use model::{ChatGroup, PersonaState, SteamId, art};
+use model::{ChatGroup, PersonaState, art};
 use ui::{Theme, icons, widgets as w};
 
 /// A group chat's name: its own, or (for an unnamed group of friends) its
@@ -83,6 +83,9 @@ impl Friends {
                     if w::icon_button(ui, t, icons::X, t!("Close conversation"), false, 0).clicked() {
                         convs.close(Pane::Group(group, room));
                     }
+                    if w::icon_button(ui, t, icons::SIGN_OUT, t!("Leave group chat"), false, 0).clicked() {
+                        self.leave_confirm = Some(group);
+                    }
                     let wide = ui.max_rect().width() > t.dense(700.0);
                     if !wide && w::icon_button(ui, t, icons::USERS, t!("Members"), self.members, 0).clicked() {
                         self.members = !self.members;
@@ -140,7 +143,20 @@ impl Friends {
                 egui::Frame::new().inner_margin(Margin { left: x, right: x, top: 0, bottom: t.spacing.lg as i8 }).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     let h = ui.available_height();
-                    if let Some(a) = self.group_body(ui, t, ctx, &g, room, &msgs, h) {
+                    let shown: Vec<super::chat::Msg> = msgs.iter().map(super::chat::Msg::group).collect();
+                    let loading = !(self.history_asked.contains(&key) && ctx.state.group_more.contains_key(&key));
+                    let more = ctx.state.group_more.get(&key) == Some(&true);
+                    let mut older = false;
+                    let sender = super::CtxSender(ctx);
+                    let env = super::chat::Env { state: ctx.state, client: &sender, steam_root: Some(&ctx.local.steam_root), language: i18n::language().steam_name().to_string() };
+                    let to = client::ChatTarget::Group { group, room };
+                    let acts = super::chat::conversation(ui, t, &env, to, &shown, &mut self.group_input, h, more.then_some(&mut older), loading);
+                    if older {
+                        if let Some(first) = msgs.first() {
+                            ctx.send(Command::LoadGroupHistory { group, room, before: Some((first.time, first.ordinal)) });
+                        }
+                    }
+                    for a in acts {
                         ctx.act(a);
                     }
                 });
@@ -157,69 +173,33 @@ impl Friends {
         });
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn group_body(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, g: &ChatGroup, room: u64, msgs: &[model::GroupMessage], height: f32) -> Option<Action> {
-        let key = (g.id, room);
-        let state = ctx.state;
-        let mut join = None;
-        let composer_id = ui.scope_id().with(("group-composer", key));
-        let composer = ui.data(|d| d.get_temp::<f32>(composer_id)).unwrap_or(46.0);
-        let list_h = (height - composer - t.spacing.sm - ui.spacing().item_spacing.y).floor().max(40.0);
-        let mut older = None;
-        egui::ScrollArea::vertical()
-            .id_salt(("group-chat", key))
-            .max_height(list_h)
-            .min_scrolled_height(list_h)
-            .auto_shrink([false, false])
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                if state.group_more.get(&key) == Some(&true) {
-                    if let Some(first) = msgs.first() {
-                        ui.vertical_centered(|ui| {
-                            if w::button(ui, t, Some(icons::CARET_UP), t!("Older messages"), w::Kind::Ghost, w::Size::Sm).clicked() {
-                                older = Some((first.time, first.ordinal));
-                            }
-                        });
-                    }
+}
+
+impl Friends {
+    /// "Leave this group chat?", then leaving it (and closing its tab).
+    pub(super) fn leave_dialog(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, convs: &mut Conversations) {
+        let Some(group) = self.leave_confirm else { return };
+        let name = ctx.state.chat_groups.as_ref().and_then(|r| r.as_ref().ok()).and_then(|l| l.iter().find(|g| g.id == group)).map(|g| group_name(ctx.state, g)).unwrap_or_default();
+        let mut done = false;
+        egui::Modal::new(egui::Id::unique(("leave-group", group))).show(ui.ctx(), |ui| {
+            ui.set_width((ui.ctx().content_rect().width() - 64.0).clamp(240.0, 400.0));
+            ui.add(egui::Label::new(w::heading_s(t, t!("Leave {name}?", name = name), t.text)).wrap());
+            ui.add(egui::Label::new(w::body_s(t, t!("You'll stop getting its messages. Someone in it can invite you back. (Steam has no way to delete a group chat; it ends when everyone has left.)"), t.text_dim)).wrap());
+            ui.add_space(t.spacing.md);
+            ui.horizontal(|ui| {
+                if w::button(ui, t, Some(icons::SIGN_OUT), t!("Leave group chat"), w::Kind::Danger, w::Size::Sm).clicked() {
+                    ctx.send(Command::LeaveChatGroup { group });
+                    convs.close(Pane::Group(group, 0));
+                    done = true;
                 }
-                if msgs.is_empty() {
-                    if self.history_asked.contains(&key) && state.group_more.contains_key(&key) {
-                        w::empty(ui, t, icons::CHAT, t!("No messages yet"), t!("Say hi!"));
-                    } else {
-                        w::loading(ui, t, t!("Loading…"));
-                    }
-                }
-                let mut last: Option<(SteamId, u32)> = None;
-                for m in msgs {
-                    let (text, invite) = model::chat::parse(&m.text);
-                    if text.is_empty() && invite.is_none() {
-                        continue;
-                    }
-                    let shown = model::ChatMessage { friend: 0, from: m.sender, text, time: m.time as u64, invite };
-                    let first = last.is_none_or(|(from, time)| from != m.sender || m.time.saturating_sub(time) > 300);
-                    let p = state.persona(m.sender);
-                    let name = if p.name.is_empty() { m.sender.to_string() } else { p.display_name() };
-                    message_block(ui, t, state, m.sender, &name, m.time as u64, first, |ui, join| message(ui, t, state, &shown, join), &mut join);
-                    last = Some((m.sender, m.time));
+                if w::button(ui, t, None, t!("Cancel"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                    done = true;
                 }
             });
-        if let Some(before) = older {
-            ctx.send(Command::LoadGroupHistory { group: g.id, room, before: Some(before) });
+        });
+        if done {
+            self.leave_confirm = None;
         }
-        ui.add_space(t.spacing.sm);
-        let room_name = g.rooms.iter().find(|r| r.id == room).map(|r| r.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| group_name(state, g));
-        let hint = t!("Message {name}", name = room_name).to_string();
-        let mut sent = None;
-        let r = composer_box(ui, t, &mut self.group_input, &hint, |text| sent = Some(text), |_| {});
-        if let Some(text) = sent {
-            ctx.send(Command::SendGroupMessage { group: g.id, room, text });
-        }
-        let measured = r.height();
-        if (measured - composer).abs() > 0.5 {
-            ui.data_mut(|d| d.insert_temp(composer_id, measured));
-            ui.ctx().request_repaint();
-        }
-        join
     }
 }
 

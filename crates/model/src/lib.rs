@@ -960,6 +960,9 @@ pub struct GroupMessage {
     pub time: u32,
     /// Orders messages sent in the same second.
     pub ordinal: u32,
+    /// Reactions under it.
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
 }
 
 /// Days since 1970-01-01 for a calendar date.
@@ -1771,7 +1774,7 @@ mod price_tests {
 }
 
 /// One chat message in a 1:1 conversation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatMessage {
     /// The other person in the conversation.
     pub friend: SteamId,
@@ -1784,6 +1787,74 @@ pub struct ChatMessage {
     /// "steam://run" link), shown as a card with a Join button.
     #[serde(default)]
     pub invite: Option<GameInvite>,
+    /// The message as Steam sent it, with its markup (emoticons, spoilers,
+    /// code, quotes, links, images); see [`chat::rich`]. Empty for messages
+    /// without any.
+    #[serde(default)]
+    pub raw: String,
+    /// Orders messages sent in the same second; with `time` it names the
+    /// message for reactions and reports.
+    #[serde(default)]
+    pub ordinal: u32,
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
+}
+
+/// A reaction under a chat message: an emoticon or a sticker, how many
+/// people chose it, and whether you're one of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reaction {
+    pub name: String,
+    pub sticker: bool,
+    pub count: u32,
+    pub mine: bool,
+}
+
+impl Reaction {
+    /// Count one person adding (or taking back) `name`.
+    pub fn apply(list: &mut Vec<Reaction>, name: &str, sticker: bool, add: bool, me: bool) {
+        match list.iter_mut().position(|r| r.name == name && r.sticker == sticker) {
+            Some(i) => {
+                let r = &mut list[i];
+                if add {
+                    if !(me && r.mine) {
+                        r.count += 1;
+                    }
+                } else if !me || r.mine {
+                    r.count = r.count.saturating_sub(1);
+                }
+                if me {
+                    r.mine = add;
+                }
+                if r.count == 0 {
+                    list.remove(i);
+                }
+            }
+            None if add => list.push(Reaction { name: name.to_string(), sticker, count: 1, mine: me }),
+            None => {}
+        }
+    }
+}
+
+/// The chat emoticons, stickers and chat effects you own (Steam's
+/// emoticon list).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Emoticons {
+    pub emoticons: Vec<OwnedEmote>,
+    pub stickers: Vec<OwnedEmote>,
+    pub effects: Vec<OwnedEmote>,
+}
+
+/// One emoticon, sticker or effect you own.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct OwnedEmote {
+    /// Without colons (`steamhappy`).
+    pub name: String,
+    /// The game it came from.
+    pub app_id: AppId,
+    /// When you last used it (unix seconds; 0 = never).
+    pub last_used: u32,
+    pub use_count: u32,
 }
 
 /// "Come play with me": which game, and how to join the inviter.
@@ -1917,9 +1988,453 @@ pub mod chat {
         Some(GameInvite { app_id, connect: String::from_utf8_lossy(&bytes).into_owned() })
     }
 
+    /// A piece of a chat message, as Steam's chat shows it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Part {
+        Text(String),
+        /// A Steam emoticon, by name (`steamhappy`).
+        Emoticon(String),
+        /// A sticker, by name.
+        Sticker(String),
+        /// A link: where it goes and what it shows.
+        Link { url: String, text: String },
+        /// `@name` for a member (by account id).
+        Mention { account: u32, text: String },
+        /// Hidden until clicked (`/spoiler`).
+        Spoiler(Vec<Part>),
+        /// One line of code (`/code`).
+        Code(String),
+        /// Preformatted text, as typed (`/pre`).
+        Pre(String),
+        /// A quote (`/quote`), with whom it quotes when known.
+        Quote { author: String, parts: Vec<Part> },
+        /// An action (`/me`).
+        Me(Vec<Part>),
+        /// A random number (`/random`); Steam picks the result.
+        Random { min: i64, max: i64, result: Option<i64> },
+        /// A coin toss (`/flip`): `Some(true)` heads.
+        Flip(Option<bool>),
+        /// A picture sent in chat.
+        Image { src: String, width: u32, height: u32 },
+        /// A chat effect (confetti and the like), by name.
+        Effect(String),
+    }
+
+    /// Tags whose content is kept as typed.
+    const VERBATIM: [&str; 2] = ["code", "pre"];
+
+    /// `\[` back to `[`, `\\` back to `\`.
+    fn unescape(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' && matches!(chars.peek(), Some('[') | Some('\\')) {
+                out.push(chars.next().unwrap_or('\\'));
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Where the matching `[/name]` starts in `s` (nested tags of the same
+    /// name counted), and where it ends.
+    fn closing(s: &str, name: &str) -> Option<(usize, usize)> {
+        let (open, close) = (format!("[{name}"), format!("[/{name}]"));
+        let lower = s.to_ascii_lowercase();
+        let mut depth = 0;
+        let mut i = 0;
+        while i < lower.len() {
+            if lower[i..].starts_with(&close) {
+                if depth == 0 {
+                    return Some((i, i + close.len()));
+                }
+                depth -= 1;
+                i += close.len();
+            } else if lower[i..].starts_with(&open) && lower[i + open.len()..].starts_with([']', ' ', '=']) {
+                depth += 1;
+                i += open.len();
+            } else {
+                i += lower[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            }
+        }
+        None
+    }
+
+    /// The value right after the tag name (`[url=…]`, `[quote=…]`).
+    fn main_value(tag: &str, name: &str) -> Option<String> {
+        let v = tag.get(name.len()..)?.strip_prefix('=')?;
+        let v = v.strip_prefix('"').map(|q| q.split('"').next().unwrap_or("")).unwrap_or_else(|| v.split(char::is_whitespace).next().unwrap_or(""));
+        Some(v.to_string())
+    }
+
+    /// A message's pieces, from Steam's markup: emoticons, stickers, links,
+    /// mentions, spoilers, code, quotes, `/me`, `/random`, `/flip`, images
+    /// and chat effects. Formatting the chat doesn't show (bold and the
+    /// like) keeps its text; game invites are left to [`parse`].
+    pub fn rich(raw: &str) -> Vec<Part> {
+        let mut out = Vec::new();
+        let mut text = String::new();
+        let mut rest = raw;
+        let flush = |text: &mut String, out: &mut Vec<Part>| {
+            if !text.is_empty() {
+                plain_parts(&std::mem::take(text), out);
+            }
+        };
+        while let Some(c) = rest.chars().next() {
+            if let Some(after) = rest.strip_prefix("\\[").or_else(|| rest.strip_prefix("\\\\")) {
+                text.push(rest.as_bytes()[1] as char);
+                rest = after;
+                continue;
+            }
+            if c == '[' {
+                if let Some(end) = rest.find(']') {
+                    let tag = &rest[1..end];
+                    let closing_tag = tag.starts_with('/');
+                    let name = tag.trim_start_matches('/').split(|c: char| c.is_whitespace() || c == '=').next().unwrap_or("").to_ascii_lowercase();
+                    if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                        let after = &rest[end + 1..];
+                        if closing_tag {
+                            // A stray closing tag: drop it.
+                            rest = after;
+                            continue;
+                        }
+                        let (inner, next) = match closing(after, &name) {
+                            Some((a, b)) => (&after[..a], &after[b..]),
+                            None => ("", after),
+                        };
+                        flush(&mut text, &mut out);
+                        part(&name, tag, inner, &mut out);
+                        rest = next;
+                        continue;
+                    }
+                }
+            }
+            text.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+        flush(&mut text, &mut out);
+        merge(out)
+    }
+
+    fn part(name: &str, tag: &str, inner: &str, out: &mut Vec<Part>) {
+        let num = |k: &str| attr(tag, k).and_then(|v| v.trim().parse::<i64>().ok());
+        let inner_text = || unescape(inner).trim().to_string();
+        match name {
+            "emoticon" => {
+                let n = inner_text();
+                let n = n.trim_matches(':').to_string();
+                if !n.is_empty() {
+                    out.push(Part::Emoticon(n));
+                }
+            }
+            "sticker" => {
+                if let Some(n) = attr(tag, "type").filter(|n| !n.is_empty()).or_else(|| Some(inner_text()).filter(|n| !n.is_empty())) {
+                    out.push(Part::Sticker(n));
+                }
+            }
+            "url" => {
+                let url = main_value(tag, "url").filter(|u| !u.is_empty()).unwrap_or_else(inner_text);
+                let shown = parse(inner).0;
+                out.push(Part::Link { text: if shown.is_empty() { url.clone() } else { shown }, url });
+            }
+            "tradeofferlink" | "tradeoffer" | "og" => {
+                let url = main_value(tag, name).or_else(|| attr(tag, "url")).filter(|u| u.starts_with("http")).unwrap_or_else(inner_text);
+                if url.starts_with("http") {
+                    out.push(Part::Link { text: url.clone(), url });
+                } else if !url.is_empty() {
+                    out.push(Part::Text(url));
+                }
+            }
+            "mention" => {
+                let account = main_value(tag, "mention").and_then(|v| v.parse().ok()).unwrap_or(0);
+                out.push(Part::Mention { account, text: inner_text() });
+            }
+            "spoiler" => out.push(Part::Spoiler(rich(inner))),
+            "code" => out.push(Part::Code(unescape(inner).trim_matches('\n').to_string())),
+            "pre" => out.push(Part::Pre(unescape(inner).trim_matches('\n').to_string())),
+            "quote" => {
+                let author = main_value(tag, "quote").or_else(|| attr(tag, "author")).unwrap_or_default();
+                out.push(Part::Quote { author, parts: rich(inner) });
+            }
+            "me" => out.push(Part::Me(rich(inner))),
+            "random" => out.push(Part::Random { min: num("min").unwrap_or(1), max: num("max").unwrap_or(100), result: num("result").or_else(|| inner_text().parse().ok()) }),
+            "flip" => {
+                let r = attr(tag, "result").unwrap_or_else(inner_text).to_ascii_lowercase();
+                out.push(Part::Flip(match r.as_str() {
+                    "heads" | "1" | "true" => Some(true),
+                    "tails" | "0" | "false" => Some(false),
+                    _ => None,
+                }));
+            }
+            "img" => {
+                let src = attr(tag, "src").filter(|s| s.starts_with("http")).unwrap_or_else(inner_text);
+                if src.starts_with("http") {
+                    let n = |k: &str| attr(tag, k).and_then(|v| v.parse().ok()).unwrap_or(0);
+                    out.push(Part::Image { src, width: n("width"), height: n("height") });
+                }
+            }
+            "roomeffect" => {
+                if let Some(n) = attr(tag, "type").or_else(|| Some(inner_text())).filter(|n| !n.is_empty()) {
+                    out.push(Part::Effect(n));
+                }
+            }
+            "gameinvite" | "lobbyinvite" => {}
+            _ if VERBATIM.contains(&name) => {}
+            // Formatting the chat doesn't draw: keep what's inside.
+            _ => out.extend(rich(inner)),
+        }
+    }
+
+    /// Plain text with its web links and `:emoticon:` names picked out.
+    fn plain_parts(s: &str, out: &mut Vec<Part>) {
+        let mut text = String::new();
+        let mut rest = s;
+        while !rest.is_empty() {
+            let link = ["https://", "http://"].iter().filter_map(|p| rest.find(p)).min();
+            let emote = emoticon_at(rest);
+            let next = match (link, emote) {
+                (Some(l), Some((e, _, _))) => l.min(e),
+                (Some(l), None) => l,
+                (None, Some((e, _, _))) => e,
+                (None, None) => rest.len(),
+            };
+            text.push_str(&rest[..next]);
+            rest = &rest[next..];
+            if rest.is_empty() {
+                break;
+            }
+            if let Some((0, len, name)) = emoticon_at(rest) {
+                if !text.is_empty() {
+                    out.push(Part::Text(std::mem::take(&mut text)));
+                }
+                out.push(Part::Emoticon(name));
+                rest = &rest[len..];
+                continue;
+            }
+            // A link runs to the next space; a closing bracket or full
+            // stop right at its end isn't part of it.
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            let mut url = &rest[..end];
+            while url.ends_with(['.', ',', ')', '!', '?', ';', ':', '"', '\'']) {
+                url = &url[..url.len() - 1];
+            }
+            if url.len() > 8 {
+                if !text.is_empty() {
+                    out.push(Part::Text(std::mem::take(&mut text)));
+                }
+                out.push(Part::Link { url: url.to_string(), text: url.to_string() });
+                rest = &rest[url.len()..];
+            } else {
+                text.push_str(&rest[..1]);
+                rest = &rest[1..];
+            }
+        }
+        if !text.is_empty() {
+            out.push(Part::Text(text));
+        }
+    }
+
+    /// The first `:name:` in `s`: where, how long, and the name. Names are
+    /// letters, digits and `_`, with at least one letter (so times like
+    /// 12:30:45 stay text).
+    fn emoticon_at(s: &str) -> Option<(usize, usize, String)> {
+        let b = s.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b':' {
+                let mut j = i + 1;
+                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                    j += 1;
+                }
+                if j < b.len() && b[j] == b':' && j - i > 2 && b[i + 1..j].iter().any(|c| c.is_ascii_alphabetic()) {
+                    return Some((i, j + 1 - i, s[i + 1..j].to_string()));
+                }
+                i = j.max(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+        None
+    }
+
+    fn merge(parts: Vec<Part>) -> Vec<Part> {
+        let mut out: Vec<Part> = Vec::with_capacity(parts.len());
+        for p in parts {
+            match (out.last_mut(), p) {
+                (Some(Part::Text(a)), Part::Text(b)) => a.push_str(&b),
+                (_, p) => out.push(p),
+            }
+        }
+        out
+    }
+
+    /// Every link in a message (not inside code), for previews.
+    pub fn links(parts: &[Part]) -> Vec<String> {
+        let mut out = Vec::new();
+        for p in parts {
+            match p {
+                Part::Link { url, .. } if !out.contains(url) => out.push(url.clone()),
+                Part::Spoiler(inner) | Part::Me(inner) | Part::Quote { parts: inner, .. } => {
+                    for u in links(inner) {
+                        if !out.contains(&u) {
+                            out.push(u);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    const ECONOMY: &str = "https://community.akamai.steamstatic.com/economy";
+
+    /// An emoticon's picture (small, or the large one).
+    pub fn emoticon_url(name: &str, large: bool) -> String {
+        format!("{ECONOMY}/{}/{}", if large { "emoticonlarge" } else { "emoticon" }, name.trim_matches(':'))
+    }
+    pub fn sticker_url(name: &str) -> String {
+        format!("{ECONOMY}/sticker/{name}")
+    }
+    pub fn effect_url(name: &str) -> String {
+        format!("{ECONOMY}/roomeffect/{name}")
+    }
+
+    /// Text to send as markup: `[` escaped so it shows as typed, and
+    /// `:name:` made an emoticon when `owned(name)`. Steam turns slash
+    /// commands (`/flip`, `/code …`) into their markup itself.
+    pub fn compose(input: &str, owned: impl Fn(&str) -> bool) -> String {
+        let input = input.trim();
+        let mut out = String::with_capacity(input.len() + 8);
+        let mut rest = input;
+        while !rest.is_empty() {
+            match emoticon_at(rest) {
+                Some((at, len, name)) if owned(&name) => {
+                    out.push_str(&escape(&rest[..at]));
+                    out.push_str(&format!("[emoticon]{name}[/emoticon]"));
+                    rest = &rest[at + len..];
+                }
+                Some((at, len, _)) => {
+                    // Not one of yours: keep it as text, but look again
+                    // from its closing colon (it may open the next one).
+                    let keep = at + len - 1;
+                    out.push_str(&escape(&rest[..keep]));
+                    rest = &rest[keep..];
+                }
+                None => {
+                    out.push_str(&escape(rest));
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// `[` → `\[`, so Steam shows it instead of reading a tag.
+    pub fn escape(s: &str) -> String {
+        s.replace('[', "\\[")
+    }
+
+    /// A sticker message.
+    pub fn sticker(name: &str) -> String {
+        format!("[sticker type=\"{name}\" limit=\"0\"][/sticker]")
+    }
+
+    /// A chat effect message.
+    pub fn effect(name: &str) -> String {
+        format!("[roomeffect type=\"{name}\"][/roomeffect]")
+    }
+
+    /// A picture message (after it's uploaded).
+    pub fn image(src: &str, width: u32, height: u32) -> String {
+        format!("[img src=\"{src}\" width=\"{width}\" height=\"{height}\"][/img]")
+    }
+
+    /// A quote of someone's message, to put in the message box.
+    pub fn quote(author: &str, text: &str) -> String {
+        format!("[quote={}]{}[/quote]\n", author.replace([']', '['], ""), escape(text))
+    }
+
+    /// The slash commands the chat offers, Steam's first; `store` is
+    /// SteamInRust's own (it sends a Store link).
+    pub const COMMANDS: [&str; 8] = ["me", "code", "pre", "quote", "spoiler", "random", "flip", "store"];
+
+    /// While typing a command name (`/co`): what's typed after the slash.
+    pub fn typing_command(input: &str) -> Option<&str> {
+        let rest = input.strip_prefix('/')?;
+        (!rest.contains(char::is_whitespace)).then_some(rest)
+    }
+
+    /// `/store <game>`: the game's name.
+    pub fn store_command(input: &str) -> Option<&str> {
+        let rest = input.trim().strip_prefix("/store")?;
+        (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn rich_messages() {
+            use Part::*;
+            assert_eq!(rich("hi [emoticon]steamhappy[/emoticon]!"), vec![Text("hi ".into()), Emoticon("steamhappy".into()), Text("!".into())]);
+            assert_eq!(rich("gg :steamthumbsup: at 12:30:45"), vec![Text("gg ".into()), Emoticon("steamthumbsup".into()), Text(" at 12:30:45".into())]);
+            assert_eq!(rich("[spoiler]he dies[/spoiler]"), vec![Spoiler(vec![Text("he dies".into())])]);
+            assert_eq!(rich("[code]let a = x\\[0];[/code]"), vec![Code("let a = x[0];".into())]);
+            assert_eq!(rich("[pre]a\n  b[/pre]"), vec![Pre("a\n  b".into())]);
+            assert_eq!(rich("[quote=Ferris]see [b]this[/b][/quote]ok"), vec![Quote { author: "Ferris".into(), parts: vec![Text("see this".into())] }, Text("ok".into())]);
+            assert_eq!(rich(r#"[random min="1" max="100" result="39"][/random]"#), vec![Random { min: 1, max: 100, result: Some(39) }]);
+            assert_eq!(rich(r#"[flip result="tails"][/flip]"#), vec![Flip(Some(false))]);
+            assert_eq!(rich(r#"[sticker type="Sticker_Hello" limit="0"][/sticker]"#), vec![Sticker("Sticker_Hello".into())]);
+            assert_eq!(rich(r#"[img src="https://images.example/a.png" width="640" height="360"][/img]"#), vec![Image { src: "https://images.example/a.png".into(), width: 640, height: 360 }]);
+            assert_eq!(rich("[mention=22202]@Ferris[/mention] hi"), vec![Mention { account: 22202, text: "@Ferris".into() }, Text(" hi".into())]);
+            assert_eq!(rich(r#"[roomeffect type="confetti"][/roomeffect]"#), vec![Effect("confetti".into())]);
+            assert_eq!(rich("[me]waves[/me]"), vec![Me(vec![Text("waves".into())])]);
+            // Escaped brackets and stray tags stay text.
+            assert_eq!(rich(r"a \[b] c [/x] d"), vec![Text("a [b] c  d".into())]);
+            assert_eq!(rich("1 [ 2"), vec![Text("1 [ 2".into())]);
+        }
+
+        #[test]
+        fn message_links() {
+            use Part::*;
+            let parts = rich("look https://store.steampowered.com/app/620/Portal_2/. and [url=https://x.y/z]this[/url]");
+            assert_eq!(parts[1], Link { url: "https://store.steampowered.com/app/620/Portal_2/".into(), text: "https://store.steampowered.com/app/620/Portal_2/".into() });
+            assert_eq!(super::links(&parts), vec!["https://store.steampowered.com/app/620/Portal_2/".to_string(), "https://x.y/z".to_string()]);
+            // No previews for links inside code.
+            assert!(super::links(&rich("[code]https://a.b/c[/code]")).is_empty());
+        }
+
+        #[test]
+        fn composing() {
+            let owned = |n: &str| n == "steamhappy";
+            assert_eq!(compose("hi :steamhappy: [b]x[/b]", owned), r"hi [emoticon]steamhappy[/emoticon] \[b]x\[/b]");
+            assert_eq!(compose("not mine :steamsad: at 1:2:3", owned), "not mine :steamsad: at 1:2:3");
+            assert_eq!(compose("::steamhappy::", owned), ":[emoticon]steamhappy[/emoticon]:");
+            assert_eq!(rich(&compose("a [x] :steamhappy:", owned)), vec![Part::Text("a [x] ".into()), Part::Emoticon("steamhappy".into())]);
+            assert_eq!(typing_command("/co"), Some("co"));
+            assert_eq!(typing_command("/code x"), None);
+            assert_eq!(store_command("/store portal 2"), Some("portal 2"));
+            assert_eq!(store_command("/storefront"), None);
+            assert_eq!(rich(&quote("Ferris", "a [b]")), vec![Part::Quote { author: "Ferris".into(), parts: vec![Part::Text("a [b]".into())] }, Part::Text("\n".into())]);
+        }
+
+        #[test]
+        fn reactions_count() {
+            let mut r = Vec::new();
+            super::super::Reaction::apply(&mut r, "steamhappy", false, true, false);
+            super::super::Reaction::apply(&mut r, "steamhappy", false, true, true);
+            assert_eq!((r[0].count, r[0].mine), (2, true));
+            // Adding yours twice counts once.
+            super::super::Reaction::apply(&mut r, "steamhappy", false, true, true);
+            assert_eq!(r[0].count, 2);
+            super::super::Reaction::apply(&mut r, "steamhappy", false, false, true);
+            assert_eq!((r[0].count, r[0].mine), (1, false));
+            super::super::Reaction::apply(&mut r, "steamhappy", false, false, false);
+            assert!(r.is_empty());
+        }
 
         #[test]
         fn steam_invites() {

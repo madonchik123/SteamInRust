@@ -62,10 +62,26 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
         (ferris, "want to try the co-op campaign this week?", 7_200),
         (me, "yes, any evening works", 7_000),
         (ferris, "cool", 6_900),
-        (ferris, "hey, portal 2 co-op tonight?", 600),
-        (me, "sure, after dinner", 540),
-        (ferris, "nice. I'll send an invite around 8", 500),
+        (ferris, "hey, portal 2 co-op tonight? [emoticon]steamhappy[/emoticon]", 900),
+        (me, "sure, after dinner", 840),
+        (ferris, "nice. I'll send an invite around 8", 800),
+        (ferris, "also, have you seen this one? https://store.steampowered.com/app/620/Portal_2/", 700),
+        (me, "[quote=Ferris]have you seen this one?[/quote]played it twice [emoticon]steamthumbsup[/emoticon]", 650),
+        (ferris, "the ending though... [spoiler]the cake is a lie[/spoiler]", 600),
+        (ferris, "[code]sv_cheats 1[/code] works in the co-op maps too", 560),
+        (me, r#"[random min="1" max="100" result="42"][/random]"#, 520),
+        (ferris, r#"[flip result="heads"][/flip]"#, 500),
+        (ferris, r#"[img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/620/header.jpg" width="460" height="215"][/img]"#, 400),
+        (me, "[emoticon]steamhappy[/emoticon][emoticon]steamthumbsup[/emoticon]", 300),
     ];
+    // Reactions under a few of them.
+    let reacted = |i: usize| -> Vec<model::Reaction> {
+        match i {
+            12 => vec![model::Reaction { name: "steamhappy".into(), sticker: false, count: 2, mine: true }],
+            14 => vec![model::Reaction { name: "steammocking".into(), sticker: false, count: 1, mine: false }, model::Reaction { name: "steamfacepalm".into(), sticker: false, count: 1, mine: true }],
+            _ => Vec::new(),
+        }
+    };
     let mut events = vec![
         Event::LoggedIn { steam_id: me, account: "demo".into() },
         Event::AccountInfo { persona_name: "You".into(), country: "US".into() },
@@ -77,7 +93,14 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
     ];
     events.push(Event::History {
         friend: ferris,
-        messages: chat.iter().map(|(from, text, ago)| ChatMessage { friend: ferris, from: *from, text: (*text).into(), time: now - ago, invite: None }).collect(),
+        messages: chat
+            .iter()
+            .enumerate()
+            .map(|(i, (from, raw, ago))| {
+                let (text, invite) = model::chat::parse(raw);
+                ChatMessage { friend: ferris, from: *from, text, time: now - ago, invite, raw: (*raw).into(), ordinal: i as u32, reactions: reacted(i) }
+            })
+            .collect(),
     });
     events.push(Event::Profile(model::ProfileInfo {
         steam_id: me,
@@ -91,7 +114,14 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
         ..Default::default()
     }));
     events.push(Event::Wallet { balance: 1234, currency: 1, pending: 250 });
-    events.push(Event::Message(ChatMessage { friend: BASE + 101, from: BASE + 101, text: "gg! one more?".into(), time: now - 30, invite: None }));
+    events.push(Event::Message(ChatMessage { friend: BASE + 101, from: BASE + 101, text: "gg! one more?".into(), time: now - 30, ..Default::default() }));
+    // The emoticons, stickers and chat effects "you" own.
+    let owned = |n: &str| model::OwnedEmote { name: n.into(), app_id: 753, ..Default::default() };
+    events.push(Event::Emoticons(model::Emoticons {
+        emoticons: ["steamhappy", "steamthumbsup", "steammocking", "steamfacepalm", "steamsad", "steamthis", "steamsalty", "steambored"].iter().map(|n| owned(n)).collect(),
+        stickers: Vec::new(),
+        effects: ["confetti", "fireworks"].iter().map(|n| owned(n)).collect(),
+    }));
     events.extend(group_chat(me, ferris, now));
     events.push(Event::Personas(friend_requests().iter().map(|(id, name, _)| Persona { steam_id: *id, name: (*name).into(), state: PersonaState::Online, ..Default::default() }).collect()));
     events.extend(inventory(me, now));
@@ -375,7 +405,15 @@ fn group_chat(me: u64, ferris: u64, now: u64) -> Vec<Event> {
     let messages: Vec<GroupMessage> = said
         .iter()
         .enumerate()
-        .map(|(i, (from, text, ago))| GroupMessage { group, room: 1, sender: *from, text: (*text).into(), time: (now - ago) as u32, ordinal: i as u32 })
+        .map(|(i, (from, text, ago))| GroupMessage {
+            group,
+            room: 1,
+            sender: *from,
+            text: (*text).into(),
+            time: (now - ago) as u32,
+            ordinal: i as u32,
+            reactions: if i == 0 { vec![model::Reaction { name: "steamthumbsup".into(), sticker: false, count: 3, mine: true }] } else { Vec::new() },
+        })
         .collect();
     let last = messages.last().cloned().unwrap_or_default();
     vec![

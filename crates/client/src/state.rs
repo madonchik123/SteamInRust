@@ -58,6 +58,10 @@ pub struct State {
     pub comments: HashMap<SteamId, Result<model::Comments, String>>,
     pub badges: HashMap<SteamId, Result<model::Badges, String>>,
     pub notifications: Option<model::Notifications>,
+    /// Your chat emoticons, stickers and effects (asked for once).
+    pub emoticons: Option<model::Emoticons>,
+    /// Your trade offer link.
+    pub trade_link: Option<Result<String, String>>,
     pub support_tickets: Option<Result<Vec<model::SupportTicket>, String>>,
     pub account_security: Option<Result<model::AccountSecurity, String>>,
     /// Purchase history loaded so far (pages appended).
@@ -385,7 +389,10 @@ impl State {
             Event::Message(m) => {
                 let chat = self.chats.entry(m.friend).or_default();
                 // The server echoes our own messages; skip exact duplicates.
-                if !chat.iter().rev().take(5).any(|c| c.from == m.from && c.text == m.text && c.invite == m.invite && c.time.abs_diff(m.time) < 5) {
+                let same = |c: &model::ChatMessage| {
+                    (c.ordinal == m.ordinal && c.time == m.time && c.time != 0) || (c.from == m.from && c.text == m.text && c.raw == m.raw && c.invite == m.invite && c.time.abs_diff(m.time) < 5)
+                };
+                if !chat.iter().rev().take(5).any(same) {
                     chat.push(m.clone());
                 }
                 if m.from != self.steam_id {
@@ -393,6 +400,25 @@ impl State {
                     self.typing.remove(&m.friend);
                 }
             }
+            Event::MessageReaction { to, time, ordinal, reactor, reaction, sticker, add } => {
+                let me = *reactor == self.steam_id;
+                match to {
+                    crate::ChatTarget::Friend(f) => {
+                        if let Some(m) = self.chats.get_mut(f).and_then(|c| c.iter_mut().rev().find(|m| m.time == *time as u64 && m.ordinal == *ordinal)) {
+                            model::Reaction::apply(&mut m.reactions, reaction, *sticker, *add, me);
+                        }
+                    }
+                    crate::ChatTarget::Group { group, room } => {
+                        if let Some(m) = self.group_messages.get_mut(&(*group, *room)).and_then(|c| c.iter_mut().rev().find(|m| m.time == *time && m.ordinal == *ordinal)) {
+                            model::Reaction::apply(&mut m.reactions, reaction, *sticker, *add, me);
+                        }
+                    }
+                }
+            }
+            Event::Emoticons(e) => self.emoticons = Some(e.clone()),
+            // Told to the user by the app; nothing to keep.
+            Event::ChatImageSent { .. } | Event::MessageReported(_) | Event::ChatGroupCreated(_) | Event::ChatGroupFailed(_) => {}
+            Event::TradeLink(r) => self.trade_link = Some(r.clone()),
             Event::Typing { from } => {
                 self.typing.insert(*from, now());
             }

@@ -102,7 +102,7 @@ pub async fn history(conn: &Connection, group: u64, room: u64, before: Option<(u
         .messages
         .iter()
         .filter(|m| !m.deleted() && m.server_message.is_none())
-        .map(|m| GroupMessage { group, room, sender: INDIVIDUAL + m.sender() as u64, text: m.message().to_string(), time: m.server_timestamp(), ordinal: m.ordinal() })
+        .map(|m| GroupMessage { group, room, sender: INDIVIDUAL + m.sender() as u64, text: m.message().to_string(), time: m.server_timestamp(), ordinal: m.ordinal(), reactions: crate::chat::group_reactions(&m.reactions) })
         .collect();
     out.sort_by_key(|m| (m.time, m.ordinal));
     Ok((out, r.more_available()))
@@ -115,7 +115,7 @@ pub async fn send(conn: &Connection, me: SteamId, group: u64, room: u64, text: &
         .await
         .map_err(|e| e.to_string())?;
     let sent = if r.modified_message().is_empty() { text.to_string() } else { r.modified_message().to_string() };
-    Ok(GroupMessage { group, room, sender: me, text: sent, time: r.server_timestamp(), ordinal: r.ordinal() })
+    Ok(GroupMessage { group, room, sender: me, text: sent, time: r.server_timestamp(), ordinal: r.ordinal(), reactions: Vec::new() })
 }
 
 /// Mark a room read up to `time`.
@@ -132,6 +132,7 @@ pub fn incoming(n: &CChatRoomIncomingChatMessageNotification) -> Option<GroupMes
         text: n.message().to_string(),
         time: n.timestamp(),
         ordinal: n.ordinal(),
+        reactions: Vec::new(),
     })
 }
 

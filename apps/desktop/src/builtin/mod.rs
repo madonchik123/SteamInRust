@@ -5,6 +5,7 @@
 
 pub mod community_home;
 pub mod friends;
+pub mod chat;
 mod downloads;
 mod gallery;
 pub mod hub;
@@ -25,6 +26,7 @@ pub fn registry(rt: tokio::runtime::Handle, ctx: egui::Context, flags: settings:
     r.register(store::Store::new(rt.clone(), ctx.clone()));
     r.register(library::Library::new(rt.clone(), ctx.clone(), flags.clone()));
     r.register(community_home::CommunityHome::default());
+    chat::init(rt.clone(), ctx.clone());
     r.register(friends::Friends::default());
     profile::set_runtime(rt.clone());
     r.register(profile::Profile::default());

@@ -1274,6 +1274,103 @@ async fn online(
                     let (conn, me) = (conn.clone(), st.me);
                     st.with_web(sink, move |web, sink| crate::hub::handle(conn, me, web, req, sink));
                 }
+                Some(Command::SendChat { to: crate::ChatTarget::Friend(to), text }) => st.send_chat(to, text, sink),
+                Some(Command::SendChat { to: crate::ChatTarget::Group { group, room }, text }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        match crate::groupchat::send(&conn, me, group, room, &text).await {
+                            Ok(m) => sink(Event::GroupMessage(m)),
+                            Err(error) => sink(Event::GroupMessageFailed { group, room, error }),
+                        }
+                    });
+                }
+                Some(Command::ReactToMessage { to, time, ordinal, reaction, sticker, add }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        match crate::chat::react(&conn, to, time, ordinal, &reaction, sticker, add).await {
+                            // Shown right away; Steam's own notice of it changes nothing more.
+                            Ok(()) => sink(Event::MessageReaction { to, time, ordinal, reactor: me, reaction, sticker, add }),
+                            Err(e) => sink(Event::Error(format!("Reaction not saved: {e}"))),
+                        }
+                    });
+                }
+                Some(Command::ReportMessage { to, from, time, ordinal, reason, text, language }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        sink(Event::MessageReported(crate::chat::report(&conn, me, to, from, time, ordinal, reason, &text, &language).await));
+                    });
+                }
+                Some(Command::LoadEmoticons) => {
+                    let _ = conn.send(emsg::CLIENT_GET_EMOTICON_LIST, &CMsgClientGetEmoticonList {});
+                }
+                Some(Command::SendChatImage { to, path }) => {
+                    let (conn, me) = (st.conn.clone(), st.me);
+                    st.with_web(sink, move |web, sink| async move {
+                        let result = async {
+                            let web = web?;
+                            let bytes = std::fs::read(&path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
+                            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "image.png".into());
+                            let (url, w, h) = crate::chat::upload_image(&web, to, bytes, &name).await?;
+                            let text = model::chat::image(&url, w, h);
+                            match to {
+                                crate::ChatTarget::Friend(friend) => {
+                                    let r: CFriendMessagesSendMessageResponse = conn
+                                        .call(
+                                            "FriendMessages.SendMessage#1",
+                                            &CFriendMessagesSendMessageRequest { steamid: Some(friend), chat_entry_type: Some(1), message: Some(text.clone()), contains_bbcode: Some(true), ..Default::default() },
+                                        )
+                                        .await
+                                        .map_err(|e| e.to_string())?;
+                                    let (plain, invite) = model::chat::parse(&text);
+                                    sink(Event::Message(model::ChatMessage { friend, from: me, text: plain, time: r.server_timestamp() as u64, invite, raw: text, ordinal: r.ordinal(), reactions: Vec::new() }));
+                                }
+                                crate::ChatTarget::Group { group, room } => sink(Event::GroupMessage(crate::groupchat::send(&conn, me, group, room, &text).await?)),
+                            }
+                            Ok::<(), String>(())
+                        }
+                        .await;
+                        sink(Event::ChatImageSent { to, result });
+                    });
+                }
+                Some(Command::LoadTradeLink { new }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move { sink(Event::TradeLink(crate::chat::trade_link(&conn, me, new).await)) });
+                }
+                Some(Command::CreateChatGroup { name, partner, invitees }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        let r = crate::chat::create_group(&conn, &name, partner, &invitees).await;
+                        if r.is_ok() {
+                            if let Ok((groups, members)) = crate::groupchat::groups(&conn).await {
+                                sink(Event::ChatGroupMembers(members));
+                                sink(Event::ChatGroups(Ok(groups)));
+                            }
+                        }
+                        sink(Event::ChatGroupCreated(r));
+                    });
+                }
+                Some(Command::InviteToChatGroup { group, friend }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        if let Err(e) = crate::chat::invite(&conn, group, friend).await {
+                            sink(Event::ChatGroupFailed(format!("Invite not sent: {e}")));
+                        }
+                    });
+                }
+                Some(Command::LeaveChatGroup { group }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        match crate::chat::leave(&conn, group).await {
+                            Ok(()) => {
+                                if let Ok((groups, members)) = crate::groupchat::groups(&conn).await {
+                                    sink(Event::ChatGroupMembers(members));
+                                    sink(Event::ChatGroups(Ok(groups)));
+                                }
+                            }
+                            Err(e) => sink(Event::ChatGroupFailed(format!("Couldn't leave the group chat: {e}"))),
+                        }
+                    });
+                }
                 Some(Command::Typing { to }) => {
                     let conn = conn.clone();
                     tokio::spawn(async move {
@@ -1725,6 +1822,28 @@ impl Online {
                             sink(Event::ChatGroups(Ok(groups)));
                         }
                     });
+                } else if name.starts_with("FriendMessagesClient.MessageReaction") {
+                    let n: CFriendMessagesMessageReactionNotification = p.body()?;
+                    sink(Event::MessageReaction {
+                        to: crate::ChatTarget::Friend(n.steamid_friend()),
+                        time: n.server_timestamp(),
+                        ordinal: n.ordinal(),
+                        reactor: n.reactor(),
+                        reaction: n.reaction().to_string(),
+                        sticker: n.reaction_type() as i32 == 2,
+                        add: n.is_add(),
+                    });
+                } else if name.starts_with("ChatRoomClient.NotifyMessageReaction") {
+                    let n: CChatRoomMessageReactionNotification = p.body()?;
+                    sink(Event::MessageReaction {
+                        to: crate::ChatTarget::Group { group: n.chat_group_id(), room: n.chat_id() },
+                        time: n.server_timestamp(),
+                        ordinal: n.ordinal(),
+                        reactor: n.reactor(),
+                        reaction: n.reaction().to_string(),
+                        sticker: n.reaction_type() as i32 == 2,
+                        add: n.is_add(),
+                    });
                 } else if name.starts_with("FriendMessagesClient.IncomingMessage") {
                     let n: CFriendMessagesIncomingMessageNotification = p.body()?;
                     match n.chat_entry_type() {
@@ -1738,6 +1857,9 @@ impl Online {
                                 text,
                                 time: n.rtime32_server_timestamp() as u64,
                                 invite,
+                                raw: n.message().to_string(),
+                                ordinal: n.ordinal(),
+                                reactions: Vec::new(),
                             }))
                         }
                         2 => sink(Event::Typing { from: n.steamid_friend() }),
@@ -1746,6 +1868,10 @@ impl Online {
                 } else {
                     sink(Event::Unhandled { emsg: p.emsg, name });
                 }
+            }
+            emsg::CLIENT_EMOTICON_LIST => {
+                let l: CMsgClientEmoticonList = p.body()?;
+                sink(Event::Emoticons(crate::chat::emoticons(&l)));
             }
             emsg::CLIENT_EMAIL_ADDR_INFO => {
                 let e: CMsgClientEmailAddrInfo = p.body()?;
@@ -1773,6 +1899,28 @@ impl Online {
         Ok(None)
     }
 
+    /// Send a message written as Steam's markup; Steam turns slash commands
+    /// (`/flip`, `/code …`) into theirs and answers with the result.
+    fn send_chat(&self, to: SteamId, text: String, sink: &Sink) {
+        let (conn, sink, me) = (self.conn.clone(), sink.clone(), self.me);
+        tokio::spawn(async move {
+            let r: Result<CFriendMessagesSendMessageResponse, _> = conn
+                .call(
+                    "FriendMessages.SendMessage#1",
+                    &CFriendMessagesSendMessageRequest { steamid: Some(to), chat_entry_type: Some(1), message: Some(text.clone()), contains_bbcode: Some(true), ..Default::default() },
+                )
+                .await;
+            match r {
+                Ok(r) => {
+                    let raw = if r.modified_message().is_empty() { text } else { r.modified_message().to_string() };
+                    let (plain, invite) = model::chat::parse(&raw);
+                    sink(Event::Message(model::ChatMessage { friend: to, from: me, text: plain, time: r.server_timestamp() as u64, invite, raw, ordinal: r.ordinal(), reactions: Vec::new() }))
+                }
+                Err(e) => sink(Event::Error(format!("Message not sent: {e}"))),
+            }
+        });
+    }
+
     fn send_message(&self, to: SteamId, text: String, sink: &Sink) {
         let (conn, sink, me) = (self.conn.clone(), sink.clone(), self.me);
         tokio::spawn(async move {
@@ -1790,8 +1938,9 @@ impl Online {
                 .await;
             match r {
                 Ok(r) => {
-                    let (text, invite) = model::chat::parse(if r.modified_message().is_empty() { &text } else { r.modified_message() });
-                    sink(Event::Message(model::ChatMessage { friend: to, from: me, text, time: r.server_timestamp() as u64, invite }))
+                    let raw = if r.modified_message().is_empty() { text.clone() } else { r.modified_message().to_string() };
+                    let (text, invite) = model::chat::parse(&raw);
+                    sink(Event::Message(model::ChatMessage { friend: to, from: me, text, time: r.server_timestamp() as u64, invite, raw, ordinal: r.ordinal(), reactions: Vec::new() }))
                 }
                 Err(e) => sink(Event::Error(format!("Message not sent: {e}"))),
             }
@@ -2551,10 +2700,19 @@ impl Online {
                         .iter()
                         .map(|m| {
                             let (text, invite) = model::chat::parse(m.message());
-                            model::ChatMessage { friend, from: base | m.accountid() as u64, text, time: m.timestamp() as u64, invite }
+                            model::ChatMessage {
+                                friend,
+                                from: base | m.accountid() as u64,
+                                text,
+                                time: m.timestamp() as u64,
+                                invite,
+                                raw: m.message().to_string(),
+                                ordinal: m.ordinal(),
+                                reactions: crate::chat::friend_reactions(&m.reactions, me),
+                            }
                         })
                         .collect();
-                    messages.sort_by_key(|m| m.time);
+                    messages.sort_by_key(|m| (m.time, m.ordinal));
                     sink(Event::History { friend, messages });
                 }
                 Err(e) => tracing::warn!("chat history: {e}"),

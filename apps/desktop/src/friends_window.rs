@@ -108,6 +108,16 @@ pub struct FriendsWindow {
     wide: bool,
     /// Bring the window to the front next frame.
     focus: bool,
+    /// The "New group chat" dialog, while open.
+    new_group: Option<NewGroup>,
+}
+
+/// A group chat being made: its name and who's invited.
+#[derive(Default)]
+struct NewGroup {
+    name: String,
+    invited: Vec<SteamId>,
+    filter: String,
 }
 
 impl FriendsWindow {
@@ -279,7 +289,55 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         let ctx = ui.ctx().clone();
         crate::chrome::border(&ctx, &t);
         crate::shell::friend_dialogs(app, &ctx);
+        new_group_dialog(app, &ctx, &t);
     });
+}
+
+/// "New group chat": a name (optional) and the friends to invite.
+fn new_group_dialog(app: &mut SteamApp, ctx: &egui::Context, t: &Theme) {
+    let Some(mut ng) = app.friends_window.new_group.take() else { return };
+    let mut keep = true;
+    let width = (ctx.content_rect().width() - 64.0).clamp(240.0, 400.0);
+    egui::Modal::new(egui::Id::unique("new-group-chat")).show(ctx, |ui| {
+        ui.set_width(width);
+        ui.label(w::heading_s(t, t!("New group chat"), t.text));
+        ui.add_space(t.spacing.sm);
+        ui.add(egui::TextEdit::singleline(&mut ng.name).hint_text(t!("Name (optional)")).desired_width(f32::INFINITY));
+        ui.add_space(t.spacing.sm);
+        ui.label(w::body_s(t, t!("Invite friends"), t.text_dim));
+        w::search(ui, t, &mut ng.filter, t!("Search friends"), width);
+        let q = ng.filter.trim().to_lowercase();
+        let mut friends = app.state.friend_list();
+        friends.retain(|p| q.is_empty() || p.display_name().to_lowercase().contains(&q));
+        friends.sort_by_key(|p| (p.state == PersonaState::Offline, p.display_name().to_lowercase()));
+        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+            for p in friends {
+                let mut on = ng.invited.contains(&p.steam_id);
+                if w::check(ui, t, &mut on, &p.display_name()).changed() {
+                    if on {
+                        ng.invited.push(p.steam_id);
+                    } else {
+                        ng.invited.retain(|x| *x != p.steam_id);
+                    }
+                }
+            }
+        });
+        ui.add_space(t.spacing.md);
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!ng.invited.is_empty(), |ui| {
+                if w::button(ui, t, Some(icons::CHATS), t!("Make the group chat"), w::Kind::Primary, w::Size::Sm).clicked() {
+                    app.client.send(Command::CreateChatGroup { name: ng.name.trim().to_string(), partner: None, invitees: ng.invited.clone() });
+                    keep = false;
+                }
+            });
+            if w::button(ui, t, None, t!("Cancel"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                keep = false;
+            }
+        });
+    });
+    if keep {
+        app.friends_window.new_group = Some(ng);
+    }
 }
 
 /// `--friends=<what>` (previews): open it once what it names has arrived.
@@ -654,7 +712,7 @@ fn friend_menu(app: &mut SteamApp, resp: &egui::Response, t: &Theme, persona: &P
 /// title folds them away).
 fn group_chats(app: &mut SteamApp, ui: &mut Ui, t: &Theme, filter: &str) {
     let groups = match &app.state.chat_groups {
-        Some(Ok(g)) if !g.is_empty() => g.clone(),
+        Some(Ok(g)) => g.clone(),
         Some(Err(e)) => {
             ui.add(egui::Label::new(w::body_s(t, t!("Couldn't load your group chats: {error}", error = i18n::tr_dyn(e)), t.text_faint)).wrap());
             return;
@@ -662,7 +720,7 @@ fn group_chats(app: &mut SteamApp, ui: &mut Ui, t: &Theme, filter: &str) {
         _ => return,
     };
     let shown: Vec<_> = groups.iter().filter(|g| filter.is_empty() || group_name(&app.state, g).to_lowercase().contains(filter)).collect();
-    if shown.is_empty() {
+    if shown.is_empty() && !filter.is_empty() {
         return;
     }
     let hidden = app.friends_window.groups_hidden;
@@ -670,7 +728,21 @@ fn group_chats(app: &mut SteamApp, ui: &mut Ui, t: &Theme, filter: &str) {
     // Lit while the pointer is on it (where it was drawn last frame).
     let id = egui::Id::unique("fw-group-title");
     let lit = ui.data(|d| d.get_temp::<Rect>(id)).is_some_and(|r| ui.rect_contains_pointer(r));
-    let title = ui.add(egui::Label::new(w::body_m(t, text, if lit { t.text } else { t.text_dim })).sense(Sense::click()));
+    // The title, and "+" for a new group chat at the row's end.
+    let title = crate::builtin::friends::ends(
+        ui,
+        |ui| {
+            let (r, resp) = ui.allocate_exact_size(vec2(t.dense(24.0), t.dense(24.0)), Sense::click());
+            let c = &t.components.icon_button;
+            let look = t.look(c, w::interact(ui, &resp, false));
+            w::paint_box(ui, t, r, c, &look, 0.0);
+            w::icon_centered(ui.painter(), r.center(), icons::PLUS, t.dense(14.0), look.icon);
+            if resp.on_hover_text(t!("New group chat")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                app.friends_window.new_group = Some(NewGroup::default());
+            }
+        },
+        |ui| ui.add(egui::Label::new(w::body_m(t, text, if lit { t.text } else { t.text_dim })).sense(Sense::click())),
+    );
     ui.data_mut(|d| d.insert_temp(id, title.rect));
     if title.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
         app.friends_window.groups_hidden = !hidden;
