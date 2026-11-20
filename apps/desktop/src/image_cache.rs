@@ -28,11 +28,17 @@ const PARALLEL: usize = 16;
 #[derive(Clone)]
 enum Entry {
     Pending,
-    Ready(Bytes, Option<String>),
+    /// The bytes, their type, and when they were last asked for.
+    Ready(Bytes, Option<String>, std::time::Instant),
     /// The error, and when. Errors starting with [`ui::widgets::GONE`] are
     /// final (the picture doesn't exist); others are asked again later.
     Failed(String, std::time::Instant),
 }
+
+/// Downloaded bytes nobody asked for in this long are dropped (the file is
+/// on disk). A picture that finished downloading after you'd left its page
+/// was otherwise kept until the app closed: a big store screenshot is 1–2 MB.
+const UNCLAIMED_FOR: Duration = Duration::from_secs(20);
 
 /// A failed download is tried again when it's asked for this long after.
 const RETRY_AFTER: Duration = Duration::from_secs(5);
@@ -69,6 +75,7 @@ pub struct ImageCache {
     http: reqwest::Client,
     slots: Arc<Gate>,
     entries: Arc<Mutex<HashMap<String, Entry>>>,
+    swept: Mutex<std::time::Instant>,
 }
 
 /// Lets `n` downloads run at once; the others wait, and a freed slot goes to
@@ -163,9 +170,11 @@ impl ImageCache {
         // Keep the folder under its limit (in the background, at start).
         let trim_dir = dir.clone();
         rt.spawn_blocking(move || trim(&trim_dir));
-        ctx.add_bytes_loader(Arc::new(Self { dir, rt, http, slots: Gate::new(PARALLEL), entries: Default::default() }));
+        ctx.add_bytes_loader(Arc::new(Self { dir, rt, http, slots: Gate::new(PARALLEL), entries: Default::default(), swept: Mutex::new(std::time::Instant::now()) }));
         // Still pictures decoded at the size they're drawn at (sized_images.rs).
         crate::sized_images::SizedLoader::install(ctx);
+        // Pictures on the graphics card, freed when no longer drawn.
+        crate::texture_cache::TextureCache::install(ctx);
     }
 
     fn key(uri: &str) -> String {
@@ -193,9 +202,16 @@ impl BytesLoader for ImageCache {
         if let Err(err) = validate_image_url(uri) {
             return Err(LoadError::Loading(format!("{}{err}", ui::widgets::GONE)));
         }
-        match self.entries.lock().unwrap().get(uri).cloned() {
+        let found = {
+            let mut entries = self.entries.lock().unwrap();
+            if let Some(Entry::Ready(_, _, asked)) = entries.get_mut(uri) {
+                *asked = std::time::Instant::now();
+            }
+            entries.get(uri).cloned()
+        };
+        match found {
             Some(Entry::Pending) => return Ok(BytesPoll::Pending { size: None }),
-            Some(Entry::Ready(bytes, mime)) => return Ok(BytesPoll::Ready { size: None, bytes, mime }),
+            Some(Entry::Ready(bytes, mime, _)) => return Ok(BytesPoll::Ready { size: None, bytes, mime }),
             // A hiccup: asked for again a little later, it's tried again.
             Some(Entry::Failed(err, at)) if err.starts_with(ui::widgets::GONE) || at.elapsed() < RETRY_AFTER => return Err(LoadError::Loading(err)),
             _ => {}
@@ -218,7 +234,7 @@ impl BytesLoader for ImageCache {
             let saved = std::fs::read(&path).ok().filter(|b| looks_like_picture(b));
             let meta = read_meta(&path);
             if let Some(bytes) = &saved {
-                done(Entry::Ready(Bytes::from(bytes.clone()), meta.mime.clone()));
+                done(Entry::Ready(Bytes::from(bytes.clone()), meta.mime.clone(), std::time::Instant::now()));
                 if age(&path).is_some_and(|a| a < FRESH_FOR) {
                     // Touch-free: fresh enough, nothing else to do.
                     return;
@@ -277,7 +293,7 @@ impl BytesLoader for ImageCache {
                                 let _ = std::fs::rename(&tmp, &path);
                                 let _ = std::fs::write(path.with_extension("json"), serde_json::to_string(&meta).unwrap_or_default());
                             }
-                            done(Entry::Ready(Bytes::from(bytes), meta.mime));
+                            done(Entry::Ready(Bytes::from(bytes), meta.mime, std::time::Instant::now()));
                         }
                         Err(e) if saved.is_none() => done(failed(e)),
                         Err(_) => {}
@@ -303,9 +319,23 @@ impl BytesLoader for ImageCache {
         self.entries.lock().unwrap().clear();
     }
 
-    fn byte_size(&self) -> usize {
-        self.entries.lock().unwrap().values().map(|e| if let Entry::Ready(b, _) = e { b.len() } else { 0 }).sum()
+    fn end_pass(&self, _pass: u64) {
+        let mut swept = self.swept.lock().unwrap();
+        if swept.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        *swept = std::time::Instant::now();
+        drop_unclaimed(&mut self.entries.lock().unwrap(), UNCLAIMED_FOR);
     }
+
+    fn byte_size(&self) -> usize {
+        self.entries.lock().unwrap().values().map(|e| if let Entry::Ready(b, ..) = e { b.len() } else { 0 }).sum()
+    }
+}
+
+/// Drop downloaded bytes nobody asked for in `after`.
+fn drop_unclaimed(entries: &mut HashMap<String, Entry>, after: Duration) {
+    entries.retain(|_, e| !matches!(e, Entry::Ready(_, _, asked) if asked.elapsed() > after));
 }
 
 /// Delete the oldest pictures until the folder is under 80% of the limit.
@@ -331,6 +361,24 @@ fn trim(dir: &PathBuf) {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("json"));
         total = total.saturating_sub(len);
+    }
+}
+
+#[cfg(test)]
+mod unclaimed_tests {
+    use super::*;
+
+    #[test]
+    fn bytes_nobody_asks_for_are_dropped() {
+        let mut entries = HashMap::new();
+        let old = std::time::Instant::now() - Duration::from_secs(60);
+        entries.insert("https://x/late.jpg".to_string(), Entry::Ready(Bytes::from(vec![0u8; 1024]), None, old));
+        entries.insert("https://x/fresh.jpg".to_string(), Entry::Ready(Bytes::from(vec![0u8; 1024]), None, std::time::Instant::now()));
+        entries.insert("https://x/loading.jpg".to_string(), Entry::Pending);
+        drop_unclaimed(&mut entries, UNCLAIMED_FOR);
+        let mut left: Vec<&String> = entries.keys().collect();
+        left.sort();
+        assert_eq!(left, ["https://x/fresh.jpg", "https://x/loading.jpg"]);
     }
 }
 

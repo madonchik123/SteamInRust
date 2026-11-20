@@ -415,6 +415,10 @@ impl Player {
             self.shown_epoch = epoch;
             self.shown_pts = f.pts;
             match &mut self.tex {
+                // Same size: write into the picture already on the graphics
+                // card instead of replacing it whole every frame (the OpenGL
+                // driver then doesn't set up new storage 30 times a second).
+                Some(t) if t.size() == f.image.size => t.set_partial([0, 0], f.image, egui::TextureOptions::LINEAR),
                 Some(t) => t.set(f.image, egui::TextureOptions::LINEAR),
                 None => self.tex = Some(ctx.load_texture("video-frame", f.image, egui::TextureOptions::LINEAR)),
             }

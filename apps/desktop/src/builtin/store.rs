@@ -111,6 +111,11 @@ pub struct Store {
     owned: std::collections::HashSet<AppId>,
     /// The trailer playing in the media area: (source URL, player).
     trailer: Option<(String, video::Player)>,
+    /// Frames so far (counted in `tick`), and the last one the store was
+    /// drawn in: a trailer or hover clip left playing on a page you've left
+    /// is freed.
+    frames: u64,
+    drawn_frame: u64,
     filters: store::query::Filters,
     browse_page: u32,
     query: Option<(store::query::Filters, u32, Shared<(Vec<store::query::QueryItem>, u64)>)>,
@@ -214,6 +219,8 @@ impl Store {
             shot_centered: None,
             owned: Default::default(),
             trailer: None,
+            frames: 0,
+            drawn_frame: 0,
         }
     }
 
@@ -540,7 +547,16 @@ impl Extension for Store {
         self.in_nav = false;
     }
 
+    fn tick(&mut self, _ctx: &mut Ctx) {
+        self.frames += 1;
+        if self.frames.saturating_sub(self.drawn_frame) > 2 {
+            self.trailer = None;
+            self.micro = Default::default();
+        }
+    }
+
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {
+        self.drawn_frame = self.frames;
         if let Some(arg) = self.nav_out.take() {
             ctx.navigate("store", arg);
         }
@@ -1036,6 +1052,7 @@ impl Store {
     /// Play trailer `i` of a game in `rect` (started if it isn't the one
     /// playing). True when it ended.
     pub(crate) fn play_trailer(&mut self, ui: &mut Ui, t: &Theme, rect: Rect, id: AppId, i: usize) -> bool {
+        self.drawn_frame = self.frames;
         let trailers = self.trailers_for(id);
         let Some(tr) = trailers.get(i) else { return false };
         let Some(src) = tr.hls.clone().map(video::Source::Hls).or_else(|| tr.micro_mp4.clone().map(video::Source::Mp4)) else {

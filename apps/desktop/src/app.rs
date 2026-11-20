@@ -865,6 +865,79 @@ fn preview_keys(ctx: &egui::Context, raw_input: &mut egui::RawInput, time: f64) 
     }
 }
 
+/// `--soak` (with `--offscreen`): a long hands-off session for memory
+/// tests: a new page every 10 s (library, store pages with trailers,
+/// Community, profiles), scrolled down and back up. `--soak-plan=apps`
+/// visits only store game pages (trailers); `--soak-plan=pages` everything
+/// else. Pair it with `STEAMINRUST_MEM_LOG=<file>` (memlog.rs).
+const SOAK_STEP: f64 = 10.0;
+
+fn soak_on() -> bool {
+    offscreen() && std::env::args().any(|a| a == "--soak")
+}
+
+fn soak_scroll(raw_input: &mut egui::RawInput, time: f64) {
+    if !soak_on() || time < 6.0 {
+        return;
+    }
+    // Every half second: down for the first 5 s of a step, then back up.
+    let in_step = (time - 6.0) % SOAK_STEP;
+    if (in_step * 2.0).fract() > 0.1 || in_step < 1.0 {
+        return;
+    }
+    let dy = if in_step < 5.5 { -350.0 } else { 350.0 };
+    let p = egui::pos2(640.0, 450.0);
+    raw_input.events.push(egui::Event::PointerMoved(p));
+    raw_input.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, dy), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers: egui::Modifiers::NONE });
+}
+
+const SOAK_APPS: &[u32] = &[
+    730, 570, 440, 620, 1145360, 413150, 292030, 1091500, 1086940, 367520, 1245620, 1145350, 504230, 892970, 105600, 1794680, 271590, 578080, 252490, 359550,
+    381210, 230410, 218620, 4000, 8930, 22380, 72850, 107410, 203160, 220200, 227300, 236390, 238960, 242760, 250900, 251570, 252950, 255710, 261550, 264710,
+    275850, 281990, 284160, 289070, 294100, 304930, 311210, 322330, 346110, 377160, 394360, 431960, 433340, 435150, 444090, 489830, 524220, 548430, 552520, 570940,
+    582010, 588650, 594650, 620980, 632360, 646570, 648800, 668580, 674940, 700330, 739630, 752590, 782330, 813780, 814380, 881100, 960090, 973230, 990080, 1029690,
+    1057090, 1085660, 1097150, 1118010, 1172470, 1174180, 1196590, 1203220, 1238810, 1240440, 1263850, 1282100, 1326470, 1361210, 1364780, 1426210, 1446780, 1449850,
+    1517290, 1551360, 1593500, 1604030, 1623730, 1659040, 1677740, 1687950, 1716740, 1817070, 1817190, 1888930, 1966720, 2050650, 2073850, 2139460, 2215430, 2246340,
+];
+
+impl SteamApp {
+    fn soak_step(&mut self, ctx: &egui::Context) {
+        if !soak_on() {
+            return;
+        }
+        let time = ctx.input(|i| i.time);
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        if time < 6.0 {
+            return;
+        }
+        let n = ((time - 6.0) / SOAK_STEP) as usize;
+        let id = egui::Id::unique("soak-step");
+        if ctx.data(|d| d.get_temp::<usize>(id)) == Some(n) {
+            return;
+        }
+        ctx.data_mut(|d| d.insert_temp(id, n));
+        let app = |k: usize| Some(format!("app:{}", SOAK_APPS[k % SOAK_APPS.len()]));
+        // Which page (0–7 below), and how many rounds through the plan so far.
+        let (kind, round) = match std::env::args().find_map(|a| a.strip_prefix("--soak-plan=").map(String::from)).as_deref() {
+            Some("apps") => ([2, 4, 7][n % 3], n / 3),
+            Some("pages") => ([0, 1, 3, 5, 6][n % 5], n / 5),
+            _ => (n % 8, n / 8),
+        };
+        let (page, arg) = match kind {
+            0 => ("library", None),
+            1 => ("store", None),
+            2 => ("store", app(round * 3)),
+            3 => ("community_home", (round % 2 == 0).then(|| "explore".to_string())),
+            4 => ("store", app(round * 3 + 1)),
+            5 => ("profile", None),
+            6 => ("store", (round % 2 == 0).then(|| "browse".to_string())),
+            _ => ("store", app(round * 3 + 2)),
+        };
+        tracing::info!("soak step {n}: {page} {arg:?}");
+        self.navigate(page.to_string(), arg);
+    }
+}
+
 impl eframe::App for SteamApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         // Transparent so the overlay window can see through; the main window
@@ -962,6 +1035,7 @@ impl eframe::App for SteamApp {
             }
         }
         preview_keys(ctx, raw_input, time);
+        soak_scroll(raw_input, time);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -981,6 +1055,10 @@ impl eframe::App for SteamApp {
         }
         self.window_icon.show(frame, self.prefs.tray_icon);
         crate::image_cache::trim_decoded(&ctx);
+        crate::texture_cache::tick(&ctx);
+        crate::builtin::profile::drop_hidden_videos();
+        crate::memlog::tick(&ctx, || format!("videos={}", crate::builtin::profile::video_count()));
+        self.soak_step(&ctx);
         if self.applied_theme.as_ref() != Some(&self.prefs.theme) {
             self.prefs.theme.apply(&ctx);
             self.applied_theme = Some(self.prefs.theme.clone());

@@ -1367,8 +1367,26 @@ pub fn set_runtime(rt: tokio::runtime::Handle) {
 
 thread_local! {
     /// Background videos playing, by address, with the frame each was last
-    /// drawn in. A player that isn't drawn pauses itself.
+    /// drawn in ([`FRAME`]).
     static VIDEOS: std::cell::RefCell<std::collections::HashMap<String, (video::Player, u64)>> = Default::default();
+    /// The main window's frames so far (counted by [`drop_hidden_videos`]).
+    static FRAME: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Called once a frame: a background video that wasn't drawn last frame
+/// (its page was left) is stopped and freed: its decoder, its frames and
+/// the downloaded file. A paused player kept all of that before.
+pub fn drop_hidden_videos() {
+    let frame = FRAME.with(|f| {
+        f.set(f.get() + 1);
+        f.get()
+    });
+    VIDEOS.with(|v| v.borrow_mut().retain(|_, (_, last)| frame.saturating_sub(*last) <= 2));
+}
+
+/// How many background videos are kept (memory log).
+pub fn video_count() -> usize {
+    VIDEOS.with(|v| v.borrow().len())
 }
 
 /// Play an MP4 looped and muted, covering `rect`. False until its first
@@ -1378,11 +1396,9 @@ pub(crate) fn paint_video(ui: &Ui, rect: Rect, url: &str, radius: CornerRadius) 
     if crate::links::validate_http_url(url).is_none() {
         return false;
     }
-    let pass = ui.ctx().cumulative_pass_nr();
+    let pass = FRAME.with(|f| f.get());
     VIDEOS.with(|v| {
         let mut v = v.borrow_mut();
-        // Videos not shown for a while are dropped (only a few at a time).
-        v.retain(|k, (_, last)| k == url || pass.saturating_sub(*last) < 300);
         let entry = v.entry(url.to_string()).or_insert_with(|| {
             let opts = video::Options { autoplay: true, muted: true, volume: 0.0, looping: true, width: 1920 };
             (video::Player::new(rt, ui.ctx(), video::Source::Mp4(url.to_string()), opts), pass)

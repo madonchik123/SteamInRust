@@ -12,7 +12,7 @@ mod inventory;
 pub mod library;
 mod plugins;
 mod support;
-mod profile;
+pub(crate) mod profile;
 pub mod settings;
 mod settings_account;
 pub mod store;
