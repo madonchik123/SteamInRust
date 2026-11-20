@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.1](https://github.com/madonchik123/SteamInRust/compare/v0.12.0...v0.12.1) (2026-11-20)
+
+
+### Fixes
+
+* free pictures and videos you're no longer looking at ([#113](https://github.com/madonchik123/SteamInRust/issues/113)) ([c23b851](https://github.com/madonchik123/SteamInRust/commit/c23b851b2dc7bade6e8650976a655b994f9256eb))
+* in-game overlay blocks all game input, opens with the Guide button, and stops doing needless work ([#112](https://github.com/madonchik123/SteamInRust/issues/112)) ([700d049](https://github.com/madonchik123/SteamInRust/commit/700d049c5aba5e654a9a373c0d85879febe94043))
+* show the Steam Cloud question when a game starts from a shortcut ([#111](https://github.com/madonchik123/SteamInRust/issues/111)) ([23a6d15](https://github.com/madonchik123/SteamInRust/commit/23a6d15d1d5353b8430706bc6c173dd511091050))
+
 ## [0.12.0](https://github.com/madonchik123/SteamInRust/compare/v0.11.0...v0.12.0) (2026-11-19)
 
 
