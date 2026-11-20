@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.0](https://github.com/madonchik123/SteamInRust/compare/v0.13.0...v0.14.0) (2026-11-20)
+
+
+### New
+
+* chat like Steam's - emoticons, slash commands, reactions, link cards, pictures ([e9668ec](https://github.com/madonchik123/SteamInRust/commit/e9668ec8150990c45540148f6a057cd9a5b9e2fb))
+* manage group chats like Steam (notifications, invites, settings, roles, bans) ([e9668ec](https://github.com/madonchik123/SteamInRust/commit/e9668ec8150990c45540148f6a057cd9a5b9e2fb))
+
 ## [0.13.0](https://github.com/madonchik123/SteamInRust/compare/v0.12.1...v0.13.0) (2026-11-20)
 
 
