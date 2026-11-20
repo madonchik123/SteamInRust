@@ -248,39 +248,62 @@ fn read_connected(mut gilrs: gilrs::Gilrs, tx: &mpsc::Sender<PadEvent>, ctx: &eg
     }
 }
 
+/// Which keys stand for which presses. `typing`: letters go to a text box,
+/// so only keys that aren't text count. Back is Esc only, like Steam's Big
+/// Picture: Backspace deletes in a text box (see [`backspace`]) and does
+/// nothing anywhere else, so deleting can never leave a page.
+pub fn key_map(typing: bool) -> Vec<(Key, Press)> {
+    let mut map = vec![
+        (Key::ArrowUp, Press::Move(Dir::Up)),
+        (Key::ArrowDown, Press::Move(Dir::Down)),
+        (Key::ArrowLeft, Press::Move(Dir::Left)),
+        (Key::ArrowRight, Press::Move(Dir::Right)),
+        (Key::Enter, Press::A),
+        (Key::Escape, Press::B),
+        (Key::PageUp, Press::Lb),
+        (Key::PageDown, Press::Rb),
+        (Key::F1, Press::Start),
+        (Key::Home, Press::Guide),
+    ];
+    if !typing {
+        map.extend([
+            (Key::Space, Press::A),
+            (Key::Q, Press::Lb),
+            (Key::E, Press::Rb),
+            (Key::X, Press::X),
+            (Key::Y, Press::Y),
+            (Key::M, Press::Start),
+            // WASD moves too.
+            (Key::W, Press::Move(Dir::Up)),
+            (Key::S, Press::Move(Dir::Down)),
+            (Key::A, Press::Move(Dir::Left)),
+            (Key::D, Press::Move(Dir::Right)),
+        ]);
+    }
+    map
+}
+
+/// Backspace in a text box: delete the last character (with Ctrl, the last
+/// word). An empty box stays empty; it never means "back".
+pub fn backspace(field: &mut String, word: bool) {
+    if word {
+        let kept = field.trim_end().len();
+        field.truncate(kept);
+        let cut = field.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+        field.truncate(cut);
+    } else {
+        field.pop();
+    }
+}
+
 /// This frame's keyboard presses (taken, so egui doesn't also act on them).
-/// `typing`: letters go to a text box, so only keys that aren't text count.
 pub fn keyboard(ctx: &egui::Context, typing: bool) -> Vec<Press> {
     let mut out = Vec::new();
     ctx.input_mut(|i| {
-        let mut take = |key: Key, press: Press| {
+        for (key, press) in key_map(typing) {
             if i.consume_key(Modifiers::NONE, key) {
                 out.push(press);
             }
-        };
-        take(Key::ArrowUp, Press::Move(Dir::Up));
-        take(Key::ArrowDown, Press::Move(Dir::Down));
-        take(Key::ArrowLeft, Press::Move(Dir::Left));
-        take(Key::ArrowRight, Press::Move(Dir::Right));
-        take(Key::Enter, Press::A);
-        take(Key::Escape, Press::B);
-        take(Key::PageUp, Press::Lb);
-        take(Key::PageDown, Press::Rb);
-        take(Key::F1, Press::Start);
-        take(Key::Home, Press::Guide);
-        if !typing {
-            take(Key::Space, Press::A);
-            take(Key::Backspace, Press::B);
-            take(Key::Q, Press::Lb);
-            take(Key::E, Press::Rb);
-            take(Key::X, Press::X);
-            take(Key::Y, Press::Y);
-            take(Key::M, Press::Start);
-            // WASD moves too.
-            take(Key::W, Press::Move(Dir::Up));
-            take(Key::S, Press::Move(Dir::Down));
-            take(Key::A, Press::Move(Dir::Left));
-            take(Key::D, Press::Move(Dir::Right));
         }
         if i.consume_key(Modifiers::SHIFT, Key::Tab) {
             out.push(Press::Lb);
@@ -290,4 +313,46 @@ pub fn keyboard(ctx: &egui::Context, typing: bool) -> Vec<Press> {
         }
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backspace_never_goes_back() {
+        for typing in [false, true] {
+            let map = key_map(typing);
+            assert!(!map.iter().any(|(k, _)| *k == Key::Backspace), "Backspace mapped (typing: {typing})");
+            assert!(map.iter().any(|(k, p)| *k == Key::Escape && *p == Press::B), "Esc must be back (typing: {typing})");
+        }
+    }
+
+    #[test]
+    fn typing_keeps_letters_for_the_text_box() {
+        let map = key_map(true);
+        for key in [Key::Space, Key::Q, Key::E, Key::X, Key::Y, Key::M, Key::W, Key::A, Key::S, Key::D] {
+            assert!(!map.iter().any(|(k, _)| *k == key), "{key:?} must type, not act");
+        }
+    }
+
+    #[test]
+    fn backspace_deletes_and_stops_at_empty() {
+        let mut s = String::from("hi");
+        backspace(&mut s, false);
+        assert_eq!(s, "h");
+        backspace(&mut s, false);
+        backspace(&mut s, false);
+        backspace(&mut s, false);
+        assert_eq!(s, "");
+        let mut s = String::from("see you tonight  ");
+        backspace(&mut s, true);
+        assert_eq!(s, "see you ");
+        backspace(&mut s, true);
+        assert_eq!(s, "see ");
+        backspace(&mut s, true);
+        assert_eq!(s, "");
+        backspace(&mut s, true);
+        assert_eq!(s, "");
+    }
 }

@@ -2565,3 +2565,12 @@
 "Your picture" = "Tu imagen"
 "{name} is already in your library" = "{name} ya está en tu biblioteca"
 "{name} was removed from your library" = "{name} se quitó de tu biblioteca"
+
+# --- Store search suggestions ---
+"See all results for “{q}”" = "Ver todos los resultados de «{q}»"
+
+# --- Store filters ---
+"Clear ({n})" = "Quitar ({n})"
+"Turn every filter off" = "Desactivar todos los filtros"
+"No filters are on" = "No hay filtros activos"
+"View|layout" = "Vista"

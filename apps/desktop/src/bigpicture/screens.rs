@@ -1038,7 +1038,13 @@ fn search(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32 {
         p.text(pos2(tx, field.center().y), Align2::LEFT_CENTER, t!("Type a game's name"), w::font(30.0 * s), f.t.text_faint);
         Rect::from_min_size(pos2(tx, field.center().y), Vec2::ZERO)
     } else {
-        paint::line(&p, pos2(tx, field.center().y), Align2::LEFT_CENTER, &bp.query, w::font_semibold(32.0 * s), f.t.text, field.right() - tx - 40.0 * s)
+        // Long text: the end stays in view (the start slides out to the left).
+        let room = field.right() - tx - 40.0 * s;
+        let galley = p.layout_no_wrap(bp.query.clone(), w::font_semibold(32.0 * s), f.t.text);
+        let x = tx - (galley.size().x - room).max(0.0);
+        let rect = Align2::LEFT_CENTER.anchor_size(pos2(x, field.center().y), galley.size());
+        p.with_clip_rect(Rect::from_min_max(pos2(tx, field.top()), pos2(tx + room + 8.0 * s, field.bottom()))).galley(rect.min, galley, f.t.text);
+        rect
     };
     // A blinking caret.
     let blink = ((f.now * 3.0).sin() as f32 * 0.5 + 0.5).powf(0.6);

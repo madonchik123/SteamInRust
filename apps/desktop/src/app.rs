@@ -1074,25 +1074,18 @@ impl eframe::App for SteamApp {
                 raw_input.events.push(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers });
                 raw_input.events.push(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers });
             }
-            // `--type=text`: half a second after the click, type it and press Enter.
-            if let Some(text) = std::env::args().find_map(|a| a.strip_prefix("--type=").map(String::from)) {
-                let typed = ctx.data(|d| d.get_temp::<bool>(egui::Id::unique("preview-typed"))).unwrap_or(false);
-                if time > after + 0.5 && !typed {
-                    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("preview-typed"), true));
-                    // Replace what's there, like typing over a selection.
-                    raw_input.events.push(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
-                    raw_input.events.push(egui::Event::Text(text));
-                    raw_input.events.push(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
-                }
-            }
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             // `--type=<text>`: typed into what the click focused, a moment
-            // later; `--type-submit` then presses Ctrl+Enter.
+            // later; `--type-enter` then presses Enter, `--type-submit`
+            // Ctrl+Enter.
             if let Some(text) = std::env::args().find_map(|a| a.strip_prefix("--type=").map(String::from)) {
                 let typed = ctx.data(|d| d.get_temp::<bool>(egui::Id::unique("preview-typed"))).unwrap_or(false);
                 if done && time > after + 0.5 && !typed {
                     ctx.data_mut(|d| d.insert_temp(egui::Id::unique("preview-typed"), true));
                     raw_input.events.push(egui::Event::Text(text));
+                    if std::env::args().any(|a| a == "--type-enter") {
+                        raw_input.events.push(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+                    }
                     if std::env::args().any(|a| a == "--type-submit") {
                         let modifiers = egui::Modifiers::COMMAND;
                         raw_input.events.push(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers });

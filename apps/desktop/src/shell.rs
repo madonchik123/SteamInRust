@@ -915,16 +915,30 @@ fn app_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action
 /// One search box for everything: your games, your friends, and the store.
 fn search_results(app: &mut SteamApp, ctx: &egui::Context, anchor: Rect, t: &Theme, actions: &mut Vec<Action>) {
     let q = app.search.trim().to_lowercase();
-    // The rows, in sections: (section title, icon, label, what a click does).
-    let mut rows: Vec<(&'static str, &'static str, String, Action)> = Vec::new();
+    // Store games matching it, asked once typing pauses (the store's own
+    // data and content filter).
+    let query = app.search.trim().to_string();
+    let now = ctx.input(|i| i.time);
+    let (games, loading) = {
+        let env = extensions::Env { state: &app.state, local: &app.local, theme: &app.prefs.theme, zoom: app.prefs.zoom, client: &app.client, actions: &mut *actions };
+        app.registry
+            .with_ext::<crate::builtin::store::Store, _>("store", env, |st, cx| (st.suggestions_for(cx, &query, now).unwrap_or_default(), st.suggestions_loading(&query)))
+            .unwrap_or_default()
+    };
+    // The rows, in sections: (section title, icon, label, a store game, what a click does).
+    let mut rows: Vec<(&'static str, &'static str, String, Option<store::Item>, Action)> = Vec::new();
     for e in crate::builtin::entries(&app.state, &app.local).into_iter().filter(|e| e.name.to_lowercase().contains(&q)).take(5) {
-        rows.push((t!("Your games"), icons::CONTROLLER, e.name.to_string(), Action::Navigate { page: "library".into(), arg: Some(e.app_id.to_string()) }));
+        rows.push((t!("Your games"), icons::CONTROLLER, e.name.to_string(), None, Action::Navigate { page: "library".into(), arg: Some(e.app_id.to_string()) }));
     }
     for p in app.state.friend_list().into_iter().filter(|p| p.name.to_lowercase().contains(&q)).take(4) {
-        rows.push((t!("Friends"), icons::USER, p.name.clone(), Action::OpenChat(p.steam_id)));
+        rows.push((t!("Friends"), icons::USER, p.name.clone(), None, Action::OpenChat(p.steam_id)));
     }
-    let nothing_here = rows.is_empty();
-    rows.push((t!("Store"), icons::STORE, t!("Search the store for “{q}”", q = app.search.trim()).to_string(), Action::Navigate { page: "store".into(), arg: Some(format!("search:{}", app.search.trim())) }));
+    let nothing_here = rows.is_empty() && games.is_empty() && !loading;
+    for g in games.into_iter().take(5) {
+        let open = Action::Navigate { page: "store".into(), arg: Some(format!("app:{}", g.app_id)) };
+        rows.push((t!("Store"), icons::STORE, g.name.clone(), Some(g), open));
+    }
+    rows.push((t!("Store"), icons::SEARCH, t!("Search the store for “{q}”", q = app.search.trim()).to_string(), None, Action::Navigate { page: "store".into(), arg: Some(format!("search:{}", app.search.trim())) }));
     // The arrow keys move a selection through the rows; Enter opens it.
     if app.search_sel.is_some_and(|i| i >= rows.len()) {
         app.search_sel = Some(rows.len() - 1);
@@ -936,10 +950,12 @@ fn search_results(app: &mut SteamApp, ctx: &egui::Context, anchor: Rect, t: &The
         .fixed_pos(anchor.left_bottom() + vec2(0.0, 6.0))
         .show(ctx, |ui| {
             w::component_frame(t, &t.components.menu).show(ui, |ui| {
-                ui.set_width(anchor.width().max(320.0));
+                // Wider once store games (with pictures and prices) are listed, never past the window.
+                let wide = if rows.iter().any(|r| r.3.is_some()) { t.dense(420.0) } else { 320.0 };
+                ui.set_width(anchor.width().max(wide).min(ctx.content_rect().right() - anchor.left() - 16.0).max(240.0));
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let mut section = "";
-                for (i, (title, icon, label, _)) in rows.iter().enumerate() {
+                for (i, (title, icon, label, game, _)) in rows.iter().enumerate() {
                     if *title != section {
                         section = title;
                         if i > 0 {
@@ -958,7 +974,10 @@ fn search_results(app: &mut SteamApp, ctx: &egui::Context, anchor: Rect, t: &The
                             ui.add_space(t.spacing.xs);
                         }
                     }
-                    let r = w::menu_row(ui, t, icon, label, app.search_sel == Some(i));
+                    let r = match game {
+                        Some(g) => crate::builtin::store::suggest::suggestion_row(ui, t, g, app.search_sel == Some(i)),
+                        None => w::menu_row(ui, t, icon, label, app.search_sel == Some(i)),
+                    };
                     // The pointer takes over the selection, so only one row lights up.
                     if r.hovered() && ui.input(|inp| inp.pointer.delta() != egui::Vec2::ZERO) {
                         app.search_sel = Some(i);
@@ -970,7 +989,7 @@ fn search_results(app: &mut SteamApp, ctx: &egui::Context, anchor: Rect, t: &The
             });
         });
     if let Some(i) = picked {
-        if let Some((_, _, _, action)) = rows.into_iter().nth(i) {
+        if let Some((_, _, _, _, action)) = rows.into_iter().nth(i) {
             actions.push(action);
         }
         app.search_open = false;

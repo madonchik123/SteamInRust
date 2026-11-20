@@ -137,7 +137,7 @@ fn list_bar(ui: &mut Ui, t: &Theme, grid: &mut bool, add: impl FnOnce(&mut Ui)) 
         // Wraps onto a second line rather than widening the page.
         ui.horizontal_wrapped(|ui| {
             ui.set_min_height(t.dense(41.0));
-            ui.label(w::body_m(t, t!("View"), t.text_dim));
+            ui.label(w::body_m(t, t!("View|layout"), t.text_dim));
             ui.spacing_mut().item_spacing.x = t.spacing.xs;
             if w::icon_box(ui, t, icons::LIST, t!("List"), !*grid).clicked() {
                 *grid = false;
@@ -193,16 +193,20 @@ fn filter_row(ui: &mut Ui, t: &Theme, label: &str, count: Option<usize>, on: boo
 }
 
 /// A filter column's frame: "FILTERS", a reset button, then `add`.
-fn filter_column(ui: &mut Ui, t: &Theme, can_reset: bool, add: impl FnOnce(&mut Ui)) -> bool {
+/// A filter column's frame: "FILTERS" and a "Clear (n)" button that turns
+/// every filter off (`active` filters are on; greyed out, saying why, when
+/// none are), then `add`. True when Clear was clicked.
+fn filter_column(ui: &mut Ui, t: &Theme, active: usize, add: impl FnOnce(&mut Ui)) -> bool {
     let mut reset = false;
     w::component_frame(t, &t.components.store_card).inner_margin(egui::Margin::symmetric(t.dense(14.0) as i8, t.dense(14.0) as i8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(w::caption_text(t, &t!("Filters").to_uppercase()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_enabled_ui(can_reset, |ui| {
-                    reset = w::icon_box(ui, t, icons::FUNNEL, t!("Clear the filters"), false).clicked();
-                });
+                let label = if active > 0 { t!("Clear ({n})", n = active) } else { t!("Clear").to_string() };
+                let r = ui.add_enabled_ui(active > 0, |ui| w::button(ui, t, Some(icons::X), &label, w::Kind::Ghost, w::Size::Sm)).inner;
+                let r = r.on_hover_text(t!("Turn every filter off")).on_disabled_hover_text(t!("No filters are on"));
+                reset = r.clicked();
             });
         });
         ui.add_space(t.spacing.sm);
@@ -320,10 +324,14 @@ impl Store {
 
     fn filter_panel(&mut self, ui: &mut Ui, t: &Theme) {
         let before = self.filters.clone();
-        let defaults = store::query::Filters { sort: self.filters.sort, only_discounted: self.filters.only_discounted, coming_soon: self.filters.coming_soon, ..Default::default() };
-        let can_reset = self.filters != defaults || self.hide_owned;
+        let f = &self.filters;
+        let active = f.tags.len()
+            + usize::from(f.max_price.is_some() || f.only_free)
+            + usize::from(f.min_review_score.is_some())
+            + [(f.games, true), (f.dlc, false), (f.software, false), (f.demos, false), (f.soundtracks, false)].iter().filter(|(on, default)| on != default).count()
+            + usize::from(self.hide_owned);
         let mut hide_owned = self.hide_owned;
-        let reset = filter_column(ui, t, can_reset, |ui| {
+        let reset = filter_column(ui, t, active, |ui| {
             // Any of Steam's tags, by name; the ones in use as removable tags.
             let width = ui.available_width();
             w::search(ui, t, &mut self.tag_query, t!("Find a tag…"), width);
@@ -350,7 +358,12 @@ impl Store {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(t.spacing.xs, t.spacing.xs);
                     for tag in tags {
-                        let name = self.tag_name(tag).unwrap_or_else(|| format!("#{tag}"));
+                        // A tag in use stays (it can be removed) but waits for its name.
+                        let Some(name) = self.tag_name(tag) else {
+                            let (r, _) = ui.allocate_exact_size(vec2(t.dense(70.0), t.height_of(&t.components.tag, 30.0)), Sense::hover());
+                            w::skeleton(ui, t, r, t.corner_small());
+                            continue;
+                        };
                         if w::tag(ui, t, &name, None, w::TagState::Filtered).on_hover_text(t!("Remove this tag")).clicked() {
                             self.filters.tags.retain(|x| *x != tag);
                         }
@@ -362,8 +375,16 @@ impl Store {
             ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, t.border));
             ui.add_space(t.dense(6.0));
             filter_group(ui, t, "genres", t!("Popular tags"), |ui| {
+                // Until Steam's names arrive: placeholder rows, never numbers.
+                if !self.tag_names_ready() {
+                    for _ in 0..6 {
+                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), t.dense(25.0)), Sense::hover());
+                        w::skeleton(ui, t, r.shrink2(vec2(0.0, t.dense(3.0))), t.corner_small());
+                    }
+                    return;
+                }
                 for tag in TAGS {
-                    let name = self.tag_name(*tag).unwrap_or_else(|| format!("#{tag}"));
+                    let Some(name) = self.tag_name(*tag) else { continue };
                     let on = self.filters.tags.contains(tag);
                     if filter_row(ui, t, &name, None, on).clicked() {
                         if on {
@@ -749,8 +770,8 @@ impl Store {
             ui.vertical(|ui| {
                 ui.set_width(side_w);
                 let v = &mut self.wish;
-                let can_reset = v.platform != 0 || v.max_price.is_some() || v.on_sale || !v.query.is_empty();
-                let reset = filter_column(ui, t, can_reset, |ui| {
+                let active = usize::from(v.platform != 0) + usize::from(v.max_price.is_some()) + usize::from(v.on_sale) + usize::from(!v.query.trim().is_empty());
+                let reset = filter_column(ui, t, active, |ui| {
                     let width = ui.available_width();
                     w::search(ui, t, &mut v.query, t!("Search by name"), width);
                     ui.add_space(t.spacing.md);
@@ -920,7 +941,7 @@ impl Store {
                 }
                 let mut acts = Vec::new();
                 for l in &lines {
-                    let (name, art, app) = names.iter().find(|n| n.0 == l.package_id).map(|n| (n.1.clone(), n.2.clone(), n.3)).unwrap_or_else(|| (format!("#{}", l.package_id), String::new(), 0));
+                    let (name, art, app) = names.iter().find(|n| n.0 == l.package_id).map(|n| (n.1.clone(), n.2.clone(), n.3)).unwrap_or_else(|| (String::new(), String::new(), 0));
                     let owned = app != 0 && self.owned.contains(&app);
                     let same: Vec<model::CartLine> = lines.iter().filter(|x| x.package_id == l.package_id).cloned().collect();
                     let (act, open) = cart_row(ui, t, ctx, l, &same, &name, &art, None, owned);
@@ -1425,11 +1446,17 @@ fn cart_row(ui: &mut Ui, t: &Theme, ctx: &Ctx, l: &model::CartLine, same: &[mode
     let mut m = ui.new_child(egui::UiBuilder::new().max_rect(mid).layout(Layout::top_down(Align::Min)));
     m.set_clip_rect(mid.expand(2.0).intersect(ui.clip_rect()));
     m.spacing_mut().item_spacing.y = spacing;
-    let name_r = m.add(egui::Label::new(w::heading_s(t, name, t.text)).truncate().sense(Sense::click()).selectable(false));
-    if name_r.hovered() {
-        m.painter().hline(name_r.rect.x_range(), name_r.rect.bottom(), Stroke::new(1.0, t.text));
+    if name.is_empty() {
+        // The name is on its way: a placeholder, not the package's number.
+        let (r, _) = m.allocate_exact_size(vec2((mid.width() * 0.5).max(40.0), name_h), Sense::hover());
+        w::skeleton(&m, t, r.shrink2(vec2(0.0, name_h * 0.2)), t.corner_small());
+    } else {
+        let name_r = m.add(egui::Label::new(w::heading_s(t, name, t.text)).truncate().sense(Sense::click()).selectable(false));
+        if name_r.hovered() {
+            m.painter().hline(name_r.rect.x_range(), name_r.rect.bottom(), Stroke::new(1.0, t.text));
+        }
+        open |= name_r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
     }
-    open |= name_r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
     let current = if l.is_gift { t!("This is a gift") } else { t!("For my account") };
     let dd = w::dropdown(&mut m, t, current, t.dense(150.0).min(mid.width()));
     egui::Popup::menu(&dd).show(|ui| {

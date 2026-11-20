@@ -162,7 +162,7 @@ impl BigPicture {
             slide: 0.0,
             ..Default::default()
         };
-        // `--bp-page=store:<app>|game:<app>|install:<app>|shots:<app>|
+        // `--bp-page=store:<app>|game:<app>|install:<app>|shots:<app>|search|
         // chat:<steam id>|library` opens a page right away (previews and checks).
         if let Some(arg) = std::env::args().find_map(|a| a.strip_prefix("--bp-page=").map(String::from)) {
             let (kind, id) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
@@ -172,6 +172,10 @@ impl BigPicture {
                 "library" => bp.tab = Tab::Library,
                 "store" => bp.stack.push(Page::StoreApp(id)),
                 "shots" => bp.stack.extend([Page::StoreApp(id), Page::Shots(id, 0)]),
+                "search" => {
+                    bp.tab = Tab::Store;
+                    bp.stack.push(Page::Search);
+                }
                 "chat" => {
                     bp.tab = Tab::Friends;
                     bp.stack.extend([Page::Friend(wide), Page::Chat(wide)]);
@@ -363,23 +367,35 @@ impl BigPicture {
         let chat = matches!(page, Page::Chat(_));
         let typing = (page == Page::Search || chat) && self.menu.is_none();
         let mut submit = false;
-        if typing {
-            let (text, back) = ctx.input_mut(|i| {
-                let text: String = i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.clone()) } else { None }).collect();
-                (text, i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
+        // Backspace only ever deletes (held down too, and on an empty box);
+        // outside a text box it does nothing. Back is Esc / B.
+        let backspaces: Vec<bool> = ctx.input_mut(|i| {
+            let mut out = Vec::new();
+            i.events.retain(|e| match e {
+                egui::Event::Key { key: egui::Key::Backspace, pressed, modifiers, .. } => {
+                    if *pressed {
+                        out.push(modifiers.ctrl || modifiers.alt || modifiers.mac_cmd);
+                    }
+                    false
+                }
+                _ => true,
             });
+            out
+        });
+        if typing {
+            let text: String = ctx.input(|i| i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.clone()) } else { None }).collect());
             let field = if chat { &mut self.message } else { &mut self.query };
             if !text.is_empty() {
                 field.push_str(&text);
                 self.query_changed = now;
                 self.device = Device::Keyboard;
             }
-            if back {
-                if field.pop().is_none() {
-                    self.queued.push(Press::B);
-                } else {
-                    self.query_changed = now;
-                }
+            for word in &backspaces {
+                input::backspace(field, *word);
+            }
+            if !backspaces.is_empty() {
+                self.query_changed = now;
+                self.device = Device::Keyboard;
             }
         }
         let keys = input::keyboard(&ctx, typing);

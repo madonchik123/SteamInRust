@@ -71,13 +71,7 @@ impl Store {
         let right = t.dense(250.0);
         let width = (ui.available_width() - right).clamp(120.0, 374.0);
         if ui.available_width() - width > right * 0.6 {
-            let r = w::bar_search(ui, &t, &mut self.bar_query, t!("Search the store"), width);
-            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                let q = self.bar_query.trim().to_string();
-                if !q.is_empty() {
-                    self.start_search(q);
-                }
-            }
+            self.search_box(ui, &t, ctx, width);
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = t.spacing.sm - 1.0;
