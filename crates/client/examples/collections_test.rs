@@ -56,7 +56,7 @@ fn main() {
     }
 
     let id = client::collections::new_id();
-    let mut edit = model::CollectionEdit { id: id.clone(), name: "SteamInRust sync test".into(), games: vec![570, 620], deleted: false };
+    let mut edit = model::CollectionEdit { id: id.clone(), name: "SteamInRust sync test".into(), games: vec![570, 620], ..Default::default() };
     save(edit.clone());
     let after = load();
     let made = after.iter().find(|x| x.id == id).expect("Steam doesn't have the new collection");
