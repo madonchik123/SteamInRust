@@ -4,6 +4,20 @@
 use client::Event;
 use model::{ChatMessage, OwnedApp, Persona, PersonaState, Relationship};
 
+/// `--demo --demo-library=<folder>`: test with a made-up Steam folder in
+/// place of this PC's. Nothing outside it is read or remembered.
+pub fn fake_library_path() -> Option<std::path::PathBuf> {
+    if !crate::app::demo() {
+        return None;
+    }
+    std::env::args().find_map(|a| a.strip_prefix("--demo-library=").map(std::path::PathBuf::from))
+}
+
+/// See [`fake_library_path`].
+pub fn fake_library() -> bool {
+    fake_library_path().is_some()
+}
+
 pub fn events(local: &local::LocalState) -> Vec<Event> {
     const BASE: u64 = 76561197960265728;
     let me = BASE + 1;

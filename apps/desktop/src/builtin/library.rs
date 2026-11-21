@@ -8,6 +8,8 @@ use super::{Entry, entries};
 mod news;
 #[path = "library_props.rs"]
 mod props;
+#[path = "library_move.rs"]
+pub(crate) mod game_move;
 #[path = "library_views.rs"]
 mod views;
 #[path = "library_dynamic.rs"]
@@ -190,6 +192,8 @@ enum MenuAct {
     CustomArt,
     /// Take a non-Steam game out of the library.
     RemoveShortcut,
+    /// Move it to another library folder.
+    MoveFolder,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -231,6 +235,8 @@ pub(crate) enum MainAction {
     FirstTimeSetup,
     Queued,
     Uninstalling,
+    /// Its files are moving to another library folder.
+    Moving,
     /// Downloading or verifying.
     Busy { fraction: f32, verifying: bool, paused: bool },
     /// Not owned: only the store page.
@@ -332,6 +338,8 @@ pub struct Library {
     /// Games to put on the desktop once installed, with their library folder.
     shortcut_after_install: BTreeMap<AppId, std::path::PathBuf>,
     seen_finished: BTreeSet<AppId>,
+    /// The move window and any move running.
+    moves: game_move::Moves,
 }
 
 impl Extension for Library {
@@ -526,6 +534,7 @@ impl Library {
         match (action.as_str(), installed) {
             ("install", None) => self.install_dialog = Some(InstallDialog::new(id, ctx)),
             ("uninstall", Some(_)) => self.dialog = Some(Dialog::Uninstall),
+            ("move", Some(_)) => game_move::request_open(vec![id]),
             ("verify", Some(g)) => self.start_verify(ctx, &g),
             ("update", Some(g)) => self.queue_install(ctx, id, Some(g.library.clone())),
             ("play", Some(g)) => self.launch_game(ctx, id, g.install_dir.clone()),
@@ -887,6 +896,7 @@ impl Library {
                     sub(ui, icons::DESKTOP, t!("Add desktop shortcut"), MenuAct::Shortcut);
                     sub(ui, icons::FOLDER, t!("Browse local files"), MenuAct::Browse);
                     sub(ui, icons::SHIELD, t!("Verify game files"), MenuAct::Verify);
+                    sub(ui, icons::DRIVES, t!("Move install folder…"), MenuAct::MoveFolder);
                     sub(ui, icons::TRASH, t!("Uninstall…"), MenuAct::Uninstall);
                 });
             }
@@ -967,6 +977,7 @@ impl Library {
             }
             MenuAct::CustomArt => self.props = Some(props::Props { app: id, tab: props::PropTab::Customization, ..Default::default() }),
             MenuAct::RemoveShortcut => {}
+            MenuAct::MoveFolder => game_move::request_open(vec![id]),
             MenuAct::Store => ctx.navigate("store", Some(format!("app:{id}"))),
             MenuAct::Help => ctx.navigate("support", Some(format!("game:{id}"))),
             MenuAct::Properties => self.props = Some(props::Props { app: id, tab: props::PropTab::General, ..Default::default() }),
@@ -1411,6 +1422,10 @@ impl Library {
     }
 
     fn queue_install(&mut self, ctx: &mut Ctx, id: AppId, library: Option<std::path::PathBuf>) {
+        if local::relocate::is_moving(id) {
+            ctx.toast(t!("This game is being moved. Try again when that finishes."));
+            return;
+        }
         let s = self.games.get(&id).cloned().unwrap_or_default();
         let library = library.or_else(|| ctx.local.libraries.first().cloned()).unwrap_or_else(|| ctx.local.steam_root.clone());
         let steam_root = if ctx.local.steam_root.as_os_str().is_empty() { library.clone() } else { ctx.local.steam_root.clone() };
@@ -1569,6 +1584,9 @@ impl Library {
     /// What the game's main button does right now (the library page and Big
     /// Picture show the same thing).
     pub(crate) fn main_action(&mut self, ctx: &Ctx, id: AppId) -> MainAction {
+        if local::relocate::is_moving(id) {
+            return MainAction::Moving;
+        }
         if let Some(d) = ctx.state.downloads.get(&id).filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed)) {
             return MainAction::Busy { fraction: d.fraction(), verifying: d.verifying(), paused: d.paused };
         }
@@ -1618,6 +1636,7 @@ impl Library {
     pub(crate) fn background_dialogs(&mut self, ui: &mut Ui, ctx: &mut Ctx) {
         let t = ctx.theme.clone();
         self.cloud_conflict_dialog(ui, &t, ctx);
+        self.move_window(ui, &t, ctx);
     }
 
     /// The game whose launch waits on an answer (a Steam Cloud conflict).
@@ -1678,7 +1697,7 @@ impl Library {
             self.dialog = None;
             return;
         }
-        let running = ctx.state.playing == Some(id);
+        let running = ctx.state.playing == Some(id) || local::relocate::is_moving(id);
         egui::Modal::new(egui::Id::unique(("uninstall", id))).show(ui.ctx(), |ui| {
             ui.set_width(460.0);
             ui.label(w::text(icons::TRASH, t.typography.heading_l.size, t.danger));

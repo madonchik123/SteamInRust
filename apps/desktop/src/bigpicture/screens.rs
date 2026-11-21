@@ -199,6 +199,7 @@ fn main_button(a: MainAction) -> (String, &'static str, Kind, Option<f32>) {
         MainAction::FirstTimeSetup => (t!("Performing first-time setup…").into(), icons::DOWNLOAD, Kind::Muted, None),
         MainAction::Queued => (t!("Queued").into(), icons::CLOCK, Kind::Muted, None),
         MainAction::Uninstalling => (t!("Uninstalling…").into(), icons::TRASH, Kind::Muted, None),
+        MainAction::Moving => (t!("Moving…").into(), icons::DRIVES, Kind::Muted, None),
         MainAction::Busy { fraction, verifying, paused } => {
             let pct = (fraction * 100.0) as u32;
             // Says what A does: resume or pause (verifying can only be cancelled).
