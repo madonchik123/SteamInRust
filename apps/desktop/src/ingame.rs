@@ -30,6 +30,10 @@ pub struct Session {
     stats: Stats,
     /// Hash of the last frame sent, to skip identical ones.
     last_sent: Option<u64>,
+    /// A copy of every live texture, for a game renderer that starts over
+    /// (egui only ever sends a texture once).
+    mirror: std::collections::HashMap<u64, wire::TexSet>,
+    resend: bool,
     theme: Option<ui::Theme>,
     /// Frames per second the game last reported.
     pub fps: Option<u32>,
@@ -71,6 +75,8 @@ impl Session {
             pixels_per_point: 1.0,
             stats: Stats::default(),
             last_sent: None,
+            mirror: Default::default(),
+            resend: false,
             theme: Some(theme.clone()),
             fps: None,
             shot: None,
@@ -102,6 +108,11 @@ impl Session {
                 }
                 Ok(FromGame::Fps(n)) => {
                     self.fps = Some(n);
+                    self.wake_now();
+                }
+                Ok(FromGame::NeedTextures) => {
+                    self.resend = true;
+                    self.last_sent = None;
                     self.wake_now();
                 }
                 Ok(FromGame::Screenshot(ok)) => {
@@ -280,7 +291,7 @@ impl Session {
         }
         let cursor = cursor(out.platform_output.cursor_icon);
         let mut textures = std::mem::take(&mut out.textures_delta);
-        let set = textures
+        let mut set: Vec<wire::TexSet> = textures
             .set
             .iter()
             .flat_map(|(id, deltas)| deltas.iter().map(move |d| (id, d)))
@@ -295,7 +306,17 @@ impl Session {
                 }
             })
             .collect();
-        let free = textures.free.iter().map(|id| tex_id(*id)).collect();
+        let free: Vec<u64> = textures.free.iter().map(|id| tex_id(*id)).collect();
+        for t in &set {
+            mirror_apply(&mut self.mirror, t);
+        }
+        for id in &free {
+            self.mirror.remove(id);
+        }
+        // The game's renderer started over: everything alive, in full.
+        if std::mem::take(&mut self.resend) {
+            set = self.mirror.values().cloned().collect();
+        }
         // Handed to the game; egui checks that nobody dropped them unseen.
         textures.clear();
         let meshes = self
@@ -479,5 +500,43 @@ impl Stats {
             );
             *self = Stats { since: Some(Instant::now()), ..Default::default() };
         }
+    }
+}
+
+/// Keep the full copy of a texture up to date with one change.
+fn mirror_apply(mirror: &mut std::collections::HashMap<u64, wire::TexSet>, t: &wire::TexSet) {
+    let Some([x, y]) = t.pos else {
+        mirror.insert(t.id, t.clone());
+        return;
+    };
+    let Some(full) = mirror.get_mut(&t.id) else { return };
+    let ([fw, fh], [w, h]) = (full.size, t.size);
+    if x + w > fw || y + h > fh {
+        return;
+    }
+    full.linear = t.linear;
+    for row in 0..h as usize {
+        let at = (y as usize + row) * fw as usize * 4 + x as usize * 4;
+        let from = row * w as usize * 4;
+        full.rgba[at..at + w as usize * 4].copy_from_slice(&t.rgba[from..from + w as usize * 4]);
+    }
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::*;
+
+    #[test]
+    fn patches_land_in_the_full_copy() {
+        let mut m = std::collections::HashMap::new();
+        mirror_apply(&mut m, &wire::TexSet { id: 1, pos: None, size: [2, 2], linear: true, rgba: vec![0; 16] });
+        mirror_apply(&mut m, &wire::TexSet { id: 1, pos: Some([1, 1]), size: [1, 1], linear: false, rgba: vec![9, 8, 7, 6] });
+        assert_eq!(&m[&1].rgba[12..16], &[9, 8, 7, 6]);
+        assert_eq!(&m[&1].rgba[..12], &[0; 12]);
+        assert!(!m[&1].linear);
+        // Out of bounds or unknown: ignored.
+        mirror_apply(&mut m, &wire::TexSet { id: 1, pos: Some([2, 0]), size: [1, 1], linear: true, rgba: vec![1; 4] });
+        mirror_apply(&mut m, &wire::TexSet { id: 2, pos: Some([0, 0]), size: [1, 1], linear: true, rgba: vec![1; 4] });
+        assert_eq!(m.len(), 1);
     }
 }
