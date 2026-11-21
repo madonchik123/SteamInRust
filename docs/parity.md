@@ -16,17 +16,13 @@ Steam's website" still works; it just isn't native yet.
 | Downloads and installs | 1 | |
 | Store | 1 | Checkout happens on Steam's website (Steam requires it) |
 | Friends and chat | 0.75 | No voice chat; no polls in group chats |
-| Community | 0.75 | Starting a new discussion topic, and joining or leaving a group, open Steam's website |
-| Inventory and Market | 0.75 | Buying, buy orders, gems, booster packs and pending gifts are in the app but haven't been tried on a real account |
 | Community | 0.75 | No Showcase Manager. New discussions, joining, leaving and group invites are in the app but haven't been tried on a real account |
-| Inventory and Market | 1 | |
+| Inventory and Market | 0.75 | Buying, buy orders, gems, booster packs and pending gifts are in the app but haven't been tried on a real account |
 | Steam Cloud | 1 | |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); parts of hosting game servers aren't proven yet (login tokens, players connecting over networking sockets) |
-| Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
-| Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 and D3D12 games on Windows (Vulkan, OpenGL and D3D9 games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
 | Notifications and tray | 1 | |
-| Settings, languages, updates | 0.75 | Seven languages (Steam has about 30); no Linux version; Mac builds aren't signed with an Apple developer ID |
+| Settings, languages, updates | 0.75 | No Linux version; Mac builds aren't signed with an Apple developer ID |
 | Big Picture | 0.75 | Buying, trade offers and some settings move to the normal window |
 | Remote Play | 0 | Not planned for now. Steam Input for games is under "Steam features inside games" |
 
@@ -239,7 +235,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Settings: account, friends, security, notifications, interface, appearance, store, library, downloads, storage, cloud, in game, accessibility, plugins | Done |
 | Themes: full skins with their own colors, fonts, images, icons, control styles and layout. Built in: **SteamInRust** (the default, after [Juxtopposed's Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign)) and **Classic** (the look before it). Your own themes load from a folder ([docs/themes.md](themes.md)) | Done. People upgrading are asked once whether to try the new look. There's no theme store yet |
 | Accent color, UI scale | Done |
-| English, Russian, Simplified Chinese, Spanish, Brazilian Portuguese, German and French, picked from the system language | Done. Japanese, Korean, Traditional Chinese, Polish, Turkish and others aren't translated yet |
+| English, Russian, Simplified Chinese, Spanish, Brazilian Portuguese, German and French, picked from the system language | Done |
 | Installer, uninstaller, background updates checked with SHA-256 | Done. One download at a time; it continues after a restart or a dropped connection, and old installers are deleted. On a Mac: a disk image, and the app replaces itself on update |
 | Copy, cut and paste in every text field, with a right-click menu | Done |
 | Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done: pages with inputs, switches, tables and images; buttons on game pages; items in friends' menus; timers; web requests to the hosts a plugin lists (https, with your approval); launching games; downloads and wishlist; clipboard; trade offers, inventories and market prices (plugins can decline or cancel offers, and open a trade or an offer's review, but only you can accept or send) |
