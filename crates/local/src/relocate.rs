@@ -156,7 +156,10 @@ struct Claim(AppId);
 
 impl Claim {
     fn take(app: AppId) -> Option<Self> {
-        MOVING.lock().unwrap_or_else(|e| e.into_inner()).insert(app).then_some(Self(app))
+        // The lock is released first, and a claim is only built if it's
+        // ours: dropping one takes the lock and takes the game off the list.
+        let added = MOVING.lock().unwrap_or_else(|e| e.into_inner()).insert(app);
+        added.then(|| Self(app))
     }
 }
 
@@ -907,12 +910,16 @@ mod tests {
     use std::sync::atomic::AtomicU32;
 
     static NEXT: AtomicU32 = AtomicU32::new(0);
+    /// Every fake game has the same app id and "being moved" is one list
+    /// for the whole program, so these tests take turns.
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
     struct Fake {
         base: PathBuf,
         from: PathBuf,
         to: PathBuf,
         game: InstalledGame,
+        _turn: std::sync::MutexGuard<'static, ()>,
     }
 
     impl Drop for Fake {
@@ -925,6 +932,7 @@ mod tests {
 
     /// A pretend library with one game, Workshop items and a Proton prefix.
     fn fake() -> Fake {
+        let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!("sir-relocate-{}-{n}", std::process::id()));
         let _ = remove_tree(&base);
@@ -960,7 +968,7 @@ mod tests {
             state: InstallState::Installed,
             last_update_bytes: None,
         };
-        Fake { base, from, to, game }
+        Fake { base, from, to, game, _turn }
     }
 
     /// True when `lib` holds the complete game, byte for byte.
@@ -1153,6 +1161,32 @@ mod tests {
         assert!(plan(&f.game, &f.to).is_ok());
     }
 
+    /// A running game holds its program open, even one Steam's own app started.
+    #[cfg(windows)]
+    #[test]
+    fn a_running_game_cant_move() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let f = fake();
+        let exe = f.game.install_dir.join("game.exe");
+        let held = fs::OpenOptions::new().read(true).share_mode(0).open(&exe).unwrap();
+        assert!(matches!(plan(&f.game, &f.to), Err(MoveError::InUse(_))));
+        drop(held);
+        // Started after the check: caught before anything is switched over.
+        let ready = plan(&f.game, &f.to).unwrap();
+        let mut held = None;
+        let r = execute(&ready, &MoveProgress::default(), &mut |s| {
+            if s == Step::Copied {
+                held = fs::OpenOptions::new().read(true).share_mode(0).open(&exe).ok();
+            }
+            false
+        });
+        assert!(matches!(r, Err(MoveError::InUse(_))), "{r:?}");
+        drop(held);
+        assert!(complete_in(&f.from));
+        assert!(gone_from(&f.to));
+        assert!(!staging_dir(&f.to, 10).exists());
+    }
+
     #[test]
     fn an_update_starting_during_the_move_stops_it() {
         let f = fake();
@@ -1254,11 +1288,19 @@ mod tests {
 
     #[test]
     fn a_game_being_moved_is_marked() {
-        let c = Claim::take(4242).unwrap();
-        assert!(is_moving(4242));
-        assert!(Claim::take(4242).is_none());
-        drop(c);
-        assert!(!is_moving(4242));
+        // On its own thread with a time limit: a mistake here is a deadlock,
+        // which must fail the test rather than hang the whole run.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let c = Claim::take(4242).unwrap();
+            let marked = is_moving(4242);
+            let second_refused = Claim::take(4242).is_none();
+            let still_marked = is_moving(4242);
+            drop(c);
+            let _ = tx.send((marked, second_refused, still_marked, is_moving(4242)));
+        });
+        let seen = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("claiming a game twice must not hang");
+        assert_eq!(seen, (true, true, true, false), "a refused second claim leaves the first in place");
     }
 
     #[cfg(unix)]
@@ -1272,6 +1314,7 @@ mod tests {
         let moved = f.to.join("steamapps/common/Game/bin/link.pak");
         assert_eq!(fs::read_link(&moved).unwrap(), PathBuf::from("data.pak"));
         assert_eq!(fs::read(&moved).unwrap(), b"some game data");
+        drop(f);
 
         let g = fake();
         std::os::unix::fs::symlink(g.game.install_dir.join("game.exe"), g.game.install_dir.join("abs")).unwrap();

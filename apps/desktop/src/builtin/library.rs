@@ -512,6 +512,7 @@ impl Library {
         match (action.as_str(), installed) {
             ("install", None) => self.install_dialog = Some(InstallDialog::new(id, ctx)),
             ("uninstall", Some(_)) => self.dialog = Some(Dialog::Uninstall),
+            ("move", Some(_)) => game_move::request_open(vec![id]),
             ("verify", Some(g)) => self.start_verify(ctx, &g),
             ("update", Some(g)) => self.queue_install(ctx, id, Some(g.library.clone())),
             ("play", Some(g)) => self.launch_game(ctx, id, g.install_dir.clone()),

@@ -92,6 +92,20 @@ fn short(path: &str) -> &str {
     path.rsplit(['/', '\\']).find(|s| !s.is_empty()).unwrap_or(path)
 }
 
+/// A long folder path with its middle left out, so it fits the window: the
+/// drive and the last folders are what tell two libraries apart.
+fn shorter(path: &str) -> String {
+    const START: usize = 12;
+    const END: usize = 40;
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= START + END + 1 {
+        return path.to_string();
+    }
+    let head: String = chars[..START].iter().collect();
+    let tail: String = chars[chars.len() - END..].iter().collect();
+    format!("{head}…{tail}")
+}
+
 /// A move's failure in plain words.
 fn reason(e: &MoveError) -> String {
     match e {
@@ -340,10 +354,11 @@ impl Library {
         ui.label(w::body_s(t, t!("Move to"), t.text_dim));
         for lib in &libraries {
             let free = fs4_free(lib);
-            let label = format!("{}   ·   {}", lib.display(), t!("{size} free", size = free.map(ui::bytes).unwrap_or_else(|| "?".into())));
+            let full = lib.display().to_string();
+            let label = format!("{}   ·   {}", shorter(&full), t!("{size} free", size = free.map(ui::bytes).unwrap_or_else(|| "?".into())));
             if let Some(d) = &mut self.moves.dialog {
                 let mut cur = d.dest.clone();
-                if w::radio_value(ui, t, &mut cur, Some(lib.clone()), w::body_m(t, label, t.text)).clicked() {
+                if w::radio_value(ui, t, &mut cur, Some(lib.clone()), w::body_m(t, label, t.text)).on_hover_text(&full).clicked() {
                     d.dest = cur;
                 }
             }
