@@ -575,6 +575,7 @@ fn view_menu(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Actio
             (icons::USERS, t!("Community"), crate::builtin::community_home::PAGE),
             (icons::DOWNLOAD, t!("Downloads"), "downloads"),
             (icons::BACKPACK, t!("Inventory"), "inventory"),
+            (icons::CAMERA, t!("Screenshots"), crate::builtin::screenshots::PAGE),
         ] {
             if item(ui, icon, &label) {
                 actions.push(Action::Navigate { page: page.into(), arg: None });

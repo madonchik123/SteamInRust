@@ -495,15 +495,27 @@ fn ingame_frame(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Actio
     let active = app.overlay.open;
     let corner = app.prefs.fps_corner;
     let fps = s.fps.filter(|_| corner != crate::builtin::settings::FpsCorner::Off);
-    let shot = s.shot.filter(|(_, at)| at.elapsed() < SHOT_NOTICE);
+    // With the overlay open there's a pointer, so the notice stays to be clicked.
+    let shot = s.shot.filter(|(ok, at)| at.elapsed() < if active && *ok { SHOT_NOTICE_OPEN } else { SHOT_NOTICE });
     let draw = active || app.overlay.any_pinned() || fps.is_some() || shot.is_some();
     let mut close = false;
+    let mut open_shots = false;
     s.run(ctx, draw, |ui| {
         close |= content(app, ui, &t, actions, active);
-        ingame_extras(ui, &t, corner, fps, shot);
+        open_shots = ingame_extras(ui, &t, corner, fps, shot, active);
     });
     if close {
         app.overlay.open = false;
+    }
+    // "Screenshot saved" clicked: the manager, on this game, in the main window.
+    if open_shots {
+        app.overlay.open = false;
+        s.shot = None;
+        let arg = app.overlay.game.map(|(id, _)| id.to_string());
+        actions.push(Action::Navigate { page: crate::builtin::screenshots::PAGE.into(), arg });
+        for cmd in [egui::ViewportCommand::Visible(true), egui::ViewportCommand::Minimized(false), egui::ViewportCommand::Focus] {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, cmd);
+        }
     }
     s.set_open(app.overlay.open);
     app.overlay.ingame = Some(s);
@@ -511,9 +523,13 @@ fn ingame_frame(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Actio
 
 /// How long "Screenshot saved" shows in the game.
 const SHOT_NOTICE: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long it stays while the overlay is open and it can be clicked.
+const SHOT_NOTICE_OPEN: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// The FPS counter and the screenshot notice, drawn over the game.
-fn ingame_extras(ui: &mut Ui, t: &Theme, corner: crate::builtin::settings::FpsCorner, fps: Option<u32>, shot: Option<(bool, Instant)>) {
+/// The FPS counter and the screenshot notice, drawn over the game. True
+/// when the notice was clicked (it can be while the overlay is open).
+fn ingame_extras(ui: &mut Ui, t: &Theme, corner: crate::builtin::settings::FpsCorner, fps: Option<u32>, shot: Option<(bool, Instant)>, active: bool) -> bool {
+    let mut clicked = false;
     use crate::builtin::settings::FpsCorner;
     let ctx = ui.ctx().clone();
     if let Some(n) = fps {
@@ -532,17 +548,26 @@ fn ingame_extras(ui: &mut Ui, t: &Theme, corner: crate::builtin::settings::FpsCo
     }
     if let Some((ok, at)) = shot {
         let (icon, text) = if ok { (icons::CAMERA, t!("Screenshot saved")) } else { (icons::WARNING, t!("Couldn't save the screenshot")) };
-        egui::Area::new(egui::Id::unique("ingame-shot")).order(egui::Order::Foreground).anchor(Align2::CENTER_TOP, vec2(0.0, 24.0)).interactable(false).show(&ctx, |ui| {
-            egui::Frame::new().fill(t.surface).stroke(Stroke::new(1.0, t.border)).corner_radius(t.corner()).inner_margin(Margin::symmetric(14, 8)).show(ui, |ui| {
+        let can_click = ok && active;
+        egui::Area::new(egui::Id::unique("ingame-shot")).order(egui::Order::Foreground).anchor(Align2::CENTER_TOP, vec2(0.0, 24.0)).interactable(can_click).show(&ctx, |ui| {
+            let frame = egui::Frame::new().fill(t.surface).stroke(Stroke::new(1.0, t.border)).corner_radius(t.corner()).inner_margin(Margin::symmetric(14, 8)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(w::text(icon, 16.0, if ok { t.accent } else { t.danger }));
                     ui.label(w::text_semibold(text, 14.0, t.text));
+                    if can_click {
+                        ui.label(w::body_s(t, t!("View screenshots"), t.accent));
+                    }
                 });
             });
+            if can_click {
+                clicked = frame.response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+            }
         });
         // Come back to take it away.
-        ctx.request_repaint_after(SHOT_NOTICE.saturating_sub(at.elapsed()) + std::time::Duration::from_millis(50));
+        let shown_for = if can_click { SHOT_NOTICE_OPEN } else { SHOT_NOTICE };
+        ctx.request_repaint_after(shown_for.saturating_sub(at.elapsed()) + std::time::Duration::from_millis(50));
     }
+    clicked
 }
 
 /// eframe runs the main window's frames at most every 100 ms while it's

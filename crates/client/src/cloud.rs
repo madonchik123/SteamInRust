@@ -790,12 +790,18 @@ async fn download(conn: &Connection, t: &Target, name: &str, path: &Path, stamp:
 
 /// Send changed files up in one batch. Returns (name, sha) of each sent file.
 async fn upload(conn: &Connection, t: &Target, files: &[(String, PathBuf, Vec<u8>)]) -> Result<Vec<(String, String)>, String> {
+    upload_files(conn, t.app_id, t.cell_id, files).await
+}
+
+/// Upload files to an app's Steam Cloud in one batch: (cloud name, local
+/// path for its time, bytes). Returns the (name, hash) of those accepted.
+pub(crate) async fn upload_files(conn: &Connection, app_id: AppId, cell_id: u32, files: &[(String, PathBuf, Vec<u8>)]) -> Result<Vec<(String, String)>, String> {
     let machine = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "SteamInRust".into());
     let batch: CCloudBeginAppUploadBatchResponse = conn
         .call(
             "Cloud.BeginAppUploadBatch#1",
             &CCloudBeginAppUploadBatchRequest {
-                appid: Some(t.app_id),
+                appid: Some(app_id),
                 machine_name: Some(machine),
                 files_to_upload: files.iter().map(|f| f.0.clone()).collect(),
                 files_to_delete: Vec::new(),
@@ -813,13 +819,13 @@ async fn upload(conn: &Connection, t: &Target, files: &[(String, PathBuf, Vec<u8
             .call(
                 "Cloud.ClientBeginFileUpload#1",
                 &CCloudClientBeginFileUploadRequest {
-                    appid: Some(t.app_id),
+                    appid: Some(app_id),
                     file_size: Some(data.len() as u32),
                     raw_file_size: Some(data.len() as u32),
                     file_sha: Some(sha.clone()),
                     time_stamp: Some(mtime(path)),
                     filename: Some(name.clone()),
-                    cell_id: Some(t.cell_id),
+                    cell_id: Some(cell_id),
                     can_encrypt: Some(false),
                     is_shared_file: Some(false),
                     upload_batch_id: batch.batch_id,
@@ -834,7 +840,7 @@ async fn upload(conn: &Connection, t: &Target, files: &[(String, PathBuf, Vec<u8
         let commit: Result<CCloudClientCommitFileUploadResponse, _> = conn
             .call(
                 "Cloud.ClientCommitFileUpload#1",
-                &CCloudClientCommitFileUploadRequest { transfer_succeeded: Some(ok.is_ok()), appid: Some(t.app_id), file_sha: Some(sha.clone()), filename: Some(name.clone()) },
+                &CCloudClientCommitFileUploadRequest { transfer_succeeded: Some(ok.is_ok()), appid: Some(app_id), file_sha: Some(sha.clone()), filename: Some(name.clone()) },
             )
             .await;
         match (ok, commit) {
@@ -847,7 +853,7 @@ async fn upload(conn: &Connection, t: &Target, files: &[(String, PathBuf, Vec<u8
     let _ = conn
         .call::<_, CCloudCompleteAppUploadBatchResponse>(
             "Cloud.CompleteAppUploadBatchBlocking#1",
-            &CCloudCompleteAppUploadBatchRequest { appid: Some(t.app_id), batch_id: batch.batch_id, batch_eresult: Some(if failed.is_none() { 1 } else { 2 }) },
+            &CCloudCompleteAppUploadBatchRequest { appid: Some(app_id), batch_id: batch.batch_id, batch_eresult: Some(if failed.is_none() { 1 } else { 2 }) },
         )
         .await;
     match failed {

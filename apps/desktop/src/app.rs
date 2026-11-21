@@ -282,6 +282,7 @@ impl SteamApp {
         crate::image_cache::ImageCache::install(&cc.egui_ctx, rt.handle().clone());
         // Custom artwork from disk (only from the art folders).
         crate::builtin::library::shortcuts::ArtLoader::install(&cc.egui_ctx);
+        crate::builtin::screenshots::ShotLoader::install(&cc.egui_ctx);
         let (tx, events) = mpsc::channel();
         let demo_tx = tx.clone();
         let repaint = cc.egui_ctx.clone();

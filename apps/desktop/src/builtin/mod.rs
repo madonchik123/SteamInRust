@@ -15,6 +15,7 @@ pub mod library;
 mod plugins;
 mod support;
 pub(crate) mod profile;
+pub mod screenshots;
 pub mod settings;
 mod settings_account;
 mod settings_family;
@@ -38,6 +39,7 @@ pub fn registry(rt: tokio::runtime::Handle, ctx: egui::Context, flags: settings:
     r.register(broadcast::Broadcast::new(rt.clone(), ctx.clone()));
     r.register(inventory::Inventory::default());
     r.register(support::Support::default());
+    r.register(screenshots::Screenshots::default());
     r.register(plugins::Plugins::new(rt.clone(), ctx.clone()));
     r.register(settings::Settings::new(flags));
     // The design gallery, only when asked for (`--page=gallery`).

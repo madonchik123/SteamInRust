@@ -1325,6 +1325,12 @@ async fn online(
                     });
                 }
                 Some(Command::CartRemove { line_item_id }) => st.cart_remove(line_item_id, sink),
+                Some(Command::Screenshots(req)) => {
+                    let (conn, sink, me, cell) = (st.conn.clone(), sink.clone(), st.me, st.download_cell.unwrap_or(st.cell_id));
+                    tokio::spawn(async move {
+                        crate::screenshots::run(conn, me, cell, req, move |r| sink(Event::Screenshots(r))).await;
+                    });
+                }
                 Some(Command::Hub(req)) => {
                     let (conn, me) = (conn.clone(), st.me);
                     st.with_web(sink, move |web, sink| crate::hub::handle(conn, me, web, req, sink));
