@@ -205,6 +205,31 @@ fn split_version(v: &str) -> (&str, u32) {
 #[repr(C)]
 struct Object {
     vtable: *const Fp,
+    /// Handed to the game's server code (SteamGameServer...()).
+    server: bool,
+}
+
+/// Whether an interface pointer is the game server's own copy.
+pub fn is_server(this: *const c_void) -> bool {
+    !this.is_null() && unsafe { (*this.cast::<Object>()).server }
+}
+
+/// The game server's copy of an interface: same methods, but they can tell
+/// it apart (networking runs under the server's identity).
+pub fn get_for_server(version: &str) -> *mut c_void {
+    let base = get(version);
+    if base.is_null() {
+        return base;
+    }
+    let mut objects = OBJECTS.lock().unwrap_or_else(|e| e.into_inner());
+    let key = format!("server:{version}");
+    if let Some(&p) = objects.get(&key) {
+        return p as *mut c_void;
+    }
+    let vtable = unsafe { (*base.cast::<Object>()).vtable };
+    let obj = Box::leak(Box::new(Object { vtable, server: true })) as *mut Object as usize;
+    objects.insert(key, obj);
+    obj as *mut c_void
 }
 
 static OBJECTS: LazyLock<Mutex<HashMap<String, usize>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -253,7 +278,7 @@ pub fn get(version: &str) -> *mut c_void {
     #[cfg(target_arch = "x86")]
     slots.extend(x86::trampolines(&[(zero as Fp, 0); 64]));
     let vtable = Box::leak(slots.into_boxed_slice()).as_ptr();
-    let obj = Box::leak(Box::new(Object { vtable })) as *mut Object as usize;
+    let obj = Box::leak(Box::new(Object { vtable, server: false })) as *mut Object as usize;
     objects.insert(version.to_string(), obj);
     obj as *mut c_void
 }

@@ -23,7 +23,7 @@ pub fn imp(kind: &str, name: &str) -> Option<Fp> {
             Some($f as Fp)
         };
     }
-    if let Some(f) = crate::extras::imp(kind, name).or_else(|| crate::sns::imp(kind, name)) {
+    if let Some(f) = crate::extras::imp(kind, name).or_else(|| crate::sns::imp(kind, name)).or_else(|| crate::gameserver::imp(kind, name)) {
         return Some(f);
     }
     match (kind, name) {
@@ -223,26 +223,48 @@ extern "C" fn has_session(_t: This) -> bool {
 // ----------------------------------------------------------- ISteamClient
 
 extern "C" fn c_create_pipe(_t: This) -> i32 {
-    1
+    lock().new_pipe()
 }
 extern "C" fn c_release_pipe(_t: This, _pipe: i32) -> bool {
     true
 }
 extern "C" fn c_connect_global(_t: This, _pipe: i32) -> i32 {
+    lock().user_connected = true;
     if state::ensure_session() { 1 } else { 0 }
 }
-/// Used by game servers (SteamGameServer_Init); they get a user that can't
-/// do much, like an anonymous server.
-extern "C" fn c_create_local(_t: This, pipe: *mut i32, _account_type: i32) -> i32 {
+/// EAccountType of a game server (with a login token / anonymous).
+const ACCOUNT_GAME_SERVER: i32 = 3;
+const ACCOUNT_ANON_GAME_SERVER: i32 = 4;
+
+/// SteamGameServer_Init makes the server's own user on its own pipe, so its
+/// callbacks don't mix with the player's.
+extern "C" fn c_create_local(_t: This, pipe: *mut i32, account_type: i32) -> i32 {
+    if matches!(account_type, ACCOUNT_GAME_SERVER | ACCOUNT_ANON_GAME_SERVER) {
+        let mut g = lock();
+        let given = if pipe.is_null() { 0 } else { unsafe { pipe.read_unaligned() } };
+        let p = if given != 0 { given } else { g.new_pipe() };
+        g.gs_pipe = Some(p);
+        put(pipe, p);
+        return state::GS_USER;
+    }
     put(pipe, 1);
     1
 }
-extern "C" fn c_release_user(_t: This, _pipe: i32, _user: i32) {}
+extern "C" fn c_release_user(_t: This, _pipe: i32, user: i32) {
+    if user == state::GS_USER {
+        crate::gameserver::shutdown();
+    }
+}
 extern "C" fn c_shutdown_if_closed(_t: This) -> bool {
     false
 }
-/// Every `GetISteamXxx(user, pipe, version)`: the version picks the object.
-extern "C" fn c_get(_t: This, _user: i32, _pipe: i32, version: *const c_char) -> *mut c_void {
+/// Every `GetISteamXxx(user, pipe, version)`: the version picks the object,
+/// and the server's user gets objects of its own (its networking identity).
+extern "C" fn c_get(_t: This, user: i32, _pipe: i32, version: *const c_char) -> *mut c_void {
+    if user == state::GS_USER {
+        let v = unsafe { text(version) };
+        return if v.is_empty() { std::ptr::null_mut() } else { crate::vt::get_for_server(&v) };
+    }
     interface(version)
 }
 extern "C" fn c_get_utils(_t: This, _pipe: i32, version: *const c_char) -> *mut c_void {

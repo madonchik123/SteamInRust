@@ -21,7 +21,7 @@ Steam's website" still works; it just isn't native yet.
 | Community | 0.75 | No Showcase Manager. New discussions, joining, leaving and group invites are in the app but haven't been tried on a real account |
 | Inventory and Market | 1 | |
 | Steam Cloud | 1 | |
-| Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers |
+| Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); parts of hosting game servers aren't proven yet (login tokens, players connecting over networking sockets) |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | Seven languages (Steam has about 30); no Linux version; Mac builds aren't signed with an Apple developer ID |
@@ -203,7 +203,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Server browser (`ISteamMatchmakingServers`): internet and LAN lists, ping, players, rules | Done |
 | Screenshots (`ISteamScreenshots`) into the Steam screenshot folder | Done. Not uploaded |
 | Steam Input on Xbox-style pads with the game's bindings | Done on Windows. No gyro, trackpads or binding panel; no controllers in games on a Mac yet |
-| Hosting game servers (`ISteamGameServer`) | Not yet: needs a game-server sign-in to Steam |
+| Hosting game servers (`ISteamGameServer`, `ISteamGameServerStats`), listen and dedicated | Partly. Tested on Spacewar through Valve's `steam_api`: anonymous sign-in, listed in Steam's server browser, answering server queries, Steam checking a player's ticket, reading a player's stats, and two game servers connecting over networking sockets and messages. Not proven: signing in with a real login token, saving stats, a player connecting to a server over networking sockets |
 
 ## Shift+Tab overlay
 

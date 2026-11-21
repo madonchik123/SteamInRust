@@ -37,6 +37,7 @@ pub mod a2s;
 pub mod game_ugc;
 pub mod game_inventory;
 pub mod game_servers;
+mod gameserver;
 mod input_config;
 pub mod account;
 mod notify;
