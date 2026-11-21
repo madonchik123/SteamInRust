@@ -65,6 +65,18 @@ pub enum Request {
     /// Post a status for your friends (public to them, under your name),
     /// tagged with a game (`app_id` 0: none). The user starts it.
     PostStatus { text: String, app_id: AppId },
+    /// A page of a Steam group's forum (`forum` as in [`Request::Topics`],
+    /// after the group's address). Answered as [`Response::Topics`] with
+    /// [`group_topics_key`].
+    GroupTopics { group: String, forum: String, page: u32, language: String },
+    /// Start a discussion (public, under your name). `key` is the forum's
+    /// topics key, handed back in the answer.
+    NewTopic { key: String, form: crate::community_actions::NewTopicForm, subject: String, text: String, subforum: Option<String> },
+    /// Join a group, or ask to (`key` as in [`Request::Group`]).
+    JoinGroup { group: SteamId, key: String },
+    LeaveGroup { group: SteamId },
+    /// Accept or ignore an invite to a group.
+    AnswerGroupInvite { group: SteamId, accept: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +96,11 @@ pub enum Response {
     Activity { start: u64, result: Result<crate::feed::Feed, String> },
     Explore { key: String, result: Result<crate::feed::Feed, String> },
     StatusPosted { result: Result<(), String> },
+    /// The new topic's link, or why not.
+    TopicCreated { key: String, result: Result<String, String> },
+    /// Steam took (or refused) joining, leaving or answering an invite.
+    /// What you are now arrives with the friends list.
+    GroupChanged { group: SteamId, result: Result<(), String> },
 }
 
 /// Kinds of shared files a game can have.
@@ -263,6 +280,8 @@ pub struct TopicPage {
     pub page_size: u32,
     pub topics: Vec<Topic>,
     pub forums: Vec<Forum>,
+    /// How to start a topic here, when the page says.
+    pub new_topic: Option<crate::community_actions::NewTopicForm>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -309,6 +328,8 @@ pub struct Group {
     pub member_ids: Vec<SteamId>,
     /// Newest first.
     pub announcements: Vec<News>,
+    /// Open, by request or by invitation only.
+    pub join: crate::community_actions::JoinKind,
 }
 
 /// Where a reply to a discussion thread goes, read from the thread's page.
@@ -342,6 +363,11 @@ pub fn topics_key(app_id: AppId, forum: &str, page: u32) -> String {
     format!("{app_id}/{forum}#{page}")
 }
 
+/// Cache key of a page of a group's forum.
+pub fn group_topics_key(group: &str, forum: &str, page: u32) -> String {
+    format!("group:{group}/{forum}#{page}")
+}
+
 pub fn thread_key(url: &str, page: u32) -> String {
     format!("{url}#{page}")
 }
@@ -367,6 +393,10 @@ pub struct Cache {
     pub activity: HashMap<u64, Result<crate::feed::Feed, String>>,
     /// Pages of the community-wide feed by [`crate::feed::ExploreQuery::key`].
     pub explore: HashMap<String, Result<crate::feed::Feed, String>>,
+    /// New topics sent per forum: how many answers came back and the last one.
+    pub topic_created: HashMap<String, (u32, Result<String, String>)>,
+    /// The same for joining, leaving and answering invites, per group.
+    pub group_changed: HashMap<SteamId, (u32, Result<(), String>)>,
 }
 
 impl Cache {
@@ -433,6 +463,19 @@ impl Cache {
             Response::Explore { key, result } => {
                 self.explore.insert(key.clone(), result.clone());
             }
+            Response::TopicCreated { key, result } => {
+                if result.is_ok() {
+                    // That game's or group's forums changed: read them again.
+                    let owner = format!("{}/", key.split('/').next().unwrap_or(key));
+                    self.topics.retain(|k, _| !k.starts_with(&owner));
+                }
+                let e = self.topic_created.entry(key.clone()).or_insert((0, Ok(String::new())));
+                *e = (e.0 + 1, result.clone());
+            }
+            Response::GroupChanged { group, result } => {
+                let e = self.group_changed.entry(*group).or_insert((0, Ok(())));
+                *e = (e.0 + 1, result.clone());
+            }
             Response::StatusPosted { result } => {
                 // The feed changed: read it again.
                 if result.is_ok() {
@@ -493,6 +536,17 @@ fn topics_url(app_id: AppId, forum: &str, page: u32, language: &str) -> Result<S
     if url.query().is_some() || url.fragment().is_some() {
         return Err("not a forum".to_string());
     }
+    url.query_pairs_mut().append_pair("fp", &page.max(1).to_string()).append_pair("l", language);
+    Ok(url.into())
+}
+
+fn group_topics_url(group: &str, forum: &str, page: u32, language: &str) -> Result<String, String> {
+    let base = group_path(group).ok_or("not a forum")?;
+    let path = if forum.is_empty() { "discussions/" } else { forum };
+    if !path.starts_with("discussions/") || path.contains("..") || path.contains('?') || path.contains('#') || path.contains("://") || path.contains('\\') {
+        return Err("not a forum".to_string());
+    }
+    let mut url = crate::market::validate_steam_url(&format!("{COMMUNITY}/{base}/{path}"), "steamcommunity.com").map_err(|_| "not a forum".to_string())?;
     url.query_pairs_mut().append_pair("fp", &page.max(1).to_string()).append_pair("l", language);
     Ok(url.into())
 }
@@ -648,6 +702,43 @@ pub(crate) async fn handle(conn: Connection, me: SteamId, web: Result<Arc<Web>, 
                 Err(e) => Err(e),
             };
             out(Response::StatusPosted { result });
+        }
+        Request::GroupTopics { group, forum, page, language } => {
+            let key = group_topics_key(&group, &forum, page);
+            let result = match group_topics_url(&group, &forum, page, &language) {
+                Ok(url) => crate::market::page(&web_or_anon, &url).await.and_then(|b| parse_group_topics(&b)),
+                Err(e) => Err(e),
+            };
+            out(Response::Topics { key, result });
+        }
+        Request::NewTopic { key, form, subject, text, subforum } => {
+            let result = match web {
+                Ok(w) => crate::community_actions::new_topic(&w, &form, &subject, &text, subforum.as_deref()).await,
+                Err(e) => Err(e),
+            };
+            out(Response::TopicCreated { key, result });
+        }
+        Request::JoinGroup { group, key } => {
+            let result = match web {
+                Ok(w) => crate::community_actions::join(&w, &key).await,
+                Err(e) => Err(e),
+            };
+            out(Response::GroupChanged { group, result });
+        }
+        Request::LeaveGroup { group } => {
+            let result = match web {
+                Ok(w) => crate::community_actions::leave(&w, me, group).await,
+                Err(e) => Err(e),
+            };
+            out(Response::GroupChanged { group, result });
+        }
+        Request::AnswerGroupInvite { group, accept } => {
+            let result = if crate::community_actions::is_clan(group) {
+                conn.send_plain(net::emsg::CLIENT_ACKNOWLEDGE_CLAN_INVITE, &crate::community_actions::clan_invite_body(group, accept)).map_err(|e| e.to_string())
+            } else {
+                Err("This isn't a Steam group".to_string())
+            };
+            out(Response::GroupChanged { group, result });
         }
     }
 }
@@ -915,6 +1006,11 @@ async fn group(web: &Web, key: &str) -> Result<Group, String> {
     if let Ok(rss) = crate::market::page(web, &feed).await {
         g.announcements = parse_group_rss(&rss);
     }
+    // How it takes members is only on its page (read in English: the words
+    // tell an open group from one you ask to join).
+    if let Ok(html) = crate::market::page(web, &format!("{COMMUNITY}/{path}?l=english")).await {
+        g.join = crate::community_actions::parse_join_kind(&html);
+    }
     Ok(g)
 }
 
@@ -945,6 +1041,7 @@ pub fn parse_group(xml: &str) -> Result<Group, String> {
         in_chat: num(details, "membersInChat"),
         member_ids,
         announcements: Vec::new(),
+        join: Default::default(),
     })
 }
 
@@ -1177,13 +1274,26 @@ fn paging_total(s: &str) -> Option<u64> {
 }
 
 pub fn parse_topics(body: &str, app_id: AppId) -> Result<TopicPage, String> {
+    parse_topics_at(body, &format!("{COMMUNITY}/app/{app_id}/"))
+}
+
+/// A group's forum: its links are under the group's own address, which the
+/// page gives (a group opened by its number has one too).
+pub fn parse_group_topics(body: &str) -> Result<TopicPage, String> {
+    let url = between(body, "\"forum_url\":\"", "\"").map(|u| u.replace("\\/", "/")).unwrap_or_default();
+    let Some(at) = url.find("discussions/") else {
+        return Err("This group's discussions aren't available.".into());
+    };
+    parse_topics_at(body, &url[..at])
+}
+
+fn parse_topics_at(body: &str, base: &str) -> Result<TopicPage, String> {
     if !body.contains("forum_topics") && !body.contains("forum_list") {
         if body.contains("is private") || body.contains("must be logged in") {
             return Err("This forum is private.".into());
         }
         return Err("This game has no discussions.".into());
     }
-    let base = format!("{COMMUNITY}/app/{app_id}/");
     let mut forums = Vec::new();
     if let Some(list) = element(body, "<div class=\"rightbox forum_list\"") {
         for block in list.split("<div class=\"rightbox_list_option").skip(1) {
@@ -1192,7 +1302,7 @@ pub fn parse_topics(body: &str, app_id: AppId) -> Result<TopicPage, String> {
             if crate::market::validate_steam_url(href, "steamcommunity.com").is_err() {
                 continue;
             }
-            let Some(path) = href.strip_prefix(&base) else { continue };
+            let Some(path) = href.strip_prefix(base) else { continue };
             if path.contains('?') || path.contains('#') {
                 continue;
             }
@@ -1239,7 +1349,7 @@ pub fn parse_topics(body: &str, app_id: AppId) -> Result<TopicPage, String> {
         });
     }
     let total = paging_total(body).unwrap_or(topics.len() as u64);
-    Ok(TopicPage { forum, total, page_size: 15, topics, forums })
+    Ok(TopicPage { forum, total, page_size: 15, topics, forums, new_topic: crate::community_actions::parse_new_topic(body) })
 }
 
 fn post(block: &str, author_class: &str, content_open: &str) -> Post {
