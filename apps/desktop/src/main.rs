@@ -72,6 +72,8 @@ fn main() -> eframe::Result {
         viewport = viewport.with_position(app::OFFSCREEN_POS);
     }
     let options = eframe::NativeOptions {
+        // A test copy's off-screen window must never become the real app's.
+        persist_window: !app::offscreen(),
         // Our own title bar (see chrome.rs) instead of the Windows one.
         viewport: chrome::frame(viewport)
             .with_title("SteamInRust")
