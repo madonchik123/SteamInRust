@@ -12,6 +12,7 @@ pub mod download;
 pub mod workshop;
 pub mod hub;
 pub mod feed;
+pub mod community_actions;
 pub mod ingame;
 pub mod ipc;
 #[cfg(target_os = "macos")]
@@ -454,6 +455,7 @@ impl std::fmt::Debug for Command {
             Command::CartModify { line_item_id, gift, gift_to } => f.debug_struct("CartModify").field("line_item_id", line_item_id).field("gift", gift).field("gift_to", gift_to).finish(),
             Command::CartRemove { line_item_id } => f.debug_struct("CartRemove").field("line_item_id", line_item_id).finish(),
             Command::Hub(hub::Request::Reply { thread_url, .. }) => f.debug_struct("HubReply").field("thread_url", thread_url).finish_non_exhaustive(),
+            Command::Hub(hub::Request::NewTopic { key, .. }) => f.debug_struct("HubNewTopic").field("key", key).finish_non_exhaustive(),
             Command::Hub(hub::Request::PostStatus { app_id, .. }) => f.debug_struct("HubPostStatus").field("app_id", app_id).finish_non_exhaustive(),
             Command::Hub(req) => f.debug_tuple("Hub").field(req).finish(),
             Command::SendChat { to, .. } => f.debug_struct("SendChat").field("to", to).finish_non_exhaustive(),
@@ -499,6 +501,8 @@ pub enum Event {
     Apps(Vec<OwnedApp>),
     /// Full friends list (replaces any earlier one).
     Friends(Vec<(SteamId, Relationship)>),
+    /// Your groups and where you stand with each (member, invited…).
+    Clans(Vec<(SteamId, community_actions::ClanRelationship)>),
     /// Personas whose details changed (friends and yourself).
     Personas(Vec<Persona>),
     /// Names of games outside your library (e.g. what friends are playing).

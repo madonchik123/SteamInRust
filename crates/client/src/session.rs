@@ -329,6 +329,7 @@ struct Online {
     me: SteamId,
     account: String,
     friends: HashMap<SteamId, Relationship>,
+    clans: HashMap<SteamId, crate::community_actions::ClanRelationship>,
     personas: HashMap<SteamId, Persona>,
     apps: HashMap<AppId, OwnedApp>,
     playing: Option<AppId>,
@@ -474,6 +475,7 @@ async fn online(
         me,
         account: account.account_name.clone(),
         friends: HashMap::new(),
+        clans: HashMap::new(),
         personas: HashMap::new(),
         apps: HashMap::new(),
         playing: None,
@@ -1658,10 +1660,26 @@ impl Online {
                 let list: CMsgClientFriendsList = p.body()?;
                 if !list.bincremental() {
                     self.friends.clear();
+                    self.clans.clear();
                 }
                 let mut new_ids = Vec::new();
+                let mut clans_changed = !list.bincremental();
                 for f in &list.friends {
                     let id = f.ulfriendid();
+                    // The list carries your groups too.
+                    if crate::community_actions::is_clan(id) {
+                        use crate::community_actions::ClanRelationship as Clan;
+                        match Clan::from_u32(f.efriendrelationship()) {
+                            Clan::None => {
+                                self.clans.remove(&id);
+                            }
+                            rel => {
+                                self.clans.insert(id, rel);
+                            }
+                        }
+                        clans_changed = true;
+                        continue;
+                    }
                     if !is_individual(id) {
                         continue;
                     }
@@ -1677,6 +1695,9 @@ impl Online {
                     }
                 }
                 sink(Event::Friends(self.friends.iter().map(|(k, v)| (*k, *v)).collect()));
+                if clans_changed {
+                    sink(Event::Clans(self.clans.iter().map(|(k, v)| (*k, *v)).collect()));
+                }
                 self.cache_dirty = true;
                 if !new_ids.is_empty() {
                     self.conn.send(

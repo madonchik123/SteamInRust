@@ -112,6 +112,8 @@ pub struct State {
     /// `None` until PICS has answered.
     pub apps: Option<BTreeMap<AppId, OwnedApp>>,
     pub friends: HashMap<SteamId, Relationship>,
+    /// Your groups and where you stand with each, from Steam's friends list.
+    pub clans: HashMap<SteamId, crate::community_actions::ClanRelationship>,
     pub personas: HashMap<SteamId, Persona>,
     /// Conversations by friend, oldest message first.
     pub chats: HashMap<SteamId, Vec<ChatMessage>>,
@@ -394,6 +396,7 @@ impl State {
                 self.apps = Some(apps.iter().map(|a| (a.app_id, a.clone())).collect());
             }
             Event::Friends(list) => self.friends = list.iter().copied().collect(),
+            Event::Clans(list) => self.clans = list.iter().copied().collect(),
             Event::Personas(list) => {
                 for p in list {
                     self.personas.insert(p.steam_id, p.clone());

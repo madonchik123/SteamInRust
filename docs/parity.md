@@ -1,7 +1,7 @@
 # Steam parity
 
 How much of the official Steam desktop client SteamInRust covers, area by
-area. Last checked against the code on 21 November 2026 (v0.13.0 and the chat changes after it).
+area. Last checked against the code on 21 November 2026 (v0.14.0 and the community actions after it).
 
 Scores: **0** not started · **0.25** started · **0.5** usable, big parts
 missing · **0.75** mostly there · **1** complete. Anything marked "opens
@@ -17,6 +17,8 @@ Steam's website" still works; it just isn't native yet.
 | Friends and chat | 0.75 | No voice chat; no polls in group chats |
 | Community | 0.75 | Starting a new discussion topic, and joining or leaving a group, open Steam's website |
 | Inventory and Market | 0.75 | Buying, buy orders, gems, booster packs and pending gifts are in the app but haven't been tried on a real account |
+| Community | 0.75 | No Showcase Manager. New discussions, joining, leaving and group invites are in the app but haven't been tried on a real account |
+| Inventory and Market | 1 | |
 | Steam Cloud | 1 | |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
@@ -143,10 +145,13 @@ All native, no web view.
 | Community hub per game: screenshots, artwork, videos, news | Done |
 | Workshop item pages: media, description, required items, change notes, comments; subscribe, rate, favorite | Done. Rating and favoriting weren't tested on a real account |
 | Guides: list, sorts, search, reader with contents | Done |
-| Discussions: forums, topics, threads with quotes and spoilers; reply to a thread | Done, in the app. Starting a new topic opens Steam's website. Sending a reply wasn't tested on a real account |
+| Discussions: forums, topics, threads with quotes and spoilers; reply to a thread | Done, in the app. Sending a reply wasn't tested on a real account |
+| Start a new discussion in a game hub or group forum: title, text, the forum's formatting buttons, a preview, which section to post in, and Steam's errors shown in the box | Done, in the app. **Not tried live:** nothing was posted on a real account. The request and Steam's answers are tested against saved samples, and the screens on the demo account |
 | Steam Support: your requests and replies | Done. New requests open Steam's help site |
 | Someone's friends (online first, searchable), their latest reviews, their groups, and the badges list | Done, in the app |
-| Group pages: name, headline, member counts, description, announcements, members (friends first), a button to the group's chat | Done, in the app, also for steamcommunity.com/groups links. Joining or leaving opens Steam's website |
+| Group pages: name, headline, member counts, description, announcements, members (friends first), a button to the group's chat, and the group's own discussions | Done, in the app, also for steamcommunity.com/groups links |
+| Join or leave a group from its page: open groups, request-to-join groups and invitation-only groups, with the button showing where you really stand. Leaving asks first | Done, in the app. **Not tried live:** no group was joined or left on a real account, and the test account is in no groups, so reading your real standing from Steam's friends list hasn't been seen working either |
+| Accept or ignore group invites, on the group's page and under Invites in Friends | Done, in the app. **Not tried live:** no real invite was answered. The message is built from a public reference and unit-tested |
 
 ## Inventory and Market
 
