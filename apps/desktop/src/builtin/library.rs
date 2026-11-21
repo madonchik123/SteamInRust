@@ -194,6 +194,8 @@ enum MenuAct {
     RemoveShortcut,
     /// Move it to another library folder.
     MoveFolder,
+    /// The screenshot manager, on this game.
+    Screenshots,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -895,6 +897,7 @@ impl Library {
                     let sub = item;
                     sub(ui, icons::DESKTOP, t!("Add desktop shortcut"), MenuAct::Shortcut);
                     sub(ui, icons::FOLDER, t!("Browse local files"), MenuAct::Browse);
+                    sub(ui, icons::CAMERA, t!("View screenshots"), MenuAct::Screenshots);
                     sub(ui, icons::SHIELD, t!("Verify game files"), MenuAct::Verify);
                     sub(ui, icons::DRIVES, t!("Move install folder…"), MenuAct::MoveFolder);
                     sub(ui, icons::TRASH, t!("Uninstall…"), MenuAct::Uninstall);
@@ -978,6 +981,7 @@ impl Library {
             MenuAct::CustomArt => self.props = Some(props::Props { app: id, tab: props::PropTab::Customization, ..Default::default() }),
             MenuAct::RemoveShortcut => {}
             MenuAct::MoveFolder => game_move::request_open(vec![id]),
+            MenuAct::Screenshots => ctx.navigate(super::screenshots::PAGE, Some(id.to_string())),
             MenuAct::Store => ctx.navigate("store", Some(format!("app:{id}"))),
             MenuAct::Help => ctx.navigate("support", Some(format!("game:{id}"))),
             MenuAct::Properties => self.props = Some(props::Props { app: id, tab: props::PropTab::General, ..Default::default() }),
@@ -1352,6 +1356,9 @@ impl Library {
             if item(ui, icons::SHIELD, t!("Verify game files"), t.text) {
                 self.start_verify(ctx, g);
             }
+        }
+        if item(ui, icons::CAMERA, t!("View screenshots"), t.text) {
+            ctx.navigate(super::screenshots::PAGE, Some(id.to_string()));
         }
         if item(ui, icons::INFO, t!("Get help with this game"), t.text) {
             ctx.navigate("support", Some(format!("game:{id}")));

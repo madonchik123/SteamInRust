@@ -50,6 +50,7 @@ pub mod state;
 pub mod store;
 pub mod chat_admin;
 pub mod economy;
+pub mod screenshots;
 
 pub use auth::Guard;
 pub use launch::{LaunchArgs, LaunchMode, mode as launch_mode, mode_cached as launch_mode_cached, mode_peek as launch_mode_peek, safe_connect_args};
@@ -311,6 +312,8 @@ pub enum Command {
     CartRemove { line_item_id: u64 },
     /// Community pages: Workshop items, guides, discussions, hub, achievements.
     Hub(hub::Request),
+    /// Your screenshots on Steam: list, upload, edit, delete.
+    Screenshots(screenshots::Request),
     /// Send a chat message written as Steam's markup (see
     /// `model::chat::compose`); Steam turns slash commands into theirs.
     SendChat { to: ChatTarget, text: String },
@@ -471,6 +474,7 @@ impl std::fmt::Debug for Command {
             Command::Hub(hub::Request::NewTopic { key, .. }) => f.debug_struct("HubNewTopic").field("key", key).finish_non_exhaustive(),
             Command::Hub(hub::Request::PostStatus { app_id, .. }) => f.debug_struct("HubPostStatus").field("app_id", app_id).finish_non_exhaustive(),
             Command::Hub(req) => f.debug_tuple("Hub").field(req).finish(),
+            Command::Screenshots(_) => f.debug_struct("Screenshots").finish_non_exhaustive(),
             Command::SendChat { to, .. } => f.debug_struct("SendChat").field("to", to).finish_non_exhaustive(),
             Command::ReactToMessage { to, time, ordinal, reaction, sticker, add } => f.debug_struct("ReactToMessage").field("to", to).field("time", time).field("ordinal", ordinal).field("reaction", reaction).field("sticker", sticker).field("add", add).finish(),
             Command::ReportMessage { to, from, time, ordinal, reason, .. } => f.debug_struct("ReportMessage").field("to", to).field("from", from).field("time", time).field("ordinal", ordinal).field("reason", reason).finish_non_exhaustive(),
@@ -689,6 +693,8 @@ pub enum Event {
     Error(String),
     /// Answer to a [`Command::Hub`] request.
     Hub(hub::Response),
+    /// The answer to a [`Command::Screenshots`].
+    Screenshots(screenshots::Response),
     /// Someone added (or took back) a reaction under a message.
     MessageReaction { to: ChatTarget, time: u32, ordinal: u32, reactor: SteamId, reaction: String, sticker: bool, add: bool },
     /// Your emoticons, stickers and chat effects.

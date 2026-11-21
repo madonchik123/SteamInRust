@@ -5,6 +5,7 @@
 
 pub mod manage;
 pub mod relocate;
+pub mod screenshots;
 
 use model::{AppId, InstallState, InstalledGame, LocalAccount};
 use std::collections::HashMap;
