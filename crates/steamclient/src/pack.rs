@@ -70,6 +70,7 @@ fn fields(callback: i32) -> Option<Vec<Field>> {
         1110 => vec![U64, U32],                // GlobalAchievementPercentagesReady_t
         1111 => vec![U32, U64],                // LeaderboardUGCSet_t
         1112 => vec![U64, U32],                // GlobalStatsReceived_t
+        1800 | 1801 => vec![U32, U64],         // GSStatsReceived_t, GSStatsStored_t
         1203 => vec![U64, U8],                 // P2PSessionConnectFail_t
         1221 => vec![U32, (696, 8), U32],      // SteamNetConnectionStatusChangedCallback_t
         1307 => vec![U32, U64, bytes(260)],    // RemoteStorageFileShareResult_t

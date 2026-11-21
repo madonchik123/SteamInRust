@@ -49,7 +49,7 @@ impl Store {
     // ---------- the page bar ----------
 
     /// The store's tabs, search and lists in the page bar (Figma "header"
-    /// `302:1092`): Home, Browse, Discover, Points Shop, the search, then
+    /// `302:1092`): Home, Browse, Discover, Curators, Points Shop, the search, then
     /// Wishlist, Cart and the store's preferences on the right.
     pub(super) fn store_bar(&mut self, ui: &mut Ui, ctx: &mut Ctx) -> bool {
         let t = ctx.theme.clone();
@@ -69,9 +69,12 @@ impl Store {
             }
         }
         ui.add_space(t.dense(30.0));
-        let right = t.dense(250.0);
+        // What Wishlist, Cart and the gear took last frame (wider in some
+        // languages): the search never runs under them.
+        let right_id = ui.scope_id().with("store-bar-right");
+        let right = ui.data(|d| d.get_temp::<f32>(right_id)).unwrap_or(0.0).max(t.dense(250.0)) + t.spacing.md;
         let width = (ui.available_width() - right).clamp(120.0, 374.0);
-        if ui.available_width() - width > right * 0.6 {
+        if ui.available_width() - width >= right {
             self.search_box(ui, &t, ctx, width);
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -93,6 +96,8 @@ impl Store {
             if signed_in && w::sub_tab(ui, &t, t!("Wishlist"), v == View::Wishlist).clicked() {
                 self.open(View::Wishlist);
             }
+            let used = ui.min_rect().width();
+            ui.data_mut(|d| d.insert_temp(right_id, used));
         });
         true
     }

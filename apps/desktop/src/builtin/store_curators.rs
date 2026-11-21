@@ -423,8 +423,8 @@ fn pick_row(ui: &mut Ui, t: &Theme, p: &Pick, index: usize) -> egui::Response {
                 ui.spacing_mut().item_spacing.y = t.dense(4.0);
                 ui.add(Label::new(w::body_l(t, &p.name, t.text)).truncate().selectable(false));
                 let (icon, word, color) = match p.verdict {
-                    Verdict::Recommended => (icons::THUMBS_UP, t!("Recommended"), t.play),
-                    Verdict::NotRecommended => (icons::THUMBS_DOWN, t!("Not recommended"), t.danger),
+                    Verdict::Recommended => (icons::THUMBS_UP, t!("Recommended|curator"), t.play),
+                    Verdict::NotRecommended => (icons::THUMBS_DOWN, t!("Not recommended|curator"), t.danger),
                     Verdict::Informational => (icons::INFO, t!("Informational"), t.accent),
                 };
                 ui.horizontal(|ui| {

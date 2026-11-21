@@ -65,6 +65,7 @@ impl Store {
         w::centered(ui, MAX, pad, |ui| {
             ui.spacing_mut().item_spacing.y = gap;
             self.title_bar(ui, t, ctx, id, &d);
+            crate::builtin::broadcast::store_strip(ui, t, ctx, id, &mut self.live_asked);
             self.media_block(ui, t, id, &d);
             let total = ui.available_width();
             let right_w = (total * 451.0 / 1567.0).clamp(300.0, 451.0);

@@ -39,6 +39,74 @@ fn entry(id: u64, app: u32, title: &str, pic: String, creator: u64, up: u32, dow
     }
 }
 
+/// A forum's "new topic" details, as a signed-in visitor gets them.
+fn topic_form(app: Option<u32>, owner: &str, feature: &str, forums: &[(&str, &str)]) -> client::community_actions::NewTopicForm {
+    client::community_actions::NewTopicForm {
+        owner: owner.into(),
+        forum_type: "General".into(),
+        feature: feature.into(),
+        app_id: app,
+        forum_url: "https://steamcommunity.com/".into(),
+        can_post: true,
+        banned: false,
+        has_form: true,
+        subforums: forums.iter().enumerate().map(|(i, (value, name))| client::community_actions::Subforum { value: (*value).into(), name: (*name).into(), selected: i == 0 }).collect(),
+    }
+}
+
+/// Made-up groups, one for each way you can stand with a group:
+/// `--page=group --arg=coopnight` (member), `pixelartists` (invited),
+/// `stardewfarmers` (open), `speedrunclub` (ask to join), `quietcorner`
+/// (invitation only).
+fn groups(now: u64, topics: &[Topic]) -> Vec<Event> {
+    use client::community_actions::{ClanRelationship as Clan, JoinKind};
+    use client::hub::Group;
+    const CLAN: u64 = 103582791429521408;
+    let group = |n: u64, url: &str, name: &str, line: &str, app: u32, join| Group {
+        id: CLAN + n,
+        name: name.into(),
+        url: url.into(),
+        headline: line.into(),
+        summary: format!("{line} Everyone here is made up for the demo."),
+        avatar: art::capsule(app),
+        members: 1_200 * n as u32 + 87,
+        in_game: 12 * n as u32,
+        online: 40 * n as u32,
+        in_chat: 3 * n as u32,
+        member_ids: (0..6).map(|i| BASE + 100 + i).collect(),
+        announcements: vec![News { id: format!("g{n}"), title: "Welcome!".into(), contents: "Say hello in the discussions.".into(), feed: name.into(), time: now - 86_400 * n, ..Default::default() }],
+        join,
+    };
+    let list = [
+        group(1, "coopnight", "Co-op Night", "Portal 2 co-op every Friday.", 620, JoinKind::Unknown),
+        group(2, "pixelartists", "Pixel Artists", "Share your sprites.", STARDEW, JoinKind::InviteOnly),
+        group(3, "stardewfarmers", "Stardew Farmers", "Crops, fish and friendly tips.", STARDEW, JoinKind::Open),
+        group(4, "speedrunclub", "Speedrun Club", "Fast runs, faster resets.", HADES, JoinKind::Request),
+        group(5, "quietcorner", "The Quiet Corner", "A small group of old friends.", 292030, JoinKind::InviteOnly),
+    ];
+    let mut out = vec![Event::Clans(vec![(CLAN + 1, Clan::Member), (CLAN + 2, Clan::Invited)])];
+    for g in list {
+        // Found by name and by number (an invite opens it by number).
+        out.push(Event::Hub(Response::Group { key: g.id.to_string(), result: Ok(g.clone()) }));
+        out.push(Event::Hub(Response::Group { key: g.url.clone(), result: Ok(g) }));
+    }
+    out.push(Event::Hub(Response::Topics {
+        key: client::hub::group_topics_key("coopnight", "", 1),
+        result: Ok(TopicPage {
+            forum: "General Discussions".into(),
+            total: topics.len().min(3) as u64,
+            page_size: 15,
+            topics: topics.iter().take(3).cloned().map(|mut topic| {
+                topic.url = String::new();
+                topic
+            }).collect(),
+            forums: vec![Forum { name: "General Discussions".into(), path: "discussions/0/".into(), threads: 412 }, Forum { name: "Looking for a partner".into(), path: "discussions/1/".into(), threads: 96 }],
+            new_topic: Some(topic_form(None, "2000", "0", &[("General_0", "General Discussions"), ("General_1", "Looking for a partner")])),
+        }),
+    }));
+    out
+}
+
 pub fn events() -> Vec<Event> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let lang = i18n::language().steam_name().to_string();
@@ -144,7 +212,8 @@ pub fn events() -> Vec<Event> {
         url: format!("https://steamcommunity.com/app/1145360/discussions/0/{}/", 3000 + i),
     })
     .collect();
-    out.push(Event::Hub(Response::Topics { key: client::hub::topics_key(HADES, "", 1), result: Ok(TopicPage { forum: "General Discussions".into(), total: 247, page_size: 15, topics, forums }) }));
+    out.push(Event::Hub(Response::Topics { key: client::hub::topics_key(HADES, "", 1), result: Ok(TopicPage { forum: "General Discussions".into(), total: 247, page_size: 15, topics: topics.clone(), forums: forums.clone(), new_topic: Some(topic_form(Some(HADES), "1000", "0", &[("General_0", "General Discussions"), ("General_1", "Bug Reports"), ("Trading_0", "Trading")])) }) }));
+    out.extend(groups(now, &topics));
     let post = |who: u64, name: &str, ago: u64, html: &str| Post { id: ago, author: friend(who), name: name.into(), avatar: None, time: now - ago, html: html.into() };
     out.push(Event::Hub(Response::Thread {
         key: client::hub::thread_key(THREAD, 1),

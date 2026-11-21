@@ -1,0 +1,68 @@
+// The parts of Steam's LoyaltyRewards and Quest services the Points Shop
+// uses. Field numbers and types are the ones in Steam's own web client
+// (store.steampowered.com/points/shop).
+
+message CLoyaltyRewards_GetSummary_Request {
+	optional fixed64 steamid = 1;
+}
+
+message CLoyaltyRewards_GetSummary_Response {
+	optional .CLoyaltyRewards_GetSummary_Response_Summary summary = 1;
+	optional uint32 timestamp_updated = 2;
+	optional uint64 auditid_highwater = 3;
+}
+
+message CLoyaltyRewards_GetSummary_Response_Summary {
+	optional int64 points = 1;
+	optional int64 points_earned = 2;
+	optional int64 points_spent = 3;
+}
+
+message CLoyaltyRewards_GetEligibleApps_Request {
+}
+
+message CLoyaltyRewards_GetEligibleApps_Response {
+	repeated .CLoyaltyRewards_GetEligibleApps_Response_EligibleApp apps = 1;
+}
+
+message CLoyaltyRewards_GetEligibleApps_Response_EligibleApp {
+	optional uint32 appid = 1;
+	optional bool has_items_anyone_can_purchase = 2;
+	optional bool event_app = 3;
+	optional string hero_carousel_image = 4;
+	optional bool owned = 5;
+}
+
+message CLoyaltyRewards_RedeemPoints_Request {
+	optional uint32 defid = 1;
+	optional int64 expected_points_cost = 2;
+}
+
+message CLoyaltyRewards_RedeemPoints_Response {
+	optional uint64 communityitemid = 1;
+	repeated uint64 bundle_community_item_ids = 2;
+}
+
+message CQuest_GetCommunityInventory_Request {
+	repeated uint32 filter_appids = 1;
+}
+
+message CQuest_GetCommunityInventory_Response {
+	repeated .CQuest_CommunityItem items = 1;
+}
+
+message CQuest_CommunityItem {
+	optional uint64 communityitemid = 1;
+	optional uint32 item_type = 2;
+	optional uint32 appid = 3;
+	optional uint32 owner = 4;
+	repeated .CQuest_CommunityItem_Attribute attributes = 5;
+	optional bool used = 6;
+	optional uint32 owner_origin = 7;
+	optional int64 amount = 8;
+}
+
+message CQuest_CommunityItem_Attribute {
+	optional uint32 attributeid = 1;
+	optional uint64 value = 2;
+}

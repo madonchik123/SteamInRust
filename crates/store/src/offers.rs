@@ -154,7 +154,16 @@ impl StoreClient {
             )
             .await?;
         let item = items.into_iter().next().filter(|i| !i.name.is_empty()).ok_or(Error::Unavailable)?;
-        Ok(offer_of(kind, id, item))
+        let mut offer = offer_of(kind, id, item);
+        // Included items come without pictures, and newer games' pictures
+        // aren't at a fixed address. The page still works if this fails.
+        let apps: Vec<AppId> = offer.parts.iter().filter_map(|p| p.apps.first().copied()).collect();
+        for chunk in apps.chunks(100) {
+            let ids: Vec<_> = chunk.iter().map(|a| serde_json::json!({ "appid": a })).collect();
+            let Ok(found) = self.store_items(serde_json::Value::Array(ids), serde_json::json!({ "include_assets": true })).await else { break };
+            apply_art(&mut offer.parts, &found);
+        }
+        Ok(offer)
     }
 
     /// The bundles and editions a game is sold in.
@@ -187,6 +196,20 @@ fn art_of(i: &RawItem) -> Option<String> {
     let a = i.assets.as_ref()?;
     let file = a.main_capsule.as_deref().or(a.header.as_deref())?;
     Some(format!("{ASSETS}{}", a.asset_url_format.as_deref()?.replace("${FILENAME}", file)))
+}
+
+/// Each part gets its first game's wide picture, where Steam gave one.
+fn apply_art(parts: &mut [OfferPart], found: &[RawItem]) {
+    for p in parts {
+        let Some(first) = p.apps.first() else { continue };
+        let art = found.iter().find(|i| i.id == *first).and_then(|i| {
+            let a = i.assets.as_ref()?;
+            Some(format!("{ASSETS}{}", a.asset_url_format.as_deref()?.replace("${FILENAME}", a.header.as_deref()?)))
+        });
+        if let Some(art) = art {
+            p.art = art;
+        }
+    }
 }
 
 fn part_of(p: RawPart, in_bundle: bool) -> OfferPart {
@@ -423,6 +446,16 @@ mod tests {
         only_here.name = "No priced package has this".into();
         let kept = sold_parts(vec![part(1, 10, 999), unsold, nameless, only_here]);
         assert_eq!(kept.iter().map(|p| p.package_id).collect::<Vec<_>>(), [1, 8]);
+    }
+
+    #[test]
+    fn parts_get_their_games_real_pictures() {
+        let mut parts = vec![part(1, 10, 999), part(2, 20, 499)];
+        parts[1].art = "fallback.jpg".into();
+        let found: Vec<RawItem> = serde_json::from_str(r#"[{"id":10,"assets":{"asset_url_format":"steam/apps/10/abc/${FILENAME}?t=1","header":"header.jpg"}},{"id":20}]"#).unwrap();
+        apply_art(&mut parts, &found);
+        assert!(parts[0].art.ends_with("steam/apps/10/abc/header.jpg?t=1"));
+        assert_eq!(parts[1].art, "fallback.jpg");
     }
 
     #[test]

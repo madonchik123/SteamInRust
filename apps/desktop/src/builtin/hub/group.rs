@@ -1,11 +1,16 @@
 //! A Steam group's page: who it is, how many are around, what it's about,
-//! its announcements and some of its members.
+//! its announcements and some of its members; joining, leaving and
+//! answering an invite.
 
 use super::{HubView, Io, View, columns, error, files, rich};
+use client::community_actions::{ClanRelationship as Clan, GroupButton, JoinKind, group_button};
 use client::hub::{self, Request};
+use client::{Command, State};
 use egui::{Align, Layout, Sense, Ui, vec2};
 use i18n::t;
-use model::Relationship;
+use model::{Relationship, SteamId};
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use ui::{Theme, icons, widgets as w};
 
 /// Group ids start here; the rest is the clan's account id.
@@ -26,7 +31,8 @@ pub(super) fn show(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, key: &
         Some(Ok(g)) => g.clone(),
     };
     ui.add_space(16.0);
-    header(ui, t, io, &g);
+    header(hv, ui, t, io, &g, key);
+    leave_dialog(hv, ui, t, io, &g);
     ui.add_space(18.0);
     columns(
         ui,
@@ -57,7 +63,7 @@ pub(super) fn show(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, key: &
     );
 }
 
-fn header(ui: &mut Ui, t: &Theme, io: &mut Io, g: &hub::Group) {
+fn header(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, g: &hub::Group, key: &str) {
     w::card(t).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -96,8 +102,19 @@ fn header(ui: &mut Ui, t: &Theme, io: &mut Io, g: &hub::Group) {
                         io.go(View::Page("community".into(), Some(format!("group:{chat}"))));
                     }
                 }
+                if w::button(ui, t, Some(icons::CHATS), t!("Discussions"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                    io.go(View::GroupForum { group: key.to_string(), forum: String::new() });
+                }
+                membership(hv, ui, t, io, g, key);
             });
         });
+        // What Steam said about the last change.
+        if let Some(notice) = hv.group_notice.get(&g.id) {
+            ui.add_space(t.spacing.sm);
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                ui.add(egui::Label::new(w::body_m(t, notice, t.danger)).wrap());
+            });
+        }
     });
 }
 
@@ -136,5 +153,271 @@ fn members(ui: &mut Ui, t: &Theme, io: &mut Io, g: &hub::Group) {
     list(ui, t!("Members").to_string(), &others);
     if let Some(id) = open {
         io.go(View::Page("profile".into(), Some(id.to_string())));
+    }
+}
+
+// ---------- joining, leaving and invites ----------
+
+/// What `--demo` pretends Steam now says, per group.
+static DEMO: Mutex<Option<HashMap<SteamId, Clan>>> = Mutex::new(None);
+/// Invites answered, until Steam's friends list says so too.
+static ANSWERED: Mutex<Option<HashSet<SteamId>>> = Mutex::new(None);
+
+/// Where you stand with a group.
+pub fn clan_state(state: &State, id: SteamId) -> Clan {
+    if super::is_demo() {
+        if let Some(c) = DEMO.lock().unwrap().as_ref().and_then(|m| m.get(&id)) {
+            return *c;
+        }
+    }
+    state.clans.get(&id).copied().unwrap_or_default()
+}
+
+/// Groups that invited you and you haven't answered.
+pub fn pending_invites(state: &State) -> Vec<SteamId> {
+    let mut answered = ANSWERED.lock().unwrap();
+    let answered = answered.get_or_insert_with(Default::default);
+    answered.retain(|id| clan_state(state, *id) == Clan::Invited);
+    let mut out: Vec<SteamId> = state.clans.keys().copied().filter(|id| clan_state(state, *id) == Clan::Invited && !answered.contains(id)).collect();
+    out.sort_unstable();
+    out
+}
+
+/// Accept or ignore an invite. The command to send (none in `--demo`,
+/// where it only changes here).
+pub fn answer_invite(id: SteamId, accept: bool) -> Option<Command> {
+    if super::is_demo() {
+        DEMO.lock().unwrap().get_or_insert_with(Default::default).insert(id, if accept { Clan::Member } else { Clan::None });
+        return None;
+    }
+    ANSWERED.lock().unwrap().get_or_insert_with(Default::default).insert(id);
+    Some(Command::Hub(Request::AnswerGroupInvite { group: id, accept }))
+}
+
+/// Steam didn't take the answer: the invite shows again.
+pub(super) fn invite_failed(id: SteamId) {
+    if let Some(a) = ANSWERED.lock().unwrap().as_mut() {
+        a.remove(&id);
+    }
+}
+
+/// A change sent to Steam, until the friends list shows it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Busy {
+    from: Clan,
+    since: f64,
+    /// Answers that had come back before this one.
+    sent: u32,
+    /// Steam said yes; the friends list is still to come.
+    taken: bool,
+}
+
+/// After Steam says yes, how long to wait for the friends list to show it.
+const CONFIRM_SECS: f64 = 12.0;
+/// How long to wait for any answer at all.
+const ANSWER_SECS: f64 = 30.0;
+
+/// What a change waiting on Steam comes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Settled {
+    Waiting,
+    Done,
+    Failed(String),
+    NotConfirmed,
+    NoAnswer,
+}
+
+fn settle(busy: &mut Busy, now_state: Clan, answer: Option<&(u32, Result<(), String>)>, now: f64) -> Settled {
+    if now_state != busy.from {
+        return Settled::Done;
+    }
+    if let Some((n, result)) = answer.filter(|(n, _)| *n > busy.sent) {
+        busy.sent = *n;
+        match result {
+            Ok(()) => busy.taken = true,
+            Err(e) => return Settled::Failed(e.clone()),
+        }
+    }
+    let waited = now - busy.since;
+    if busy.taken && waited > CONFIRM_SECS {
+        Settled::NotConfirmed
+    } else if waited > ANSWER_SECS {
+        Settled::NoAnswer
+    } else {
+        Settled::Waiting
+    }
+}
+
+/// Send a change, or in `--demo` make it here.
+fn change(hv: &mut HubView, ui: &Ui, io: &mut Io, g: &hub::Group, to: Clan, cmd: Request) {
+    hv.group_notice.remove(&g.id);
+    if super::is_demo() {
+        DEMO.lock().unwrap().get_or_insert_with(Default::default).insert(g.id, to);
+        return;
+    }
+    let sent = io.state.hub.group_changed.get(&g.id).map_or(0, |(n, _)| *n);
+    hv.group_busy.insert(g.id, Busy { from: clan_state(io.state, g.id), since: ui.input(|i| i.time), sent, taken: false });
+    io.send(Command::Hub(cmd));
+}
+
+/// The group's button: join, ask to join, leave, answer an invite, or
+/// where you stand when there's nothing to press.
+fn membership(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, g: &hub::Group, key: &str) {
+    if io.state.steam_id == 0 {
+        return;
+    }
+    let now = ui.input(|i| i.time);
+    let state_now = clan_state(io.state, g.id);
+    if let Some(busy) = hv.group_busy.get_mut(&g.id) {
+        match settle(busy, state_now, io.state.hub.group_changed.get(&g.id), now) {
+            Settled::Waiting => {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::REFRESH), t!("Working…"), w::Kind::Secondary, w::Size::Sm));
+                return;
+            }
+            Settled::Done => {}
+            Settled::Failed(e) => {
+                hv.group_notice.insert(g.id, i18n::tr_dyn(&e));
+            }
+            Settled::NotConfirmed => {
+                hv.group_notice.insert(g.id, t!("Steam took it but hasn't updated your groups yet. Check again in a moment.").to_string());
+            }
+            Settled::NoAnswer => {
+                hv.group_notice.insert(g.id, t!("Steam didn't answer. Try again.").to_string());
+            }
+        }
+        hv.group_busy.remove(&g.id);
+    }
+    let join_key = if g.url.is_empty() { key.to_string() } else { g.url.clone() };
+    let still = |ui: &mut Ui, icon: &str, label: &str| {
+        ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icon), label, w::Kind::Secondary, w::Size::Sm));
+    };
+    // Right to left: the main action ends up nearest the edge.
+    match group_button(state_now, g.join) {
+        GroupButton::Join => {
+            if w::button(ui, t, Some(icons::PLUS), t!("Join group"), w::Kind::Primary, w::Size::Sm).clicked() {
+                change(hv, ui, io, g, Clan::Member, Request::JoinGroup { group: g.id, key: join_key });
+            }
+        }
+        GroupButton::RequestToJoin => {
+            if w::button(ui, t, Some(icons::USER_PLUS), t!("Request to join"), w::Kind::Primary, w::Size::Sm).on_hover_text(t!("An officer of this group has to approve you.")).clicked() {
+                change(hv, ui, io, g, Clan::PendingApproval, Request::JoinGroup { group: g.id, key: join_key });
+            }
+        }
+        GroupButton::Leave => {
+            if w::button(ui, t, Some(icons::SIGN_OUT), t!("Leave group"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                hv.leave_confirm = Some(g.id);
+            }
+            ui.label(w::body_s(t, format!("{}  {}", icons::CHECK, t!("You're a member")), t.play));
+        }
+        GroupButton::Invited => {
+            if w::button(ui, t, Some(icons::X), t!("Ignore"), w::Kind::Ghost, w::Size::Sm).clicked() {
+                change(hv, ui, io, g, Clan::None, Request::AnswerGroupInvite { group: g.id, accept: false });
+            }
+            if w::button(ui, t, Some(icons::CHECK), t!("Accept invite"), w::Kind::Primary, w::Size::Sm).clicked() {
+                change(hv, ui, io, g, Clan::Member, Request::AnswerGroupInvite { group: g.id, accept: true });
+            }
+            ui.label(w::body_s(t, t!("You're invited to this group"), t.accent));
+        }
+        GroupButton::InviteOnly => still(ui, icons::LOCK_SIMPLE, t!("Invitation only")),
+        GroupButton::RequestPending => still(ui, icons::CLOCK, t!("Request sent")),
+        GroupButton::RequestDenied => still(ui, icons::X, t!("Request declined")),
+        GroupButton::Removed => still(ui, icons::X, t!("Removed from this group")),
+        GroupButton::Blocked => still(ui, icons::LOCK_SIMPLE, t!("Blocked from this group")),
+    }
+}
+
+/// "Leave this group?"
+fn leave_dialog(hv: &mut HubView, ui: &Ui, t: &Theme, io: &mut Io, g: &hub::Group) {
+    if hv.leave_confirm != Some(g.id) {
+        return;
+    }
+    let (mut leave, mut cancel) = (false, false);
+    egui::Modal::new(egui::Id::unique(("leave-steam-group", g.id))).show(ui.ctx(), |ui| {
+        ui.set_width((ui.ctx().content_rect().width() - 64.0).clamp(240.0, 420.0));
+        ui.add(egui::Label::new(w::heading_s(t, t!("Leave {name}?", name = g.name), t.text)).wrap());
+        let why = if g.join == JoinKind::InviteOnly {
+            t!("This group is by invitation only: you'd need a new invite to come back.")
+        } else if g.join == JoinKind::Request {
+            t!("To come back you'd have to ask to join again.")
+        } else {
+            t!("You can join it again at any time.")
+        };
+        ui.add(egui::Label::new(w::body_s(t, why, t.text_dim)).wrap());
+        ui.add_space(t.spacing.md);
+        ui.horizontal(|ui| {
+            leave = w::button(ui, t, Some(icons::SIGN_OUT), t!("Leave group"), w::Kind::Danger, w::Size::Sm).clicked();
+            cancel = w::button(ui, t, None, t!("Cancel"), w::Kind::Ghost, w::Size::Sm).clicked();
+        });
+    });
+    if leave {
+        change(hv, ui, io, g, Clan::None, Request::LeaveGroup { group: g.id });
+    }
+    if leave || cancel {
+        hv.leave_confirm = None;
+    }
+}
+
+/// The title over a group's forum, with the way back to its page.
+pub(super) fn forum_header(ui: &mut Ui, t: &Theme, io: &mut Io, key: &str) {
+    ui.add_space(t.spacing.xl);
+    let name = match io.state.hub.groups.get(key) {
+        Some(Ok(g)) => g.name.clone(),
+        _ => String::new(),
+    };
+    ui.horizontal(|ui| {
+        if w::button(ui, t, Some(icons::CARET_LEFT), t!("Group page"), w::Kind::Ghost, w::Size::Sm).clicked() {
+            io.go(View::Group(key.to_string()));
+        }
+        if !name.is_empty() {
+            ui.label(w::heading_m(t, name, t.text));
+        }
+    });
+    ui.add_space(t.spacing.md);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn busy(from: Clan) -> Busy {
+        Busy { from, since: 100.0, sent: 2, taken: false }
+    }
+
+    #[test]
+    fn a_change_ends_when_the_friends_list_shows_it() {
+        let mut b = busy(Clan::None);
+        assert_eq!(settle(&mut b, Clan::None, None, 101.0), Settled::Waiting);
+        // An old answer from before this change doesn't count.
+        assert_eq!(settle(&mut b, Clan::None, Some(&(2, Err("old".into()))), 101.0), Settled::Waiting);
+        // Steam said yes, the list hasn't caught up: keep waiting a while.
+        assert_eq!(settle(&mut b, Clan::None, Some(&(3, Ok(()))), 102.0), Settled::Waiting);
+        assert!(b.taken);
+        assert_eq!(settle(&mut b, Clan::Member, Some(&(3, Ok(()))), 103.0), Settled::Done);
+    }
+
+    #[test]
+    fn an_answered_invite_stays_gone_unless_steam_refuses() {
+        const ID: SteamId = 103582791429521999;
+        let mut state = State::default();
+        state.clans.insert(ID, Clan::Invited);
+        assert_eq!(pending_invites(&state), vec![ID]);
+        let Some(Command::Hub(Request::AnswerGroupInvite { group, accept })) = answer_invite(ID, true) else {
+            panic!("the answer should go to Steam");
+        };
+        assert_eq!((group, accept), (ID, true));
+        assert!(pending_invites(&state).is_empty());
+        invite_failed(ID);
+        assert_eq!(pending_invites(&state), vec![ID]);
+    }
+
+    #[test]
+    fn a_change_says_when_it_went_wrong() {
+        let mut b = busy(Clan::Member);
+        assert_eq!(settle(&mut b, Clan::Member, Some(&(3, Err("Nope".into()))), 101.0), Settled::Failed("Nope".into()));
+        let mut b = busy(Clan::None);
+        assert_eq!(settle(&mut b, Clan::None, Some(&(3, Ok(()))), 100.0 + CONFIRM_SECS + 1.0), Settled::NotConfirmed);
+        let mut b = busy(Clan::None);
+        assert_eq!(settle(&mut b, Clan::None, None, 100.0 + ANSWER_SECS + 1.0), Settled::NoAnswer);
     }
 }

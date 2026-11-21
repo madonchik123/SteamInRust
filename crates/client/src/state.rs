@@ -33,6 +33,8 @@ pub struct State {
     /// Market prices by (app, market hash name).
     pub market_prices: HashMap<(AppId, String), Result<model::MarketPrice, String>>,
     pub my_listings: Option<Result<model::MyListings, String>>,
+    /// Buying, gems, booster packs and pending gifts.
+    pub economy: crate::economy::Book,
     /// Your market history so far (newest first), how many rows Steam has,
     /// or why it couldn't load.
     pub market_history: Option<Result<(Vec<model::HistoryRow>, u32), String>>,
@@ -110,6 +112,8 @@ pub struct State {
     /// `None` until PICS has answered.
     pub apps: Option<BTreeMap<AppId, OwnedApp>>,
     pub friends: HashMap<SteamId, Relationship>,
+    /// Your groups and where you stand with each, from Steam's friends list.
+    pub clans: HashMap<SteamId, crate::community_actions::ClanRelationship>,
     pub personas: HashMap<SteamId, Persona>,
     /// Conversations by friend, oldest message first.
     pub chats: HashMap<SteamId, Vec<ChatMessage>>,
@@ -274,6 +278,8 @@ impl State {
                 self.locations.insert((country.clone(), state.clone()), l.clone());
             }
             Event::Locations { .. } | Event::ProfileSaved { .. } => {}
+            // The store keeps these.
+            Event::PointsBalance(_) | Event::RewardEligible(_) | Event::RewardInventory { .. } | Event::PointsRedeemed { .. } => {}
             // Shown right away; the list is loaded again afterwards.
             Event::TradeOfferAnswered { id, action, result: Ok(confirm) } => {
                 if let Some(Ok(o)) = &mut self.trade_offers {
@@ -335,6 +341,8 @@ impl State {
             },
             Event::LicenseList(r) => self.licenses = Some(r.clone()),
             Event::Family(r) => self.family = Some(r.clone()),
+            // The family itself is reloaded right after; the page shows the answer.
+            Event::FamilyActionDone { .. } => {}
             Event::SupportTicket { id, result } => {
                 self.support_messages.insert(id.clone(), result.clone());
             }
@@ -356,6 +364,12 @@ impl State {
                 }
             }
             Event::ItemListed { .. } | Event::ListingCancelled { .. } | Event::BuyOrderCancelled { .. } => {}
+            Event::Economy(r) => {
+                if let Some(w) = r.new_wallet() {
+                    self.wallet = Some(w);
+                }
+                self.economy.apply(r);
+            }
             Event::InventoryApps { steam_id, result } => {
                 self.inventory_apps.insert(*steam_id, result.clone());
             }
@@ -384,6 +398,7 @@ impl State {
                 self.apps = Some(apps.iter().map(|a| (a.app_id, a.clone())).collect());
             }
             Event::Friends(list) => self.friends = list.iter().copied().collect(),
+            Event::Clans(list) => self.clans = list.iter().copied().collect(),
             Event::Personas(list) => {
                 for p in list {
                     self.personas.insert(p.steam_id, p.clone());

@@ -59,6 +59,22 @@ impl Packet {
         out
     }
 
+    /// A message in Steam's older, non-protobuf format (a few client
+    /// messages still are): the 36-byte extended header, then `body`.
+    pub fn encode_plain(emsg: u32, steam_id: u64, session_id: i32, body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(36 + body.len());
+        out.extend_from_slice(&emsg.to_le_bytes());
+        out.push(36); // header size
+        out.extend_from_slice(&2u16.to_le_bytes()); // header version
+        out.extend_from_slice(&u64::MAX.to_le_bytes()); // target job: none
+        out.extend_from_slice(&u64::MAX.to_le_bytes()); // source job: none
+        out.push(239); // header canary
+        out.extend_from_slice(&steam_id.to_le_bytes());
+        out.extend_from_slice(&session_id.to_le_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
     pub fn body<M: Message + Default>(&self) -> Result<M> {
         Ok(M::decode(self.body.as_slice())?)
     }
@@ -127,6 +143,21 @@ impl Packet {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn encodes_a_plain_message() {
+        let out = Packet::encode_plain(745, 0x0110_0001_0000_0002, 77, &[1, 2, 3]);
+        assert_eq!(out.len(), 39);
+        assert_eq!(&out[0..4], &745u32.to_le_bytes());
+        assert_eq!((out[4], &out[5..7]), (36, &2u16.to_le_bytes()[..]));
+        assert_eq!(&out[7..23], &[0xFF; 16]);
+        assert_eq!(out[23], 239);
+        assert_eq!(&out[24..32], &0x0110_0001_0000_0002u64.to_le_bytes());
+        assert_eq!(&out[32..36], &77i32.to_le_bytes());
+        assert_eq!(&out[36..], &[1, 2, 3]);
+        // Not mistaken for a protobuf message when read back.
+        assert!(Packet::decode(&out).unwrap().is_none());
+    }
+
     use super::*;
 
     #[test]

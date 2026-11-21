@@ -25,6 +25,9 @@ pub mod cb {
     pub const REMOTE_STORAGE_FILE_READ_ASYNC_COMPLETE: i32 = 1332;
 }
 
+/// The game server's HSteamUser (the player is 1).
+pub const GS_USER: i32 = 2;
+
 pub const RESULT_OK: i32 = 1;
 pub const RESULT_FAIL: i32 = 2;
 pub const RESULT_NO_CONNECTION: i32 = 3;
@@ -133,6 +136,13 @@ pub struct Global {
     /// Our auth tickets: handle -> CRC.
     pub tickets: HashMap<u32, u32>,
     pub encrypted_ticket: Option<Vec<u8>>,
+    /// Callbacks for the game's server code, on its own pipe.
+    pub gs_queue: VecDeque<(i32, Vec<u8>)>,
+    pub gs_current: Option<Vec<u8>>,
+    pub gs_pipe: Option<i32>,
+    next_pipe: i32,
+    /// The game also runs as a player (SteamAPI_Init), not just a server.
+    pub user_connected: bool,
 }
 
 static G: LazyLock<Mutex<Global>> = LazyLock::new(|| {
@@ -154,6 +164,11 @@ static G: LazyLock<Mutex<Global>> = LazyLock::new(|| {
         files: Vec::new(),
         tickets: HashMap::new(),
         encrypted_ticket: None,
+        gs_queue: VecDeque::new(),
+        gs_current: None,
+        gs_pipe: None,
+        next_pipe: 1,
+        user_connected: false,
     })
 });
 
@@ -206,6 +221,45 @@ impl Global {
         self.queue.push_back((callback, crate::pack::small(callback, data)));
     }
 
+    /// Queue a callback for the game's server code.
+    pub fn post_gs(&mut self, callback: i32, data: Vec<u8>) {
+        self.gs_queue.push_back((callback, crate::pack::small(callback, data)));
+    }
+
+    pub fn new_pipe(&mut self) -> i32 {
+        let p = self.next_pipe;
+        self.next_pipe += 1;
+        p
+    }
+
+    /// The next callback for `pipe`: (user, id, data, size). A process that
+    /// is only a server has nobody else reading the shared queue, so its
+    /// pipe takes those callbacks too (HTTP results and the like).
+    pub fn next_callback(&mut self, pipe: i32) -> Option<(i32, i32, *mut u8, i32)> {
+        let server = self.gs_pipe == Some(pipe);
+        let item = if server {
+            match self.gs_queue.pop_front() {
+                Some(x) => Some(x),
+                None if !self.user_connected => self.queue.pop_front(),
+                None => None,
+            }
+        } else {
+            self.queue.pop_front()
+        };
+        let (callback, data) = item?;
+        let slot = if server { &mut self.gs_current } else { &mut self.current };
+        let cur = slot.insert(data);
+        Some((if server { GS_USER } else { 1 }, callback, cur.as_mut_ptr(), cur.len() as i32))
+    }
+
+    pub fn free_callback(&mut self, pipe: i32) {
+        if self.gs_pipe == Some(pipe) {
+            self.gs_current = None;
+        } else {
+            self.current = None;
+        }
+    }
+
     pub fn new_call(&mut self) -> u64 {
         let id = self.next_call;
         self.next_call += 1;
@@ -221,6 +275,15 @@ impl Global {
         done.u64(0, call).i32(8, callback).u32(12, data.len() as u32);
         self.calls.insert(call, Call { callback, data, failed });
         self.post(cb::API_CALL_COMPLETED, done.0);
+    }
+
+    /// [`complete`](Self::complete) for a call made by the game's server code.
+    pub fn complete_gs(&mut self, call: u64, callback: i32, data: Vec<u8>, failed: bool) {
+        let data = crate::pack::small(callback, data);
+        let mut done = Bytes::new(16);
+        done.u64(0, call).i32(8, callback).u32(12, data.len() as u32);
+        self.calls.insert(call, Call { callback, data, failed });
+        self.post_gs(cb::API_CALL_COMPLETED, done.0);
     }
 
     /// Start and immediately finish a call.
@@ -338,6 +401,35 @@ mod tests {
         assert_eq!(block.stored, 0b100);
         assert!(s.stat("NumGames").is_some());
         assert!(s.stat("").is_none(), "block stats aren't visible by name");
+    }
+
+    #[test]
+    fn server_callbacks_stay_on_the_servers_pipe() {
+        let mut g = lock();
+        let (queue, gs_queue) = (std::mem::take(&mut g.queue), std::mem::take(&mut g.gs_queue));
+        let (gs_pipe, user) = (g.gs_pipe, g.user_connected);
+        let (player, server) = (g.new_pipe(), g.new_pipe());
+        g.gs_pipe = Some(server);
+        g.user_connected = true;
+        g.queue.push_back((1, vec![1]));
+        g.post_gs(101, vec![2]);
+        // The player only sees theirs, the server only its own.
+        let (u, c, _, _) = g.next_callback(player).unwrap();
+        assert_eq!((u, c), (1, 1));
+        assert!(g.next_callback(player).is_none());
+        let (u, c, _, _) = g.next_callback(server).unwrap();
+        assert_eq!((u, c), (GS_USER, 101));
+        // A dedicated server (no player) also drains the shared queue.
+        g.user_connected = false;
+        g.queue.push_back((2101, vec![3]));
+        let (u, c, _, _) = g.next_callback(server).unwrap();
+        assert_eq!((u, c), (GS_USER, 2101));
+        g.free_callback(server);
+        assert!(g.gs_current.is_none());
+        g.queue = queue;
+        g.gs_queue = gs_queue;
+        g.gs_pipe = gs_pipe;
+        g.user_connected = user;
     }
 
     #[test]

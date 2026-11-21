@@ -1,8 +1,7 @@
 //! Store: the Points Shop (Figma "point shop" `317:1001`). Steam's catalog
 //! of profile items, chat stickers and the like, by kind, from any game or
-//! from yours. Browsing needs no sign-in. Your points balance and getting an
-//! item need a signed-in call SteamInRust doesn't make yet, so those open
-//! Steam's Points Shop in the browser.
+//! from yours. Browsing needs no sign-in; your balance and getting an item
+//! are in `store_redeem.rs`.
 
 use super::{Load, Shared, Store, View, store_page::block, thousands};
 use egui::{Align, Align2, Layout, Rect, Sense, Ui, UiBuilder, pos2, vec2};
@@ -50,7 +49,7 @@ fn groups() -> Vec<(&'static str, Vec<(Shelf, &'static str)>)> {
 }
 
 /// The name of a kind of item, for its card.
-fn kind_name(c: u32) -> &'static str {
+pub(super) fn kind_name(c: u32) -> &'static str {
     match c {
         class::AVATAR => t!("Animated avatar"),
         class::AVATAR_FRAME => t!("Avatar frame"),
@@ -75,6 +74,16 @@ pub(super) struct Points {
     key: Option<(Shelf, Vec<AppId>)>,
     /// A few items per game, for game pages.
     per_app: HashMap<AppId, Shared<RewardPage>>,
+    /// Your points, what you own, and the open item.
+    pub wallet: super::redeem::Wallet,
+}
+
+impl Points {
+    /// Ask Steam for the open list again (prices may have changed).
+    pub(super) fn reload(&mut self) {
+        self.key = None;
+        self.per_app.clear();
+    }
 }
 
 impl Store {
@@ -132,7 +141,7 @@ impl Store {
             ui.vertical(|ui| {
                 let width = ui.available_width();
                 ui.set_width(width);
-                self.points_items(ui, t, &apps);
+                self.points_items(ui, t, ctx, &apps);
             });
         });
     }
@@ -151,21 +160,21 @@ impl Store {
     /// "Buy Games, Earn Points", with How it works, History, My Profile and
     /// the balance on the right (Figma `317:1001`, top).
     fn points_header(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
+        // The title wraps rather than run under the buttons (long in some
+        // languages); their width is last frame's.
+        let buttons_id = ui.scope_id().with("points-header-buttons");
+        let buttons = ui.data(|d| d.get_temp::<f32>(buttons_id)).unwrap_or(0.0);
+        let title_w = (ui.available_width() - buttons - t.spacing.lg).max(t.dense(160.0));
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
+                ui.set_max_width(title_w);
                 ui.spacing_mut().item_spacing.y = t.spacing.sm;
-                ui.label(w::heading_l(t, t!("Buy Games, Earn Points"), t.text));
-                ui.label(w::body_m(t, t!("Make your profile and chats your own with Points Shop items."), t.text));
+                ui.add(egui::Label::new(w::heading_l(t, t!("Buy Games, Earn Points"), t.text)).wrap());
+                ui.add(egui::Label::new(w::body_m(t, t!("Make your profile and chats your own with Points Shop items."), t.text)).wrap());
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = t.dense(10.0);
-                // The balance: Steam only tells a signed-in session, which
-                // SteamInRust doesn't ask yet; Steam's own page shows it.
-                let r = w::button(ui, t, Some(icons::COINS), t!("Your points"), w::Kind::Secondary, w::Size::Lg)
-                    .on_hover_text(t!("Your points balance is on Steam's Points Shop page (opens in your browser)."));
-                if r.clicked() {
-                    crate::links::open_http("https://store.steampowered.com/points/shop");
-                }
+                self.balance_box(ui, t, ctx);
                 if ctx.state.steam_id != 0 && w::button(ui, t, None, t!("My Profile"), w::Kind::Tertiary, w::Size::Lg).clicked() {
                     ctx.navigate("profile", None);
                 }
@@ -175,6 +184,8 @@ impl Store {
                 if w::button(ui, t, None, t!("How it works"), w::Kind::Tertiary, w::Size::Lg).on_hover_text(t!("Opens in your browser")).clicked() {
                     crate::links::open_http("https://store.steampowered.com/points/howitworks");
                 }
+                let used = ui.min_rect().width();
+                ui.data_mut(|d| d.insert_temp(buttons_id, used));
             });
         });
     }
@@ -212,7 +223,7 @@ impl Store {
     }
 
     /// The open list's items, a grid of cards (Figma `317:1001`, right).
-    fn points_items(&mut self, ui: &mut Ui, t: &Theme, apps: &[AppId]) {
+    fn points_items(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, apps: &[AppId]) {
         let shelf = self.points.shelf;
         let title = match shelf {
             Shelf::Featured => t!("All items").to_string(),
@@ -232,6 +243,7 @@ impl Store {
             .collect();
         let items: Vec<RewardItem> = pages.iter().flatten().flatten().flat_map(|p| p.items.clone()).collect();
         let total = pages.iter().flatten().flatten().next().map(|p| p.total);
+        self.wallet_tick(ctx, &items);
         let c = &t.components.shelf;
         w::component_frame(t, c).inner_margin(egui::Margin::symmetric(t.dense(24.0) as i8, t.dense(24.0) as i8)).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -269,9 +281,8 @@ impl Store {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;
                     for it in row {
-                        if reward_card(ui, t, it, cw).clicked() {
-                            // Getting an item needs your points: on Steam's page.
-                            crate::links::open_http(&format!("https://store.steampowered.com/points/shop/app/{}", it.app_id));
+                        if reward_card(ui, t, it, cw, self.points.wallet.owns(it)).clicked() {
+                            self.points_open_item(it);
                         }
                     }
                 });
@@ -308,7 +319,7 @@ fn list_row(ui: &mut Ui, t: &Theme, label: &str, selected: bool) -> egui::Respon
 }
 
 /// One item (Figma `317:1001`'s cards): its picture, name, kind and price.
-fn reward_card(ui: &mut Ui, t: &Theme, it: &RewardItem, width: f32) -> egui::Response {
+fn reward_card(ui: &mut Ui, t: &Theme, it: &RewardItem, width: f32, owned: bool) -> egui::Response {
     let c = &t.components.store_card;
     let pad = t.dense(11.0);
     let img = width - pad * 2.0;
@@ -339,8 +350,12 @@ fn reward_card(ui: &mut Ui, t: &Theme, it: &RewardItem, width: f32) -> egui::Res
     });
     b.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = t.spacing.sm;
-        ui.label(w::heading_s(t, icons::COINS, t.accent));
-        ui.label(w::heading_s(t, thousands(it.cost), t.text));
+        if owned {
+            ui.label(w::heading_s(t, format!("{}  {}", icons::CHECK, t!("You own this")), t.play));
+        } else {
+            ui.label(w::heading_s(t, icons::COINS, t.accent));
+            ui.label(w::heading_s(t, thousands(it.cost), t.text));
+        }
     });
     let resp = if it.description.is_empty() { resp } else { resp.on_hover_text(&it.description) };
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)

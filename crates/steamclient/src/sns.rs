@@ -23,7 +23,7 @@ use crate::vt::Fp;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_void};
 use std::net::SocketAddr;
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 // Callback ids and sizes (Windows packing).
@@ -123,7 +123,7 @@ struct Session {
 }
 
 /// Global config callbacks, by ESteamNetworkingConfigValue.
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct Callbacks {
     conn_status: usize,
     auth_status: usize,
@@ -134,6 +134,8 @@ struct Callbacks {
 
 pub struct Net {
     me: u64,
+    /// Runs under the game server's identity, not the player's.
+    server: bool,
     next: u32,
     arrival: u64,
     conns: HashMap<u32, Conn>,
@@ -226,6 +228,7 @@ impl Net {
     pub fn new(me: u64, with_network: bool) -> Self {
         Net {
             me,
+            server: false,
             next: 0x51_0000 + (std::process::id() & 0xFFFF),
             arrival: 0,
             conns: HashMap::new(),
@@ -831,22 +834,37 @@ impl PutBytes for Bytes {
 
 // ------------------------------------------------------- the game's side
 
-static NET: LazyLock<Mutex<Net>> = LazyLock::new(|| {
-    let (me, app) = {
-        let s = crate::state::lock();
-        (s.me(), s.app_id())
-    };
-    let n = Net::new(me, true);
-    if me != 0 {
-        engine::fetch_cert(me, app);
-    }
-    let sock = n.engine.as_ref().and_then(|e| e.sock.clone());
-    std::thread::spawn(move || network_loop(sock));
-    Mutex::new(n)
-});
+static NET: OnceLock<Mutex<Net>> = OnceLock::new();
+/// The game server's own connections, under its Steam ID.
+static SERVER_NET: OnceLock<Mutex<Net>> = OnceLock::new();
+/// Callbacks set for the whole game (SetGlobalCallback_...): both identities use them.
+static GLOBAL_CALLBACKS: Mutex<Callbacks> = Mutex::new(Callbacks { conn_status: 0, auth_status: 0, relay_status: 0, session_request: 0, session_failed: 0 });
+
+fn global_callbacks() -> MutexGuard<'static, Callbacks> {
+    GLOBAL_CALLBACKS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn net_cell(server: bool) -> &'static Mutex<Net> {
+    let cell = if server { &SERVER_NET } else { &NET };
+    cell.get_or_init(|| {
+        let (me, app) = {
+            let s = crate::state::lock();
+            (if server { 0 } else { s.me() }, s.app_id())
+        };
+        let me = if server { crate::gameserver::steam_id() } else { me };
+        let mut n = Net::new(me, true);
+        n.server = server;
+        if me != 0 || server {
+            engine::fetch_cert(server, me, app);
+        }
+        let sock = n.engine.as_ref().and_then(|e| e.sock.clone());
+        std::thread::spawn(move || network_loop(server, sock));
+        Mutex::new(n)
+    })
+}
 
 /// Receives on the ICE socket and runs every connection's timers.
-fn network_loop(sock: Option<Arc<std::net::UdpSocket>>) {
+fn network_loop(server: bool, sock: Option<Arc<std::net::UdpSocket>>) {
     if let Some(s) = &sock {
         let _ = s.set_read_timeout(Some(Duration::from_millis(10)));
     }
@@ -864,7 +882,7 @@ fn network_loop(sock: Option<Arc<std::net::UdpSocket>>) {
         if got.is_none() && !due {
             continue;
         }
-        let mut n = net();
+        let mut n = net_of(server);
         if let Some((len, from)) = got {
             n.on_udp(&buf[..len], from);
         }
@@ -879,18 +897,30 @@ fn network_loop(sock: Option<Arc<std::net::UdpSocket>>) {
 /// Config callbacks to call on the game's thread: (function, bytes).
 static PENDING: Mutex<Vec<(usize, Vec<u8>)>> = Mutex::new(Vec::new());
 
-fn net() -> MutexGuard<'static, Net> {
-    let mut n = NET.lock().unwrap_or_else(|e| e.into_inner());
-    if n.me == 0 {
+/// The network state of the player or the game server.
+fn net_of(server: bool) -> MutexGuard<'static, Net> {
+    let mut n = net_cell(server).lock().unwrap_or_else(|e| e.into_inner());
+    if server {
+        let id = crate::gameserver::steam_id();
+        if id != 0 {
+            n.me = id;
+        }
+    } else if n.me == 0 {
         n.me = crate::state::lock().me();
     }
+    n.callbacks = *global_callbacks();
     n
+}
+
+/// The network state of whichever interface object the game called.
+fn net_for(t: This) -> MutexGuard<'static, Net> {
+    net_of(crate::vt::is_server(t))
 }
 
 /// Hand events to the game (config callbacks wait for RunCallbacks, the
 /// rest go into Steam's callback queue) and send collected signals.
 fn finish(n: &mut Net) {
-    engine::send_signals(std::mem::take(&mut n.signals));
+    engine::send_signals(n.server, std::mem::take(&mut n.signals));
     if n.events.is_empty() {
         return;
     }
@@ -898,38 +928,66 @@ fn finish(n: &mut Net) {
     let mut g = crate::state::lock();
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     for (id, data, f) in events {
-        if f != 0 { pending.push((f, crate::pack::small(id, data))) } else { g.post(id, data) }
+        if f != 0 {
+            pending.push((f, crate::pack::small(id, data)))
+        } else if n.server {
+            g.post_gs(id, data)
+        } else {
+            g.post(id, data)
+        }
     }
 }
 
 /// Run `f` on the network state, then publish its events and signals.
-fn with<R>(f: impl FnOnce(&mut Net) -> R) -> R {
-    let mut n = net();
+fn with_for<R>(t: This, f: impl FnOnce(&mut Net) -> R) -> R {
+    let mut n = net_for(t);
     let r = f(&mut n);
     finish(&mut n);
     r
 }
 
 /// Our certificate for a new connection (waits briefly for Steam the first time).
-fn my_cert() -> Arc<LocalCert> {
-    if let Some(c) = engine::cert_ready() {
+fn cert_of(server: bool) -> Arc<LocalCert> {
+    if let Some(c) = engine::cert_ready(server) {
         return c;
     }
     let (me, app) = {
         let s = crate::state::lock();
         (s.me(), s.app_id())
     };
-    engine::cert(me, app, Duration::from_secs(5))
+    let me = if server { crate::gameserver::steam_id() } else { me };
+    engine::cert(server, me, app, Duration::from_secs(5))
 }
 
-/// A SteamNetworkingSockets rendezvous from another player (through Steam).
-pub fn rendezvous(from: u64, data: &[u8]) {
+fn my_cert(t: This) -> Arc<LocalCert> {
+    cert_of(crate::vt::is_server(t))
+}
+
+fn on_rendezvous(server: bool, from: u64, data: &[u8]) {
     let Some(m) = crate::gns::msg::decode::<Rendezvous>(data) else {
         crate::log!("sns: unreadable rendezvous from {from}");
         return;
     };
-    let cert = if m.connect_request.is_some() && m.to_connection_id.is_none() { Some(my_cert()) } else { None };
-    with(|n| n.on_signal(from, &m, cert));
+    let cert = if m.connect_request.is_some() && m.to_connection_id.is_none() { Some(cert_of(server)) } else { None };
+    let mut n = net_of(server);
+    n.on_signal(from, &m, cert);
+    finish(&mut n);
+}
+
+/// A SteamNetworkingSockets rendezvous from another player (through Steam).
+pub fn rendezvous(from: u64, data: &[u8]) {
+    on_rendezvous(false, from, data);
+}
+
+/// The same, addressed to the game server.
+pub fn server_rendezvous(from: u64, data: &[u8]) {
+    on_rendezvous(true, from, data);
+}
+
+/// The game server signed in again with a new Steam ID (anonymous servers
+/// get a fresh one): connections need a certificate for it.
+pub fn server_identity_changed() {
+    engine::forget_server_cert();
 }
 
 thread_local! {
@@ -1122,83 +1180,83 @@ fn option_callback(n: i32, options: *const u8) -> usize {
     d.chunks(16).find(|o| i32_at(o, 0) == Some(CFG_CONN_STATUS) && i32_at(o, 4) == Some(TYPE_PTR)).map(|o| usize::from_le_bytes(o[8..8 + size_of::<usize>()].try_into().unwrap())).unwrap_or(0)
 }
 
-extern "C" fn s_listen_ip(_t: This, _addr: *const u8, n: i32, options: *const u8) -> u32 {
+extern "C" fn s_listen_ip(t: This, _addr: *const u8, n: i32, options: *const u8) -> u32 {
     // Nobody can reach it (that needs Valve's UDP protocol), but a host
     // keeps working over P2P with a valid handle.
     crate::log!("sns: listen by IP (only P2P connections arrive)");
-    with(|net| net.listen(-1, option_callback(n, options)))
+    with_for(t, |net| net.listen(-1, option_callback(n, options)))
 }
 
-extern "C" fn s_connect_ip(_t: This, _addr: *const u8, n: i32, options: *const u8) -> u32 {
+extern "C" fn s_connect_ip(t: This, _addr: *const u8, n: i32, options: *const u8) -> u32 {
     crate::log!("sns: connect by IP isn't possible");
-    with(|net| net.connect_unsupported(option_callback(n, options), "connecting by IP address needs Valve's UDP connect protocol; SteamInRust connects players over P2P only"))
+    with_for(t, |net| net.connect_unsupported(option_callback(n, options), "connecting by IP address needs Valve's UDP connect protocol; SteamInRust connects players over P2P only"))
 }
 
-extern "C" fn s_listen_p2p(_t: This, vport: i32, n: i32, options: *const u8) -> u32 {
+extern "C" fn s_listen_p2p(t: This, vport: i32, n: i32, options: *const u8) -> u32 {
     crate::log!("sns: listen on virtual port {vport}");
-    with(|net| net.listen(vport, option_callback(n, options)))
+    with_for(t, |net| net.listen(vport, option_callback(n, options)))
 }
 
-extern "C" fn s_connect_p2p(_t: This, who: *const u8, vport: i32, n: i32, options: *const u8) -> u32 {
+extern "C" fn s_connect_p2p(t: This, who: *const u8, vport: i32, n: i32, options: *const u8) -> u32 {
     let peer = steam_id_of(who);
     crate::log!("sns: connect to {peer} port {vport}");
     if peer == 0 {
-        return with(|net| net.connect_unsupported(option_callback(n, options), "only Steam ID identities are supported"));
+        return with_for(t, |net| net.connect_unsupported(option_callback(n, options), "only Steam ID identities are supported"));
     }
-    let cert = my_cert();
-    with(|net| net.connect(peer, vport, option_callback(n, options), Some(cert)))
+    let cert = my_cert(t);
+    with_for(t, |net| net.connect(peer, vport, option_callback(n, options), Some(cert)))
 }
 
-extern "C" fn s_accept(_t: This, h: u32) -> i32 {
-    with(|n| n.accept(h))
+extern "C" fn s_accept(t: This, h: u32) -> i32 {
+    with_for(t, |n| n.accept(h))
 }
 
-extern "C" fn s_close(_t: This, h: u32, reason: i32, debug: *const c_char, _linger: bool) -> bool {
+extern "C" fn s_close(t: This, h: u32, reason: i32, debug: *const c_char, _linger: bool) -> bool {
     let debug = unsafe { crate::ifaces::text(debug) };
-    with(|n| n.close(h, reason, &debug))
+    with_for(t, |n| n.close(h, reason, &debug))
 }
 
-extern "C" fn s_close_listen(_t: This, h: u32) -> bool {
-    with(|n| n.close_listen(h))
+extern "C" fn s_close_listen(t: This, h: u32) -> bool {
+    with_for(t, |n| n.close_listen(h))
 }
 
-extern "C" fn s_set_user_data(_t: This, h: u32, v: i64) -> bool {
-    net().conns.get_mut(&h).map(|c| c.user_data = v).is_some()
+extern "C" fn s_set_user_data(t: This, h: u32, v: i64) -> bool {
+    net_for(t).conns.get_mut(&h).map(|c| c.user_data = v).is_some()
 }
 
-extern "C" fn s_user_data(_t: This, h: u32) -> i64 {
-    net().conns.get(&h).map(|c| c.user_data).unwrap_or(-1)
+extern "C" fn s_user_data(t: This, h: u32) -> i64 {
+    net_for(t).conns.get(&h).map(|c| c.user_data).unwrap_or(-1)
 }
 
-extern "C" fn s_set_name(_t: This, h: u32, name: *const c_char) {
+extern "C" fn s_set_name(t: This, h: u32, name: *const c_char) {
     let name = unsafe { crate::ifaces::text(name) };
-    if let Some(c) = net().conns.get_mut(&h) {
+    if let Some(c) = net_for(t).conns.get_mut(&h) {
         c.name = name;
     }
 }
 
-extern "C" fn s_name(_t: This, h: u32, buf: *mut c_char, len: i32) -> bool {
-    let n = net();
+extern "C" fn s_name(t: This, h: u32, buf: *mut c_char, len: i32) -> bool {
+    let n = net_for(t);
     let Some(c) = n.conns.get(&h) else { return false };
     copy_out(&c.name, buf, len.max(0) as usize);
     true
 }
 
-extern "C" fn s_send(_t: This, h: u32, data: *const u8, len: u32, flags: i32, number: *mut i64) -> i32 {
+extern "C" fn s_send(t: This, h: u32, data: *const u8, len: u32, flags: i32, number: *mut i64) -> i32 {
     let data = slice(data, len as usize).to_vec();
-    let (r, num) = with(|n| n.send(h, &data, flags));
+    let (r, num) = with_for(t, |n| n.send(h, &data, flags));
     put(number, num);
     r
 }
 
-extern "C" fn s_send_messages(_t: This, count: i32, msgs: *const *mut Message, results: *mut i64) {
+extern "C" fn s_send_messages(t: This, count: i32, msgs: *const *mut Message, results: *mut i64) {
     for i in 0..count.max(0) as usize {
         let m = unsafe { *msgs.add(i) };
         if m.is_null() {
             continue;
         }
         let (conn, data, flags) = unsafe { ((*m).conn, slice((*m).data, (*m).size.max(0) as usize).to_vec(), (*m).flags) };
-        let (r, num) = with(|n| n.send(conn, &data, flags));
+        let (r, num) = with_for(t, |n| n.send(conn, &data, flags));
         if !results.is_null() {
             unsafe { *results.add(i) = if r == OK { num } else { -(r as i64) } };
         }
@@ -1207,22 +1265,22 @@ extern "C" fn s_send_messages(_t: This, count: i32, msgs: *const *mut Message, r
     }
 }
 
-extern "C" fn s_flush(_t: This, h: u32) -> i32 {
-    if net().conns.contains_key(&h) { OK } else { INVALID_PARAM }
+extern "C" fn s_flush(t: This, h: u32) -> i32 {
+    if net_for(t).conns.contains_key(&h) { OK } else { INVALID_PARAM }
 }
 
-extern "C" fn s_receive(_t: This, h: u32, out: *mut *mut Message, max: i32) -> i32 {
+extern "C" fn s_receive(t: This, h: u32, out: *mut *mut Message, max: i32) -> i32 {
     if out.is_null() || max <= 0 {
         return 0;
     }
-    match net().receive(h, max as usize) {
+    match net_for(t).receive(h, max as usize) {
         Some(msgs) => hand_out(msgs, out),
         None => -1,
     }
 }
 
-extern "C" fn s_info(_t: This, h: u32, out: *mut u8) -> bool {
-    let n = net();
+extern "C" fn s_info(t: This, h: u32, out: *mut u8) -> bool {
+    let n = net_for(t);
     if !n.conns.contains_key(&h) {
         return false;
     }
@@ -1244,8 +1302,8 @@ fn realtime(state: i32, ping: i32, pending: usize) -> Vec<u8> {
     b.0
 }
 
-extern "C" fn s_status(_t: This, h: u32, out: *mut u8) -> i32 {
-    let n = net();
+extern "C" fn s_status(t: This, h: u32, out: *mut u8) -> i32 {
+    let n = net_for(t);
     // 0 for a bad handle: false for GetQuickConnectionStatus, not OK for
     // GetConnectionRealTimeStatus.
     let Some(c) = n.conns.get(&h) else { return 0 };
@@ -1258,8 +1316,8 @@ extern "C" fn s_status(_t: This, h: u32, out: *mut u8) -> i32 {
     OK
 }
 
-extern "C" fn s_detailed(_t: This, h: u32, buf: *mut c_char, len: i32) -> i32 {
-    let n = net();
+extern "C" fn s_detailed(t: This, h: u32, buf: *mut c_char, len: i32) -> i32 {
+    let n = net_for(t);
     let Some(c) = n.conns.get(&h) else { return -1 };
     let route = c.proto.as_ref().and_then(|p| p.remote_addr()).map(|a| a.to_string()).unwrap_or_else(|| "none".into());
     let text = format!("SteamInRust P2P to {} (state {}, ping {} ms, route {route})
@@ -1271,19 +1329,19 @@ extern "C" fn s_detailed(_t: This, h: u32, buf: *mut c_char, len: i32) -> i32 {
     0
 }
 
-extern "C" fn s_pair(_t: This, a: *mut u32, b: *mut u32, _loopback: bool, _id1: *const u8, _id2: *const u8) -> bool {
-    let (x, y) = net().pair();
+extern "C" fn s_pair(t: This, a: *mut u32, b: *mut u32, _loopback: bool, _id1: *const u8, _id2: *const u8) -> bool {
+    let (x, y) = net_for(t).pair();
     put(a, x);
     put(b, y);
     true
 }
 
-extern "C" fn s_lanes(_t: This, h: u32) -> i32 {
-    if net().conns.contains_key(&h) { OK } else { INVALID_PARAM }
+extern "C" fn s_lanes(t: This, h: u32) -> i32 {
+    if net_for(t).conns.contains_key(&h) { OK } else { INVALID_PARAM }
 }
 
-extern "C" fn s_identity(_t: This, out: *mut u8) -> bool {
-    let me = net().me;
+extern "C" fn s_identity(t: This, out: *mut u8) -> bool {
+    let me = net_for(t).me;
     if !out.is_null() && me != 0 {
         unsafe { std::ptr::copy_nonoverlapping(identity(me).as_ptr(), out, IDENTITY) };
     }
@@ -1296,10 +1354,12 @@ fn auth_status() -> Vec<u8> {
     b.0
 }
 
-extern "C" fn s_init_auth(_t: This) -> i32 {
-    let f = net().callbacks.auth_status;
+extern "C" fn s_init_auth(t: This) -> i32 {
+    let f = global_callbacks().auth_status;
     if f != 0 {
         PENDING.lock().unwrap_or_else(|e| e.into_inner()).push((f, auth_status()));
+    } else if crate::vt::is_server(t) {
+        crate::state::lock().post_gs(CB_AUTH_STATUS, auth_status());
     } else {
         crate::state::lock().post(CB_AUTH_STATUS, auth_status());
     }
@@ -1313,23 +1373,23 @@ extern "C" fn s_auth_status(_t: This, out: *mut u8) -> i32 {
     AVAILABLE
 }
 
-extern "C" fn s_new_group(_t: This) -> u32 {
-    net().new_group()
+extern "C" fn s_new_group(t: This) -> u32 {
+    net_for(t).new_group()
 }
 
-extern "C" fn s_drop_group(_t: This, g: u32) -> bool {
-    net().drop_group(g)
+extern "C" fn s_drop_group(t: This, g: u32) -> bool {
+    net_for(t).drop_group(g)
 }
 
-extern "C" fn s_set_group(_t: This, h: u32, g: u32) -> bool {
-    net().set_group(h, g)
+extern "C" fn s_set_group(t: This, h: u32, g: u32) -> bool {
+    net_for(t).set_group(h, g)
 }
 
-extern "C" fn s_receive_group(_t: This, g: u32, out: *mut *mut Message, max: i32) -> i32 {
+extern "C" fn s_receive_group(t: This, g: u32, out: *mut *mut Message, max: i32) -> i32 {
     if out.is_null() || max <= 0 {
         return 0;
     }
-    match net().receive_group(g, max as usize) {
+    match net_for(t).receive_group(g, max as usize) {
         Some(msgs) => hand_out(msgs, out),
         None => -1,
     }
@@ -1339,36 +1399,36 @@ extern "C" fn s_run_callbacks(_t: This) {
     run_callbacks();
 }
 
-extern "C" fn m_send(_t: This, who: *const u8, data: *const u8, len: u32, flags: i32, channel: i32) -> i32 {
+extern "C" fn m_send(t: This, who: *const u8, data: *const u8, len: u32, flags: i32, channel: i32) -> i32 {
     let peer = steam_id_of(who);
     let data = slice(data, len as usize).to_vec();
-    let cert = (peer != 0).then(my_cert);
-    with(|n| n.send_to_user(peer, &data, flags, channel, cert))
+    let cert = (peer != 0).then(|| my_cert(t));
+    with_for(t, |n| n.send_to_user(peer, &data, flags, channel, cert))
 }
 
-extern "C" fn m_receive(_t: This, channel: i32, out: *mut *mut Message, max: i32) -> i32 {
+extern "C" fn m_receive(t: This, channel: i32, out: *mut *mut Message, max: i32) -> i32 {
     if out.is_null() || max <= 0 {
         return 0;
     }
-    let msgs = net().receive_channel(channel, max as usize);
+    let msgs = net_for(t).receive_channel(channel, max as usize);
     hand_out(msgs, out)
 }
 
-extern "C" fn m_accept(_t: This, who: *const u8) -> bool {
-    net().accept_session(steam_id_of(who))
+extern "C" fn m_accept(t: This, who: *const u8) -> bool {
+    net_for(t).accept_session(steam_id_of(who))
 }
 
-extern "C" fn m_close(_t: This, who: *const u8) -> bool {
-    net().close_session(steam_id_of(who))
+extern "C" fn m_close(t: This, who: *const u8) -> bool {
+    net_for(t).close_session(steam_id_of(who))
 }
 
-extern "C" fn m_close_channel(_t: This, who: *const u8, channel: i32) -> bool {
-    net().close_channel(steam_id_of(who), channel)
+extern "C" fn m_close_channel(t: This, who: *const u8, channel: i32) -> bool {
+    net_for(t).close_channel(steam_id_of(who), channel)
 }
 
-extern "C" fn m_info(_t: This, who: *const u8, info: *mut u8, status: *mut u8) -> i32 {
+extern "C" fn m_info(t: This, who: *const u8, info: *mut u8, status: *mut u8) -> i32 {
     let peer = steam_id_of(who);
-    let n = net();
+    let n = net_for(t);
     let state = n.session_state(peer);
     let p = n.sessions.get(&peer).and_then(|s| s.proto.as_deref());
     if !info.is_null() {
@@ -1417,7 +1477,7 @@ static RELAY_ANNOUNCED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// relay status once, as Steam does when it becomes ready.
 extern "C" fn u_check_ping(_t: This, _max_age: f32) -> bool {
     if !RELAY_ANNOUNCED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        let f = net().callbacks.relay_status;
+        let f = global_callbacks().relay_status;
         if f != 0 {
             PENDING.lock().unwrap_or_else(|e| e.into_inner()).push((f, relay_status()));
         } else {
@@ -1456,11 +1516,33 @@ extern "C" fn u_parse_ping(_t: This, _s: *const c_char, out: *mut u8) -> bool {
     true
 }
 
+/// A callback set for the whole game.
+fn set_global_callback(value: i32, f: usize) -> bool {
+    let mut c = global_callbacks();
+    match value {
+        CFG_CONN_STATUS => c.conn_status = f,
+        CFG_AUTH_STATUS => c.auth_status = f,
+        CFG_RELAY_STATUS => c.relay_status = f,
+        CFG_SESSION_REQUEST => c.session_request = f,
+        CFG_SESSION_FAILED => c.session_failed = f,
+        _ => return false,
+    }
+    true
+}
+
 /// Config values: callbacks are kept, everything else is accepted as is.
 extern "C" fn u_set_config(_t: This, value: i32, scope: i32, object: isize, kind: i32, arg: *const usize) -> bool {
     if (CFG_CONN_STATUS..=CFG_SESSION_FAILED).contains(&value) && kind == TYPE_PTR {
         let f = if arg.is_null() { 0 } else { unsafe { arg.read_unaligned() } };
-        return net().set_callback(value, scope, object as usize, f);
+        if !matches!(scope, SCOPE_LISTEN | SCOPE_CONNECTION) {
+            return set_global_callback(value, f);
+        }
+        // A socket or connection belongs to one identity; only look in
+        // the ones that exist (a server alone never starts the player's).
+        return [false, true].into_iter().any(|server| {
+            let cell = if server { &SERVER_NET } else { &NET };
+            cell.get().is_some() && net_of(server).set_callback(value, scope, object as usize, f)
+        });
     }
     true
 }
