@@ -38,7 +38,9 @@ Steam's website" still works; it just isn't native yet.
 | Account details: email, phone, Steam Guard and authenticator with dates, password and email change dates, store country, wallet, VAC | Done, native (Credentials service) |
 | Purchase history with "load more", refunds marked | Done, native (read from Steam's history page, like Steam's client) |
 | Licenses and product key activations, searchable | Done, native |
-| Steam Families: members, roles, cooldowns, invites, shared library with owners | Done, native (FamilyGroups service). Inviting, removing and limits open Steam's website |
+| Steam Families: members, roles, cooldowns, invites, shared library with owners | Done, native (FamilyGroups service) |
+| Steam Families: invite and cancel, accept (with Steam's phone or email confirmation) and decline, remove a member, leave | Done, native (FamilyGroups service), following the calls Steam's own family page makes. The rules and cooldowns show first, and accepting, removing and leaving need an "I understand" tick. **Not tried on a real account**, because these can lock an account out of a family for a year: requests and replies are unit-tested and the screens were checked on the demo account |
+| Steam Families: creating, renaming or deleting a family, its history, a child's playtime, game, store and community limits | Open Steam's website. Limits aren't part of the FamilyGroups service (they're Steam's separate Parental service) |
 | Changing email, password, phone, Steam Guard | Open Steam's website (they need Steam's own confirmation) |
 
 ## Offline mode and reconnecting

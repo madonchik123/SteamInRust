@@ -335,6 +335,8 @@ impl State {
             },
             Event::LicenseList(r) => self.licenses = Some(r.clone()),
             Event::Family(r) => self.family = Some(r.clone()),
+            // The family itself is reloaded right after; the page shows the answer.
+            Event::FamilyActionDone { .. } => {}
             Event::SupportTicket { id, result } => {
                 self.support_messages.insert(id.clone(), result.clone());
             }

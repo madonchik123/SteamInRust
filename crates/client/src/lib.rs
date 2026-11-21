@@ -216,6 +216,9 @@ pub enum Command {
     LoadLicenses { language: String },
     /// Your Steam Family and its shared library.
     LoadFamily { language: String },
+    /// Invite, cancel, accept, decline, remove or leave. Changes the real
+    /// account: send it only after the person confirmed.
+    FamilyAction { action: model::FamilyAction, language: String },
     CancelListing { listing_id: u64 },
     CancelBuyOrder { order_id: u64 },
     /// Fetch the games on someone's profile with their playtime.
@@ -405,6 +408,7 @@ impl std::fmt::Debug for Command {
             Command::LoadPurchases { language, cursor } => f.debug_struct("LoadPurchases").field("language", language).field("cursor", cursor).finish(),
             Command::LoadLicenses { language } => f.debug_struct("LoadLicenses").field("language", language).finish(),
             Command::LoadFamily { language } => f.debug_struct("LoadFamily").field("language", language).finish(),
+            Command::FamilyAction { action, language } => f.debug_struct("FamilyAction").field("action", action).field("language", language).finish(),
             Command::CancelListing { listing_id } => f.debug_struct("CancelListing").field("listing_id", listing_id).finish(),
             Command::CancelBuyOrder { order_id } => f.debug_struct("CancelBuyOrder").field("order_id", order_id).finish(),
             Command::LoadPlayerGames { steam_id, language } => f.debug_struct("LoadPlayerGames").field("steam_id", steam_id).field("language", language).finish(),
@@ -587,6 +591,8 @@ pub enum Event {
     Purchases { more: bool, result: Result<model::PurchasePage, String> },
     LicenseList(Result<Vec<model::License>, String>),
     Family(Result<model::FamilyStatus, String>),
+    /// How Steam answered a [`Command::FamilyAction`].
+    FamilyActionDone { action: model::FamilyAction, result: Result<model::FamilyOutcome, String> },
     /// Community Market fee rules for your wallet currency.
     FeeRules(model::fees::Rules),
     ListingCancelled { listing_id: u64, result: Result<(), String> },
