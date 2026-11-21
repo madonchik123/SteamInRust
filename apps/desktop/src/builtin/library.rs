@@ -12,6 +12,8 @@ mod props;
 pub(crate) mod game_move;
 #[path = "library_views.rs"]
 mod views;
+#[path = "library_dynamic.rs"]
+mod dynamic;
 #[path = "library_shortcuts.rs"]
 pub(crate) mod shortcuts;
 use shortcuts::{CustomGame, is_shortcut};
@@ -293,9 +295,19 @@ pub struct Library {
     steam_base: Collections,
     /// Steam's collections have loaded this session; edits go to Steam.
     steam_loaded: bool,
-    /// Steam's dynamic collections (name, filters): their games are worked
-    /// out from the filters, like Steam does.
-    dynamic: Vec<(String, client::collections::DynamicFilter)>,
+    /// Steam's dynamic collections: their games are worked out from the
+    /// filters, like Steam does.
+    dynamic: Vec<dynamic::DynCollection>,
+    /// The dynamic collection being made or edited.
+    dyn_editor: Option<dynamic::DynEditor>,
+    /// A link asked to open this one in the editor, once Steam's list is here.
+    open_dynamic: Option<String>,
+    /// What friends named in dynamic filters own, by account id.
+    friend_games: client::collections::FriendGames,
+    /// Games this account has played, for the filters.
+    played_ids: std::collections::HashSet<AppId>,
+    /// Friends whose games were asked for this session.
+    asked_friends: BTreeSet<model::SteamId>,
     adv: AdvFilters,
     /// Naming a new collection (with games to put in it), or renaming one.
     naming: Option<(Option<usize>, String, Vec<AppId>)>,
@@ -344,6 +356,12 @@ impl Extension for Library {
         self.reader = None;
         // Links can ask for an action: "install:ID", "uninstall:ID", "verify:ID", "play:ID".
         match arg.and_then(|a| a.split_once(':')) {
+            // "collection:<id>" edits a dynamic collection, "collection:new" makes one.
+            Some(("collection", id)) => {
+                self.tab = Tab::Collections;
+                self.selected = None;
+                self.open_dynamic = Some(id.to_string());
+            }
             Some((action, id)) => {
                 self.selected = id.parse().ok();
                 self.pending = Some(action.to_string());
@@ -370,10 +388,12 @@ impl Extension for Library {
             client::Event::GameStopped { .. } => self.auto_update(ctx),
             client::Event::SteamCollections(Ok(list)) => {
                 self.merge_steam_collections(list);
+                self.refresh_dynamic_data(ctx);
                 self.sync_collections(ctx);
             }
+            client::Event::PlayerGames { .. } => self.refresh_dynamic_data(ctx),
             client::Event::SteamCollectionsSaved(Err(e)) => {
-                ctx.toast(t!("Couldn't save your collections to Steam: {error}", error = e));
+                ctx.toast(t!("Couldn't save your collections to Steam: {error}", error = i18n::tr_dyn(e)));
             }
             client::Event::CloudReport { report, held_launch } => {
                 let name = ctx.state.app_name(report.app_id).unwrap_or_default().to_string();
@@ -445,6 +465,8 @@ impl Extension for Library {
         // The Steam Cloud question is drawn by the app on every page (and
         // in Big Picture), see `background_dialogs`.
         self.naming_dialog(ui, &t);
+        self.open_linked_dynamic();
+        self.dynamic_dialog(ui, &t, ctx);
         if let Some((id, act)) = self.menu_request.take() {
             self.apply_menu(ctx, id, act);
         }
@@ -572,7 +594,7 @@ impl Library {
     /// from the official client or another computer show up, removals too.
     /// The very first time, both sides are merged so nothing is lost.
     fn merge_steam_collections(&mut self, list: &[model::SteamCollection]) {
-        self.dynamic = list.iter().filter(|c| c.dynamic).filter_map(|c| Some((c.name.clone(), client::collections::DynamicFilter::parse(c.filter.as_deref()?)?))).collect();
+        self.dynamic = list.iter().filter(|c| c.dynamic).filter_map(dynamic::DynCollection::from_steam).collect();
         let steam: Collections = list.iter().filter(|c| !c.dynamic).map(|c| (c.id.clone(), (c.name.clone(), c.games.iter().copied().collect()))).collect();
         // The non-Steam games in each list, put back after following Steam.
         let local_only = |s: &BTreeSet<AppId>| s.iter().copied().filter(|id| is_shortcut(*id)).collect::<BTreeSet<AppId>>();
@@ -642,7 +664,7 @@ impl Library {
         let mut edits: Vec<model::CollectionEdit> = now
             .iter()
             .filter(|(id, v)| self.steam_base.get(*id) != Some(*v))
-            .map(|(id, (name, games))| model::CollectionEdit { id: id.clone(), name: name.clone(), games: games.iter().copied().collect(), deleted: false })
+            .map(|(id, (name, games))| model::CollectionEdit { id: id.clone(), name: name.clone(), games: games.iter().copied().collect(), ..Default::default() })
             .collect();
         edits.extend(self.steam_base.keys().filter(|id| !now.contains_key(*id)).map(|id| model::CollectionEdit { id: id.clone(), deleted: true, ..Default::default() }));
         self.steam_base = now;
@@ -1081,7 +1103,7 @@ impl Library {
 
     /// The filter popup (Figma "library home filters" `727:39670`): the
     /// choices in three columns, then clear and "Create Collection" (a
-    /// collection of the games the filters leave).
+    /// dynamic collection from these filters, in Steam's format).
     fn adv_panel(&mut self, ui: &mut Ui, t: &Theme, ctx: &Ctx) {
         // Only offer what this library has.
         let apps: Vec<&model::OwnedApp> = ctx.state.apps.as_ref().map(|a| a.values().filter(|a| !a.is_dlc()).collect()).unwrap_or_default();
@@ -1141,7 +1163,7 @@ impl Library {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = t.spacing.md;
             let any = f.count() > 0;
-            if ui.add_enabled_ui(any, |ui| w::button(ui, t, None, t!("Create Collection"), w::Kind::Primary, w::Size::Md)).inner.on_hover_text(t!("A new collection of the games these filters show")).clicked() {
+            if ui.add_enabled_ui(any, |ui| w::button(ui, t, None, t!("Create Collection"), w::Kind::Primary, w::Size::Md)).inner.on_hover_text(t!("A new dynamic collection from these filters")).clicked() {
                 create = true;
             }
             if ui.add_enabled_ui(any, |ui| w::icon_box(ui, t, icons::X, t!("Clear all"), false)).inner.clicked() {
@@ -1150,7 +1172,7 @@ impl Library {
         });
         if create {
             let games = self.filtered(ctx).iter().map(|e| e.app_id).collect();
-            self.naming = Some((None, String::new(), games));
+            self.new_dynamic_from_filters(games);
             ui.close();
         }
     }
@@ -1838,25 +1860,12 @@ impl InstallDialog {
 }
 
 
-/// What a dynamic collection's filters look at for one game.
-fn facts<'a>(e: &'a Entry) -> client::collections::GameFacts<'a> {
-    client::collections::GameFacts {
-        name: e.name,
-        installed: e.installed.is_some(),
-        played: e.installed.and_then(|g| g.last_played).is_some_and(|t| t > 0),
-        runs_here: e.owned.is_none_or(|o| o.runs_on_this_os()),
-        categories: e.owned.map(|o| o.categories.as_slice()).unwrap_or_default(),
-        tags: e.owned.map(|o| o.tags.as_slice()).unwrap_or_default(),
-        deck: e.owned.map(|o| o.deck).unwrap_or(0),
-    }
-}
-
 #[cfg(test)]
 mod collection_sync_tests {
     use super::*;
 
     fn steam(list: &[(&str, &str, &[AppId])]) -> Vec<model::SteamCollection> {
-        list.iter().map(|(id, name, games)| model::SteamCollection { id: id.to_string(), name: name.to_string(), games: games.to_vec(), dynamic: false, filter: None }).collect()
+        list.iter().map(|(id, name, games)| model::SteamCollection { id: id.to_string(), name: name.to_string(), games: games.to_vec(), ..Default::default() }).collect()
     }
 
     #[test]

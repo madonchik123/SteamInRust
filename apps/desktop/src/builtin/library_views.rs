@@ -3,7 +3,7 @@
 //! the game list beside the page, the grid and list views, collections and
 //! a game's page.
 
-use super::{Entry, Filter, Library, MainAction, MenuAct, Setup, Sort, Tab, View, entries, facts, props, setup_state, shortcuts};
+use super::{Entry, Filter, Library, MainAction, MenuAct, Setup, Sort, Tab, View, entries, props, setup_state, shortcuts};
 use super::shortcuts::is_shortcut;
 use egui::{Align, Align2, Layout, Margin, Rect, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use extensions::Ctx;
@@ -298,6 +298,7 @@ impl Library {
         let (state, local) = (ctx.state, ctx.local);
         let groups = self.groups(state, local);
         let mut remove = None;
+        let (mut edit_dyn, mut remove_dyn) = (None, None);
         for (key, title, games, index) in &groups {
             let open = !self.collapsed.contains(key);
             let shelf = &t.components.library_shelf;
@@ -331,8 +332,18 @@ impl Library {
                             ui.close();
                         }
                     });
-                } else if key.starts_with("dyn:") {
-                    hresp.on_hover_text(t!("A dynamic collection: Steam fills it from its filters. Change them in Steam."));
+                } else if let Some(id) = key.strip_prefix("dyn:") {
+                    let hresp = hresp.on_hover_text(t!("A dynamic collection: its games come from its filters. Right-click to change them."));
+                    hresp.context_menu(|ui| {
+                        if w::menu_item(ui, t, icons::SLIDERS, t!("Edit filters…")).clicked() {
+                            edit_dyn = Some(id.to_string());
+                            ui.close();
+                        }
+                        if w::menu_item_tinted(ui, t, icons::TRASH, t!("Delete collection"), Some(t.danger)).clicked() {
+                            remove_dyn = Some(id.to_string());
+                            ui.close();
+                        }
+                    });
                 }
                 if open {
                     ui.add_space(t.spacing.xs);
@@ -357,6 +368,12 @@ impl Library {
         if let Some(i) = remove {
             self.collections.remove(i);
         }
+        if let Some(id) = edit_dyn {
+            self.edit_dynamic(&id);
+        }
+        if let Some(id) = remove_dyn {
+            self.delete_dynamic(&id, ctx);
+        }
     }
 
     /// Favorites, your collections and Steam's dynamic ones, each with its
@@ -375,8 +392,8 @@ impl Library {
         for (i, c) in self.collections.iter().enumerate() {
             groups.push((format!("c:{}", c.steam_id.clone().unwrap_or_else(|| c.name.clone())), c.name.clone(), pick(&|e| c.games.contains(&e.app_id)), Some(i)));
         }
-        for (name, f) in &self.dynamic {
-            groups.push((format!("dyn:{name}"), name.clone(), pick(&|e| f.matches(&facts(e))), None));
+        for d in &self.dynamic {
+            groups.push((format!("dyn:{}", d.id), d.name.clone(), pick(&|e| d.filter.contains(&self.facts(e), &d.added, &d.removed)), None));
         }
         groups
     }
@@ -414,6 +431,9 @@ impl Library {
             ui.spacing_mut().item_spacing.x = t.spacing.sm + 1.0;
             ui.label(w::heading_s(t, format!("{} ({n})", title.to_uppercase()), t.text));
             self.sort_button(ui, t);
+            if let Some(id) = collapse.and_then(|k| k.strip_prefix("dyn:")) && small_box(ui, t, icons::SLIDERS, t!("Edit filters…"), false).clicked() {
+                self.edit_dynamic(id);
+            }
             if let Some(key) = collapse {
                 let open = !self.collapsed.contains(key);
                 if small_box(ui, t, if open { icons::CARET_UP } else { icons::CARET_DOWN }, if open { t!("Hide") } else { t!("Show") }, false).clicked() && !self.collapsed.remove(key) {

@@ -53,6 +53,29 @@ enum ShownStage {
 
 static VIEW: std::sync::LazyLock<std::sync::Arc<std::sync::Mutex<View>>> = std::sync::LazyLock::new(Default::default);
 
+const POPUP_SIZE: [f32; 2] = [440.0, 170.0];
+
+/// The primary screen's size in egui points. It's asked for directly because
+/// the main window may be hidden while a game starts.
+fn screen_points(ctx: &egui::Context) -> Option<egui::Vec2> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+        let (w, h, dpi) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), GetDpiForSystem()) };
+        if w > 0 && h > 0 && dpi > 0 {
+            let pixels_per_point = dpi as f32 / 96.0 * ctx.zoom_factor();
+            return Some(vec2(w as f32, h as f32) / pixels_per_point);
+        }
+    }
+    ctx.input(|i| i.viewport().monitor_size)
+}
+
+/// Where a window of `size` sits in the middle of `screen`.
+fn centered(screen: egui::Vec2, size: egui::Vec2) -> egui::Pos2 {
+    (((screen - size) / 2.0).max(egui::Vec2::ZERO)).to_pos2()
+}
+
 pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
     let now = ctx.input(|i| i.time);
     // A question (a Steam Cloud conflict) holds the launch: it's asked in
@@ -106,12 +129,16 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
         app.launch_popup = None;
         return;
     }
-    let builder = egui::ViewportBuilder::default()
+    let mut builder = egui::ViewportBuilder::default()
         .with_title(t!("Launching {name}", name = name))
-        .with_inner_size([440.0, 170.0])
+        .with_inner_size(POPUP_SIZE)
         .with_resizable(false)
         .with_decorations(false)
         .with_always_on_top();
+    // Without a position Windows puts it near the top left of the screen.
+    if let Some(screen) = screen_points(ctx) {
+        builder = builder.with_position(centered(screen, POPUP_SIZE.into()));
+    }
     let view = VIEW.clone();
     ctx.show_viewport_deferred(egui::ViewportId::from_hash_of("launch-popup"), builder, move |ui, _| {
         let mut v = view.lock().unwrap();
@@ -170,4 +197,16 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
     });
     ctx.request_repaint_after(std::time::Duration::from_millis(250));
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+
+    #[test]
+    fn popup_sits_in_the_middle() {
+        assert_eq!(centered(vec2(1920.0, 1080.0), vec2(440.0, 170.0)), egui::pos2(740.0, 455.0));
+        // A screen smaller than the popup: stays on it.
+        assert_eq!(centered(vec2(400.0, 100.0), vec2(440.0, 170.0)), egui::pos2(0.0, 0.0));
+    }
 }

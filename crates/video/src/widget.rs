@@ -209,11 +209,12 @@ fn draw(ui: &mut Ui, t: &Theme, rect: Rect, p: &mut Player, poster: &str, fullsc
     }
 
     // Center: spinner, big play / replay button, or an error.
+    let live = p.is_live();
     let st = &mut p.ui;
     let busy = matches!(status, Status::Loading | Status::Buffering) && now - first_shown > 0.2;
     if busy {
         egui::Spinner::new().size(36.0).color(Color32::WHITE).paint_at(ui, Rect::from_center_size(rect.center(), vec2(36.0, 36.0)));
-    } else if matches!(status, Status::Paused | Status::Ended) && st.drag.is_none() {
+    } else if (status == Status::Paused || status == Status::Ended && !live) && st.drag.is_none() {
         painter.circle_filled(rect.center(), 34.0, Color32::from_black_alpha(160));
         let icon = if status == Status::Ended { REPLAY } else { PLAY };
         w::icon_centered(&painter, rect.center(), icon, 30.0, Color32::WHITE);
@@ -281,6 +282,23 @@ fn icon_button(ui: &Ui, painter: &egui::Painter, r: Rect, id: Id, icon: &str, si
     b.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip)
 }
 
+/// "● LIVE" while watching live; after a pause, a button back to it.
+fn live_button(ui: &Ui, t: &Theme, painter: &egui::Painter, p: &mut Player, left: Pos2, id: Id) {
+    let at_edge = p.at_live_edge();
+    let label = if at_edge { t!("LIVE") } else { t!("Back to live") };
+    let g = painter.layout_no_wrap(label.to_string(), w::font(12.5), Color32::WHITE);
+    let r = Rect::from_min_size(pos2(left.x, left.y - 12.0), vec2(g.size().x + 26.0, 24.0));
+    let b = ui.interact(r, id.with("live"), if at_edge { Sense::hover() } else { Sense::click() });
+    if !at_edge && b.hovered() {
+        painter.rect_filled(r, CornerRadius::same(5), Color32::from_white_alpha(28));
+    }
+    painter.circle_filled(pos2(r.left() + 11.0, r.center().y), 4.0, if at_edge { t.danger } else { Color32::from_white_alpha(150) });
+    painter.galley(pos2(r.left() + 21.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
+    if !at_edge && b.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        p.go_live();
+    }
+}
+
 fn controls(ui: &mut Ui, t: &Theme, rect: Rect, p: &mut Player, fullscreen: bool, id: Id) {
     let ctx = ui.ctx().clone();
     let painter = ui.painter_at(rect);
@@ -291,6 +309,10 @@ fn controls(ui: &mut Ui, t: &Theme, rect: Rect, p: &mut Player, fullscreen: bool
     // Seek bar with the buffered range.
     let dur = p.duration();
     let bar = Rect::from_min_max(pos2(rect.left() + pad, rect.bottom() - 46.0), pos2(rect.right() - pad, rect.bottom() - 32.0));
+    let shown_pos = p.ui.drag.unwrap_or(p.position());
+    // A live stream has no timeline to drag: it has the live button below.
+    let live = p.is_live();
+    if !live {
     let seek = ui.interact(bar, id.with("seek"), Sense::click_and_drag());
     let frac_at = |x: f32| ((x - bar.left()) / bar.width()).clamp(0.0, 1.0) as f64;
     if dur > 0.0 {
@@ -305,7 +327,7 @@ fn controls(ui: &mut Ui, t: &Theme, rect: Rect, p: &mut Player, fullscreen: bool
             }
         }
     }
-    let shown_pos = p.ui.drag.unwrap_or(p.position());
+    let shown_pos = p.ui.drag.unwrap_or(shown_pos);
     let thick = if seek.hovered() || p.ui.drag.is_some() { 6.0 } else { 4.0 };
     let line = Rect::from_center_size(bar.center(), vec2(bar.width(), thick));
     let x_of = |s: f64| line.left() + line.width() * if dur > 0.0 { (s / dur).clamp(0.0, 1.0) as f32 } else { 0.0 };
@@ -325,6 +347,7 @@ fn controls(ui: &mut Ui, t: &Theme, rect: Rect, p: &mut Player, fullscreen: bool
             }
         }
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     }
 
     // Buttons.
@@ -381,8 +404,12 @@ fn controls(ui: &mut Ui, t: &Theme, rect: Rect, p: &mut Player, fullscreen: bool
         }
     }
     let tr = slot(0.0);
-    let label = if dur > 0.0 { format!("{} / {}", time(shown_pos), time(dur)) } else { time(shown_pos) };
-    painter.text(pos2(tr.left() + 6.0, cy), Align2::LEFT_CENTER, label, w::font(12.5), Color32::from_white_alpha(230));
+    if live {
+        live_button(ui, t, &painter, p, pos2(tr.left() + 6.0, cy), id);
+    } else {
+        let label = if dur > 0.0 { format!("{} / {}", time(shown_pos), time(dur)) } else { time(shown_pos) };
+        painter.text(pos2(tr.left() + 6.0, cy), Align2::LEFT_CENTER, label, w::font(12.5), Color32::from_white_alpha(230));
+    }
 
     // Right side: quality, full screen.
     let fs = Rect::from_min_size(pos2(rect.right() - pad + 6.0 - bs, cy - bs / 2.0), vec2(bs, bs));

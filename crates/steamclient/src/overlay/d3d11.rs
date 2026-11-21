@@ -7,8 +7,9 @@
 //! here: we draw the overlay's triangles on top of the back buffer, put the
 //! game's D3D11 state back exactly as it was, and call the real `Present`.
 //!
-//! A game that isn't D3D11 (D3D9/12, OpenGL, Vulkan) never sends a D3D11
-//! frame through, so the app keeps its window overlay for it.
+//! D3D12 swap chains arrive through the same hook and go to `d3d12.rs`.
+//! Games on anything else never send a frame here, so the app keeps its
+//! window overlay for them.
 
 use super::{Frame, TexOp, shared};
 use crate::overlay::wire::VERTEX_SIZE;
@@ -65,7 +66,7 @@ pub fn install() -> bool {
     }
 }
 
-unsafe fn patch(vtable: *mut usize, slot: usize, ours: usize, real: &AtomicUsize) {
+pub(super) unsafe fn patch(vtable: *mut usize, slot: usize, ours: usize, real: &AtomicUsize) {
     use windows::Win32::System::Memory::{PAGE_PROTECTION_FLAGS, PAGE_READWRITE, VirtualProtect};
     unsafe {
         let p = vtable.add(slot);
@@ -233,6 +234,7 @@ unsafe extern "system" fn resize1(this: *mut c_void, count: u32, w: u32, h: u32,
 
 /// The back buffer can't be resized while we hold a view of it.
 fn before_resize(this: *mut c_void) {
+    super::d3d12::before_resize(this as usize);
     if let Ok(mut r) = RENDERER.lock() {
         if let Some(r) = r.as_mut().filter(|r| r.swapchain == this as usize) {
             r.rtv = None;
@@ -264,9 +266,7 @@ struct Renderer {
     vb: Option<(ID3D11Buffer, usize)>,
     ib: Option<(ID3D11Buffer, usize)>,
     rtv: Option<ID3D11RenderTargetView>,
-    /// Frames since `fps_since`.
-    frames: u32,
-    fps_since: Instant,
+    fps: super::Fps,
     /// The render target stores linear light (sRGB view or float), so
     /// egui's gamma-space colors are converted in the shader.
     linear_out: bool,
@@ -291,6 +291,10 @@ fn on_present(this: *mut c_void) {
 
 unsafe fn present_inner(this: *mut c_void) {
     let Some(sc) = (unsafe { IDXGISwapChain::from_raw_borrowed(&this) }) else { return };
+    // D3D12 swap chains come through the same hook.
+    if super::d3d12::on_present(sc, this as usize) {
+        return;
+    }
     let Ok(mut guard) = RENDERER.lock() else { return };
     if let Some(r) = guard.as_ref() {
         if r.swapchain != this as usize {
@@ -338,13 +342,7 @@ unsafe fn present_inner(this: *mut c_void) {
         }
     }
     // Frames per second, for the app's FPS counter.
-    r.frames += 1;
-    let elapsed = r.fps_since.elapsed().as_secs_f32();
-    if elapsed >= 1.0 {
-        super::tell_app(crate::overlay::wire::FromGame::Fps((r.frames as f32 / elapsed).round() as u32));
-        r.frames = 0;
-        r.fps_since = Instant::now();
-    }
+    r.fps.tick();
     // The game's own frame, before the overlay is drawn on it.
     if super::SHOT.swap(false, Ordering::Relaxed) {
         match unsafe { r.capture(sc) } {
@@ -389,7 +387,7 @@ float4 ps(PI i) : SV_Target {
 
 /// Compile one entry point with d3dcompiler_47 (loaded when needed, so
 /// games that never draw the overlay don't load it).
-unsafe fn compile(entry: PCSTR, target: PCSTR) -> windows::core::Result<Vec<u8>> {
+pub(super) unsafe fn compile_source(source: &str, entry: PCSTR, target: PCSTR) -> windows::core::Result<Vec<u8>> {
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
     type CompileFn = unsafe extern "system" fn(*const c_void, usize, PCSTR, *const c_void, *mut c_void, PCSTR, PCSTR, u32, u32, *mut *mut c_void, *mut *mut c_void) -> HRESULT;
     unsafe {
@@ -397,7 +395,7 @@ unsafe fn compile(entry: PCSTR, target: PCSTR) -> windows::core::Result<Vec<u8>>
         let Some(f) = GetProcAddress(module, s!("D3DCompile")) else { return Err(windows::core::Error::from_thread()) };
         let f: CompileFn = std::mem::transmute(f);
         let (mut code, mut errors) = (std::ptr::null_mut(), std::ptr::null_mut());
-        let hr = f(SHADER.as_ptr().cast(), SHADER.len(), PCSTR::null(), std::ptr::null(), std::ptr::null_mut(), entry, target, 0, 0, &mut code, &mut errors);
+        let hr = f(source.as_ptr().cast(), source.len(), PCSTR::null(), std::ptr::null(), std::ptr::null_mut(), entry, target, 0, 0, &mut code, &mut errors);
         if !errors.is_null() {
             let e = ID3DBlob::from_raw(errors);
             let text = std::slice::from_raw_parts(e.GetBufferPointer() as *const u8, e.GetBufferSize());
@@ -409,7 +407,7 @@ unsafe fn compile(entry: PCSTR, target: PCSTR) -> windows::core::Result<Vec<u8>>
     }
 }
 
-fn out<T>(slot: Option<T>) -> windows::core::Result<T> {
+pub(super) fn out<T>(slot: Option<T>) -> windows::core::Result<T> {
     slot.ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL))
 }
 
@@ -419,8 +417,8 @@ impl Renderer {
             let device: ID3D11Device = sc.GetDevice()?;
             let ctx = device.GetImmediateContext()?;
             let desc = sc.GetDesc()?;
-            let vs_code = compile(s!("vs"), s!("vs_4_0"))?;
-            let ps_code = compile(s!("ps"), s!("ps_4_0"))?;
+            let vs_code = compile_source(SHADER, s!("vs"), s!("vs_4_0"))?;
+            let ps_code = compile_source(SHADER, s!("ps"), s!("ps_4_0"))?;
             let mut vs = None;
             device.CreateVertexShader(&vs_code, None, Some(&mut vs))?;
             let mut ps = None;
@@ -486,8 +484,7 @@ impl Renderer {
                 vb: None,
                 ib: None,
                 rtv: None,
-                frames: 0,
-                fps_since: Instant::now(),
+                fps: super::Fps::new(),
                 linear_out: false,
                 size: (desc.BufferDesc.Width, desc.BufferDesc.Height),
                 textures: HashMap::new(),
@@ -868,7 +865,7 @@ impl Saved {
 
 /// How a back buffer's pixels are laid out, for screenshots.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum PixelKind {
+pub(super) enum PixelKind {
     Rgba8,
     Bgra8,
     Rgb10a2,
@@ -876,7 +873,7 @@ enum PixelKind {
     Half,
 }
 
-fn pixel_kind(f: DXGI_FORMAT) -> Option<PixelKind> {
+pub(super) fn pixel_kind(f: DXGI_FORMAT) -> Option<PixelKind> {
     Some(match f {
         DXGI_FORMAT_R8G8B8A8_TYPELESS | DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => PixelKind::Rgba8,
         DXGI_FORMAT_B8G8R8A8_TYPELESS | DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB | DXGI_FORMAT_B8G8R8X8_UNORM => PixelKind::Bgra8,
@@ -898,7 +895,7 @@ fn typed(f: DXGI_FORMAT) -> DXGI_FORMAT {
 }
 
 /// One row of pixels to RGB.
-fn to_rgb(kind: PixelKind, row: &[u8], out: &mut Vec<u8>) {
+pub(super) fn to_rgb(kind: PixelKind, row: &[u8], out: &mut Vec<u8>) {
     match kind {
         PixelKind::Rgba8 => row.chunks_exact(4).for_each(|p| out.extend_from_slice(&p[..3])),
         PixelKind::Bgra8 => row.chunks_exact(4).for_each(|p| out.extend_from_slice(&[p[2], p[1], p[0]])),

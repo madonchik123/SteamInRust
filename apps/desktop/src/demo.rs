@@ -228,11 +228,10 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
             steam_id: me,
             result: Ok(vec![
                 InventoryApp { app_id: 570, name: "Dota 2".into(), icon: None, contexts: vec![(2, "Backpack".into(), items.len() as u32)] },
-                InventoryApp { app_id: 753, name: "Steam".into(), icon: None, contexts: vec![(6, "Community".into(), 0)] },
+                InventoryApp { app_id: 753, name: "Steam".into(), icon: None, contexts: vec![(6, "Community".into(), crate::builtin::inventory::economy_demo::item_count())] },
             ]),
         },
         Event::Inventory(model::Inventory { steam_id: me, app_id: 570, context_id: 2, total: items.len() as u32, items, error: None }),
-        Event::Inventory(model::Inventory { steam_id: me, app_id: 753, context_id: 6, ..Default::default() }),
         Event::MyListings(Ok(MyListings {
             listings: vec![
                 MyListing { listing_id: 1, app_id: 570, name: "Hydrakan Latch".into(), game: "Dota 2".into(), icon: ITEMS[1].6.into(), name_color: Some("D2D2D2".into()), buyer_pays: 299, you_receive: 260, currency: 1, amount: 1, created: now - 7200, status: model::ListingStatus::Active, market_hash_name: "Hydrakan Latch".into() },
@@ -283,6 +282,7 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
             games: vec![],
             dynamic: true,
             filter: Some(r#"{"nFormatVersion":2,"strSearchText":"","filterGroups":[{"rgOptions":[],"bAcceptUnion":true},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[8],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false}],"setSuggestions":{}}"#.into()),
+            ..Default::default()
         }])),
         Event::PlayerGames {
             steam_id: me,
@@ -393,6 +393,7 @@ No trades for Steam keys, sorry.".into(),
             ],
         }),
     });
+    out.push(Event::Family(Ok(demo_family())));
     // Names for the wishlist's games (you don't own them).
     out.push(Event::AppNames(vec![(1245620, "ELDEN RING".into()), (1086940, "Baldur's Gate 3".into()), (367520, "Hollow Knight".into()), (1145350, "Hades II".into()), (504230, "Celeste".into()), (1091500, "Cyberpunk 2077".into())]));
     // Someone who isn't your friend (BASE + 300), for the profile's
@@ -411,12 +412,50 @@ No trades for Steam keys, sorry.".into(),
     out
 }
 
+/// A made-up Steam Family (`--demo-family-invite`: not in one yet, with an
+/// invitation). Nothing in the demo reaches Steam.
+fn demo_family() -> model::FamilyStatus {
+    use model::{Family, FamilyInvite, FamilyMember, FamilyRole as R, FamilyStatus, SharedApp};
+    const BASE: u64 = 76561197960265728;
+    let (me, ferris, pixel, quartz, marlow) = (BASE + 1, BASE + 100, BASE + 102, BASE + 103, BASE + 105);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    if std::env::args().any(|a| a == "--demo-family-invite") {
+        return FamilyStatus {
+            role: R::Unknown,
+            cooldown: 41 * 86_400,
+            invites: vec![
+                FamilyInvite { family: 501, inviter: ferris, role: R::Adult, invite_id: 9001, awaiting_confirmation: false },
+                FamilyInvite { family: 502, inviter: quartz, role: R::Child, invite_id: 9002, awaiting_confirmation: true },
+            ],
+            ..Default::default()
+        };
+    }
+    let member = |steam_id, role, days_ago: u64, cooldown_days: u32| FamilyMember { steam_id, role, joined: now - days_ago * 86_400, cooldown: cooldown_days * 86_400 };
+    let game = |app_id, name: &str, owners: Vec<u64>| SharedApp { app_id, name: name.into(), owners, excluded: false };
+    FamilyStatus {
+        role: R::Adult,
+        family: Some(Family {
+            id: 501,
+            name: "The Demo Household".into(),
+            members: vec![member(me, R::Adult, 300, 65), member(ferris, R::Adult, 200, 165), member(pixel, R::Child, 90, 275)],
+            invites: vec![(quartz, R::Adult)],
+            free_spots: 2,
+            country: "US".into(),
+            slot_cooldown: 0,
+            former: vec![marlow],
+            slot_overrides: 0,
+            shared: vec![game(1145360, "Hades", vec![me]), game(413150, "Stardew Valley", vec![me, ferris]), game(620, "Portal 2", vec![ferris])],
+        }),
+        ..Default::default()
+    }
+}
+
 /// A made-up group chat of friends, for the Friends & Chat window.
 fn group_chat(me: u64, ferris: u64, now: u64) -> Vec<Event> {
     use model::{ChatGroup, ChatRoom, GroupMessage};
     let (nova, quartz) = (ferris + 1, ferris + 3);
     let group = 4_200_001;
-    let said = [(ferris, "who's in for Portal 2 co-op tonight?", 3600), (quartz, "me! after 9", 3400), (nova, "I'll join after this match", 3300), (me, "count me in", 1500), (ferris, "great, I'll set it up", 1200)];
+    let said = [(ferris, "who's in for Portal 2 co-op tonight?", 3600), (quartz, "me! after 9", 3400), (nova, "I'll join after this match", 3300), (me, "count me in", 1500), (ferris, "great, I'll set it up", 1200), (quartz, "map for after: https://steamcommunity.com/sharedfiles/filedetails/?id=2177193451", 900)];
     let messages: Vec<GroupMessage> = said
         .iter()
         .enumerate()
@@ -532,4 +571,30 @@ fn owned_group_chat(me: u64, ferris: u64, now: u64) -> Vec<Event> {
             }),
         }),
     ]
+}
+
+/// The demo's chat answers itself: what you send shows up as if Steam had
+/// taken it, and nothing leaves this computer.
+pub fn echo(tx: &std::sync::mpsc::Sender<Event>, me: u64, cmd: client::Command) {
+    use client::{ChatTarget, Command};
+    static ORDINAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let ordinal = ORDINAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let say = |to: ChatTarget, text: String| match to {
+        ChatTarget::Friend(friend) => {
+            let (plain, invite) = model::chat::parse(&text);
+            Event::Message(ChatMessage { friend, from: me, text: plain, time, invite, raw: text, ordinal, reactions: Vec::new() })
+        }
+        ChatTarget::Group { group, room } => Event::GroupMessage(model::GroupMessage { group, room, sender: me, text, time: time as u32, ordinal, reactions: Vec::new() }),
+    };
+    let event = match cmd {
+        Command::SendChat { to, text } => say(to, text),
+        Command::SendChatImage { to, .. } => say(to, model::chat::image("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/620/header.jpg", 460, 215)),
+        Command::ReactToMessage { to, time, ordinal, reaction, sticker, add } => Event::MessageReaction { to, time, ordinal, reactor: me, reaction, sticker, add },
+        Command::ReportMessage { .. } => Event::MessageReported(Ok(())),
+        Command::LoadTradeLink { .. } => Event::TradeLink(Ok("https://steamcommunity.com/tradeoffer/new/?partner=1&token=demo".into())),
+        Command::SetPersonaState(state) => Event::Personas(vec![Persona { steam_id: me, name: "You".into(), state, ..Default::default() }]),
+        _ => return,
+    };
+    let _ = tx.send(event);
 }

@@ -152,6 +152,13 @@ impl Connection {
         self.send_with(emsg, self.header(), body)
     }
 
+    /// Send a message in Steam's older, non-protobuf format.
+    pub fn send_plain(&self, emsg: u32, body: &[u8]) -> Result<()> {
+        tracing::debug!("-> {}", emsg::name(emsg));
+        let session = self.inner.session_id.load(Ordering::Relaxed);
+        self.inner.out.send(Packet::encode_plain(emsg, self.steam_id(), session, body)).map_err(|_| Error::Disconnected)
+    }
+
     /// Send with a custom header (fields left at defaults are filled in).
     pub fn send_with(&self, emsg: u32, mut header: CMsgProtoBufHeader, body: &impl Message) -> Result<()> {
         let base = self.header();

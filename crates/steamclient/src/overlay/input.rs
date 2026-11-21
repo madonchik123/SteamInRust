@@ -97,8 +97,14 @@ fn hook_thread_messages(hwnd: HWND) {
     }
 }
 
+/// WM_TOUCH and the WM_POINTER family. Engines that call EnableMouseInPointer
+/// (Unity 6) get the mouse this way, ahead of the WM_MOUSE messages.
+fn is_pointer(msg: u32) -> bool {
+    (0x0240..=0x024F).contains(&msg)
+}
+
 fn is_input(msg: u32) -> bool {
-    (WM_KEYFIRST..=WM_KEYLAST).contains(&msg) || (WM_MOUSEFIRST..=WM_MOUSELAST).contains(&msg) || msg == WM_INPUT || msg == WM_MOUSELEAVE_ || (WM_NCMOUSEMOVE..=WM_NCXBUTTONDBLCLK).contains(&msg)
+    (WM_KEYFIRST..=WM_KEYLAST).contains(&msg) || (WM_MOUSEFIRST..=WM_MOUSELAST).contains(&msg) || msg == WM_INPUT || is_pointer(msg) || msg == WM_MOUSELEAVE_ || (WM_NCMOUSEMOVE..=WM_NCXBUTTONDBLCLK).contains(&msg)
 }
 
 unsafe extern "system" fn getmsg_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -127,8 +133,9 @@ unsafe fn take_input(m: &mut MSG, removed: bool) {
     }
     if removed {
         match m.message {
-            // Windows frees raw input data when the message is handled.
-            WM_INPUT => unsafe {
+            // Windows frees raw input data when the message is handled, and
+            // makes the overlay's mouse messages from pointer messages.
+            x if x == WM_INPUT || is_pointer(x) => unsafe {
                 DefWindowProcW(m.hwnd, m.message, m.wParam, m.lParam);
             },
             _ => {
@@ -463,6 +470,9 @@ unsafe fn ours(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> 
             handled
         }
         WM_SYSCHAR | WM_DEADCHAR | WM_SYSDEADCHAR => Some(unsafe { DefWindowProcW(hwnd, msg, wp, lp) }),
+        // Pointer input: Windows turns what we pass on into the mouse
+        // messages above, which the overlay reads. The game sees neither.
+        m if is_pointer(m) => Some(unsafe { DefWindowProcW(hwnd, msg, wp, lp) }),
         // Raw input is the game's mouse look; let Windows clean it up.
         WM_INPUT => Some(unsafe { DefWindowProcW(hwnd, msg, wp, lp) }),
         WM_SETCURSOR if (lp.0 & 0xffff) as u32 == HTCLIENT => {
@@ -709,5 +719,23 @@ unsafe fn patch_module(base: *mut u8, table: &[(usize, usize)]) -> usize {
             desc += 20;
         }
         count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pointer_input_counts_as_input() {
+        // WM_POINTERUPDATE, DOWN, UP, WHEEL, and WM_TOUCH.
+        for msg in [0x0245, 0x0246, 0x0247, 0x024E, 0x0240] {
+            assert!(is_input(msg), "{msg:#x}");
+        }
+        assert!(is_input(WM_LBUTTONDOWN) && is_input(WM_KEYDOWN) && is_input(WM_INPUT));
+        // Not input: the game must keep getting these.
+        for msg in [WM_PAINT, WM_SIZE, WM_ACTIVATE, WM_SETFOCUS, WM_TIMER, 0x023F, 0x0250] {
+            assert!(!is_input(msg), "{msg:#x}");
+        }
     }
 }

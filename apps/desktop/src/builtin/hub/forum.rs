@@ -73,12 +73,44 @@ fn forum_list(ui: &mut Ui, t: &Theme, title: &str, count: &str, forums: &[hub::F
     picked
 }
 
-pub(super) fn forum(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: AppId, forum: &str) {
-    let page_key = format!("forum{app}/{forum}");
+/// Whose forum it is.
+#[derive(Clone, Copy)]
+pub(super) enum Place<'a> {
+    App(AppId),
+    Group(&'a str),
+}
+
+impl Place<'_> {
+    fn key(self, forum: &str, page: u32) -> String {
+        match self {
+            Place::App(app) => hub::topics_key(app, forum, page),
+            Place::Group(group) => hub::group_topics_key(group, forum, page),
+        }
+    }
+
+    fn request(self, forum: &str, page: u32, language: String) -> Request {
+        match self {
+            Place::App(app_id) => Request::Topics { app_id, forum: forum.to_string(), page, language },
+            Place::Group(group) => Request::GroupTopics { group: group.to_string(), forum: forum.to_string(), page, language },
+        }
+    }
+
+    fn view(self, forum: String) -> View {
+        match self {
+            Place::App(app) => View::Forum { app, forum },
+            Place::Group(group) => View::GroupForum { group: group.to_string(), forum },
+        }
+    }
+}
+
+pub(super) fn forum(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, place: Place, forum: &str) {
+    let page_key = format!("forum{}", place.key(forum, 0));
     let page = hv.pages.get(&page_key).copied().unwrap_or(1);
-    let key = hub::topics_key(app, forum, page);
+    let key = place.key(forum, page);
+    // The forum's key without its page, for a discussion written here.
+    let forum_key = key.rsplit_once('#').map_or(key.clone(), |(k, _)| k.to_string());
     let lang = io.lang();
-    let req = || Request::Topics { app_id: app, forum: forum.to_string(), page, language: lang.clone() };
+    let req = || place.request(forum, page, lang.clone());
     let have = io.state.hub.topics.contains_key(&key);
     hv.ask(io, key.clone(), have, req);
     let data = match io.state.hub.topics.get(&key) {
@@ -99,15 +131,14 @@ pub(super) fn forum(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: 
         |ui| {
             let current = |f: &hub::Forum| f.name == data.forum || (forum.is_empty() && f.path == "discussions/0/") || f.path == forum;
             if let Some(f) = forum_list(ui, t, &t!("Forums"), &t!("Threads"), &data.forums, current) {
-                picked = Some(View::Forum { app, forum: f.path });
+                picked = Some(place.view(f.path));
             }
-            ui.add_space(t.spacing.md);
-            ui.label(w::body_s(t, t!("Reading only for now: replying and starting topics happen on Steam."), t.text_faint));
         },
         |ui| {
             ui.horizontal(|ui| {
                 ui.label(w::heading_s(t, if data.forum.is_empty() { t!("Discussions").to_string() } else { data.forum.clone() }, t.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    new_topic_button(hv, ui, t, io, data.new_topic.as_ref(), &forum_key);
                     let from = (page as u64 - 1) * data.page_size as u64 + 1;
                     let to = (from + data.topics.len() as u64).saturating_sub(1);
                     if data.total > 0 {
@@ -116,12 +147,16 @@ pub(super) fn forum(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: 
                 });
             });
             ui.add_space(t.spacing.sm);
-            if data.topics.is_empty() {
+            if let Some(form) = data.new_topic.as_ref().filter(|_| hv.compose.as_ref().is_some_and(|c| c.key == forum_key)) {
+                super::compose::show(hv, ui, t, io, form);
+            }
+            let mine = hv.local_topics.get(&forum_key).cloned().unwrap_or_default();
+            if data.topics.is_empty() && mine.is_empty() {
                 w::empty(ui, t, icons::CHATS, t!("No discussions yet"), t!("Nobody has started a topic here."));
                 return;
             }
-            for topic in &data.topics {
-                if topic_row(ui, t, topic) {
+            for topic in mine.iter().chain(&data.topics) {
+                if topic_row(ui, t, topic) && !topic.url.is_empty() {
                     go = Some(View::Thread(topic.url.clone()));
                 }
             }
@@ -136,6 +171,21 @@ pub(super) fn forum(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &mut Io, app: 
     if let Some(v) = go.or(picked) {
         io.go(v);
     }
+}
+
+/// "Start a new discussion", or why you can't here.
+fn new_topic_button(hv: &mut HubView, ui: &mut Ui, t: &Theme, io: &Io, form: Option<&client::community_actions::NewTopicForm>, forum_key: &str) {
+    let Some(form) = form else { return };
+    if io.state.steam_id == 0 || !form.has_form {
+        ui.label(w::body_s(t, t!("Sign in to start a discussion"), t.text_dim));
+    } else if form.banned {
+        ui.label(w::body_s(t, t!("You're banned from posting in this forum."), t.danger));
+    } else if !form.can_post {
+        ui.label(w::body_s(t, t!("You can't post in this forum."), t.text_dim));
+    } else if !hv.compose.as_ref().is_some_and(|c| c.key == forum_key) && w::button(ui, t, Some(icons::PLUS), t!("Start a new discussion"), w::Kind::Primary, w::Size::Sm).clicked() {
+        hv.compose = Some(super::compose::Compose::new(forum_key.to_string()));
+    }
+    ui.add_space(t.spacing.md);
 }
 
 /// One topic (Figma `505:8934`): its title and author, when it was last

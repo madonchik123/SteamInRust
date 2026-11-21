@@ -11,7 +11,9 @@
 pub mod download;
 pub mod workshop;
 pub mod hub;
+pub mod broadcast;
 pub mod feed;
+pub mod community_actions;
 pub mod ingame;
 pub mod ipc;
 #[cfg(target_os = "macos")]
@@ -28,6 +30,7 @@ pub mod collections;
 pub mod friends_add;
 pub mod discovery;
 pub mod wishlist;
+pub mod points;
 pub mod installscript;
 pub mod reviews;
 pub mod regions;
@@ -35,6 +38,7 @@ pub mod a2s;
 pub mod game_ugc;
 pub mod game_inventory;
 pub mod game_servers;
+mod gameserver;
 mod input_config;
 pub mod account;
 mod notify;
@@ -45,6 +49,7 @@ mod session;
 pub mod state;
 pub mod store;
 pub mod chat_admin;
+pub mod economy;
 
 pub use auth::Guard;
 pub use launch::{LaunchArgs, LaunchMode, mode as launch_mode, mode_cached as launch_mode_cached, mode_peek as launch_mode_peek, safe_connect_args};
@@ -216,8 +221,13 @@ pub enum Command {
     LoadLicenses { language: String },
     /// Your Steam Family and its shared library.
     LoadFamily { language: String },
+    /// Invite, cancel, accept, decline, remove or leave. Changes the real
+    /// account: send it only after the person confirmed.
+    FamilyAction { action: model::FamilyAction, language: String },
     CancelListing { listing_id: u64 },
     CancelBuyOrder { order_id: u64 },
+    /// Buying on the Market, gems, booster packs and pending gifts.
+    Economy(economy::Request),
     /// Fetch the games on someone's profile with their playtime.
     LoadPlayerGames { steam_id: SteamId, language: String },
     /// Your achievement progress (unlocked / total) for these games.
@@ -283,6 +293,13 @@ pub enum Command {
     WishlistRemove { app_id: AppId },
     /// Move a game to `to` (0-based) in the wishlist's own order ("Your rank").
     WishlistMove { app_id: AppId, to: usize },
+    /// Your Steam Points and the games whose items you can get.
+    LoadPoints,
+    /// Which Points Shop items you own from these games.
+    LoadRewardInventory { apps: Vec<AppId> },
+    /// Spend points on a Points Shop item. `cost` is the price the user
+    /// agreed to; Steam refuses if it has changed. Never retried.
+    RedeemPoints { defid: u32, app_id: AppId, cost: u64 },
     LoadCart,
     /// Add a package to the cart, optionally as a gift for a friend.
     /// Add a copy to the cart: for this account, or as a gift (optionally
@@ -405,8 +422,10 @@ impl std::fmt::Debug for Command {
             Command::LoadPurchases { language, cursor } => f.debug_struct("LoadPurchases").field("language", language).field("cursor", cursor).finish(),
             Command::LoadLicenses { language } => f.debug_struct("LoadLicenses").field("language", language).finish(),
             Command::LoadFamily { language } => f.debug_struct("LoadFamily").field("language", language).finish(),
+            Command::FamilyAction { action, language } => f.debug_struct("FamilyAction").field("action", action).field("language", language).finish(),
             Command::CancelListing { listing_id } => f.debug_struct("CancelListing").field("listing_id", listing_id).finish(),
             Command::CancelBuyOrder { order_id } => f.debug_struct("CancelBuyOrder").field("order_id", order_id).finish(),
+            Command::Economy(r) => f.debug_tuple("Economy").field(r).finish(),
             Command::LoadPlayerGames { steam_id, language } => f.debug_struct("LoadPlayerGames").field("steam_id", steam_id).field("language", language).finish(),
             Command::LoadAchievementProgress { app_ids } => f.debug_struct("LoadAchievementProgress").field("app_ids", app_ids).finish(),
             Command::LoadAchievements { app_id, language } => f.debug_struct("LoadAchievements").field("app_id", app_id).field("language", language).finish(),
@@ -432,6 +451,9 @@ impl std::fmt::Debug for Command {
             Command::WishlistAdd { app_id } => f.debug_struct("WishlistAdd").field("app_id", app_id).finish(),
             Command::WishlistRemove { app_id } => f.debug_struct("WishlistRemove").field("app_id", app_id).finish(),
             Command::WishlistMove { app_id, to } => f.debug_struct("WishlistMove").field("app_id", app_id).field("to", to).finish(),
+            Command::LoadPoints => f.write_str("LoadPoints"),
+            Command::LoadRewardInventory { apps } => f.debug_struct("LoadRewardInventory").field("apps", &apps.len()).finish(),
+            Command::RedeemPoints { defid, app_id, cost } => f.debug_struct("RedeemPoints").field("defid", defid).field("app_id", app_id).field("cost", cost).finish(),
             Command::LoadDiscoveryQueue { rebuild } => f.debug_struct("LoadDiscoveryQueue").field("rebuild", rebuild).finish(),
             Command::DiscoverySeen { app_id } => f.debug_struct("DiscoverySeen").field("app_id", app_id).finish(),
             Command::LoadMyReview { app_id } => f.debug_struct("LoadMyReview").field("app_id", app_id).finish(),
@@ -446,6 +468,7 @@ impl std::fmt::Debug for Command {
             Command::CartModify { line_item_id, gift, gift_to } => f.debug_struct("CartModify").field("line_item_id", line_item_id).field("gift", gift).field("gift_to", gift_to).finish(),
             Command::CartRemove { line_item_id } => f.debug_struct("CartRemove").field("line_item_id", line_item_id).finish(),
             Command::Hub(hub::Request::Reply { thread_url, .. }) => f.debug_struct("HubReply").field("thread_url", thread_url).finish_non_exhaustive(),
+            Command::Hub(hub::Request::NewTopic { key, .. }) => f.debug_struct("HubNewTopic").field("key", key).finish_non_exhaustive(),
             Command::Hub(hub::Request::PostStatus { app_id, .. }) => f.debug_struct("HubPostStatus").field("app_id", app_id).finish_non_exhaustive(),
             Command::Hub(req) => f.debug_tuple("Hub").field(req).finish(),
             Command::SendChat { to, .. } => f.debug_struct("SendChat").field("to", to).finish_non_exhaustive(),
@@ -491,6 +514,8 @@ pub enum Event {
     Apps(Vec<OwnedApp>),
     /// Full friends list (replaces any earlier one).
     Friends(Vec<(SteamId, Relationship)>),
+    /// Your groups and where you stand with each (member, invited…).
+    Clans(Vec<(SteamId, community_actions::ClanRelationship)>),
     /// Personas whose details changed (friends and yourself).
     Personas(Vec<Persona>),
     /// Names of games outside your library (e.g. what friends are playing).
@@ -587,10 +612,13 @@ pub enum Event {
     Purchases { more: bool, result: Result<model::PurchasePage, String> },
     LicenseList(Result<Vec<model::License>, String>),
     Family(Result<model::FamilyStatus, String>),
+    /// How Steam answered a [`Command::FamilyAction`].
+    FamilyActionDone { action: model::FamilyAction, result: Result<model::FamilyOutcome, String> },
     /// Community Market fee rules for your wallet currency.
     FeeRules(model::fees::Rules),
     ListingCancelled { listing_id: u64, result: Result<(), String> },
     BuyOrderCancelled { order_id: u64, result: Result<(), String> },
+    Economy(economy::Reply),
     /// Games with inventories for an account, or why it's unknown ("private").
     InventoryApps { steam_id: SteamId, result: Result<Vec<model::InventoryApp>, String> },
     /// Games on a profile, or why they can't be shown ("private").
@@ -642,6 +670,14 @@ pub enum Event {
     ReviewSaved { app_id: AppId, deleted: bool, result: Result<(), String> },
     /// The discovery queue's games, in order.
     DiscoveryQueue(Result<Vec<AppId>, String>),
+    /// Your Steam Points.
+    PointsBalance(Result<i64, String>),
+    /// The games whose plain backgrounds and emoticons you can get.
+    RewardEligible(Result<Vec<AppId>, String>),
+    /// The Points Shop items you own from these games.
+    RewardInventory { apps: Vec<AppId>, result: Result<Vec<points::OwnedReward>, String> },
+    /// How spending points on an item went (its community item id).
+    PointsRedeemed { defid: u32, result: Result<u64, points::RedeemFail> },
     /// "Not interested" was set (or undone) for a game.
     AppIgnored { app_id: AppId, ignore: bool, result: Result<(), String> },
     Cart(Vec<model::CartLine>),

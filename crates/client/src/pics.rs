@@ -19,12 +19,15 @@ const LIBRARY_TYPES: &[&str] = &["game", "demo", "application", "tool", "music",
 
 pub async fn resolve(conn: &Connection, licenses: &[(u32, u64)]) -> Result<Vec<OwnedApp>> {
     let started = std::time::Instant::now();
-    let app_ids = package_apps(conn, licenses).await?;
+    let (app_ids, master_subs) = package_apps(conn, licenses).await?;
     tracing::info!("{} licenses -> {} app ids", licenses.len(), app_ids.len());
     let ids: Vec<AppId> = app_ids.into_iter().collect();
     let tokens = app_tokens(conn, &ids).await?;
     let mut apps = app_info(conn, &ids, &tokens).await?;
     apps.retain(|a| LIBRARY_TYPES.contains(&a.kind.as_str()));
+    for a in &mut apps {
+        a.master_sub = master_subs.get(&a.app_id).copied().unwrap_or(0);
+    }
     apps.sort_by_key(|a| a.name.to_lowercase());
     tracing::info!("library: {} apps in {:.1} s", apps.len(), started.elapsed().as_secs_f32());
     Ok(apps)
@@ -46,8 +49,11 @@ async fn product_info(
     replies.iter().map(|p| p.body().map_err(Error::from)).collect()
 }
 
-async fn package_apps(conn: &Connection, licenses: &[(u32, u64)]) -> Result<BTreeSet<AppId>> {
+/// The apps in these licenses, and which of them come with a subscription
+/// (like EA Play), by the subscription's app.
+async fn package_apps(conn: &Connection, licenses: &[(u32, u64)]) -> Result<(BTreeSet<AppId>, HashMap<AppId, u32>)> {
     let mut out = BTreeSet::new();
+    let mut subs = HashMap::new();
     for chunk in licenses.chunks(500) {
         let req = CMsgClientPicsProductInfoRequest {
             packages: chunk
@@ -66,12 +72,17 @@ async fn package_apps(conn: &Connection, licenses: &[(u32, u64)]) -> Result<BTre
                 let Ok(kv) = vdf::binary::parse(&buf[4..]) else { continue };
                 for (_, v) in kv.iter() {
                     let Some(apps) = v.get("appids").and_then(|a| a.as_obj()) else { continue };
-                    out.extend(apps.iter().filter_map(|(_, a)| a.as_str()?.parse::<AppId>().ok()));
+                    let ids: Vec<AppId> = apps.iter().filter_map(|(_, a)| a.as_str()?.parse::<AppId>().ok()).collect();
+                    let sub = v.as_obj().and_then(|p| p.obj("extended")).and_then(|e| e.u64("mastersubscriptionappid")).unwrap_or(0) as u32;
+                    if sub != 0 {
+                        subs.extend(ids.iter().map(|id| (*id, sub)));
+                    }
+                    out.extend(ids);
                 }
             }
         }
     }
-    Ok(out)
+    Ok((out, subs))
 }
 
 async fn app_tokens(conn: &Connection, ids: &[AppId]) -> Result<HashMap<AppId, u64>> {
@@ -311,6 +322,19 @@ fn parse_app(id: AppId, text: &str) -> Option<OwnedApp> {
         genres: common.obj("genres").map(|g| g.iter().filter_map(|(_, v)| v.as_str()?.parse().ok()).collect()).unwrap_or_default(),
         tags: common.obj("store_tags").map(|g| g.iter().filter_map(|(_, v)| v.as_str()?.parse().ok()).collect()).unwrap_or_default(),
         deck: common.obj("steam_deck_compatibility").and_then(|d| d.u64("category")).unwrap_or(0) as u8,
+        machine: common.obj("steam_machine_compatibility").and_then(|d| d.u64("category")).unwrap_or(0) as u8,
+        frame: common.obj("steam_frame_compatibility").and_then(|d| d.u64("category")).unwrap_or(0) as u8,
+        languages: common
+            .obj("supported_languages")
+            .map(|l| {
+                crate::collections::language_bits(
+                    l.iter()
+                        .filter(|(_, v)| v.as_obj().and_then(|o| o.str("supported")).is_some_and(|s| s == "true" || s == "1"))
+                        .map(|(name, _)| name),
+                )
+            })
+            .unwrap_or(0),
+        master_sub: 0,
         os_list: common.str("oslist").unwrap_or_default().to_string(),
     })
 }

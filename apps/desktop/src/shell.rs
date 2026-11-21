@@ -209,7 +209,7 @@ pub fn section_of(page: &str) -> &str {
         "library" => "library",
         "downloads" => "downloads",
         "profile" | "inventory" => "profile",
-        "community" | "workshop" | crate::builtin::community_home::PAGE => "community",
+        "community" | "workshop" | "broadcast" | crate::builtin::community_home::PAGE => "community",
         p if crate::builtin::hub::PAGES.contains(&p) => "community",
         p => p,
     }
@@ -667,7 +667,7 @@ fn open_notification(state: &client::State, n: &model::Notification, actions: &m
     let me = state.steam_id;
     let app = n.app_id.filter(|a| *a != 0 && *a != 753);
     match n.kind {
-        2 => web(format!("https://steamcommunity.com/profiles/{me}/inventory/#pending_gifts")),
+        2 => actions.push(nav("inventory", Some("gifts".into()))),
         3 => actions.push(nav("profile", Some(me.to_string()))),
         4 => actions.push(nav("inventory", Some(format!("{me}/{}", n.app_id.unwrap_or(753))))),
         5 => actions.push(match n.from {

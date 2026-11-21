@@ -38,6 +38,8 @@ pub struct Focus {
     pointer_moved: bool,
     /// The focus moved by D-pad/keys this frame (scroll it into view).
     pub moved: bool,
+    /// The direction asked for this frame.
+    pub last_dir: Option<Dir>,
     /// Ring position (animated) and where it's heading.
     ring: Option<Rect>,
     ring_target: Option<(Rect, f32)>,
@@ -70,6 +72,7 @@ impl Focus {
         self.last = std::mem::take(&mut self.items);
         self.press = press;
         self.moved = false;
+        self.last_dir = dir;
         self.ring_target = None;
         self.no_ring = false;
         let now = ui.input(|i| i.time);
@@ -138,6 +141,19 @@ impl Focus {
     }
 
     /// Ring around a different shape than the item (a grown tile, a pill).
+    /// Register an area that takes focus from the D-pad but not the mouse
+    /// (what's inside it handles the mouse itself).
+    pub fn quiet_item(&mut self, ui: &Ui, id: Id, rect: Rect, place: Place) -> Hit {
+        self.items.push(Item { id, rect, place });
+        let focused = self.current == Some(id);
+        let activated = focused && std::mem::take(&mut self.press);
+        let glow = ui.ctx().animate_bool_with_time(id.with("bp-focus"), focused, 0.18);
+        if focused {
+            self.ring_target = Some((rect, 0.0));
+        }
+        Hit { focused, activated, glow }
+    }
+
     /// Hide the ring this frame.
     pub fn hide_ring(&mut self) {
         self.no_ring = true;

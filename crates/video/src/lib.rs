@@ -1,7 +1,8 @@
-//! Native trailer playback: no web view, no external player.
+//! Native video playback: no web view, no external player.
 //!
-//! - Streams HLS (fMP4 segments, what Steam serves for trailers) or plain MP4
-//!   (Steam's microtrailers) over HTTP, a few segments ahead.
+//! - Streams HLS (fMP4 segments, what Steam serves for trailers), live HLS
+//!   (Steam broadcasts) or plain MP4 (Steam's microtrailers) over HTTP, a few
+//!   segments ahead.
 //! - Decodes H.264 and AAC with what the system has built in: Media
 //!   Foundation on Windows, VideoToolbox and AudioToolbox on macOS.
 //! - Plays audio through WASAPI (Windows) or the default output audio unit
@@ -45,12 +46,15 @@ pub enum Source {
     Hls(String),
     /// A plain MP4 file.
     Mp4(String),
+    /// A live HLS stream's master playlist (a Steam broadcast): its segment
+    /// list moves forward and playback starts near the newest segment.
+    Live(String),
 }
 
 impl Source {
     pub fn url(&self) -> &str {
         match self {
-            Source::Hls(u) | Source::Mp4(u) => u,
+            Source::Hls(u) | Source::Mp4(u) | Source::Live(u) => u,
         }
     }
 }
@@ -98,6 +102,28 @@ const UNSEEN: Duration = Duration::from_millis(500);
 const AHEAD: f64 = 30.0;
 /// Decoded frames kept ready.
 const MAX_FRAMES: usize = 4;
+/// Live: start this many segments behind the newest, so a late segment
+/// doesn't stall playback (Steam's own player sits about as far back).
+const LIVE_BACK: usize = 3;
+/// Live: download this far ahead at most (keeps memory small).
+const LIVE_AHEAD: f64 = 10.0;
+/// Live: this many failed playlist or segment loads in a row and the stream
+/// counts as lost (the page then asks Steam what happened to it).
+const LIVE_FAILS: u32 = 4;
+/// Live: "at the live edge" within this many seconds of the joining point
+/// (Steam's lists move in steps of a few seconds).
+const LIVE_SLACK: f64 = 6.0;
+/// Live: wait this long before asking for a segment that wasn't there.
+const LIVE_RETRY: Duration = Duration::from_millis(700);
+/// Live: give up on one request after this long (a hung connection would
+/// otherwise freeze the picture until the normal read timeout).
+const LIVE_TIMEOUT: Duration = Duration::from_secs(4);
+/// Live: fallen this far behind without asking to (after a stall), jump
+/// back to the live picture.
+const LIVE_CATCH_UP: f64 = 8.0;
+/// Live: this many quick video segments in a row before trying a higher
+/// quality again.
+const LIVE_QUICK: u32 = 20;
 
 pub(crate) struct Seg {
     pub url: String,
@@ -111,6 +137,10 @@ pub(crate) struct Plan {
     pub segs: Vec<Seg>,
     /// A whole plain MP4 file as the only segment.
     pub single: bool,
+    /// The number of `segs[0]` (0 unless it's a live stream's moving list).
+    pub first: u64,
+    /// A live stream that is still going: more segments will come.
+    pub live: bool,
 }
 
 impl Plan {
@@ -125,7 +155,46 @@ impl Plan {
                 s
             })
             .collect();
-        Plan { init: m.init, segs, single: false }
+        Plan { init: m.init, segs, single: false, first: 0, live: false }
+    }
+    /// A live playlist on the stream's own clock: segment `anchor.0` starts at
+    /// `anchor.1` seconds, the others follow from their durations.
+    fn from_live(m: hls::Media, anchor: (u64, f64)) -> Self {
+        let nominal = if m.target > 0.0 { m.target } else { m.segments.first().map_or(2.0, |s| s.1) };
+        let first = m.sequence;
+        let mut t = match anchor.0.checked_sub(first) {
+            // The anchor is in this list: count back with the real durations.
+            Some(back) if (back as usize) < m.segments.len() => anchor.1 - m.segments[..back as usize].iter().map(|s| s.1).sum::<f64>(),
+            Some(back) => anchor.1 - back as f64 * nominal,
+            None => anchor.1 + (first - anchor.0) as f64 * nominal,
+        };
+        let live = !m.ended;
+        let segs = m
+            .segments
+            .into_iter()
+            .map(|(url, dur)| {
+                let s = Seg { url, start: t, dur };
+                t += dur;
+                s
+            })
+            .collect();
+        Plan { init: m.init, segs, single: false, first, live }
+    }
+    /// Where playback joins a live stream: a few segments behind the newest.
+    fn live_point(&self) -> f64 {
+        self.segs.len().checked_sub(LIVE_BACK + 1).and_then(|i| self.segs.get(i)).or(self.segs.first()).map_or(0.0, |s| s.start)
+    }
+    /// The number of the segment playing at `t`.
+    pub fn number_at(&self, t: f64) -> u64 {
+        self.first + self.index_at(t) as u64
+    }
+    /// The segment with this number, if it's in the list.
+    pub fn seg(&self, number: u64) -> Option<&Seg> {
+        self.segs.get(usize::try_from(number.checked_sub(self.first)?).ok()?)
+    }
+    /// The number after the last segment.
+    pub fn end_number(&self) -> u64 {
+        self.first + if self.single { 1 } else { self.segs.len() as u64 }
     }
     pub fn index_at(&self, t: f64) -> usize {
         if self.single {
@@ -192,6 +261,15 @@ pub(crate) struct St {
     pub muted: bool,
     pub looping: bool,
     pub error: Option<String>,
+    /// Playing a live stream.
+    pub live: bool,
+    /// Live: too many loads failed; the stream may be over.
+    pub live_lost: bool,
+    /// Live: the viewer paused or moved back, so being behind is on purpose.
+    pub behind_on_purpose: bool,
+    /// Live: don't pick a quality above this one (the connection was too
+    /// slow for it).
+    pub cap: Option<usize>,
 }
 
 impl St {
@@ -308,6 +386,10 @@ impl Player {
             muted: opts.muted,
             looping: opts.looping,
             error: None,
+            live: matches!(source, Source::Live(_)),
+            live_lost: false,
+            behind_on_purpose: false,
+            cap: None,
         };
         let sh = Arc::new(Shared { m: Mutex::new(st), cv: Condvar::new(), stop: AtomicBool::new(false), epoch: AtomicU64::new(0), ctx: ctx.clone() });
         rt.spawn(download(sh.clone(), source));
@@ -490,7 +572,7 @@ impl Player {
     pub fn play(&mut self) {
         tracing::debug!("video: play ({:?})", self.status);
         let mut st = self.sh.lock();
-        if self.status == Status::Ended {
+        if self.status == Status::Ended && !st.live {
             st.restart(0.0);
             self.sh.epoch.store(st.epoch, Ordering::Relaxed);
         }
@@ -501,7 +583,10 @@ impl Player {
     }
     pub fn pause(&mut self) {
         tracing::debug!("video: pause");
-        self.sh.lock().paused = true;
+        let mut st = self.sh.lock();
+        st.paused = true;
+        st.behind_on_purpose = true;
+        drop(st);
         self.sh.notify();
         self.sh.repaint();
     }
@@ -511,6 +596,15 @@ impl Player {
     pub fn seek(&mut self, t: f64) {
         tracing::debug!("video: seek to {t:.2}");
         let mut st = self.sh.lock();
+        // A live stream can only go back as far as Steam still keeps it.
+        let t = match st.video.as_ref().filter(|p| st.live && !p.segs.is_empty()) {
+            Some(p) => {
+                let t = t.clamp(p.segs[0].start + 0.5, p.live_point().max(p.segs[0].start + 0.5));
+                st.behind_on_purpose = p.live_point() - t >= LIVE_SLACK;
+                t
+            }
+            None => t,
+        };
         st.restart(t);
         self.sh.epoch.store(st.epoch, Ordering::Relaxed);
         drop(st);
@@ -518,6 +612,36 @@ impl Player {
         self.pos = t;
         self.sh.notify();
         self.sh.repaint();
+    }
+
+    /// Playing a live stream (a broadcast).
+    pub fn is_live(&self) -> bool {
+        self.sh.lock().live
+    }
+    /// Live: seconds behind the point where playback joins the stream
+    /// (0 = watching live).
+    pub fn live_delay(&self) -> f64 {
+        let st = self.sh.lock();
+        st.video.as_ref().filter(|_| st.live).map_or(0.0, |p| (p.live_point() - self.pos).max(0.0))
+    }
+    /// Live: playing, and close enough to the newest video to call it live.
+    pub fn at_live_edge(&self) -> bool {
+        !self.is_paused() && self.live_delay() < LIVE_SLACK
+    }
+    /// Live: jump to the newest video and keep playing.
+    pub fn go_live(&mut self) {
+        let edge = {
+            let st = self.sh.lock();
+            st.video.as_ref().filter(|_| st.live).map(|p| p.live_point())
+        };
+        if let Some(edge) = edge {
+            self.seek(edge);
+            self.play();
+        }
+    }
+    /// Live: the stream stopped loading. Ask Steam whether it ended.
+    pub fn live_lost(&self) -> bool {
+        self.sh.lock().live_lost
     }
     pub fn volume(&self) -> f32 {
         self.sh.lock().volume
@@ -585,7 +709,9 @@ const MAX_RANGE_CONCURRENCY: usize = 6;
 /// full size when the server answered with a range.
 async fn fetch(http: &reqwest::Client, sh: &Shared, url: &str, range: Option<(u64, u64)>) -> Result<(Vec<u8>, Option<u64>), String> {
     let mut last = String::new();
-    for attempt in 0..4u32 {
+    // A live segment is only useful for a moment: don't keep retrying it.
+    let tries = if sh.lock().live { 2 } else { 4u32 };
+    for attempt in 0..tries {
         if sh.stopped() {
             return Err("stopped".into());
         }
@@ -593,6 +719,9 @@ async fn fetch(http: &reqwest::Client, sh: &Shared, url: &str, range: Option<(u6
             tokio::time::sleep(Duration::from_millis(400 << attempt)).await;
         }
         let mut req = http.get(url);
+        if tries == 2 {
+            req = req.timeout(LIVE_TIMEOUT);
+        }
         if let Some((a, b)) = range {
             req = req.header(reqwest::header::RANGE, format!("bytes={a}-{b}"));
         }
@@ -630,6 +759,8 @@ async fn fetch(http: &reqwest::Client, sh: &Shared, url: &str, range: Option<(u6
                     }
                 }
             }
+            // Gone for good (a live segment that aged out, a broadcast that ended).
+            Err(e) if tries == 2 && e.status().is_some_and(|c| c == reqwest::StatusCode::NOT_FOUND || c == reqwest::StatusCode::GONE) => return Err(e.to_string()),
             Err(e) => last = e.to_string(),
         }
     }
@@ -682,25 +813,39 @@ async fn download(sh: Arc<Shared>, source: Source) {
     // One client for all players: later trailers reuse warm connections.
     static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     let http = HTTP.get_or_init(|| reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).read_timeout(Duration::from_secs(15)).build().unwrap_or_default()).clone();
-    if let Err(e) = load(&http, &sh, &source).await {
-        if !sh.stopped() {
-            sh.fail(e);
+    let mut feed = match load(&http, &sh, &source).await {
+        Ok(f) => f,
+        Err(e) => {
+            if !sh.stopped() {
+                sh.fail(e);
+            }
+            return;
         }
-        return;
-    }
+    };
+    let ahead = if feed.is_some() { LIVE_AHEAD } else { AHEAD };
     let mut inflight = tokio::task::JoinSet::new();
-    let mut busy: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+    let mut busy: HashMap<String, (tokio::task::AbortHandle, Instant)> = HashMap::new();
+    // Live: segments that just failed, and when to try them again.
+    let mut cooling: HashMap<String, Instant> = HashMap::new();
     while !sh.stopped() {
+        if let Some(f) = feed.as_mut() {
+            f.tick(&http, &sh).await;
+        }
         // Quality switch.
         let switch = {
             let st = sh.lock();
             // Automatic quality only goes up (e.g. for full screen): going
             // back down would rebuffer for nothing.
-            let want = st.manual.unwrap_or_else(|| pick_variant(&st.variants, st.width).max(st.variant)).min(st.variants.len().saturating_sub(1));
+            let auto = pick_variant(&st.variants, st.width).max(st.variant).min(st.cap.unwrap_or(usize::MAX));
+            let want = st.manual.unwrap_or(auto).min(st.variants.len().saturating_sub(1));
             (!st.variants.is_empty() && want != st.variant).then(|| (want, st.variants[want].url.clone()))
         };
         if let Some((i, url)) = switch {
-            match media_plan(&http, &sh, &url).await {
+            let plan = match feed.as_mut() {
+                Some(f) => f.switch(&http, &sh, url).await,
+                None => media_plan(&http, &sh, &url).await,
+            };
+            match plan {
                 Ok(plan) => {
                     let mut st = sh.lock();
                     let old: Vec<String> = st.video.iter().flat_map(|p| p.segs.iter().map(|s| s.url.clone()).chain(p.init.clone())).collect();
@@ -723,7 +868,7 @@ async fn download(sh: Arc<Shared>, source: Source) {
         // What to fetch next, and what to keep.
         let (todo, keep) = {
             let st = sh.lock();
-            let pos = st.clock.max(st.target.min(st.clock + AHEAD));
+            let pos = st.clock.max(st.target.min(st.clock + ahead));
             let mut todo: Vec<(f64, String)> = Vec::new();
             let mut keep: HashSet<String> = HashSet::new();
             for plan in [&st.video, &st.audio_plan].into_iter().flatten() {
@@ -738,11 +883,14 @@ async fn download(sh: Arc<Shared>, source: Source) {
                     keep.insert(prev.url.clone());
                 }
                 for s in plan.segs.iter().skip(i0) {
-                    if s.start > pos + AHEAD && keep.len() > 3 {
+                    if s.start > pos + ahead && keep.len() > 3 {
                         break;
                     }
                     keep.insert(s.url.clone());
-                    if !st.cache.contains_key(&s.url) {
+                    // Live: the newest listed segment usually isn't on the
+                    // CDN yet. Leave it until playback gets close to it.
+                    let too_new = plan.live && plan.segs.last().is_some_and(|l| std::ptr::eq(l, s)) && s.start > pos + 1.0;
+                    if !too_new && !st.cache.contains_key(&s.url) {
                         todo.push((s.start, s.url.clone()));
                     }
                 }
@@ -753,7 +901,7 @@ async fn download(sh: Arc<Shared>, source: Source) {
         };
         sh.lock().cache.retain(|k, _| keep.contains(k));
         // Drop downloads nobody needs any more (after a seek), start new ones.
-        busy.retain(|u, h| {
+        busy.retain(|u, (h, _)| {
             let k = keep.contains(u);
             if !k {
                 h.abort();
@@ -761,21 +909,32 @@ async fn download(sh: Arc<Shared>, source: Source) {
             k
         });
         let free = PARALLEL.saturating_sub(busy.len());
-        let start: Vec<String> = todo.into_iter().map(|(_, u)| u).filter(|u| !busy.contains_key(u)).take(free).collect();
+        let now = Instant::now();
+        cooling.retain(|u, at| *at > now && keep.contains(u));
+        let start: Vec<String> = todo.into_iter().map(|(_, u)| u).filter(|u| !busy.contains_key(u) && !cooling.contains_key(u)).take(free).collect();
         for url in start {
             let (h, s, u) = (http.clone(), sh.clone(), url.clone());
             let handle = inflight.spawn(async move {
                 let r = get(h, s, u.clone()).await;
                 (u, r)
             });
-            busy.insert(url, handle);
+            busy.insert(url, (handle, Instant::now()));
         }
         if inflight.is_empty() {
             tokio::time::sleep(Duration::from_millis(200)).await;
             continue;
         }
         let Ok(Some(Ok((url, r)))) = tokio::time::timeout(Duration::from_millis(250), inflight.join_next()).await else { continue };
-        busy.remove(&url);
+        let took = busy.remove(&url).map(|(_, at)| at.elapsed().as_secs_f64());
+        if let Some(f) = feed.as_mut() {
+            let error = r.as_ref().err().filter(|_| !sh.stopped());
+            f.loaded(&sh, &url, took, error.map(String::as_str));
+            if error.is_some() {
+                // Try it again in a moment.
+                cooling.insert(url, Instant::now() + LIVE_RETRY);
+                continue;
+            }
+        }
         let mut st = sh.lock();
         match r {
             Ok(bytes) => {
@@ -797,10 +956,11 @@ async fn download(sh: Arc<Shared>, source: Source) {
     }
 }
 
-async fn load(http: &reqwest::Client, sh: &Arc<Shared>, source: &Source) -> Result<(), String> {
+async fn load(http: &reqwest::Client, sh: &Arc<Shared>, source: &Source) -> Result<Option<LiveFeed>, String> {
     let (video, audio, variants, variant) = match source {
+        Source::Live(url) => return LiveFeed::open(http, sh, url).await.map(Some),
         Source::Mp4(url) => {
-            let plan = Arc::new(Plan { init: None, segs: vec![Seg { url: url.clone(), start: 0.0, dur: 0.0 }], single: true });
+            let plan = Arc::new(Plan { init: None, segs: vec![Seg { url: url.clone(), start: 0.0, dur: 0.0 }], single: true, first: 0, live: false });
             (plan.clone(), Some(plan), Vec::new(), 0)
         }
         Source::Hls(url) => {
@@ -842,13 +1002,292 @@ async fn load(http: &reqwest::Client, sh: &Arc<Shared>, source: &Source) -> Resu
     st.ready = true;
     drop(st);
     sh.notify();
-    Ok(())
+    Ok(None)
+}
+
+/// Keeps a live stream's segment lists current.
+struct LiveFeed {
+    video_url: String,
+    audio_url: Option<String>,
+    /// A known segment on the stream's clock: (number, seconds).
+    video_anchor: (u64, f64),
+    audio_anchor: (u64, f64),
+    /// The longest segment.
+    target: f64,
+    last: Instant,
+    refresh: Option<tokio::task::JoinHandle<Result<(hls::Media, Option<hls::Media>), String>>>,
+    /// Failed loads in a row.
+    fails: u32,
+    /// Failed loads in a row of a segment playback is waiting for.
+    due_fails: u32,
+    /// Video segments in a row that took longer to load than to play.
+    slow: u32,
+    /// Video segments in a row that loaded with lots of time to spare.
+    quick: u32,
+}
+
+impl Drop for LiveFeed {
+    fn drop(&mut self) {
+        if let Some(r) = self.refresh.take() {
+            r.abort();
+        }
+    }
+}
+
+/// Where a segment really starts on the stream's clock (its own timestamps).
+/// Numbers and timestamps line up only roughly, and audio and video differ.
+async fn anchor_of(http: &reqwest::Client, sh: &Arc<Shared>, m: &hls::Media, number: u64, video: bool) -> Result<(u64, f64), String> {
+    let init_url = m.init.clone().ok_or("live stream without an init segment")?;
+    let i = usize::try_from(number.saturating_sub(m.sequence)).unwrap_or(usize::MAX);
+    let seg_url = m.segments.get(i).ok_or("live stream without segments")?.0.clone();
+    let (init, seg) = tokio::try_join!(get(http.clone(), sh.clone(), init_url.clone()), get(http.clone(), sh.clone(), seg_url.clone()))?;
+    let movie = mp4::parse_movie(&init)?;
+    let track = if video { movie.video() } else { movie.audio() }.ok_or("live stream track missing")?;
+    let start = mp4::parse_fragment(&seg, track).first().map(|s| track.pts(s)).ok_or("live segment without samples")?;
+    // Already here: don't download them again.
+    let mut st = sh.lock();
+    st.cache.insert(init_url, Arc::new(init));
+    st.cache.insert(seg_url, Arc::new(seg));
+    Ok((number, start))
+}
+
+impl LiveFeed {
+    async fn open(http: &reqwest::Client, sh: &Arc<Shared>, url: &str) -> Result<LiveFeed, String> {
+        let body = text(http, sh, url).await?;
+        if !hls::is_master(&body) {
+            return Err("not a live stream's master playlist".into());
+        }
+        let variants = hls::parse_master(&body, url);
+        if variants.is_empty() {
+            return Err("empty playlist".into());
+        }
+        let i = {
+            let st = sh.lock();
+            st.manual.unwrap_or_else(|| pick_variant(&variants, st.width)).min(variants.len() - 1)
+        };
+        let video_url = variants[i].url.clone();
+        let audio_url = variants[i].audio.clone();
+        let (v, a) = fetch_lists(http.clone(), sh.clone(), video_url.clone(), audio_url.clone()).await?;
+        let join = v.sequence + v.segments.len().saturating_sub(LIVE_BACK + 1) as u64;
+        let video_anchor = anchor_of(http, sh, &v, join, true).await?;
+        // The audio list can be a segment ahead of or behind the video's.
+        let audio_anchor = match &a {
+            Some(a) => {
+                let last = a.sequence + (a.segments.len() as u64).saturating_sub(1);
+                match anchor_of(http, sh, a, join.clamp(a.sequence, last), false).await {
+                    Ok(x) => x,
+                    Err(e) => {
+                        tracing::info!("video: live audio: {e}");
+                        video_anchor
+                    }
+                }
+            }
+            None => video_anchor,
+        };
+        let target = if v.target > 0.0 { v.target } else { 2.0 };
+        let video = Arc::new(Plan::from_live(v, video_anchor));
+        let audio = a.map(|a| Arc::new(Plan::from_live(a, audio_anchor)));
+        let mut st = sh.lock();
+        let at = video.seg(video_anchor.0).map_or_else(|| video.live_point(), |s| s.start);
+        st.video = Some(video);
+        st.audio_plan = audio;
+        st.variants = variants;
+        st.variant = i;
+        st.restart(at);
+        sh.epoch.store(st.epoch, Ordering::Relaxed);
+        st.ready = true;
+        drop(st);
+        sh.notify();
+        Ok(LiveFeed { video_url, audio_url, video_anchor, audio_anchor, target, last: Instant::now(), refresh: None, fails: 0, due_fails: 0, slow: 0, quick: 0 })
+    }
+
+    /// Reload the lists when it's time and apply new ones. Never waits for
+    /// the network, so downloads keep flowing.
+    async fn tick(&mut self, http: &reqwest::Client, sh: &Arc<Shared>) {
+        if self.refresh.as_ref().is_some_and(|r| r.is_finished()) {
+            if let Some(r) = self.refresh.take() {
+                match r.await {
+                    Ok(Ok((v, a))) => {
+                        self.fails = 0;
+                        self.apply(sh, v, a);
+                    }
+                    Ok(Err(e)) => {
+                        tracing::debug!("video: live playlist: {e}");
+                        self.failed(sh);
+                    }
+                    Err(_) => self.failed(sh),
+                }
+            }
+        }
+        // A paused player only needs to know where the stream has got to.
+        let paused = sh.lock().paused;
+        let every = if paused { 5.0 } else { self.target.clamp(1.0, 6.0) };
+        if self.refresh.is_none() && self.last.elapsed().as_secs_f64() >= every {
+            self.last = Instant::now();
+            self.refresh = Some(tokio::spawn(fetch_lists(http.clone(), sh.clone(), self.video_url.clone(), self.audio_url.clone())));
+        }
+    }
+
+    fn failed(&mut self, sh: &Shared) {
+        self.fails += 1;
+        if self.fails >= LIVE_FAILS {
+            let mut st = sh.lock();
+            if !st.live_lost {
+                tracing::info!("video: live stream lost");
+                st.live_lost = true;
+                drop(st);
+                sh.notify();
+                sh.repaint();
+            }
+        }
+    }
+
+    fn apply(&mut self, sh: &Shared, v: hls::Media, a: Option<hls::Media>) {
+        let ended = v.ended;
+        let video = Arc::new(Plan::from_live(v, self.video_anchor));
+        let audio = a.map(|a| Arc::new(Plan::from_live(a, self.audio_anchor)));
+        // Keep the clock exact from what's listed now, so rounding can't add up.
+        if let Some(s) = video.segs.first() {
+            self.video_anchor = (video.first, s.start);
+        }
+        if let Some(s) = audio.as_ref().and_then(|p| p.segs.first().map(|s| (p.first, s.start))) {
+            self.audio_anchor = s;
+        }
+        let mut st = sh.lock();
+        let (start, join) = (video.segs.first().map_or(0.0, |s| s.start), video.live_point());
+        st.video = Some(video);
+        if audio.is_some() {
+            st.audio_plan = audio;
+        }
+        // Fell out of what Steam still keeps (a long stall): rejoin. A paused
+        // player stays on its picture until it's played again.
+        let stalled_behind = !st.behind_on_purpose && st.clock < join - LIVE_CATCH_UP;
+        if !ended && !st.paused && (st.clock < start - 0.5 || stalled_behind) {
+            tracing::debug!("video: behind the live window, rejoining");
+            st.behind_on_purpose = false;
+            st.restart(join);
+            sh.epoch.store(st.epoch, Ordering::Relaxed);
+        }
+        drop(st);
+        sh.notify();
+        sh.repaint();
+    }
+
+    /// The list of another quality, on the same clock.
+    async fn switch(&mut self, http: &reqwest::Client, sh: &Arc<Shared>, url: String) -> Result<Plan, String> {
+        let m = hls::parse_media(&text(http, sh, &url).await?, &url);
+        self.video_url = url;
+        self.slow = 0;
+        Ok(Plan::from_live(m, self.video_anchor))
+    }
+
+    /// A segment finished loading, or failed with `error`.
+    fn loaded(&mut self, sh: &Shared, url: &str, took: Option<f64>, error: Option<&str>) {
+        let mut st = sh.lock();
+        if let Some(e) = error {
+            tracing::debug!("video: live segment: {e}");
+            // The newest segments often aren't on this CDN server yet: that
+            // only matters once playback actually needs the segment.
+            let clock = st.clock;
+            let due = [&st.video, &st.audio_plan].into_iter().flatten().flat_map(|p| p.segs.iter()).find(|s| s.url == url).is_some_and(|s| s.start <= clock + 1.0);
+            if !due {
+                return;
+            }
+            self.due_fails += 1;
+            if self.due_fails < 3 {
+                return;
+            }
+            // That moment is gone: pick up again from the newest video.
+            self.due_fails = 0;
+            if let Some(join) = st.video.as_ref().map(|p| p.live_point()) {
+                st.restart(join);
+                sh.epoch.store(st.epoch, Ordering::Relaxed);
+            }
+            drop(st);
+            self.failed(sh);
+            sh.notify();
+            return;
+        }
+        self.fails = 0;
+        self.due_fails = 0;
+        if !st.video.as_ref().is_some_and(|p| p.segs.iter().any(|s| s.url == url)) {
+            return;
+        }
+        // Two video segments in a row slower than real time: step down a
+        // quality (only on automatic).
+        self.slow = if took.is_some_and(|s| s > self.target) { self.slow + 1 } else { 0 };
+        if self.slow >= 2 && st.manual.is_none() && st.variant > 0 {
+            self.slow = 0;
+            st.cap = Some(st.variant - 1);
+            tracing::info!("video: connection too slow, lowering the quality");
+        }
+        // Fast again for a good while: allow one quality more.
+        self.quick = if took.is_some_and(|s| s < self.target * 0.4) { self.quick + 1 } else { 0 };
+        if self.quick >= LIVE_QUICK {
+            self.quick = 0;
+            st.cap = st.cap.map(|c| c + 1).filter(|c| *c + 1 < st.variants.len());
+        }
+    }
+}
+
+/// Both of a live stream's playlists.
+async fn fetch_lists(http: reqwest::Client, sh: Arc<Shared>, video: String, audio: Option<String>) -> Result<(hls::Media, Option<hls::Media>), String> {
+    let v = text(&http, &sh, &video).await?;
+    let a = match &audio {
+        Some(u) => Some(hls::parse_media(&text(&http, &sh, u).await?, u)),
+        None => None,
+    };
+    Ok((hls::parse_media(&v, &video), a))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    fn live_media(sequence: u64, count: usize) -> hls::Media {
+        hls::Media {
+            init: Some("init".into()),
+            segments: (0..count as u64).map(|i| (format!("seg{}", sequence + i), 2.0)).collect(),
+            sequence,
+            target: 2.0,
+            ended: false,
+        }
+    }
+
+    #[test]
+    fn live_plan_keeps_numbers_and_times_as_the_window_moves() {
+        // Segment 105 really starts at 1000.5 s on the stream's clock.
+        let p = Plan::from_live(live_media(100, 10), (105, 1000.5));
+        assert_eq!((p.first, p.end_number()), (100, 110));
+        assert!(p.live);
+        assert_eq!(p.seg(105).unwrap().start, 1000.5);
+        assert_eq!(p.seg(100).unwrap().start, 990.5);
+        assert!(p.seg(99).is_none() && p.seg(110).is_none());
+        assert_eq!(p.number_at(1001.0), 105);
+        // Joins three segments behind the newest (109).
+        assert_eq!(p.live_point(), p.seg(106).unwrap().start);
+
+        // Later the list has moved past the anchor: the same segment keeps its time.
+        let later = Plan::from_live(live_media(108, 10), (105, 1000.5));
+        assert_eq!(later.seg(108).unwrap().start, 1006.5);
+        assert_eq!(later.seg(117).unwrap().start, 1024.5);
+    }
+
+    #[test]
+    fn live_plan_knows_when_the_broadcast_ended() {
+        let mut m = live_media(7, 3);
+        m.ended = true;
+        let p = Plan::from_live(m, (7, 14.0));
+        assert!(!p.live);
+        assert_eq!(p.end_number(), 10);
+    }
+
+    #[test]
+    fn a_short_live_list_joins_at_its_start() {
+        let p = Plan::from_live(live_media(5, 2), (5, 10.0));
+        assert_eq!(p.live_point(), 10.0);
+    }
     use std::net::TcpListener;
 
     fn test_shared() -> Arc<Shared> {
@@ -880,6 +1319,10 @@ mod tests {
             muted: false,
             looping: false,
             error: None,
+            live: false,
+            live_lost: false,
+            behind_on_purpose: false,
+            cap: None,
         };
         Arc::new(Shared {
             m: Mutex::new(st),

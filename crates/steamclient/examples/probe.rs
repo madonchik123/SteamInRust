@@ -725,12 +725,719 @@ fn cert_test(dll: &str) -> ! {
     std::process::exit(0);
 }
 
+/// One interface method by name, as a plain function.
+fn method(obj: usize, version: &str, name: &str) -> usize {
+    slot(obj, steamclient::slot_of(version, name).unwrap_or_else(|| panic!("{version}::{name}")))
+}
+
+/// Copies callbacks off a pipe until the wanted one arrives.
+struct Pump {
+    get: extern "C" fn(i32, *mut CallbackMsg) -> bool,
+    free: extern "C" fn(i32) -> bool,
+}
+
+impl Pump {
+    fn next(&self, pipe: i32) -> Option<(i32, Vec<u8>)> {
+        let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
+        if !(self.get)(pipe, &mut msg) {
+            return None;
+        }
+        let data = unsafe { std::slice::from_raw_parts(msg.param, msg.size.max(0) as usize) }.to_vec();
+        (self.free)(pipe);
+        Some((msg.callback, data))
+    }
+
+    fn wait(&self, pipe: i32, wanted: &[i32], secs: u64) -> Option<(i32, Vec<u8>)> {
+        let end = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < end {
+            while let Some((id, data)) = self.next(pipe) {
+                if wanted.contains(&id) {
+                    return Some((id, data));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        None
+    }
+}
+
+/// One A2S exchange with a local server: the reply after its challenge.
+fn a2s(sock: &std::net::UdpSocket, to: &str, query: &[u8]) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 1500];
+    sock.send_to(query, to).ok()?;
+    let (n, _) = sock.recv_from(&mut buf).ok()?;
+    if n < 9 || buf[4] != b'A' {
+        return Some(buf[..n].to_vec());
+    }
+    let mut q = query.to_vec();
+    if query[4] != b'T' {
+        q.truncate(5);
+    }
+    q.extend_from_slice(&buf[5..9]);
+    sock.send_to(&q, to).ok()?;
+    let (n, _) = sock.recv_from(&mut buf).ok()?;
+    Some(buf[..n].to_vec())
+}
+
+fn check(results: &mut Vec<(&'static str, bool)>, what: &'static str, ok: bool, detail: String) {
+    println!("{} {what}: {detail}", if ok { "PASS" } else { "FAIL" });
+    results.push((what, ok));
+}
+
+/// `--direct <steamclient.dll> --test gameserver [--port N] [--bad-token]`:
+/// hosts a Spacewar (480) server through our DLL for about a minute and
+/// plays a client against it, through a signed-in SteamInRust. Reads the
+/// player's stats but never writes them. `--player-net` also connects the
+/// player to the server with SteamNetworkingSockets. The server's answer never
+/// reached a test session that wasn't reported as playing the game (maybe why),
+/// so try it from a real launch; this tool doesn't report playing.
+fn gameserver_test(dll: &str, port: u16, bad_token: bool, test_player_net: bool) -> ! {
+    use std::sync::atomic::Ordering::SeqCst;
+    let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {dll}");
+    let api = Api(module);
+    let create: extern "C" fn(*const c_char, *mut i32) -> usize = unsafe { std::mem::transmute(api.f("CreateInterface").unwrap()) };
+    const C: &str = "SteamClient021";
+    const G: &str = "SteamGameServer015";
+    const ST: &str = "SteamGameServerStats001";
+    const U: &str = "SteamUser023";
+    const NS: &str = "SteamNetworkingSockets012";
+    const NM: &str = "SteamNetworkingMessages002";
+    const MS: &str = "SteamMatchMakingServers002";
+    let client = create(c"SteamClient021".as_ptr(), std::ptr::null_mut());
+    let new_pipe: extern "C" fn(usize) -> i32 = unsafe { std::mem::transmute(method(client, C, "CreateSteamPipe")) };
+    let connect: extern "C" fn(usize, i32) -> i32 = unsafe { std::mem::transmute(method(client, C, "ConnectToGlobalUser")) };
+    let local: extern "C" fn(usize, *mut i32, i32) -> i32 = unsafe { std::mem::transmute(method(client, C, "CreateLocalUser")) };
+    let generic: extern "C" fn(usize, i32, i32, *const c_char) -> usize = unsafe { std::mem::transmute(method(client, C, "GetISteamGenericInterface")) };
+    let player_pipe = new_pipe(client);
+    let player = connect(client, player_pipe);
+    let mut server_pipe = new_pipe(client);
+    let server_user = local(client, &mut server_pipe, 3);
+    let pump = Pump {
+        get: unsafe { std::mem::transmute(api.f("Steam_BGetCallback").unwrap()) },
+        free: unsafe { std::mem::transmute(api.f("Steam_FreeLastCallback").unwrap()) },
+    };
+    let gs = generic(client, server_user, server_pipe, c"SteamGameServer015".as_ptr());
+    assert!(gs != 0, "no game server interface");
+    let mut results = Vec::new();
+
+    macro_rules! m {
+        ($obj:expr, $v:expr, $name:literal, fn($($t:ty),*) -> $r:ty, $($a:expr),*) => {{
+            let f: extern "C" fn(usize, $($t),*) -> $r = unsafe { std::mem::transmute(method($obj, $v, $name)) };
+            f($obj, $($a),*)
+        }};
+    }
+    let query_port = port + 1;
+    m!(gs, G, "InitGameServer", fn(u32, u16, u16, u32, u32, *const c_char) -> bool, 0, port, query_port, 0, 480, c"1.0.0.0".as_ptr());
+    m!(gs, G, "SetProduct", fn(*const c_char) -> (), c"SteamworksExample".as_ptr());
+    m!(gs, G, "SetGameDescription", fn(*const c_char) -> (), c"SteamInRust test".as_ptr());
+    m!(gs, G, "SetModDir", fn(*const c_char) -> (), c"spacewar".as_ptr());
+    m!(gs, G, "SetDedicatedServer", fn(bool) -> (), true);
+
+    if bad_token {
+        m!(gs, G, "LogOn", fn(*const c_char) -> (), c"not-a-real-login-token".as_ptr());
+        let r = pump.wait(server_pipe, &[101, 102], 30);
+        let code = r.as_ref().filter(|(id, _)| *id == 102).map(|(_, d)| i32::from_le_bytes(d[..4].try_into().unwrap()));
+        check(&mut results, "Steam refuses a bad login token", code.is_some(), format!("{r:?}"));
+        std::process::exit(if code.is_some() { 0 } else { 1 });
+    }
+
+    m!(gs, G, "LogOnAnonymous", fn() -> (),);
+    m!(gs, G, "SetMaxPlayerCount", fn(i32) -> (), 4);
+    m!(gs, G, "SetBotPlayerCount", fn(i32) -> (), 1);
+    m!(gs, G, "SetServerName", fn(*const c_char) -> (), c"SteamInRust test server".as_ptr());
+    m!(gs, G, "SetMapName", fn(*const c_char) -> (), c"sirtest".as_ptr());
+    m!(gs, G, "SetGameTags", fn(*const c_char) -> (), c"test".as_ptr());
+    m!(gs, G, "SetKeyValue", fn(*const c_char, *const c_char) -> (), c"mode".as_ptr(), c"ffa".as_ptr());
+    m!(gs, G, "SetAdvertiseServerActive", fn(bool) -> (), true);
+
+    // 1. Signed in.
+    let up = pump.wait(server_pipe, &[101, 102], 30);
+    let signed = matches!(up, Some((101, _))) && m!(gs, G, "BLoggedOn", fn() -> bool,);
+    let mut id = 0u64;
+    m!(gs, G, "GetSteamID", fn(*mut u64) -> *mut u64, &mut id);
+    let mut ip_struct = [0u8; 20];
+    m!(gs, G, "GetPublicIP", fn(*mut [u8; 20]) -> *mut [u8; 20], &mut ip_struct);
+    let ip = std::net::Ipv4Addr::from(u32::from_le_bytes(ip_struct[..4].try_into().unwrap()));
+    check(&mut results, "anonymous sign-in", signed && id >> 52 == 0x014, format!("Steam ID {id}"));
+    if !signed {
+        std::process::exit(1);
+    }
+    println!("   BSecure = {}", m!(gs, G, "BSecure", fn() -> bool,));
+
+    // 2. Answers server-browser queries on its query port.
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let to = format!("127.0.0.1:{query_port}");
+    std::thread::sleep(Duration::from_millis(1200));
+    let info = a2s(&sock, &to, b"\xFF\xFF\xFF\xFFTSource Engine Query\0").unwrap_or_default();
+    let text = String::from_utf8_lossy(&info).into_owned();
+    check(&mut results, "A2S_INFO", info.get(4) == Some(&b'I') && text.contains("SteamInRust test server") && text.contains("sirtest"), format!("{} bytes", info.len()));
+    let rules = a2s(&sock, &to, &[0xFF, 0xFF, 0xFF, 0xFF, b'V', 0xFF, 0xFF, 0xFF, 0xFF]).unwrap_or_default();
+    check(&mut results, "A2S_RULES", rules.get(4) == Some(&b'E') && String::from_utf8_lossy(&rules).contains("ffa"), format!("{} bytes", rules.len()));
+
+    // 3. Listed by Steam's master server.
+    std::thread::sleep(Duration::from_secs(5));
+    let mms = generic(client, player, player_pipe, c"SteamMatchMakingServers002".as_ptr());
+    let list_vt: [usize; 3] = [on_responded as *const () as usize, on_failed as *const () as usize, on_complete as *const () as usize];
+    let listener = Listener { vtable: list_vt.as_ptr() };
+    let mut filter = [0u8; 512];
+    filter[..8].copy_from_slice(b"gameaddr");
+    let dotted = ip.to_string();
+    filter[256..256 + dotted.len()].copy_from_slice(dotted.as_bytes());
+    let listed = |pump: &Pump| -> bool {
+        COMPLETE.store(-1, SeqCst);
+        let fp = filter.as_ptr();
+        let h = m!(mms, MS, "RequestInternetServerList", fn(u32, *const *const u8, u32, *const Listener) -> usize, 480, &fp, 1, &listener);
+        let end = Instant::now() + Duration::from_secs(25);
+        while Instant::now() < end && COMPLETE.load(SeqCst) < 0 {
+            while pump.next(player_pipe).is_some() {}
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let count = m!(mms, MS, "GetServerCount", fn(usize) -> i32, h);
+        (0..count).any(|i| {
+            let d = m!(mms, MS, "GetServerDetails", fn(usize, i32) -> *const u8, h, i);
+            let d = unsafe { std::slice::from_raw_parts(d, 376) };
+            u64::from_le_bytes(d[368..376].try_into().unwrap()) == id
+        })
+    };
+    check(&mut results, "listed by Steam's server browser", listed(&pump), format!("searched {dotted} through ISteamMatchmakingServers"));
+
+    // 4. A player's ticket, checked by Steam for the server.
+    let user = generic(client, player, player_pipe, c"SteamUser023".as_ptr());
+    let mut me = 0u64;
+    m!(user, U, "GetSteamID", fn(*mut u64) -> *mut u64, &mut me);
+    let mut ticket = vec![0u8; 2560];
+    let mut len = 0u32;
+    let handle = m!(user, U, "GetAuthSessionTicket", fn(*mut u8, i32, *mut u32, *const u8) -> u32, ticket.as_mut_ptr(), 2560, &mut len, std::ptr::null());
+    let accepted = pump.wait(player_pipe, &[163], 20).is_some();
+    let begin = m!(gs, G, "BeginAuthSession", fn(*const u8, i32, u64) -> i32, ticket.as_ptr(), len as i32, me);
+    let verdict = pump.wait(server_pipe, &[143], 25);
+    let response = verdict.as_ref().map(|(_, d)| i32::from_le_bytes(d[8..12].try_into().unwrap()));
+    check(&mut results, "player ticket accepted by Steam", accepted && begin == 0 && response == Some(0), format!("begin {begin}, response {response:?}, {len} bytes"));
+    let duplicate = m!(gs, G, "BeginAuthSession", fn(*const u8, i32, u64) -> i32, ticket.as_ptr(), len as i32, me);
+    check(&mut results, "second session refused", duplicate == 2, format!("{duplicate}"));
+    let other = m!(gs, G, "BeginAuthSession", fn(*const u8, i32, u64) -> i32, ticket.as_ptr(), len as i32, me ^ 1);
+    check(&mut results, "ticket for another player refused", other == 1, format!("{other}"));
+    let license = m!(gs, G, "UserHasLicenseForApp", fn(u64, u32) -> i32, me, 480);
+    let no_license = m!(gs, G, "UserHasLicenseForApp", fn(u64, u32) -> i32, me, 730);
+    check(&mut results, "ownership from the ticket", license == 0 && no_license == 1, format!("480: {license}, 730: {no_license}"));
+
+    // 5. The player's stats, read as the server (never written).
+    let stats = generic(client, server_user, server_pipe, c"SteamGameServerStats001".as_ptr());
+    let call = m!(stats, ST, "RequestUserStats", fn(u64) -> u64, me);
+    let done = pump.wait(server_pipe, &[703], 20);
+    let same_call = done.as_ref().is_some_and(|(_, d)| u64::from_le_bytes(d[..8].try_into().unwrap()) == call);
+    let mut result = [0u8; 16];
+    let mut failed = true;
+    let got: extern "C" fn(i32, u64, *mut u8, i32, i32, *mut bool) -> bool = unsafe { std::mem::transmute(api.f("Steam_GetAPICallResult").unwrap()) };
+    let have = got(server_pipe, call, result.as_mut_ptr(), 16, 1800, &mut failed);
+    let eresult = i32::from_le_bytes(result[..4].try_into().unwrap());
+    let mut games = -1i32;
+    let read = m!(stats, ST, "GetUserStatInt32", fn(u64, *const c_char, *mut i32) -> bool, me, c"NumGames".as_ptr(), &mut games);
+    check(&mut results, "player stats read as the server", same_call && have && eresult == 1 && read, format!("result {eresult}, NumGames {games}"));
+
+    // 6. Networking from the server's identity: connection and messages.
+    let server_net = generic(client, server_user, server_pipe, c"SteamNetworkingSockets012".as_ptr());
+    let player_net = generic(client, player, player_pipe, c"SteamNetworkingSockets012".as_ptr());
+    let mut who = [0u8; 136];
+    let known = m!(server_net, NS, "GetIdentity", fn(*mut u8) -> bool, who.as_mut_ptr());
+    let identity_id = u64::from_le_bytes(who[8..16].try_into().unwrap());
+    check(&mut results, "networking identity is the server's", known && identity_id == id, format!("{identity_id}"));
+    if test_player_net {
+        let server_id = identity(id);
+        let listen = m!(server_net, NS, "CreateListenSocketP2P", fn(i32, i32, *const u8) -> u32, 5, 0, std::ptr::null());
+        let outgoing = m!(player_net, NS, "ConnectP2P", fn(*const u8, i32, i32, *const u8) -> u32, server_id.as_ptr(), 5, 0, std::ptr::null());
+        let (mut incoming, mut server_up, mut player_up) = (0u32, false, false);
+        let end = Instant::now() + Duration::from_secs(25);
+        while Instant::now() < end && !(server_up && player_up) {
+            while let Some((cb, b)) = pump.next(server_pipe) {
+                if cb == 1221 {
+                    let h = u32::from_le_bytes(b[0..4].try_into().unwrap());
+                    let state = i32::from_le_bytes(b[8 + 176..8 + 180].try_into().unwrap());
+                    if state == 1 && incoming == 0 {
+                        incoming = h;
+                        m!(server_net, NS, "AcceptConnection", fn(u32) -> i32, h);
+                    }
+                    server_up |= state == 3;
+                }
+            }
+            while let Some((cb, b)) = pump.next(player_pipe) {
+                if cb == 1221 && u32::from_le_bytes(b[0..4].try_into().unwrap()) == outgoing {
+                    player_up |= i32::from_le_bytes(b[8 + 176..8 + 180].try_into().unwrap()) == 3;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        check(&mut results, "player connected to the server's socket", listen != 0 && server_up && player_up, format!("server {server_up}, player {player_up}"));
+        let receive = |net: usize, h: u32, want: &[u8]| -> bool {
+            let end = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < end {
+                let mut out = [std::ptr::null_mut::<u8>(); 4];
+                let n = m!(net, NS, "ReceiveMessagesOnConnection", fn(u32, *mut *mut u8, i32) -> i32, h, out.as_mut_ptr(), 4);
+                for p in &out[..n.max(0) as usize] {
+                    if take_message(*p).2 == want {
+                        return true;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        };
+        if server_up && player_up {
+            m!(player_net, NS, "SendMessageToConnection", fn(u32, *const u8, u32, i32, *mut i64) -> i32, outgoing, b"to server".as_ptr(), 9, 8, std::ptr::null_mut());
+            let at_server = receive(server_net, incoming, b"to server");
+            m!(server_net, NS, "SendMessageToConnection", fn(u32, *const u8, u32, i32, *mut i64) -> i32, incoming, b"to player".as_ptr(), 9, 8, std::ptr::null_mut());
+            let at_player = receive(player_net, outgoing, b"to player");
+            check(&mut results, "data over the connection, both ways", at_server && at_player, format!("server got it: {at_server}, player got it: {at_player}"));
+        }
+        m!(player_net, NS, "CloseConnection", fn(u32, i32, *const c_char, bool) -> bool, outgoing, 0, std::ptr::null(), false);
+        m!(server_net, NS, "CloseListenSocket", fn(u32) -> bool, listen);
+
+        let server_msgs = generic(client, server_user, server_pipe, c"SteamNetworkingMessages002".as_ptr());
+        let player_msgs = generic(client, player, player_pipe, c"SteamNetworkingMessages002".as_ptr());
+        let player_id = identity(me);
+        m!(player_msgs, NM, "SendMessageToUser", fn(*const u8, *const u8, u32, i32, i32) -> i32, server_id.as_ptr(), b"msg up".as_ptr(), 6, 8, 2);
+        let (mut got_up, mut got_down, mut replied) = (false, false, false);
+        let end = Instant::now() + Duration::from_secs(25);
+        while Instant::now() < end && !(got_up && got_down) {
+            while let Some((cb, _)) = pump.next(server_pipe) {
+                if cb == 1251 {
+                    m!(server_msgs, NM, "AcceptSessionWithUser", fn(*const u8) -> bool, player_id.as_ptr());
+                }
+            }
+            while pump.next(player_pipe).is_some() {}
+            let mut out = [std::ptr::null_mut::<u8>(); 4];
+            let n = m!(server_msgs, NM, "ReceiveMessagesOnChannel", fn(i32, *mut *mut u8, i32) -> i32, 2, out.as_mut_ptr(), 4);
+            for p in &out[..n.max(0) as usize] {
+                let (_, from, data) = take_message(*p);
+                got_up |= from == me && data == b"msg up";
+            }
+            if got_up && !replied {
+                replied = m!(server_msgs, NM, "SendMessageToUser", fn(*const u8, *const u8, u32, i32, i32) -> i32, player_id.as_ptr(), b"msg down".as_ptr(), 8, 8, 2) == 1;
+            }
+            let n = m!(player_msgs, NM, "ReceiveMessagesOnChannel", fn(i32, *mut *mut u8, i32) -> i32, 2, out.as_mut_ptr(), 4);
+            for p in &out[..n.max(0) as usize] {
+                let (_, from, data) = take_message(*p);
+                got_down |= from == id && data == b"msg down";
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        check(&mut results, "ISteamNetworkingMessages, both ways", got_up && got_down, format!("server got it: {got_up}, player got it: {got_down}"));
+    } else {
+        println!("NOT TESTED player-to-server networking (see --player-net; server-to-server is --test gs-net)");
+    }
+
+    // 7. Goes away cleanly.
+    m!(gs, G, "EndAuthSession", fn(u64) -> (), me);
+    m!(user, U, "CancelAuthTicket", fn(u32) -> (), handle);
+    let after = m!(gs, G, "UserHasLicenseForApp", fn(u64, u32) -> i32, me, 480);
+    check(&mut results, "session ended", after == 2, format!("{after}"));
+    m!(gs, G, "SetAdvertiseServerActive", fn(bool) -> (), false);
+    std::thread::sleep(Duration::from_millis(1500));
+    m!(gs, G, "LogOff", fn() -> (),);
+    let down = pump.wait(server_pipe, &[103], 5).is_some();
+    check(&mut results, "signed off", down && !m!(gs, G, "BLoggedOn", fn() -> bool,), String::new());
+    std::thread::sleep(Duration::from_secs(4));
+    check(&mut results, "gone from the server browser", !listed(&pump), "searched again after signing off".into());
+
+    let failed: Vec<&str> = results.iter().filter(|r| !r.1).map(|r| r.0).collect();
+    println!("{} of {} checks passed{}", results.len() - failed.len(), results.len(), if failed.is_empty() { String::new() } else { format!("; failed: {failed:?}") });
+    std::process::exit(if failed.is_empty() { 0 } else { 1 });
+}
+
+/// `--direct <steamclient.dll> --test gs-net --role host|join --id-file <path>`:
+/// two game servers (one process each, neither listed) connect to each other
+/// by Steam ID with SteamNetworkingSockets, then exchange messages with
+/// SteamNetworkingMessages. No player identity is involved.
+fn gs_net_test(dll: &str, host: bool, id_file: &str) -> ! {
+    let w: Vec<u16> = dll.encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {dll}");
+    let api = Api(module);
+    let create: extern "C" fn(*const c_char, *mut i32) -> usize = unsafe { std::mem::transmute(api.f("CreateInterface").unwrap()) };
+    const C: &str = "SteamClient021";
+    const G: &str = "SteamGameServer015";
+    const NS: &str = "SteamNetworkingSockets012";
+    const NM: &str = "SteamNetworkingMessages002";
+    let client = create(c"SteamClient021".as_ptr(), std::ptr::null_mut());
+    let new_pipe: extern "C" fn(usize) -> i32 = unsafe { std::mem::transmute(method(client, C, "CreateSteamPipe")) };
+    let local: extern "C" fn(usize, *mut i32, i32) -> i32 = unsafe { std::mem::transmute(method(client, C, "CreateLocalUser")) };
+    let generic: extern "C" fn(usize, i32, i32, *const c_char) -> usize = unsafe { std::mem::transmute(method(client, C, "GetISteamGenericInterface")) };
+    let mut pipe = new_pipe(client);
+    let user = local(client, &mut pipe, 3);
+    let pump = Pump { get: unsafe { std::mem::transmute(api.f("Steam_BGetCallback").unwrap()) }, free: unsafe { std::mem::transmute(api.f("Steam_FreeLastCallback").unwrap()) } };
+    let gs = generic(client, user, pipe, c"SteamGameServer015".as_ptr());
+    macro_rules! m {
+        ($obj:expr, $v:expr, $name:literal, fn($($t:ty),*) -> $r:ty, $($a:expr),*) => {{
+            let f: extern "C" fn(usize, $($t),*) -> $r = unsafe { std::mem::transmute(method($obj, $v, $name)) };
+            f($obj, $($a),*)
+        }};
+    }
+    let port: u16 = if host { 27925 } else { 27935 };
+    m!(gs, G, "InitGameServer", fn(u32, u16, u16, u32, u32, *const c_char) -> bool, 0, port, port + 1, 0, 480, c"1.0.0.0".as_ptr());
+    m!(gs, G, "SetModDir", fn(*const c_char) -> (), c"spacewar".as_ptr());
+    m!(gs, G, "LogOnAnonymous", fn() -> (),);
+    assert!(matches!(pump.wait(pipe, &[101, 102], 30), Some((101, _))), "server didn't sign in");
+    let mut me = 0u64;
+    m!(gs, G, "GetSteamID", fn(*mut u64) -> *mut u64, &mut me);
+    println!("{} signed in as server {me}", if host { "host" } else { "join" });
+    let net = generic(client, user, pipe, c"SteamNetworkingSockets012".as_ptr());
+    let msgs = generic(client, user, pipe, c"SteamNetworkingMessages002".as_ptr());
+    let finish = |ok: bool, what: &str| -> ! {
+        println!("{} {what}", if ok { "PASS" } else { "FAIL" });
+        m!(gs, G, "LogOff", fn() -> (),);
+        std::thread::sleep(Duration::from_millis(600));
+        std::process::exit(if ok { 0 } else { 1 });
+    };
+    let receive = |h: u32, want: &[u8]| -> bool {
+        let end = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < end {
+            while pump.next(pipe).is_some() {}
+            let mut out = [std::ptr::null_mut::<u8>(); 4];
+            let n = m!(net, NS, "ReceiveMessagesOnConnection", fn(u32, *mut *mut u8, i32) -> i32, h, out.as_mut_ptr(), 4);
+            for p in &out[..n.max(0) as usize] {
+                if take_message(*p).2 == want {
+                    return true;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    };
+    // 1. A connection by Steam ID.
+    let (conn, peer) = if host {
+        let listen = m!(net, NS, "CreateListenSocketP2P", fn(i32, i32, *const u8) -> u32, 5, 0, std::ptr::null());
+        std::fs::write(id_file, me.to_string()).expect("write id file");
+        let (mut conn, mut up, mut peer) = (0u32, false, 0u64);
+        let end = Instant::now() + Duration::from_secs(40);
+        while Instant::now() < end && !up {
+            while let Some((cb, b)) = pump.next(pipe) {
+                if cb != 1221 {
+                    continue;
+                }
+                let state = i32::from_le_bytes(b[8 + 176..8 + 180].try_into().unwrap());
+                if state == 1 && conn == 0 {
+                    conn = u32::from_le_bytes(b[0..4].try_into().unwrap());
+                    peer = u64::from_le_bytes(b[8 + 8..8 + 16].try_into().unwrap());
+                    m!(net, NS, "AcceptConnection", fn(u32) -> i32, conn);
+                }
+                up |= state == 3;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !up {
+            finish(false, "connection from the other server");
+        }
+        let _ = listen;
+        (conn, peer)
+    } else {
+        let end = Instant::now() + Duration::from_secs(25);
+        let peer = loop {
+            if let Some(v) = std::fs::read_to_string(id_file).ok().and_then(|s| s.trim().parse::<u64>().ok()) {
+                break v;
+            }
+            if Instant::now() > end {
+                finish(false, "no host id");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let who = identity(peer);
+        let conn = m!(net, NS, "ConnectP2P", fn(*const u8, i32, i32, *const u8) -> u32, who.as_ptr(), 5, 0, std::ptr::null());
+        let mut up = false;
+        let end = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < end && !up {
+            while let Some((cb, b)) = pump.next(pipe) {
+                if cb == 1221 && u32::from_le_bytes(b[0..4].try_into().unwrap()) == conn {
+                    up |= i32::from_le_bytes(b[8 + 176..8 + 180].try_into().unwrap()) == 3;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !up {
+            finish(false, "connection to the other server");
+        }
+        (conn, peer)
+    };
+    println!("PASS connected, server to server (peer {peer})");
+    // 2. Data both ways.
+    let send = |h: u32, data: &[u8]| m!(net, NS, "SendMessageToConnection", fn(u32, *const u8, u32, i32, *mut i64) -> i32, h, data.as_ptr(), data.len() as u32, 8, std::ptr::null_mut());
+    if host {
+        if !receive(conn, b"ping") {
+            finish(false, "data from the other server");
+        }
+        send(conn, b"pong");
+    } else {
+        send(conn, b"ping");
+        if !receive(conn, b"pong") {
+            finish(false, "data from the other server");
+        }
+    }
+    println!("PASS data over the connection");
+    // 3. ISteamNetworkingMessages.
+    let who = identity(peer);
+    if !host {
+        m!(msgs, NM, "SendMessageToUser", fn(*const u8, *const u8, u32, i32, i32) -> i32, who.as_ptr(), b"msg up".as_ptr(), 6, 8, 2);
+    }
+    let want: &[u8] = if host { b"msg up" } else { b"msg down" };
+    let (mut got, end) = (false, Instant::now() + Duration::from_secs(20));
+    while Instant::now() < end && !got {
+        while let Some((cb, _)) = pump.next(pipe) {
+            if cb == 1251 {
+                m!(msgs, NM, "AcceptSessionWithUser", fn(*const u8) -> bool, who.as_ptr());
+            }
+        }
+        let mut out = [std::ptr::null_mut::<u8>(); 4];
+        let n = m!(msgs, NM, "ReceiveMessagesOnChannel", fn(i32, *mut *mut u8, i32) -> i32, 2, out.as_mut_ptr(), 4);
+        for p in &out[..n.max(0) as usize] {
+            let (_, from, data) = take_message(*p);
+            got |= from == peer && data == want;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if got && host {
+        m!(msgs, NM, "SendMessageToUser", fn(*const u8, *const u8, u32, i32, i32) -> i32, who.as_ptr(), b"msg down".as_ptr(), 8, 8, 2);
+        // Keep the session up long enough for it to arrive.
+        let end = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < end {
+            while pump.next(pipe).is_some() {}
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    finish(got, "ISteamNetworkingMessages, server to server");
+}
+
+/// `--test gs-api`: a dedicated server through a real `steam_api64.dll` next
+/// to this exe (SteamGameServer_Init and the flat API), with our DLL beside
+/// it as `steamclient64.dll`. Signs in anonymously, unlisted, then shuts down.
+fn gs_api_test() -> ! {
+    let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+    let w: Vec<u16> = dir.join(STEAM_API).to_string_lossy().encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {STEAM_API}");
+    let api = Api(module);
+    const PORT: u16 = 27945;
+    // Authentication mode; the second argument is the SDK's unused legacy port.
+    let up = call!(api, "SteamInternal_GameServer_Init", fn(u32, u16, u16, u16, i32, *const c_char) -> bool, 0, 0, PORT, PORT + 1, 2, c"1.0.0.0".as_ptr());
+    println!("SteamGameServer_Init = {up}");
+    if !up {
+        std::process::exit(1);
+    }
+    call!(api, "SteamAPI_ManualDispatch_Init", fn() -> (),);
+    let pipe = call!(api, "SteamGameServer_GetHSteamPipe", fn() -> i32,);
+    let gs = api.iface("SteamGameServer", &["v015", "v014", "v013"]);
+    assert!(gs != 0, "no ISteamGameServer accessor");
+    call!(api, "SteamAPI_ISteamGameServer_SetProduct", fn(usize, *const c_char) -> (), gs, c"SteamworksExample".as_ptr());
+    call!(api, "SteamAPI_ISteamGameServer_SetGameDescription", fn(usize, *const c_char) -> (), gs, c"SteamInRust test".as_ptr());
+    call!(api, "SteamAPI_ISteamGameServer_SetModDir", fn(usize, *const c_char) -> (), gs, c"spacewar".as_ptr());
+    call!(api, "SteamAPI_ISteamGameServer_SetDedicatedServer", fn(usize, bool) -> (), gs, true);
+    call!(api, "SteamAPI_ISteamGameServer_SetMaxPlayerCount", fn(usize, i32) -> (), gs, 2);
+    call!(api, "SteamAPI_ISteamGameServer_SetServerName", fn(usize, *const c_char) -> (), gs, c"SteamInRust flat API test".as_ptr());
+    call!(api, "SteamAPI_ISteamGameServer_SetMapName", fn(usize, *const c_char) -> (), gs, c"sirtest".as_ptr());
+    call!(api, "SteamAPI_ISteamGameServer_LogOnAnonymous", fn(usize) -> (), gs);
+    let mut signed = false;
+    let end = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < end && !signed {
+        call!(api, "SteamAPI_ManualDispatch_RunFrame", fn(i32) -> (), pipe);
+        let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
+        while call!(api, "SteamAPI_ManualDispatch_GetNextCallback", fn(i32, *mut CallbackMsg) -> bool, pipe, &mut msg) {
+            println!("  callback {} on the server's pipe", msg.callback);
+            signed |= msg.callback == 101;
+            call!(api, "SteamAPI_ManualDispatch_FreeLastCallback", fn(i32) -> (), pipe);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let on = call!(api, "SteamAPI_ISteamGameServer_BLoggedOn", fn(usize) -> bool, gs);
+    let id = call!(api, "SteamAPI_ISteamGameServer_GetSteamID", fn(usize) -> u64, gs);
+    println!("{} signed in through steam_api: logged on {on}, Steam ID {id}", if signed && on && id >> 52 == 0x014 { "PASS" } else { "FAIL" });
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let info = a2s(&sock, &format!("127.0.0.1:{}", PORT + 1), b"\xFF\xFF\xFF\xFFTSource Engine Query\0").unwrap_or_default();
+    let named = String::from_utf8_lossy(&info).contains("SteamInRust flat API test");
+    println!("{} A2S_INFO with the name set through the flat API", if named { "PASS" } else { "FAIL" });
+    call!(api, "SteamAPI_ISteamGameServer_LogOff", fn(usize) -> (), gs);
+    std::thread::sleep(Duration::from_millis(500));
+    call!(api, "SteamGameServer_Shutdown", fn() -> (),);
+    println!("shut down");
+    std::process::exit(if signed && on && named { 0 } else { 1 });
+}
+
+/// Windows: makes this process alone see a stand-in for Steam's registry
+/// values (the rest of the PC, and Steam's real keys, are untouched), so
+/// steam_api finds our DLL the way a game SteamInRust starts does.
+#[cfg(windows)]
+mod private_registry {
+    use std::ffi::c_void;
+    const HKCU: isize = 0x8000_0001u32 as i32 as isize;
+    const KEY_ALL_ACCESS: u32 = 0xF003F;
+    const REG_SZ: u32 = 1;
+    const REG_DWORD: u32 = 4;
+    const ROOT: &str = "Software\\SteamInRustGameServerTest";
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegCreateKeyExW(key: isize, sub: *const u16, r: u32, class: *const u16, opt: u32, sam: u32, sec: *const c_void, out: *mut isize, disp: *mut u32) -> i32;
+        fn RegSetValueExW(key: isize, name: *const u16, r: u32, kind: u32, data: *const u8, size: u32) -> i32;
+        fn RegCloseKey(key: isize) -> i32;
+        fn RegOverridePredefKey(key: isize, new: isize) -> i32;
+        fn RegDeleteTreeW(key: isize, sub: *const u16) -> i32;
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain([0]).collect()
+    }
+
+    fn create(parent: isize, sub: &str) -> isize {
+        let mut key = 0;
+        let r = unsafe { RegCreateKeyExW(parent, wide(sub).as_ptr(), 0, std::ptr::null(), 0, KEY_ALL_ACCESS, std::ptr::null(), &mut key, std::ptr::null_mut()) };
+        assert_eq!(r, 0, "can't create the test key");
+        key
+    }
+
+    pub fn install(dll: &str) {
+        let root = create(HKCU, ROOT);
+        let active = create(root, "Software\\Valve\\Steam\\ActiveProcess");
+        let path: Vec<u8> = wide(dll).iter().flat_map(|c| c.to_le_bytes()).collect();
+        for (name, kind, data) in [
+            ("SteamClientDll64", REG_SZ, path),
+            ("pid", REG_DWORD, std::process::id().to_le_bytes().to_vec()),
+            ("ActiveUser", REG_DWORD, 1u32.to_le_bytes().to_vec()),
+        ] {
+            unsafe { RegSetValueExW(active, wide(name).as_ptr(), 0, kind, data.as_ptr(), data.len() as u32) };
+        }
+        unsafe {
+            RegCloseKey(active);
+            assert_eq!(RegOverridePredefKey(HKCU, root), 0);
+            RegCloseKey(root);
+        }
+    }
+
+    pub fn remove() {
+        unsafe {
+            RegOverridePredefKey(HKCU, 0);
+            RegDeleteTreeW(HKCU, wide(ROOT).as_ptr());
+        }
+    }
+}
+
+/// `--test gs-listen --client-dll <our dll>`: a listen server, the way a game
+/// runs one: real steam_api finds our DLL through (its private view of) the
+/// registry, the player and the server each get their own pipe, and the
+/// server checks the player's ticket with Steam.
+#[cfg(windows)]
+fn gs_listen_test(dll: &str) -> ! {
+    private_registry::install(dll);
+    let finish = |ok: bool| -> ! {
+        private_registry::remove();
+        std::process::exit(if ok { 0 } else { 1 });
+    };
+    let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+    let w: Vec<u16> = dir.join(STEAM_API).to_string_lossy().encode_utf16().chain([0]).collect();
+    let module = unsafe { LoadLibraryW(w.as_ptr()) };
+    assert!(!module.is_null(), "can't load {STEAM_API}");
+    let api = Api(module);
+    let player_up = if let Some(init) = api.f("SteamAPI_InitFlat") {
+        let init: extern "C" fn(*mut c_char) -> i32 = unsafe { std::mem::transmute(init) };
+        let mut err = [0 as c_char; 1024];
+        init(err.as_mut_ptr()) == 0
+    } else {
+        call!(api, "SteamAPI_Init", fn() -> bool,)
+    };
+    println!("{} player side (SteamAPI_Init)", if player_up { "PASS" } else { "FAIL" });
+    if !player_up {
+        finish(false);
+    }
+    call!(api, "SteamAPI_ManualDispatch_Init", fn() -> (),);
+    let player_pipe = call!(api, "SteamAPI_GetHSteamPipe", fn() -> i32,);
+    const PORT: u16 = 27955;
+    let up = call!(api, "SteamInternal_GameServer_Init", fn(u32, u16, u16, u16, i32, *const c_char) -> bool, 0, 0, PORT, PORT + 1, 2, c"1.0.0.0".as_ptr());
+    let server_pipe = call!(api, "SteamGameServer_GetHSteamPipe", fn() -> i32,);
+    let separate = up && server_pipe != 0 && server_pipe != player_pipe;
+    println!("{} server side has its own pipe: player {player_pipe}, server {server_pipe}", if separate { "PASS" } else { "FAIL" });
+    if !separate {
+        finish(false);
+    }
+    let gs = api.iface("SteamGameServer", &["v015", "v014", "v013"]);
+    call!(api, "SteamAPI_ISteamGameServer_SetModDir", fn(usize, *const c_char) -> (), gs, c"spacewar".as_ptr());
+    call!(api, "SteamAPI_ISteamGameServer_SetServerName", fn(usize, *const c_char) -> (), gs, c"SteamInRust listen test".as_ptr());
+    call!(api, "SteamAPI_ISteamGameServer_LogOnAnonymous", fn(usize) -> (), gs);
+    // Everything arriving on each pipe, until `done`.
+    let pump = |until: &mut dyn FnMut(i32, i32, &[u8]) -> bool, secs: u64| -> bool {
+        let end = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < end {
+            for pipe in [player_pipe, server_pipe] {
+                call!(api, "SteamAPI_ManualDispatch_RunFrame", fn(i32) -> (), pipe);
+                let mut msg = CallbackMsg { user: 0, callback: 0, param: std::ptr::null_mut(), size: 0 };
+                while call!(api, "SteamAPI_ManualDispatch_GetNextCallback", fn(i32, *mut CallbackMsg) -> bool, pipe, &mut msg) {
+                    let d = unsafe { std::slice::from_raw_parts(msg.param, msg.size.max(0) as usize) }.to_vec();
+                    let (id, _) = (msg.callback, ());
+                    call!(api, "SteamAPI_ManualDispatch_FreeLastCallback", fn(i32) -> (), pipe);
+                    if until(pipe, id, &d) {
+                        return true;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        false
+    };
+    let mut wrong_pipe = false;
+    let signed = pump(&mut |pipe, id, _| {
+        wrong_pipe |= id == 101 && pipe != server_pipe;
+        id == 101 && pipe == server_pipe
+    }, 30);
+    let sid = call!(api, "SteamAPI_ISteamGameServer_GetSteamID", fn(usize) -> u64, gs);
+    println!("{} server signed in on its own pipe: Steam ID {sid}", if signed && !wrong_pipe { "PASS" } else { "FAIL" });
+    if !signed {
+        finish(false);
+    }
+    let user = api.iface("SteamUser", &["v023", "v021", "v020"]);
+    let me = call!(api, "SteamAPI_ISteamUser_GetSteamID", fn(usize) -> u64, user);
+    let mut ticket = vec![0u8; 2560];
+    let mut len = 0u32;
+    let handle = call!(api, "SteamAPI_ISteamUser_GetAuthSessionTicket", fn(usize, *mut u8, i32, *mut u32, *const u8) -> u32, user, ticket.as_mut_ptr(), 2560, &mut len, std::ptr::null());
+    let ready = pump(&mut |pipe, id, _| id == 163 && pipe == player_pipe, 20);
+    let begin = call!(api, "SteamAPI_ISteamGameServer_BeginAuthSession", fn(usize, *const u8, i32, u64) -> i32, gs, ticket.as_ptr(), len as i32, me);
+    let mut response = -1;
+    let answered = pump(&mut |pipe, id, d| {
+        if id == 143 && pipe == server_pipe {
+            response = i32::from_le_bytes(d[8..12].try_into().unwrap());
+            return true;
+        }
+        false
+    }, 25);
+    let authed = ready && begin == 0 && answered && response == 0;
+    println!("{} player's ticket checked by the server: begin {begin}, response {response}", if authed { "PASS" } else { "FAIL" });
+    call!(api, "SteamAPI_ISteamGameServer_EndAuthSession", fn(usize, u64) -> (), gs, me);
+    call!(api, "SteamAPI_ISteamUser_CancelAuthTicket", fn(usize, u32) -> (), user, handle);
+    call!(api, "SteamAPI_ISteamGameServer_LogOff", fn(usize) -> (), gs);
+    std::thread::sleep(Duration::from_millis(500));
+    call!(api, "SteamGameServer_Shutdown", fn() -> (),);
+    call!(api, "SteamAPI_Shutdown", fn() -> (),);
+    println!("shut down");
+    finish(authed && !wrong_pipe);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let (Some(dll), Some("cert")) = (args.iter().position(|a| a == "--direct").and_then(|i| args.get(i + 1)), args.iter().position(|a| a == "--test").and_then(|i| args.get(i + 1)).map(|s| s.as_str())) {
         cert_test(dll);
     }
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+    #[cfg(windows)]
+    if arg("--test").as_deref() == Some("gs-listen") {
+        gs_listen_test(&arg("--client-dll").expect("--client-dll"));
+    }
+    if arg("--test").as_deref() == Some("gs-api") {
+        gs_api_test();
+    }
+    if let (Some(dll), Some("gs-net")) = (arg("--direct"), arg("--test").as_deref()) {
+        gs_net_test(&dll, arg("--role").as_deref() == Some("host"), &arg("--id-file").expect("--id-file"));
+    }
+    if let (Some(dll), Some("gameserver")) = (arg("--direct"), arg("--test").as_deref()) {
+        gameserver_test(&dll, arg("--port").and_then(|p| p.parse().ok()).unwrap_or(27915), args.iter().any(|a| a == "--bad-token"), args.iter().any(|a| a == "--player-net"));
+    }
     if let (Some(dll), Some("input")) = (arg("--direct"), arg("--test").as_deref()) {
         input_test(&dll);
     }
