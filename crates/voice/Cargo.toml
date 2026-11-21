@@ -1,0 +1,36 @@
+[package]
+name = "voice"
+description = "Steam voice chat: audio devices, Opus, mixing and the connection to Valve's voice servers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+tracing.workspace = true
+# The official Opus voice codec, built from source (needs CMake).
+opusic-sys = "=0.7.7"
+
+# The encryption comes from the operating system where it can.
+[target.'cfg(windows)'.dependencies]
+str0m = { version = "=0.25.0", default-features = false, features = ["wincrypto"] }
+windows = { version = "0.62", features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_Multimedia",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+str0m = { version = "=0.25.0", default-features = false, features = ["apple-crypto"] }
+
+[target.'cfg(not(any(windows, target_vendor = "apple")))'.dependencies]
+str0m = { version = "=0.25.0", default-features = false, features = ["rust-crypto"] }

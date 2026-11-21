@@ -616,7 +616,7 @@ impl Admin {
         let why = no_right(t!("Create and delete channels").as_ref());
         ui.horizontal(|ui| {
             let width = (ui.available_width() - t.spacing.md) / 2.0;
-            let r = ui.add_enabled_ui(can, |ui| w::text_input(ui, t, &mut s.new_text, t!("New text channel name").as_ref(), width - t.dense(110.0), 1)).inner;
+            let r = ui.add_enabled_ui(can, |ui| w::text_input(ui, t, &mut s.new_text, t!("New channel name").as_ref(), width - t.dense(110.0), 1)).inner;
             allowed(r, can, &why);
             let ok = can && !s.new_text.trim().is_empty();
             let b = ui.add_enabled_ui(ok, |ui| w::button(ui, t, Some(icons::PLUS), t!("Create"), w::Kind::Secondary, w::Size::Md)).inner;
@@ -624,8 +624,11 @@ impl Admin {
                 Self::send(ctx, g.id, AdminOp::CreateRoom { name: s.new_text.trim().to_string(), voice: false });
                 s.new_text.clear();
             }
-            let voice_why = t!("Voice chat isn't supported in SteamInRust yet").to_string();
-            ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::PLUS), t!("Create new voice channel"), w::Kind::Secondary, w::Size::Md)).inner.on_disabled_hover_text(voice_why);
+            let b = ui.add_enabled_ui(ok, |ui| w::button(ui, t, Some(icons::MICROPHONE), t!("Create new voice channel"), w::Kind::Secondary, w::Size::Md)).inner;
+            if allowed(b, can, &why).clicked() {
+                Self::send(ctx, g.id, AdminOp::CreateRoom { name: s.new_text.trim().to_string(), voice: true });
+                s.new_text.clear();
+            }
         });
         ui.add_space(t.spacing.lg);
         let rooms = |voice: bool| -> Vec<&model::ChatRoom> { g.rooms.iter().filter(|r| r.voice == voice).collect() };
@@ -635,9 +638,6 @@ impl Admin {
                 continue;
             }
             ui.label(w::body_s(t, heading.to_uppercase(), t.text_dim));
-            if voice {
-                ui.label(w::body_s(t, t!("Voice chat isn't supported in SteamInRust yet; these channels show for reference."), t.text_faint));
-            }
             ui.separator();
             for (i, r) in list.iter().enumerate() {
                 let home = r.id == g.default_room;

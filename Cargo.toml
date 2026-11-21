@@ -26,6 +26,7 @@ plugins = { path = "crates/plugins" }
 i18n = { path = "crates/i18n" }
 depot = { path = "crates/depot" }
 video = { path = "crates/video" }
+voice = { path = "crates/voice" }
 
 # Protocol
 prost = "0.14"

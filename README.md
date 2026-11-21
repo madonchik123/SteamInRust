@@ -244,7 +244,8 @@ tells you what a new trade offer is worth).
 
 ## Build from source
 
-Needs [Rust](https://rustup.rs). On Windows also MinGW-w64: the project uses the
+Needs [Rust](https://rustup.rs) and [CMake](https://cmake.org) (it builds the
+Opus voice codec). On Windows also MinGW-w64: the project uses the
 GNU toolchain there (see `rust-toolchain.toml`). On macOS, install the Xcode
 command line tools (`xcode-select --install`), then tell rustup to use the Mac's
 own toolchain in the project folder, once:

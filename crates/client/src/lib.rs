@@ -49,6 +49,7 @@ mod session;
 pub mod state;
 pub mod store;
 pub mod chat_admin;
+pub mod voice;
 pub mod economy;
 pub mod screenshots;
 pub mod store_user;
@@ -345,6 +346,11 @@ pub enum Command {
     LogOut,
     /// Manage a group chat (`group` 0 for a new one): see [`model::chat_admin::AdminOp`].
     ChatAdmin { group: u64, op: model::chat_admin::AdminOp },
+    /// Check that Valve's voice server accepts a connection. Rings nobody
+    /// and joins nothing.
+    VoiceConnectionTest,
+    /// Calls, channels, mute, volumes and audio settings.
+    Voice(model::voice::VoiceOp),
 }
 
 /// A conversation: one-to-one with a friend, or a room of a group chat.
@@ -496,6 +502,8 @@ impl std::fmt::Debug for Command {
             Command::LeaveChatGroup { group } => f.debug_struct("LeaveChatGroup").field("group", group).finish(),
             Command::LogOut => f.write_str("LogOut"),
             Command::ChatAdmin { group, op } => f.debug_struct("ChatAdmin").field("group", group).field("op", op).finish(),
+            Command::VoiceConnectionTest => f.write_str("VoiceConnectionTest"),
+            Command::Voice(op) => f.debug_tuple("Voice").field(op).finish(),
         }
     }
 }
@@ -724,6 +732,9 @@ pub enum Event {
     ChatGroupFailed(String),
     /// What a [`Command::ChatAdmin`] came back with.
     ChatAdmin(model::chat_admin::AdminEvent),
+    /// What a [`Command::VoiceConnectionTest`] found.
+    VoiceConnectionTest(Result<voice::ConnectionTest, String>),
+    Voice(model::voice::VoiceEvent),
 }
 
 /// How the client is connected to Steam right now.

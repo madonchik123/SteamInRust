@@ -228,6 +228,8 @@ pub struct SteamApp {
     /// `--demo`: feeds made-up events in (a link's "start this game" shows
     /// a sample Steam Cloud conflict instead of starting anything).
     demo_events: Option<mpsc::Sender<Event>>,
+    /// Friends whose calls were already announced.
+    ringing: Vec<model::SteamId>,
     applied_theme: Option<Theme>,
     /// The look as last written to disk, and a change waiting to settle.
     saved_look: Option<String>,
@@ -335,6 +337,9 @@ impl SteamApp {
             for e in crate::demo::events(&local) {
                 let _ = demo_tx.send(e);
             }
+            for e in crate::demo::voice_preview(&client) {
+                let _ = demo_tx.send(e);
+            }
             for e in crate::builtin::inventory::economy_demo::install(demo_tx.clone()) {
                 let _ = demo_tx.send(e);
             }
@@ -392,6 +397,7 @@ impl SteamApp {
             question_raised: None,
             question_on_top_until: None,
             demo_events: demo.then(|| demo_tx.clone()),
+            ringing: Vec::new(),
             applied_theme: None,
             saved_look: None,
             look_pending: None,
@@ -506,6 +512,27 @@ impl SteamApp {
                 Event::ChatGroupCreated(Ok(id)) => self.friends_window.show(crate::friends_window::Pane::Group(*id, 0)),
                 Event::ChatGroupCreated(Err(e)) => self.toast(now, i18n::t!("The group chat wasn't made"), e.clone()),
                 Event::ChatGroupFailed(e) => self.toast(now, i18n::tr_dyn(e), ""),
+                Event::Voice(model::voice::VoiceEvent::Ended(why)) => {
+                    use model::voice::CallEnd;
+                    match why {
+                        CallEnd::Finished => {}
+                        CallEnd::Declined => self.toast(now, i18n::t!("Call declined"), ""),
+                        CallEnd::NoAnswer => self.toast(now, i18n::t!("No answer"), ""),
+                        CallEnd::Failed(e) => self.toast(now, i18n::t!("Voice chat ended"), i18n::tr_dyn(e)),
+                    }
+                }
+                Event::Voice(model::voice::VoiceEvent::State(v)) => {
+                    // Someone new is calling: say so, and open the window with
+                    // the Answer button (unless you're in a game).
+                    for from in v.incoming.iter().filter(|f| !self.ringing.contains(f)).copied().collect::<Vec<_>>() {
+                        let name = self.state.persona(from).display_name();
+                        self.toast(now, i18n::t!("{name} is calling you", name = name), "");
+                        if self.state.playing.is_none() {
+                            self.friends_window.open = true;
+                        }
+                    }
+                    self.ringing = v.incoming.clone();
+                }
                 // Additions show in the store's "Added to your cart!" popup.
                 Event::Cart(lines) => {
                     self.cart_count = Some(lines.len());

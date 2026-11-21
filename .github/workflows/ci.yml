@@ -50,11 +50,13 @@ jobs:
           # Use the MSYS2 that ships with the runner instead of downloading it
           # (the download often fails with HTTP 504).
           release: false
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
 
       - name: Put MinGW on PATH
         shell: pwsh
-        run: echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+        run: |
+          echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo "CMAKE_GENERATOR=Ninja" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
       - uses: Swatinem/rust-cache@v2
@@ -93,11 +95,13 @@ jobs:
           # Use the MSYS2 that ships with the runner instead of downloading it
           # (the download often fails with HTTP 504).
           release: false
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-i686-gcc mingw-w64-i686-binutils
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-i686-gcc mingw-w64-i686-binutils
 
       - name: Put MinGW on PATH
         shell: pwsh
-        run: echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+        run: |
+          echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo "CMAKE_GENERATOR=Ninja" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
       - uses: Swatinem/rust-cache@v2

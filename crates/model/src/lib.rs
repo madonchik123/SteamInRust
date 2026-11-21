@@ -964,6 +964,9 @@ pub struct ChatRoom {
     pub unread: bool,
     pub voice: bool,
     pub sort: u32,
+    /// Who's in its voice channel now.
+    #[serde(default)]
+    pub in_voice: Vec<SteamId>,
 }
 
 /// A message in a group chat room.
@@ -2783,3 +2786,6 @@ mod steam_id_tests {
 /// Managing group chats (roles, invites, bans, notifications).
 pub mod chat_admin;
 pub mod economy;
+
+/// Voice chat: calls, who's in them, and audio settings.
+pub mod voice;

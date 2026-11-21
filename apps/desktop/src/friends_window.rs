@@ -158,7 +158,10 @@ impl FriendsWindow {
                 self.raise();
             }
             a => {
-                if let Some(g) = a.strip_prefix("group:").and_then(|g| g.parse().ok()) {
+                if let Some((g, room)) = a.strip_prefix("group:").and_then(|g| g.split_once(':')).and_then(|(g, r)| Some((g.parse().ok()?, r.parse().ok()?))) {
+                    // `group:<id>:<room>`: one channel of it.
+                    self.show(Pane::Group(g, room));
+                } else if let Some(g) = a.strip_prefix("group:").and_then(|g| g.parse().ok()) {
                     self.show(Pane::Group(g, 0));
                 } else if let Ok(id) = a.parse::<SteamId>() {
                     self.show(Pane::Chat(id));
@@ -379,6 +382,13 @@ fn pane(app: &mut SteamApp, ui: &mut Ui, actions: &mut Vec<Action>, reserve: f32
     registry.with_ext::<Friends, _>("friends", env, |f, ctx| f.pane(ui, ctx, &mut friends_window.convs, reserve));
 }
 
+/// Friends calling you and the call you're in, drawn by the `friends` extension.
+fn voice_dock(app: &mut SteamApp, ui: &mut Ui, rect: Rect, actions: &mut Vec<Action>) {
+    let SteamApp { registry, state, local, prefs, client, .. } = app;
+    let env = Env { state, local, theme: &prefs.theme, zoom: prefs.zoom, client, actions: &mut *actions };
+    registry.with_ext::<Friends, _>("friends", env, |f, ctx| f.voice_dock(ui, ctx, rect));
+}
+
 /// The list column: you, your status and "Add a friend"; the Friends and
 /// Activity tabs; the friends grouped by what they're doing, and group chats.
 fn list(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>) {
@@ -390,7 +400,12 @@ fn list(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>) {
     let strip = Rect::from_min_size(full.min, vec2(full.width(), 30.0));
     crate::chrome::drag_area(ui, strip, true);
     let pad = t.padding_of(panel);
-    let inner = Rect::from_min_max(pos2(full.left() + pad.x, strip.bottom() + (pad.y - 10.0).max(0.0)), full.max - pad);
+    // Calls sit under the list, so they stay in view whatever is open.
+    let dock = crate::builtin::friends::dock_height(&app.state, t);
+    if dock > 0.0 {
+        voice_dock(app, ui, Rect::from_min_max(pos2(full.left(), full.bottom() - dock), full.max), actions);
+    }
+    let inner = Rect::from_min_max(pos2(full.left() + pad.x, strip.bottom() + (pad.y - 10.0).max(0.0)), full.max - pad - vec2(0.0, dock));
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
     let ui = &mut ui;
     header(app, ui, t);
