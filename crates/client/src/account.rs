@@ -4,7 +4,7 @@
 //! no service). Everything here only reads.
 
 use crate::market::Web;
-use model::{AccountSecurity, Family, FamilyMember, FamilyRole, FamilyStatus, GuardDevice, License, Purchase, PurchasePage, SharedApp, SteamId};
+use model::{AccountSecurity, Family, FamilyAction, FamilyInvite, FamilyMember, FamilyOutcome, FamilyRole, FamilyStatus, GuardDevice, License, Purchase, PurchasePage, SharedApp, SteamId};
 use net::Connection;
 use proto::webui::*;
 use proto::*;
@@ -52,7 +52,7 @@ pub async fn family(conn: &Connection, me: SteamId, language: &str) -> Result<Fa
         family: None,
         role: FamilyRole::from_steam(r.role() as i32),
         cooldown: r.cooldown_seconds_remaining(),
-        invites: r.pending_group_invites.iter().map(|i| (i.family_groupid(), i.inviter_steamid())).collect(),
+        invites: r.pending_group_invites.iter().map(invite_for_you).collect(),
     };
     if r.is_not_member_of_any_group() || r.family_groupid() == 0 {
         return Ok(status);
@@ -102,8 +102,87 @@ pub async fn family(conn: &Connection, me: SteamId, language: &str) -> Result<Fa
         country: g.country().to_string(),
         slot_cooldown: g.slot_cooldown_remaining_seconds(),
         shared,
+        former: g.former_members.iter().map(|m| m.steamid()).collect(),
+        slot_overrides: g.slot_cooldown_overrides(),
     });
     Ok(status)
+}
+
+fn invite_for_you(i: &FamilyGroupPendingInviteForUser) -> FamilyInvite {
+    FamilyInvite { family: i.family_groupid(), inviter: i.inviter_steamid(), role: FamilyRole::from_steam(i.role()), invite_id: i.invite_id(), awaiting_confirmation: i.awaiting_2fa() }
+}
+
+/// The one FamilyGroups call for an action. Kept apart from sending so
+/// what goes to Steam can be tested without touching an account.
+#[derive(Debug, PartialEq)]
+enum FamilyCall {
+    Invite(CFamilyGroupsInviteToFamilyGroupRequest),
+    Cancel(CFamilyGroupsCancelFamilyGroupInviteRequest),
+    Join(CFamilyGroupsJoinFamilyGroupRequest),
+    ConfirmJoin(CFamilyGroupsConfirmJoinFamilyGroupRequest),
+    Remove(CFamilyGroupsRemoveFromFamilyGroupRequest),
+}
+
+/// Declining is cancelling the invite to yourself and leaving is removing
+/// yourself: that's how Steam's own family page does both.
+fn family_call(action: &FamilyAction, me: SteamId) -> Result<FamilyCall, String> {
+    let (family, target) = match action {
+        FamilyAction::Invite { family, steam_id, .. } | FamilyAction::CancelInvite { family, steam_id } | FamilyAction::Remove { family, steam_id } => (*family, *steam_id),
+        FamilyAction::Accept { family } | FamilyAction::ConfirmJoin { family, .. } | FamilyAction::Decline { family } | FamilyAction::Leave { family } => (*family, me),
+    };
+    if family == 0 || target == 0 {
+        return Err("That family or account isn't valid".into());
+    }
+    let family_groupid = Some(family);
+    Ok(match action {
+        FamilyAction::Invite { role, .. } => {
+            let role = role.to_steam().ok_or("Choose Adult or Child")?;
+            FamilyCall::Invite(CFamilyGroupsInviteToFamilyGroupRequest { family_groupid, receiver_steamid: Some(target), receiver_role: Some(role) })
+        }
+        FamilyAction::CancelInvite { .. } | FamilyAction::Decline { .. } => FamilyCall::Cancel(CFamilyGroupsCancelFamilyGroupInviteRequest { family_groupid, steamid_to_cancel: Some(target) }),
+        FamilyAction::Accept { .. } => FamilyCall::Join(CFamilyGroupsJoinFamilyGroupRequest { family_groupid, nonce: None }),
+        FamilyAction::ConfirmJoin { invite_id, code, .. } => FamilyCall::ConfirmJoin(CFamilyGroupsConfirmJoinFamilyGroupRequest { family_groupid, invite_id: Some(*invite_id), nonce: Some(*code) }),
+        FamilyAction::Remove { .. } | FamilyAction::Leave { .. } => FamilyCall::Remove(CFamilyGroupsRemoveFromFamilyGroupRequest { family_groupid, steamid_to_remove: Some(target) }),
+    })
+}
+
+/// Steam's `two_factor_method`: 0 none, 1 Steam Mobile app, 2 email.
+fn family_outcome(two_factor: i32, already_accepted: bool) -> FamilyOutcome {
+    match (already_accepted, two_factor) {
+        (true, _) => FamilyOutcome::AlreadyAccepted,
+        (_, 0) => FamilyOutcome::Done,
+        (_, 1) => FamilyOutcome::ConfirmOnPhone,
+        (_, 2) => FamilyOutcome::ConfirmByEmail,
+        _ => FamilyOutcome::ConfirmOther,
+    }
+}
+
+/// Do something to a family. This changes the real account: the app only
+/// calls it after the person confirmed in its dialog.
+pub async fn family_action(conn: &Connection, me: SteamId, action: &FamilyAction) -> Result<FamilyOutcome, String> {
+    let err = |e: net::Error| e.to_string();
+    match family_call(action, me)? {
+        FamilyCall::Invite(req) => {
+            let r: CFamilyGroupsInviteToFamilyGroupResponse = conn.call("FamilyGroups.InviteToFamilyGroup#1", &req).await.map_err(err)?;
+            Ok(family_outcome(r.two_factor_method(), false))
+        }
+        FamilyCall::Cancel(req) => {
+            conn.call::<_, CFamilyGroupsCancelFamilyGroupInviteResponse>("FamilyGroups.CancelFamilyGroupInvite#1", &req).await.map_err(err)?;
+            Ok(FamilyOutcome::Done)
+        }
+        FamilyCall::Join(req) => {
+            let r: CFamilyGroupsJoinFamilyGroupResponse = conn.call("FamilyGroups.JoinFamilyGroup#1", &req).await.map_err(err)?;
+            Ok(family_outcome(r.two_factor_method(), r.invite_already_accepted()))
+        }
+        FamilyCall::ConfirmJoin(req) => {
+            conn.call::<_, CFamilyGroupsConfirmJoinFamilyGroupResponse>("FamilyGroups.ConfirmJoinFamilyGroup#1", &req).await.map_err(err)?;
+            Ok(FamilyOutcome::Done)
+        }
+        FamilyCall::Remove(req) => {
+            conn.call::<_, CFamilyGroupsRemoveFromFamilyGroupResponse>("FamilyGroups.RemoveFromFamilyGroup#1", &req).await.map_err(err)?;
+            Ok(FamilyOutcome::Done)
+        }
+    }
 }
 
 /// A signed-in store page (`query` already has its `?`).
@@ -350,5 +429,115 @@ mod tests {
         assert!(store_page_url(".evil.tld/account/", "?l=english").is_err());
         let hist = history_more_url("english&evil=1");
         assert!(!hist.contains("&evil=1"), "language must be percent-encoded: {hist}");
+    }
+}
+
+#[cfg(test)]
+mod family_tests {
+    use super::*;
+    use model::FamilyAction as A;
+    use prost::Message;
+
+    const ME: SteamId = 76561197960265729;
+    const THEM: SteamId = 76561197960265829;
+
+    #[test]
+    fn invite_sends_the_person_and_role() {
+        for (role, n) in [(FamilyRole::Adult, 1), (FamilyRole::Child, 2)] {
+            let call = family_call(&A::Invite { family: 7, steam_id: THEM, role }, ME).unwrap();
+            assert_eq!(call, FamilyCall::Invite(CFamilyGroupsInviteToFamilyGroupRequest { family_groupid: Some(7), receiver_steamid: Some(THEM), receiver_role: Some(n) }));
+        }
+        assert!(family_call(&A::Invite { family: 7, steam_id: THEM, role: FamilyRole::Unknown }, ME).is_err());
+    }
+
+    #[test]
+    fn decline_cancels_your_own_invite_and_cancel_theirs() {
+        let cancel = |id| FamilyCall::Cancel(CFamilyGroupsCancelFamilyGroupInviteRequest { family_groupid: Some(7), steamid_to_cancel: Some(id) });
+        assert_eq!(family_call(&A::Decline { family: 7 }, ME).unwrap(), cancel(ME));
+        assert_eq!(family_call(&A::CancelInvite { family: 7, steam_id: THEM }, ME).unwrap(), cancel(THEM));
+    }
+
+    #[test]
+    fn leave_removes_you_and_remove_removes_them() {
+        let remove = |id| FamilyCall::Remove(CFamilyGroupsRemoveFromFamilyGroupRequest { family_groupid: Some(7), steamid_to_remove: Some(id) });
+        assert_eq!(family_call(&A::Leave { family: 7 }, ME).unwrap(), remove(ME));
+        assert_eq!(family_call(&A::Remove { family: 7, steam_id: THEM }, ME).unwrap(), remove(THEM));
+    }
+
+    #[test]
+    fn accept_and_the_emailed_code() {
+        assert_eq!(family_call(&A::Accept { family: 7 }, ME).unwrap(), FamilyCall::Join(CFamilyGroupsJoinFamilyGroupRequest { family_groupid: Some(7), nonce: None }));
+        assert_eq!(
+            family_call(&A::ConfirmJoin { family: 7, invite_id: 9, code: 123456 }, ME).unwrap(),
+            FamilyCall::ConfirmJoin(CFamilyGroupsConfirmJoinFamilyGroupRequest { family_groupid: Some(7), invite_id: Some(9), nonce: Some(123456) })
+        );
+    }
+
+    #[test]
+    fn refuses_empty_ids() {
+        assert!(family_call(&A::Remove { family: 0, steam_id: THEM }, ME).is_err());
+        assert!(family_call(&A::Remove { family: 7, steam_id: 0 }, ME).is_err());
+        assert!(family_call(&A::Leave { family: 7 }, 0).is_err());
+    }
+
+    #[test]
+    fn reads_how_steam_wants_it_confirmed() {
+        assert_eq!(family_outcome(0, false), FamilyOutcome::Done);
+        assert_eq!(family_outcome(1, false), FamilyOutcome::ConfirmOnPhone);
+        assert_eq!(family_outcome(2, false), FamilyOutcome::ConfirmByEmail);
+        assert_eq!(family_outcome(9, false), FamilyOutcome::ConfirmOther);
+        assert_eq!(family_outcome(0, true), FamilyOutcome::AlreadyAccepted);
+        // A join reply as it comes off the wire.
+        let bytes = CFamilyGroupsJoinFamilyGroupResponse { two_factor_method: Some(2), cooldown_seconds_remaining: Some(86_400), ..Default::default() }.encode_to_vec();
+        let r = CFamilyGroupsJoinFamilyGroupResponse::decode(bytes.as_slice()).unwrap();
+        assert_eq!(family_outcome(r.two_factor_method(), r.invite_already_accepted()), FamilyOutcome::ConfirmByEmail);
+    }
+
+    #[test]
+    fn reads_an_invite_to_you() {
+        let wire = FamilyGroupPendingInviteForUser { family_groupid: Some(7), role: Some(2), inviter_steamid: Some(THEM), awaiting_2fa: Some(true), invite_id: Some(9) }.encode_to_vec();
+        let i = invite_for_you(&FamilyGroupPendingInviteForUser::decode(wire.as_slice()).unwrap());
+        assert_eq!(i, FamilyInvite { family: 7, inviter: THEM, role: FamilyRole::Child, invite_id: 9, awaiting_confirmation: true });
+    }
+
+    fn status(role: FamilyRole, free: u32, slot: u32, overrides: u32) -> FamilyStatus {
+        let member = |steam_id, role| FamilyMember { steam_id, role, ..Default::default() };
+        FamilyStatus {
+            role,
+            family: Some(Family { id: 7, members: vec![member(ME, role), member(THEM, FamilyRole::Child)], invites: vec![(5, FamilyRole::Adult)], free_spots: free, slot_cooldown: slot, slot_overrides: overrides, former: vec![6], ..Default::default() }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn who_can_be_invited() {
+        use model::InviteBlock as B;
+        let open = status(FamilyRole::Adult, 2, 0, 0);
+        assert_eq!(open.invite_block(), None);
+        assert!(open.can_invite(99) && !open.can_invite(THEM) && !open.can_invite(5) && !open.can_invite(0));
+        // A slot cooldown: only former members.
+        let cooling = status(FamilyRole::Adult, 2, 1000, 0);
+        assert_eq!(cooling.invite_block(), Some(B::SlotCooldown(1000)));
+        assert!(cooling.can_invite(6) && !cooling.can_invite(99));
+        assert_eq!(status(FamilyRole::Adult, 2, 1000, 1).invite_block(), None);
+        let full = status(FamilyRole::Adult, 0, 0, 0);
+        assert_eq!(full.invite_block(), Some(B::Full));
+        assert!(!full.can_invite(6));
+        let child = status(FamilyRole::Child, 2, 0, 0);
+        assert_eq!(child.invite_block(), Some(B::NotAdult));
+        assert!(!child.can_invite(99));
+    }
+
+    #[test]
+    fn who_can_be_removed() {
+        let adult = status(FamilyRole::Adult, 2, 0, 0);
+        assert!(adult.can_remove(THEM) && adult.can_remove(ME) && !adult.can_remove(99));
+        // Children can't remove anyone, or leave.
+        let child = status(FamilyRole::Child, 2, 0, 0);
+        assert!(!child.can_remove(THEM) && !child.can_remove(ME));
+        // The last member deletes the family instead (on Steam's site).
+        let mut alone = status(FamilyRole::Adult, 2, 0, 0);
+        alone.family.as_mut().unwrap().members.truncate(1);
+        assert!(!alone.can_remove(ME));
     }
 }

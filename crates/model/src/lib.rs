@@ -1247,6 +1247,13 @@ pub struct Family {
     pub slot_cooldown: u32,
     /// Games shared in the family, with who owns them.
     pub shared: Vec<SharedApp>,
+    /// People who left: they can be invited back during a slot cooldown.
+    #[serde(default)]
+    pub former: Vec<SteamId>,
+    /// Exceptions Steam granted to the slot cooldown (it doesn't apply
+    /// while there are any).
+    #[serde(default)]
+    pub slot_overrides: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1264,6 +1271,15 @@ impl FamilyRole {
             1 => FamilyRole::Adult,
             2 => FamilyRole::Child,
             _ => FamilyRole::Unknown,
+        }
+    }
+
+    /// Back to `EFamilyGroupRole`; `None` for a role Steam can't be sent.
+    pub fn to_steam(self) -> Option<i32> {
+        match self {
+            FamilyRole::Adult => Some(1),
+            FamilyRole::Child => Some(2),
+            FamilyRole::Unknown => None,
         }
     }
 }
@@ -1294,8 +1310,101 @@ pub struct FamilyStatus {
     pub role: FamilyRole,
     /// Seconds before you can join a family again.
     pub cooldown: u32,
-    /// Families that invited you: (family id, inviter).
-    pub invites: Vec<(u64, SteamId)>,
+    /// Families that invited you.
+    pub invites: Vec<FamilyInvite>,
+}
+
+/// A family's invitation to you.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FamilyInvite {
+    pub family: u64,
+    pub inviter: SteamId,
+    /// What you'd join as.
+    pub role: FamilyRole,
+    pub invite_id: u64,
+    /// You accepted and Steam is waiting for your phone or email code.
+    pub awaiting_confirmation: bool,
+}
+
+/// Something done to a Steam Family. Each is one call to Steam's
+/// FamilyGroups service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FamilyAction {
+    Invite { family: u64, steam_id: SteamId, role: FamilyRole },
+    /// Take back an invitation you sent.
+    CancelInvite { family: u64, steam_id: SteamId },
+    /// Accept an invitation to you.
+    Accept { family: u64 },
+    /// The code Steam emailed you after accepting.
+    ConfirmJoin { family: u64, invite_id: u64, code: u64 },
+    /// Turn down an invitation to you.
+    Decline { family: u64 },
+    Remove { family: u64, steam_id: SteamId },
+    /// Remove yourself.
+    Leave { family: u64 },
+}
+
+/// How Steam answered a family action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FamilyOutcome {
+    Done,
+    /// Waiting for approval in the Steam Mobile app.
+    ConfirmOnPhone,
+    /// Waiting for the email: a link (inviting) or a code (joining).
+    ConfirmByEmail,
+    /// Already accepted: a confirmation request is waiting.
+    AlreadyAccepted,
+    /// Steam asked for a confirmation this app doesn't know.
+    ConfirmOther,
+}
+
+/// Why you can't invite someone new right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InviteBlock {
+    /// Only adults can invite.
+    NotAdult,
+    /// All six places are taken.
+    Full,
+    /// A place was left recently: only former members can be invited,
+    /// for this many more seconds.
+    SlotCooldown(u32),
+}
+
+impl FamilyStatus {
+    /// What stops you inviting someone who was never in this family.
+    pub fn invite_block(&self) -> Option<InviteBlock> {
+        let f = self.family.as_ref()?;
+        if self.role != FamilyRole::Adult {
+            return Some(InviteBlock::NotAdult);
+        }
+        if f.free_spots == 0 {
+            return Some(InviteBlock::Full);
+        }
+        (f.slot_cooldown > 0 && f.slot_overrides == 0).then_some(InviteBlock::SlotCooldown(f.slot_cooldown))
+    }
+
+    /// Whether `who` can be invited now: not already in or invited, and
+    /// allowed by [`Self::invite_block`] (a slot cooldown still lets former
+    /// members back in).
+    pub fn can_invite(&self, who: SteamId) -> bool {
+        let Some(f) = &self.family else { return false };
+        if who == 0 || f.members.iter().any(|m| m.steam_id == who) || f.invites.iter().any(|i| i.0 == who) {
+            return false;
+        }
+        match self.invite_block() {
+            None => true,
+            Some(InviteBlock::SlotCooldown(_)) => f.former.contains(&who),
+            Some(_) => false,
+        }
+    }
+
+    /// Whether you can remove `who` (yourself = leaving). As on Steam's
+    /// page: adults only, and not the last member (that's deleting the
+    /// family, which stays on Steam's site).
+    pub fn can_remove(&self, who: SteamId) -> bool {
+        let Some(f) = &self.family else { return false };
+        self.role == FamilyRole::Adult && f.members.len() > 1 && f.members.iter().any(|m| m.steam_id == who)
+    }
 }
 
 /// What happened in a row of your Community Market history.

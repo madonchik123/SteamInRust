@@ -16,6 +16,7 @@ mod support;
 pub(crate) mod profile;
 pub mod settings;
 mod settings_account;
+mod settings_family;
 pub mod store;
 mod workshop;
 

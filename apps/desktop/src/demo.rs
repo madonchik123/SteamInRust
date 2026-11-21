@@ -379,6 +379,7 @@ No trades for Steam keys, sorry.".into(),
             ],
         }),
     });
+    out.push(Event::Family(Ok(demo_family())));
     // Names for the wishlist's games (you don't own them).
     out.push(Event::AppNames(vec![(1245620, "ELDEN RING".into()), (1086940, "Baldur's Gate 3".into()), (367520, "Hollow Knight".into()), (1145350, "Hades II".into()), (504230, "Celeste".into()), (1091500, "Cyberpunk 2077".into())]));
     // Someone who isn't your friend (BASE + 300), for the profile's
@@ -395,6 +396,44 @@ No trades for Steam keys, sorry.".into(),
         ..Default::default()
     }));
     out
+}
+
+/// A made-up Steam Family (`--demo-family-invite`: not in one yet, with an
+/// invitation). Nothing in the demo reaches Steam.
+fn demo_family() -> model::FamilyStatus {
+    use model::{Family, FamilyInvite, FamilyMember, FamilyRole as R, FamilyStatus, SharedApp};
+    const BASE: u64 = 76561197960265728;
+    let (me, ferris, pixel, quartz, marlow) = (BASE + 1, BASE + 100, BASE + 102, BASE + 103, BASE + 105);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    if std::env::args().any(|a| a == "--demo-family-invite") {
+        return FamilyStatus {
+            role: R::Unknown,
+            cooldown: 41 * 86_400,
+            invites: vec![
+                FamilyInvite { family: 501, inviter: ferris, role: R::Adult, invite_id: 9001, awaiting_confirmation: false },
+                FamilyInvite { family: 502, inviter: quartz, role: R::Child, invite_id: 9002, awaiting_confirmation: true },
+            ],
+            ..Default::default()
+        };
+    }
+    let member = |steam_id, role, days_ago: u64, cooldown_days: u32| FamilyMember { steam_id, role, joined: now - days_ago * 86_400, cooldown: cooldown_days * 86_400 };
+    let game = |app_id, name: &str, owners: Vec<u64>| SharedApp { app_id, name: name.into(), owners, excluded: false };
+    FamilyStatus {
+        role: R::Adult,
+        family: Some(Family {
+            id: 501,
+            name: "The Demo Household".into(),
+            members: vec![member(me, R::Adult, 300, 65), member(ferris, R::Adult, 200, 165), member(pixel, R::Child, 90, 275)],
+            invites: vec![(quartz, R::Adult)],
+            free_spots: 2,
+            country: "US".into(),
+            slot_cooldown: 0,
+            former: vec![marlow],
+            slot_overrides: 0,
+            shared: vec![game(1145360, "Hades", vec![me]), game(413150, "Stardew Valley", vec![me, ferris]), game(620, "Portal 2", vec![ferris])],
+        }),
+        ..Default::default()
+    }
 }
 
 /// A made-up group chat of friends, for the Friends & Chat window.
