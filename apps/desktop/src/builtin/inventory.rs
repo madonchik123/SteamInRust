@@ -17,6 +17,10 @@ mod market;
 mod search;
 #[path = "inventory_trades.rs"]
 mod trades;
+#[path = "inventory_economy.rs"]
+mod economy;
+#[path = "inventory_economy_demo.rs"]
+pub(crate) mod economy_demo;
 
 /// Games with community inventories: (app, context, name). 753/6 is Steam's
 /// own inventory (trading cards, backgrounds, emoticons, boosters).
@@ -52,6 +56,10 @@ enum View {
     Market,
     /// Your trade offers, and making new ones.
     Trades,
+    /// Your gems and the booster packs you can make.
+    Gems,
+    /// Gifts waiting for your answer.
+    Gifts,
 }
 
 #[derive(Default)]
@@ -92,6 +100,7 @@ pub struct Inventory {
     market: search::MarketSearch,
     trades: trades::Trades,
     bar_search: String,
+    economy: economy::Economy,
 }
 
 impl Extension for Inventory {
@@ -123,6 +132,11 @@ impl Extension for Inventory {
         }
         if arg == Some("market") {
             self.view = View::Market;
+            return;
+        }
+        if arg == Some("gems") || arg == Some("gifts") {
+            self.owner = None;
+            self.view = if arg == Some("gems") { View::Gems } else { View::Gifts };
             return;
         }
         // "market:<app>:<query>": the Market search for something.
@@ -176,6 +190,10 @@ impl Extension for Inventory {
 
     fn page(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) {
         let t = ctx.theme.clone();
+        self.economy_dialog(ui, &t, ctx);
+        if matches!(self.view, View::Gems | View::Gifts) {
+            return self.economy_page(ui, &t, ctx);
+        }
         if self.view == View::Market {
             return self.market_page(ui, &t, ctx);
         }
@@ -307,6 +325,16 @@ impl Extension for Inventory {
                     if w::chip(ui, &t, &format!("{}  {}{n}", icons::STOREFRONT, t!("My listings")), self.view == View::Listings).clicked() {
                         self.view = View::Listings;
                         ctx.send(Command::LoadMyListings);
+                    }
+                    if w::chip(ui, &t, &format!("{}  {}", icons::SPARKLE, t!("Gems and booster packs")), false).clicked() {
+                        self.view = View::Gems;
+                    }
+                    let gifts = match &ctx.state.economy.gifts {
+                        Some(Ok(g)) if !g.is_empty() => format!("  {}", g.len()),
+                        _ => String::new(),
+                    };
+                    if w::chip(ui, &t, &format!("{}  {}{gifts}", icons::GIFT, t!("Pending gifts")), false).clicked() {
+                        self.view = View::Gifts;
                     }
                 }
             });
@@ -503,6 +531,9 @@ impl Extension for Inventory {
 
     fn on_event(&mut self, event: &Event, ctx: &mut Ctx) {
         self.trade_event(event, ctx);
+        if let Event::Economy(r) = event {
+            self.economy_event(r, ctx);
+        }
         if let Event::MarketPricesDone { app_id } = event {
             self.prices_searched(*app_id, ctx);
         }

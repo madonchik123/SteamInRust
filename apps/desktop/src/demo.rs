@@ -214,11 +214,10 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
             steam_id: me,
             result: Ok(vec![
                 InventoryApp { app_id: 570, name: "Dota 2".into(), icon: None, contexts: vec![(2, "Backpack".into(), items.len() as u32)] },
-                InventoryApp { app_id: 753, name: "Steam".into(), icon: None, contexts: vec![(6, "Community".into(), 0)] },
+                InventoryApp { app_id: 753, name: "Steam".into(), icon: None, contexts: vec![(6, "Community".into(), crate::builtin::inventory::economy_demo::item_count())] },
             ]),
         },
         Event::Inventory(model::Inventory { steam_id: me, app_id: 570, context_id: 2, total: items.len() as u32, items, error: None }),
-        Event::Inventory(model::Inventory { steam_id: me, app_id: 753, context_id: 6, ..Default::default() }),
         Event::MyListings(Ok(MyListings {
             listings: vec![
                 MyListing { listing_id: 1, app_id: 570, name: "Hydrakan Latch".into(), game: "Dota 2".into(), icon: ITEMS[1].6.into(), name_color: Some("D2D2D2".into()), buyer_pays: 299, you_receive: 260, currency: 1, amount: 1, created: now - 7200, status: model::ListingStatus::Active, market_hash_name: "Hydrakan Latch".into() },

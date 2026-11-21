@@ -9,7 +9,7 @@ pub mod chat;
 mod downloads;
 mod gallery;
 pub mod hub;
-mod inventory;
+pub(crate) mod inventory;
 pub mod library;
 mod plugins;
 mod support;

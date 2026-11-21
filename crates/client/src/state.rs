@@ -33,6 +33,8 @@ pub struct State {
     /// Market prices by (app, market hash name).
     pub market_prices: HashMap<(AppId, String), Result<model::MarketPrice, String>>,
     pub my_listings: Option<Result<model::MyListings, String>>,
+    /// Buying, gems, booster packs and pending gifts.
+    pub economy: crate::economy::Book,
     /// Your market history so far (newest first), how many rows Steam has,
     /// or why it couldn't load.
     pub market_history: Option<Result<(Vec<model::HistoryRow>, u32), String>>,
@@ -356,6 +358,12 @@ impl State {
                 }
             }
             Event::ItemListed { .. } | Event::ListingCancelled { .. } | Event::BuyOrderCancelled { .. } => {}
+            Event::Economy(r) => {
+                if let Some(w) = r.new_wallet() {
+                    self.wallet = Some(w);
+                }
+                self.economy.apply(r);
+            }
             Event::InventoryApps { steam_id, result } => {
                 self.inventory_apps.insert(*steam_id, result.clone());
             }

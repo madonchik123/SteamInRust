@@ -16,7 +16,7 @@ Steam's website" still works; it just isn't native yet.
 | Store | 1 | Checkout happens on Steam's website (Steam requires it) |
 | Friends and chat | 0.75 | No voice chat; no polls in group chats |
 | Community | 0.75 | Starting a new discussion topic, and joining or leaving a group, open Steam's website |
-| Inventory and Market | 1 | |
+| Inventory and Market | 0.75 | Buying, buy orders, gems, booster packs and pending gifts are in the app but haven't been tried on a real account |
 | Steam Cloud | 1 | |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers |
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
@@ -157,6 +157,11 @@ All native, no web view.
 | New trade offers: to a friend or by trade link, items from both inventories with a game picker, search, tag filters, sorting and prices | Done, in the app |
 | Market search: by name and game, most popular first, with each item's price history and order book | Done, in the app |
 | Your Market history: sold, bought, listed and removed, with prices and dates, filters, 50 at a time | Done, in the app (My listings → History) |
+| Buy from the Market: the cheapest listing, with the seller's price, Steam's fee, the game's fee, any tax, the total and your wallet after it, then a confirmation | In the app. **Not tried on a real account**: no real purchase was made. The requests follow Steam's current Market pages and are tested against saved samples. If Steam needs a billing address first, it sends you to its website |
+| Buy orders: price, quantity, the most you can pay, a confirmation; cancel them in your lists | In the app. **Placing one wasn't tried on a real account**. Approval in the Steam Mobile app is handled, also untried |
+| Gems: turn an item into gems (shows what you get, and that the item is destroyed), pack gems into sacks, open sacks | In the app. **Not tried on a real account**: nothing was ground, packed or opened |
+| Booster packs: which you can make, their gem cost and when they're next available, make one, open one and see the cards | In the app. **Not tried on a real account**. A pack that would have to use gems you can't trade opens Steam's page, which asks how you want to pay |
+| Pending gifts: see them, add to your library, keep in your inventory, or decline with a note | In the app. **Not tried on a real gift**. The list is read from Steam's inventory page, and that part of the page couldn't be seen without a real gift, so a gift's name or picture may be missing (its buttons still work from Steam's own ids) |
 
 ## Steam Cloud
 

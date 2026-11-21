@@ -268,11 +268,11 @@ pub fn parse_app_contexts(body: &str) -> Result<Vec<model::InventoryApp>, String
     Ok(apps)
 }
 
-fn num(v: &Value) -> Option<u64> {
+pub(crate) fn num(v: &Value) -> Option<u64> {
     v.as_u64().or_else(|| v.as_str()?.replace(',', "").parse().ok())
 }
 
-fn str_of(v: &Value, key: &str) -> String {
+pub(crate) fn str_of(v: &Value, key: &str) -> String {
     v.get(key).and_then(|n| n.as_str()).unwrap_or_default().to_string()
 }
 
@@ -314,7 +314,7 @@ async fn listing_page(http: &reqwest::Client, app: AppId, hash_name: &str) -> Pa
 }
 
 /// Parse the JSON object starting at `marker` inside a JS string literal.
-fn embedded(body: &str, marker: &str) -> Option<Value> {
+pub(crate) fn embedded(body: &str, marker: &str) -> Option<Value> {
     let at = body.find(marker)?;
     let mut text = String::new();
     let mut chars = body[at..].chars();

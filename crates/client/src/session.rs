@@ -1103,6 +1103,7 @@ async fn online(
                 Some(Command::LoadSupportTicket { id, url }) => st.support_ticket(id, url, sink),
                 Some(Command::CancelListing { listing_id }) => st.cancel_listing(listing_id, sink),
                 Some(Command::CancelBuyOrder { order_id }) => st.cancel_buy_order(order_id, sink),
+                Some(Command::Economy(request)) => st.with_web(sink, move |web, sink| crate::economy::run(web, request, sink)),
                 Some(Command::LoadPlayerGames { steam_id, language }) => st.load_player_games(steam_id, language, sink),
                 Some(Command::LoadAchievementProgress { app_ids }) => st.load_achievement_progress(app_ids, sink),
                 Some(Command::LoadAchievements { app_id, language }) => st.load_achievements(app_id, language, sink),
@@ -3564,6 +3565,7 @@ fn econ_item(owner: SteamId, a: &CEconAsset, d: &CEconItemDescription) -> model:
         market_hold_days: d.market_marketable_restriction().max(0) as u32,
         commodity: d.commodity(),
         market_fee: d.market_fee().parse().ok(),
+        owner_actions: d.owner_actions.iter().map(|x| (x.name().to_string(), x.link().replace("%owner_steamid%", &owner.to_string()).replace("%assetid%", &a.assetid().to_string()))).collect(),
     }
 }
 
