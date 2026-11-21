@@ -115,6 +115,8 @@ pub struct Store {
     owned: std::collections::HashSet<AppId>,
     /// The trailer playing in the media area: (source URL, player).
     trailer: Option<(String, video::Player)>,
+    /// Games whose live broadcasts were already asked for.
+    pub(crate) live_asked: std::collections::HashSet<AppId>,
     /// Frames so far (counted in `tick`), and the last one the store was
     /// drawn in: a trailer or hover clip left playing on a page you've left
     /// is freed.
@@ -227,6 +229,7 @@ impl Store {
             shot_centered: None,
             owned: Default::default(),
             trailer: None,
+            live_asked: Default::default(),
             frames: 0,
             drawn_frame: 0,
         }

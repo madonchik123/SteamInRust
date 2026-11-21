@@ -26,6 +26,9 @@ pub const MATURE: [i32; 3] = [1, 3, 4];
 /// comes back as [`crate::Event::Hub`] and lands in [`Cache`].
 #[derive(Debug, Clone)]
 pub enum Request {
+    /// Follow a broadcast until its [`crate::broadcast::Watch`] is stopped.
+    /// Answers through the watch itself, not as a [`Response`].
+    WatchBroadcast(crate::broadcast::Watch),
     /// One Workshop item or guide: previews, required items, change notes,
     /// your vote.
     Item { file_id: u64, language: String },
@@ -512,6 +515,10 @@ pub(crate) async fn handle(conn: Connection, me: SteamId, web: Result<Arc<Web>, 
     let web_or_anon = web.clone().unwrap_or(anon);
     let out = |r: Response| sink(Event::Hub(r));
     match req {
+        Request::WatchBroadcast(w) => {
+            want_personas(&conn, vec![w.steam_id()]);
+            crate::broadcast::run(web_or_anon, w).await;
+        }
         Request::Item { file_id, language } => {
             let result = item(&conn, me, file_id, &language).await;
             if let Ok(i) = &result {
