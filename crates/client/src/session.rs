@@ -24,6 +24,23 @@ enum Login {
     Offline(store::SavedAccount),
 }
 
+/// Your family as Steam has it now, with names and avatars for members who
+/// aren't friends.
+async fn load_family(conn: &Connection, me: SteamId, language: &str, sink: &Sink) {
+    let r = crate::account::family(conn, me, language).await;
+    if let Ok(f) = &r {
+        let mut ids: Vec<SteamId> = f.invites.iter().map(|i| i.inviter).collect();
+        if let Some(g) = &f.family {
+            ids.extend(g.members.iter().map(|m| m.steam_id).chain(g.invites.iter().map(|i| i.0)).chain(g.former.iter().copied()));
+        }
+        ids.retain(|id| *id != me && *id != 0);
+        if !ids.is_empty() {
+            let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: ids });
+        }
+    }
+    sink(Event::Family(r));
+}
+
 pub async fn run(mut cmds: Cmds, sink: Sink) {
     // A login command that arrived while another login was waiting.
     let mut next: Option<Command> = None;
@@ -1069,20 +1086,15 @@ async fn online(
                 }
                 Some(Command::LoadFamily { language }) => {
                     let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move { load_family(&conn, me, &language, &sink).await });
+                }
+                Some(Command::FamilyAction { action, language }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
                     tokio::spawn(async move {
-                        let r = crate::account::family(&conn, me, &language).await;
-                        // Names and avatars for members who aren't friends.
-                        if let Ok(f) = &r {
-                            let mut ids: Vec<SteamId> = f.invites.iter().map(|i| i.1).collect();
-                            if let Some(g) = &f.family {
-                                ids.extend(g.members.iter().map(|m| m.steam_id).chain(g.invites.iter().map(|i| i.0)));
-                            }
-                            ids.retain(|id| *id != me && *id != 0);
-                            if !ids.is_empty() {
-                                let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: ids });
-                            }
-                        }
-                        sink(Event::Family(r));
+                        let result = crate::account::family_action(&conn, me, &action).await;
+                        sink(Event::FamilyActionDone { action, result });
+                        // What Steam has now, whether it worked or not.
+                        load_family(&conn, me, &language, &sink).await;
                     });
                 }
                 Some(Command::LoadPurchases { language, cursor }) => st.with_web(sink, move |web, sink| async move {
