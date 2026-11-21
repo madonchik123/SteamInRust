@@ -210,11 +210,19 @@ fn part_of(p: RawPart, in_bundle: bool) -> OfferPart {
     }
 }
 
+/// Steam also lists a bundle's packages for other regions, with no name or
+/// price here. They aren't separate items: the same games are in a package
+/// that has a price.
+fn sold_parts(parts: Vec<OfferPart>) -> Vec<OfferPart> {
+    let priced: std::collections::HashSet<AppId> = parts.iter().filter(|p| p.cents.is_some()).flat_map(|p| p.apps.iter().copied()).collect();
+    parts.into_iter().filter(|p| p.cents.is_some() || (!p.name.is_empty() && !p.apps.iter().all(|a| priced.contains(a)))).collect()
+}
+
 fn offer_of(kind: OfferKind, id: u32, i: RawItem) -> Offer {
     let art = art_of(&i).unwrap_or_else(|| model::art::header(i.included_appids.first().copied().unwrap_or(0)));
     let RawIncluded { included_apps, included_packages } = i.included_items;
     let parts: Vec<OfferPart> = if kind == OfferKind::Bundle && !included_packages.is_empty() {
-        included_packages.into_iter().map(|p| part_of(p, true)).collect()
+        sold_parts(included_packages.into_iter().map(|p| part_of(p, true)).collect())
     } else {
         included_apps.into_iter().map(|p| part_of(p, false)).collect()
     };
@@ -402,6 +410,19 @@ mod tests {
         assert_eq!(o.parts.len(), 2);
         assert_eq!((o.parts[1].package_id, o.parts[1].apps.as_slice(), o.parts[1].cents), (7877, &[620][..], Some(499)));
         assert_eq!(o.before_text, "$14.98");
+    }
+
+    #[test]
+    fn other_regions_packages_arent_extra_items() {
+        let mut unsold = part(9, 10, 0);
+        unsold.cents = None;
+        unsold.name = "Same game, other region".into();
+        let nameless = OfferPart { package_id: 79, ..Default::default() };
+        let mut only_here = part(8, 30, 0);
+        only_here.cents = None;
+        only_here.name = "No priced package has this".into();
+        let kept = sold_parts(vec![part(1, 10, 999), unsold, nameless, only_here]);
+        assert_eq!(kept.iter().map(|p| p.package_id).collect::<Vec<_>>(), [1, 8]);
     }
 
     #[test]
