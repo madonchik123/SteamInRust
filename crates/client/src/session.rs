@@ -943,7 +943,13 @@ async fn online(
                 Some(Command::SaveSteamCollections(edits)) => {
                     let (conn, sink, store) = (conn.clone(), sink.clone(), st.collections.clone());
                     tokio::spawn(async move {
-                        let result = crate::collections::save(&conn, &store, &edits).await;
+                        // A filter edit starts from Steam's latest copy, so it
+                        // can't overwrite a change made in the official client.
+                        let fresh = if edits.iter().any(|e| e.filter.is_some()) { crate::collections::download(&conn, &store).await.map(|_| ()) } else { Ok(()) };
+                        let result = match fresh {
+                            Ok(()) => crate::collections::save(&conn, &store, &edits).await,
+                            Err(e) => Err(e),
+                        };
                         if result.is_err() {
                             // Read Steam's copy again, so the next edit starts from it.
                             sink(Event::SteamCollections(crate::collections::download(&conn, &store).await));

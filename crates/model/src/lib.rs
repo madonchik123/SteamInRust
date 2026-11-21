@@ -121,6 +121,18 @@ pub struct OwnedApp {
     /// Steam Deck: 0 unknown, 1 unsupported, 2 playable, 3 verified.
     #[serde(default)]
     pub deck: u8,
+    /// Steam Machine compatibility, on the same scale.
+    #[serde(default)]
+    pub machine: u8,
+    /// Steam Frame compatibility, on the same scale.
+    #[serde(default)]
+    pub frame: u8,
+    /// Supported languages, one bit per Steam language id (0 = not known).
+    #[serde(default)]
+    pub languages: u64,
+    /// The subscription app this game comes with, like EA Play (0 = none).
+    #[serde(default)]
+    pub master_sub: u32,
     /// Systems the game runs on (`common/oslist`, e.g. "windows,macos");
     /// empty when app info doesn't say.
     #[serde(default)]
@@ -1024,6 +1036,14 @@ pub struct CollectionEdit {
     pub id: String,
     pub name: String,
     pub games: Vec<AppId>,
+    /// A dynamic collection's filters, as Steam stores them. When set, `games`
+    /// is ignored: the games added and removed by hand stay as they are.
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// The filters this edit started from (none for a new collection). If
+    /// Steam's copy has moved on, the edit isn't saved.
+    #[serde(default)]
+    pub based_on: Option<String>,
     pub deleted: bool,
 }
 
@@ -1114,9 +1134,16 @@ pub struct SteamCollection {
     pub games: Vec<AppId>,
     /// Built from filters in Steam (its games aren't listed).
     pub dynamic: bool,
-    /// A dynamic collection's filters, as Steam stores them (`filterSpec`).
+    /// A dynamic collection's filters, exactly as Steam stores them
+    /// (`filterSpec`).
     #[serde(default)]
     pub filter: Option<String>,
+    /// Games put in by hand (on a dynamic collection, on top of its filters).
+    #[serde(default)]
+    pub added: Vec<AppId>,
+    /// Games taken out by hand.
+    #[serde(default)]
+    pub removed: Vec<AppId>,
 }
 
 /// A Steam download region with the connection time measured from this PC.

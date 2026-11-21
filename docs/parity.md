@@ -1,7 +1,7 @@
 # Steam parity
 
 How much of the official Steam desktop client SteamInRust covers, area by
-area. Last checked against the code on 21 November 2026 (v0.13.0 and the chat changes after it).
+area. Last checked against the code on 21 November 2026 (v0.14.0 and the dynamic collection changes after it).
 
 Scores: **0** not started · **0.25** started · **0.5** usable, big parts
 missing · **0.75** mostly there · **1** complete. Anything marked "opens
@@ -11,7 +11,7 @@ Steam's website" still works; it just isn't native yet.
 | --- | ---: | --- |
 | Sign-in and accounts | 0.75 | Changing email, password or phone opens Steam's website |
 | Offline mode and reconnecting | 1 | Whether Steam counts playtime recorded offline is unconfirmed |
-| Library | 0.75 | Dynamic collections show and stay up to date, but their filters can only be changed in Steam |
+| Library | 0.75 | Dynamic collections can be made and edited here, but saving them hasn't been tried on a real Steam account yet |
 | Downloads and installs | 1 | |
 | Store | 1 | Checkout happens on Steam's website (Steam requires it) |
 | Friends and chat | 0.75 | No voice chat; no polls in group chats |
@@ -63,7 +63,9 @@ Steam's website" still works; it just isn't native yet.
 | Search, filters (genre, features, Steam Deck status, installed, played), sort by name, recent, hours, size | Done |
 | Home with recent games and shelves, game page with art, play bar, news and achievements | Done |
 | Collections, including your Steam Favorites and Hidden | Done, in step with Steam both ways. Edits made before Steam answers (or offline) are kept and sent once it does |
-| Dynamic collections (made in Steam from filters) | Shown with their games worked out from Steam's filters, so they stay up to date. Their filters are changed in Steam. Filters on friends who own a game, languages and subscriptions aren't checked, so such a collection can show a few extra games |
+| Dynamic collections | Shown with their games worked out from Steam's filters, including games added or removed by hand. Made from the library's filters (**Create Collection**) or edited here (right-click one, or its filter button), saved in Steam's own format. Only what you change is rewritten, and a save is refused if Steam's copy changed meanwhile. Filters this app can't write back exactly stay as they are: you can rename that collection, and change its filters in Steam |
+| Dynamic collections: how far they're tested | The format is unit-tested byte for byte on saved samples, and on read-only copies of the 23 collections (1 dynamic) cached on the test PC. The editor was tried in the demo account. **Not tried live: saving to a real Steam account, or seeing a collection made here in the official client** |
+| Dynamic collection filters | Checked: play state, features, Steam Deck, Steam Machine and Steam Frame status, genres and store tags, store categories, languages, EA Play, and friends who own a game. Not checked, so a collection can show a few extra games: private games, Steam OS compatibility, friends whose game lists are private, and a game borrowed from the friend you filter on. Steam's fuzzy name search and its search suggestions aren't copied, so a text filter can show fewer games. Library filters Steam has no equivalent for (such as Not installed or Type) are named in the editor and left out |
 | Non-Steam games: the same right-click menu as Steam games, collections, a game page with the play bar, and Steam's shortcut properties (name, target, start in, launch options, icon) | Done. Games added in Steam (`shortcuts.vdf`) show up too |
 | Custom artwork for any game, like Steam's: icon, cover, background (hero), logo with its position, and wide header, picked from files on disk | Done. Steam's own custom art in `config/grid` shows up too |
 | Install states everywhere: list row with progress, game page, right-click menu, Properties | Done |

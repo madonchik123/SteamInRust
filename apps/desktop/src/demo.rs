@@ -269,6 +269,7 @@ fn inventory(me: u64, now: u64) -> Vec<Event> {
             games: vec![],
             dynamic: true,
             filter: Some(r#"{"nFormatVersion":2,"strSearchText":"","filterGroups":[{"rgOptions":[],"bAcceptUnion":true},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[8],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false},{"rgOptions":[],"bAcceptUnion":false}],"setSuggestions":{}}"#.into()),
+            ..Default::default()
         }])),
         Event::PlayerGames {
             steam_id: me,
