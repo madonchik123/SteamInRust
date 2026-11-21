@@ -22,7 +22,7 @@ Steam's website" still works; it just isn't native yet.
 | Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | Seven languages (Steam has about 30); no Linux version; Mac builds aren't signed with an Apple developer ID |
-| Big Picture | 0.75 | Buying and most settings move to the normal window |
+| Big Picture | 0.75 | Buying, trade offers and some settings move to the normal window |
 | Remote Play | 0 | Not planned for now. Steam Input for games is under "Steam features inside games" |
 
 ---
@@ -239,4 +239,4 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Store: front page, sections, search with an on-screen keyboard (English and Russian), store pages with screenshots you can flip with the mouse wheel, wishlist | Done. Buying moves to the normal window, because Steam only takes payment on its website |
 | Downloads: progress, pause, resume, cancel, queue | Done |
 | Friends and chat | Done: a page per friend (join their game, invite to yours, profile), group chats with their rooms, and a full-screen chat for a controller, keyboard or mouse. Pick a message to reply with a quote, react, copy it, show a spoiler, open a picture large, open a link, join a game or report it. Emoticons, stickers, chat effects, link cards and slash commands work, and you can send a screenshot or your trade link. Store, Workshop, community and profile links open inside Big Picture (their pages are read with up and down; their buttons need a mouse). Trade offers, voice rooms, inviting people and managing a group stay in the normal window |
-| Settings | Interface size, start in Big Picture, language. Everything else moves to the normal window |
+| Settings | Done for what you'd change from the couch: interface size, start in Big Picture, language; downloads (auto-updates, region, speed limit, schedule, connections); library (what it opens on, Steam Cloud); notifications; controller (swap A and B, repeat speed, stick sensitivity); in-game overlay and FPS counter; theme; status, account picker, close to tray and sign out. The rest stays in the normal window because it needs typing, a file dialog or a browser: profile and privacy, security, family, wallet and purchases, Store content filters, library folders, custom colors, plugins. SteamInRust has no sounds, so there's no audio setting |

@@ -540,6 +540,7 @@ pub fn echo(tx: &std::sync::mpsc::Sender<Event>, me: u64, cmd: client::Command) 
         Command::ReactToMessage { to, time, ordinal, reaction, sticker, add } => Event::MessageReaction { to, time, ordinal, reactor: me, reaction, sticker, add },
         Command::ReportMessage { .. } => Event::MessageReported(Ok(())),
         Command::LoadTradeLink { .. } => Event::TradeLink(Ok("https://steamcommunity.com/tradeoffer/new/?partner=1&token=demo".into())),
+        Command::SetPersonaState(state) => Event::Personas(vec![Persona { steam_id: me, name: "You".into(), state, ..Default::default() }]),
         _ => return,
     };
     let _ = tx.send(event);
