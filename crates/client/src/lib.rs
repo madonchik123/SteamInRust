@@ -45,6 +45,7 @@ mod session;
 pub mod state;
 pub mod store;
 pub mod chat_admin;
+pub mod economy;
 
 pub use auth::Guard;
 pub use launch::{LaunchArgs, LaunchMode, mode as launch_mode, mode_cached as launch_mode_cached, mode_peek as launch_mode_peek, safe_connect_args};
@@ -218,6 +219,8 @@ pub enum Command {
     LoadFamily { language: String },
     CancelListing { listing_id: u64 },
     CancelBuyOrder { order_id: u64 },
+    /// Buying on the Market, gems, booster packs and pending gifts.
+    Economy(economy::Request),
     /// Fetch the games on someone's profile with their playtime.
     LoadPlayerGames { steam_id: SteamId, language: String },
     /// Your achievement progress (unlocked / total) for these games.
@@ -407,6 +410,7 @@ impl std::fmt::Debug for Command {
             Command::LoadFamily { language } => f.debug_struct("LoadFamily").field("language", language).finish(),
             Command::CancelListing { listing_id } => f.debug_struct("CancelListing").field("listing_id", listing_id).finish(),
             Command::CancelBuyOrder { order_id } => f.debug_struct("CancelBuyOrder").field("order_id", order_id).finish(),
+            Command::Economy(r) => f.debug_tuple("Economy").field(r).finish(),
             Command::LoadPlayerGames { steam_id, language } => f.debug_struct("LoadPlayerGames").field("steam_id", steam_id).field("language", language).finish(),
             Command::LoadAchievementProgress { app_ids } => f.debug_struct("LoadAchievementProgress").field("app_ids", app_ids).finish(),
             Command::LoadAchievements { app_id, language } => f.debug_struct("LoadAchievements").field("app_id", app_id).field("language", language).finish(),
@@ -591,6 +595,7 @@ pub enum Event {
     FeeRules(model::fees::Rules),
     ListingCancelled { listing_id: u64, result: Result<(), String> },
     BuyOrderCancelled { order_id: u64, result: Result<(), String> },
+    Economy(economy::Reply),
     /// Games with inventories for an account, or why it's unknown ("private").
     InventoryApps { steam_id: SteamId, result: Result<Vec<model::InventoryApp>, String> },
     /// Games on a profile, or why they can't be shown ("private").

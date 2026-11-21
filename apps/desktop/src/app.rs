@@ -320,6 +320,9 @@ impl SteamApp {
             for e in crate::demo::events(&local) {
                 let _ = demo_tx.send(e);
             }
+            for e in crate::builtin::inventory::economy_demo::install(demo_tx.clone()) {
+                let _ = demo_tx.send(e);
+            }
         } else if let Some(acc) = prefs.auto_login.as_ref().filter(|_| !prefs.ask_account && !std::env::args().any(|a| a == "--no-auto-login")) {
             if saved.iter().any(|s| &s.account_name == acc) {
                 auto_account = Some(acc.clone());
