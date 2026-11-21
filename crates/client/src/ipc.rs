@@ -129,6 +129,11 @@ impl Server {
         }
     }
 
+    /// Something that can queue events for one launch from another task.
+    pub fn pusher(&self, token: &str) -> Pusher {
+        Pusher { tokens: self.tokens.clone(), token: token.to_string() }
+    }
+
     /// Games running right now (for routing Steam's pushes).
     pub fn running_apps(&self) -> Vec<AppId> {
         let mut apps: Vec<AppId> = self.tokens.lock().unwrap().values().map(|s| s.app_id).collect();
@@ -144,6 +149,24 @@ impl Server {
     /// Value for the game's `STEAMINRUST_IPC` variable.
     pub fn env_value(&self, token: &str) -> String {
         format!("{}|{}", self.name, token)
+    }
+}
+
+/// Queues events for one launch (see [`Server::pusher`]).
+#[derive(Clone)]
+pub struct Pusher {
+    tokens: Tokens,
+    token: String,
+}
+
+impl Pusher {
+    pub fn push(&self, event: GameEvent) {
+        if let Some(slot) = self.tokens.lock().unwrap().get_mut(&self.token) {
+            if slot.events.len() < 4096 {
+                slot.events.push_back(event);
+            }
+            slot.notify.notify_one();
+        }
     }
 }
 
@@ -439,10 +462,16 @@ fn localized(v: &vdf::Value, language: &str) -> String {
 
 /// Save changed stats (achievement blocks included). Returns (EResult, new CRC).
 pub async fn store_stats(conn: &Connection, app_id: AppId, me: u64, stats: &[(u32, u32)], crc: u32, reset: bool) -> (i32, u32) {
+    store_stats_as(conn, app_id, me, me, stats, crc, reset).await
+}
+
+/// [`store_stats`] with `setter` changing `user`'s stats (a game server
+/// writes its players' stats this way).
+pub async fn store_stats_as(conn: &Connection, app_id: AppId, setter: u64, user: u64, stats: &[(u32, u32)], crc: u32, reset: bool) -> (i32, u32) {
     let req = msg::StoreUserStats2 {
         game_id: Some(app_id as u64),
-        settor_steam_id: Some(me),
-        settee_steam_id: Some(me),
+        settor_steam_id: Some(setter),
+        settee_steam_id: Some(user),
         crc_stats: Some(crc),
         explicit_reset: Some(reset),
         stats: stats.iter().map(|&(id, v)| msg::StatValue { stat_id: Some(id), stat_value: Some(v) }).collect(),

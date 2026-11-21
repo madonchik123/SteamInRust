@@ -141,18 +141,20 @@ fn local_ips() -> Vec<std::net::Ipv4Addr> {
 
 // ------------------------------------------------------------- signals
 
-static SIGNALS: OnceLock<Mutex<Sender<(u64, Vec<u8>)>>> = OnceLock::new();
+static SIGNALS: [OnceLock<Mutex<Sender<(u64, Vec<u8>)>>>; 2] = [OnceLock::new(), OnceLock::new()];
 
-/// Send rendezvous signals through SteamInRust, in order, off the caller's thread.
-pub fn send_signals(list: Vec<(u64, Vec<u8>)>) {
+/// Send rendezvous signals through SteamInRust, in order, off the caller's
+/// thread: as the player, or (`server`) from the game server's identity.
+pub fn send_signals(server: bool, list: Vec<(u64, Vec<u8>)>) {
     if list.is_empty() {
         return;
     }
-    let tx = SIGNALS.get_or_init(|| {
+    let tx = SIGNALS[server as usize].get_or_init(|| {
         let (tx, rx) = channel::<(u64, Vec<u8>)>();
         std::thread::spawn(move || {
             while let Ok((to, data)) = rx.recv() {
-                let _ = crate::ipc::request(crate::protocol::Request::Rendezvous { to, data });
+                let req = if server { crate::protocol::Request::GsRendezvous { to, data } } else { crate::protocol::Request::Rendezvous { to, data } };
+                let _ = crate::ipc::request(req);
             }
         });
         Mutex::new(tx)
@@ -171,15 +173,16 @@ struct CertSlot {
     started: Mutex<bool>,
 }
 
-static CERT: OnceLock<CertSlot> = OnceLock::new();
+static CERT: [OnceLock<CertSlot>; 2] = [OnceLock::new(), OnceLock::new()];
 
-fn slot() -> &'static CertSlot {
-    CERT.get_or_init(|| CertSlot { cert: Mutex::new(None), ready: Condvar::new(), started: Mutex::new(false) })
+fn slot(server: bool) -> &'static CertSlot {
+    CERT[server as usize].get_or_init(|| CertSlot { cert: Mutex::new(None), ready: Condvar::new(), started: Mutex::new(false) })
 }
 
-/// Start getting our certificate from Steam (once).
-pub fn fetch_cert(me: u64, app_id: u32) {
-    let s = slot();
+/// Start getting our certificate from Steam (once). The game server's is
+/// for its own identity, so it waits for the server's sign-in.
+pub fn fetch_cert(server: bool, me: u64, app_id: u32) {
+    let s = slot(server);
     {
         let mut started = s.started.lock().unwrap_or_else(|e| e.into_inner());
         if *started {
@@ -191,11 +194,13 @@ pub fn fetch_cert(me: u64, app_id: u32) {
         let key = LocalCert::new_key();
         let public_key = key.verifying_key().to_bytes().to_vec();
         let started = Instant::now();
-        let cert = match crate::ipc::request(crate::protocol::Request::NetworkingCert { public_key }) {
+        let me = if server { crate::gameserver::wait_signed_in(Duration::from_secs(30)) } else { me };
+        let req = if server { crate::protocol::Request::GsNetworkingCert { public_key } } else { crate::protocol::Request::NetworkingCert { public_key } };
+        let cert = match crate::ipc::request(req) {
             Some(crate::protocol::Reply::NetworkingCert { cert, ca_key_id, ca_signature }) => {
                 let c = LocalCert::signed(key, cert, ca_key_id, ca_signature);
                 let parsed = prost::Message::decode(c.cert_bytes()).ok().map(|x: super::msg::Cert| (super::crypto::cert_steam_id(&x), x.app_ids.clone(), x.time_expiry));
-                crate::log!("gns: Steam signed our networking cert in {} ms (CA {}, {:?})", started.elapsed().as_millis(), ca_key_id, parsed);
+                crate::log!("gns: Steam signed our networking cert in {} ms (CA {}, {:?}, server {server})", started.elapsed().as_millis(), ca_key_id, parsed);
                 c
             }
             other => {
@@ -209,9 +214,9 @@ pub fn fetch_cert(me: u64, app_id: u32) {
 }
 
 /// Our certificate, waiting up to `wait` for Steam's answer.
-pub fn cert(me: u64, app_id: u32, wait: Duration) -> Arc<LocalCert> {
-    fetch_cert(me, app_id);
-    let s = slot();
+pub fn cert(server: bool, me: u64, app_id: u32, wait: Duration) -> Arc<LocalCert> {
+    fetch_cert(server, me, app_id);
+    let s = slot(server);
     let g = s.cert.lock().unwrap_or_else(|e| e.into_inner());
     let (g, _) = s.ready.wait_timeout_while(g, wait, |c| c.is_none()).unwrap_or_else(|e| e.into_inner());
     match g.as_ref() {
@@ -220,6 +225,13 @@ pub fn cert(me: u64, app_id: u32, wait: Duration) -> Arc<LocalCert> {
     }
 }
 
-pub fn cert_ready() -> Option<Arc<LocalCert>> {
-    slot().cert.lock().unwrap_or_else(|e| e.into_inner()).clone()
+pub fn cert_ready(server: bool) -> Option<Arc<LocalCert>> {
+    slot(server).cert.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The game server has a new Steam ID: its old certificate no longer fits.
+pub fn forget_server_cert() {
+    let s = slot(true);
+    *s.cert.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *s.started.lock().unwrap_or_else(|e| e.into_inner()) = false;
 }
