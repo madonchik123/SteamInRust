@@ -45,7 +45,8 @@ pub fn draw(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, pos: f32) -> f32 {
         Page::Shots(id, i) => shots(bp, ui, f, id, i),
         Page::Settings => settings(bp, ui, f, top),
         Page::Friend(id) => friend_page(bp, ui, f, top, id),
-        Page::Chat(id) => chat_page(bp, ui, f, top, id),
+        Page::Chat(to) => super::chat::page(bp, ui, f, to),
+        Page::Embedded(page, arg) => super::chat::embedded(bp, ui, f, &page, arg.as_deref()),
         Page::Video(id, i) => video_page(bp, ui, f, id, i),
         Page::Install(id) => install_page(bp, ui, f, top, id),
     }
@@ -153,7 +154,7 @@ fn wide(bp: &mut BigPicture, ui: &mut Ui, f: &Frame, r: Rect, hit: &Hit, order: 
 
 /// A pill button that's focusable. Returns its hit.
 #[allow(clippy::too_many_arguments)]
-fn button(bp: &mut BigPicture, ui: &Ui, f: &Frame, id: Id, at: egui::Pos2, min_w: f32, icon: Option<&str>, label: &str, kind: Kind, progress: Option<f32>) -> (Rect, Hit) {
+pub(super) fn button(bp: &mut BigPicture, ui: &Ui, f: &Frame, id: Id, at: egui::Pos2, min_w: f32, icon: Option<&str>, label: &str, kind: Kind, progress: Option<f32>) -> (Rect, Hit) {
     let h = 72.0 * f.s;
     let wdt = paint::pill_width(ui, icon.is_some(), label, f.s).max(min_w);
     let r = Rect::from_min_size(at, vec2(wdt, h));
@@ -1105,7 +1106,7 @@ fn search(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32 {
 }
 
 /// A key pressed on the on-screen keyboard.
-enum Key {
+pub(super) enum Key {
     Char(char),
     Del,
     Go,
@@ -1113,7 +1114,7 @@ enum Key {
 
 /// The on-screen keyboard (letters, Space, Delete, ABC/АБВ and `go`), from
 /// `y` down; `y` ends below it. Switching the alphabet is handled here.
-fn keyboard(bp: &mut BigPicture, ui: &mut Ui, f: &Frame, left: f32, y: &mut f32, go: &str) -> Option<Key> {
+pub(super) fn keyboard(bp: &mut BigPicture, ui: &mut Ui, f: &Frame, left: f32, y: &mut f32, go: &str) -> Option<Key> {
     let s = f.s;
     let rows = if bp.cyrillic { KEYS_RU } else { KEYS_EN };
     let key = 74.0 * s;
@@ -1288,9 +1289,45 @@ fn friends(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32 {
     let p = ui.painter().clone();
     p.text(pos2(left, y), Align2::LEFT_TOP, t!("{n} of {total} online", n = online, total = list.len()), w::font_medium(22.0 * s), f.t.text_dim);
     y += 56.0 * s;
+    if !bp.chat.groups_asked {
+        bp.chat.groups_asked = true;
+        if f.app.state.chat_groups.is_none() && !f.app.demo {
+            f.app.client.send(Command::LoadChatGroups);
+        }
+    }
+    let groups: Vec<model::ChatGroup> = f.app.state.chat_groups.as_ref().and_then(|r| r.as_ref().ok()).cloned().unwrap_or_default();
+    if !groups.is_empty() {
+        heading(ui, f, &mut y, t!("Group chats"));
+        let tiles = shelf(bp, ui, f, &mut y, "groups", groups.len(), vec2(520.0 * s, 120.0 * s), |i| Id::unique(("bp-group", i)));
+        for (i, r, hit) in tiles {
+            let g = &groups[i];
+            let shown = paint::grow(r, 1.0 + 0.03 * hit.glow);
+            ui.painter().rect_filled(shown, paint::radius(16.0 * s), w::mix(Color32::from_black_alpha(100), Color32::from_white_alpha(26), hit.glow));
+            let name = crate::builtin::friends::group_name(&f.app.state, g);
+            let av = Rect::from_center_size(pos2(shown.left() + 66.0 * s, shown.center().y), vec2(80.0 * s, 80.0 * s));
+            crate::builtin::friends::paint_group_avatar(ui, &f.t, g, &name, av);
+            let tx = av.right() + 24.0 * s;
+            let tw = shown.right() - tx - 24.0 * s;
+            paint::line(ui.painter(), pos2(tx, shown.center().y - 3.0 * s), Align2::LEFT_BOTTOM, &name, w::font_semibold(26.0 * s), f.t.text, tw);
+            let members = f.app.state.chat_group_members.get(&g.id).map(|m| m.len()).unwrap_or(0);
+            paint::line(ui.painter(), pos2(tx, shown.center().y + 3.0 * s), Align2::LEFT_TOP, &t!("{n} members", n = members), w::font(19.0 * s), f.t.text_dim, tw);
+            if g.unread {
+                ui.painter().circle_filled(shown.right_top() + vec2(-18.0 * s, 18.0 * s), 7.0 * s, f.t.accent);
+            }
+            if hit.focused {
+                bp.focus.ring_around(shown, 16.0 * s);
+            }
+            if hit.activated {
+                let room = if g.default_room != 0 { g.default_room } else { g.rooms.first().map(|r| r.id).unwrap_or(0) };
+                bp.open(Page::Chat(client::ChatTarget::Group { group: g.id, room }), f.now);
+            }
+        }
+        y += 34.0 * s;
+        heading(ui, f, &mut y, t!("Friends"));
+    }
     if list.is_empty() {
         empty(bp, ui, f, y, icons::USERS, t!("No friends yet"), t!("Friends you add on Steam show up here."), None);
-        return 500.0 * s;
+        return y - top + 500.0 * s;
     }
     let width = f.view.width() - 2.0 * f.pad;
     let gap = 24.0 * s;
@@ -1381,7 +1418,7 @@ fn friend_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: mo
         }
     }
     if next(bp, ui, f, "chat", icons::CHAT, t!("Send a message"), if game.is_some() { Kind::Secondary } else { Kind::Primary }) {
-        bp.open(Page::Chat(id), f.now);
+        bp.open(Page::Chat(client::ChatTarget::Friend(id)), f.now);
     }
     for (i, (invite, label)) in crate::shell::invite_options(&f.app.state).into_iter().enumerate() {
         if next(bp, ui, f, &format!("invite{i}"), icons::USER_PLUS, &label, Kind::Secondary) {
@@ -1404,219 +1441,10 @@ fn friend_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: mo
     y - top
 }
 
-/// The chat's message history (scrolls with up/down while focused).
-pub fn chat_history_id() -> Id {
-    Id::unique("bp-chat-history")
-}
-
-/// The chat's message box (selecting it brings up the keyboard).
-fn chat_input_id() -> Id {
-    Id::unique("bp-chat-input")
-}
-
 /// A key of the on-screen keyboard (see `keyboard`).
-fn is_key(id: Option<Id>) -> bool {
+pub(super) fn is_key(id: Option<Id>) -> bool {
     let Some(id) = id else { return false };
     (0..4).any(|r| (0..11).any(|c| id == Id::unique(("bp-key", r, c)))) || (0..4).any(|i| id == Id::unique(("bp-key-special", i)))
-}
-
-/// A conversation over the whole page: the friend at the top, the history
-/// filling the middle (it scrolls), the message box at the bottom. The
-/// on-screen keyboard slides up while the message box is selected, like
-/// Steam's; a real keyboard types any time (Enter sends).
-fn chat_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, _top: f32, id: model::SteamId) -> f32 {
-    let s = f.s;
-    let left = f.view.left() + f.pad;
-    let right = f.view.right() - f.pad;
-    if bp.chats_loaded.insert(id) {
-        f.app.client.send(Command::LoadHistory { friend: id });
-    }
-    if f.app.state.unread.get(&id).is_some_and(|n| *n > 0) {
-        f.actions.push(Action::MarkRead(id));
-    }
-    if bp.chat_for != Some(id) {
-        bp.chat_for = Some(id);
-        bp.chat_follow = true;
-    }
-    let fr = f.app.state.persona(id);
-    let p = ui.painter().clone();
-
-    // Who you're talking to.
-    let head_y = f.view.top() + 6.0 * s;
-    let av = Rect::from_min_size(pos2(left, head_y), vec2(64.0 * s, 64.0 * s));
-    if !w::paint_cover(ui, av, &art::avatar_full(fr.avatar_hash.as_deref()), paint::radius(32.0 * s)) {
-        p.circle_filled(av.center(), 32.0 * s, f.t.raised);
-    }
-    let color = crate::shell::status_color(&f.t, &fr);
-    p.circle_stroke(av.center(), 34.0 * s, egui::Stroke::new(3.0 * s, color));
-    let tx = av.right() + 22.0 * s;
-    paint::line(&p, pos2(tx, av.center().y - 2.0 * s), Align2::LEFT_BOTTOM, &fr.display_name(), w::font_bold(32.0 * s), f.t.text, right - tx);
-    let status = if f.app.state.is_typing(id) { t!("typing…").to_string() } else { crate::shell::status_text(&f.app.state, &fr) };
-    paint::line(&p, pos2(tx, av.center().y + 4.0 * s), Align2::LEFT_TOP, &status, w::font_medium(20.0 * s), color, right - tx);
-    let head_bottom = av.bottom() + 18.0 * s;
-
-    // The keyboard slides up while the message box or one of its keys is focused.
-    let input_id = chat_input_id();
-    let want_keys = bp.focus.current == Some(input_id) || is_key(bp.focus.current);
-    bp.chat_keys = want_keys;
-    let k = super::focus::ease(ui.ctx().animate_bool_with_time(Id::unique(("bp-chat-keys", id)), want_keys, 0.25));
-    let key = 74.0 * s;
-    let unit = key + 10.0 * s;
-    let keys_w = 11.0 * unit - 10.0 * s;
-    let keys_h = 5.0 * unit + 40.0 * s;
-    let panel_top = f.view.bottom() - keys_h * k;
-    let mut send = std::mem::take(&mut bp.send_now);
-    if k > 0.01 {
-        let screen = ui.max_rect();
-        let panel = Rect::from_min_max(pos2(screen.left(), panel_top), pos2(screen.right(), f.view.bottom() + keys_h));
-        p.rect_filled(panel, 0.0, f.t.chrome.gamma_multiply(0.96));
-        let edge = Rect::from_min_size(panel.min, vec2(panel.width(), 2.0 * s));
-        w::gradient(&p, edge, f.t.accent.gamma_multiply(0.0), f.t.accent.gamma_multiply(0.8), true);
-        let mut ky = panel_top + 26.0 * s;
-        match keyboard(bp, ui, f, f.view.center().x - keys_w / 2.0, &mut ky, t!("Send")) {
-            Some(Key::Char(ch)) => bp.message.push(ch),
-            Some(Key::Del) => {
-                bp.message.pop();
-            }
-            Some(Key::Go) => send = true,
-            None => {}
-        }
-    }
-
-    // The message box: grows to four lines, then shows the end of the text.
-    if f.x {
-        bp.message.pop();
-    }
-    if f.y {
-        bp.message.push(' ');
-    }
-    let send_label = t!("Send");
-    let send_w = paint::pill_width(ui, true, send_label, s);
-    let field_w = right - left - send_w - 18.0 * s;
-    let font = w::font_semibold(26.0 * s);
-    let text_w = field_w - 64.0 * s;
-    let galley = ui.fonts_mut(|fonts| fonts.layout_job(egui::text::LayoutJob::simple(bp.message.clone(), font.clone(), f.t.text, text_w)));
-    let line_h = ui.fonts_mut(|fonts| fonts.row_height(&font));
-    let lines = (galley.size().y / line_h).round().clamp(1.0, 4.0);
-    let field_h = (lines * line_h + 34.0 * s).max(72.0 * s);
-    let bottom = panel_top - 20.0 * s;
-    let field = Rect::from_min_max(pos2(left, bottom - field_h), pos2(left + field_w, bottom));
-    let hit = bp.focus.item(ui, input_id, field, ui.clip_rect(), Place::Page);
-    let r = (36.0 * s).min(field.height() / 2.0);
-    p.rect_filled(field, paint::radius(r), Color32::from_black_alpha(130));
-    let stroke = w::mix(f.t.accent.gamma_multiply(0.45), f.t.accent, hit.glow);
-    p.rect_stroke(field, paint::radius(r), egui::Stroke::new((2.0 + hit.glow) * s, stroke), egui::StrokeKind::Inside);
-    if hit.focused {
-        bp.focus.ring_around(field, r);
-    }
-    let inner = field.shrink2(vec2(32.0 * s, 17.0 * s));
-    let caret = if bp.message.is_empty() {
-        p.text(pos2(inner.left(), inner.bottom() - line_h / 2.0), Align2::LEFT_CENTER, t!("Message {name}", name = fr.display_name()), w::font(26.0 * s), f.t.text_faint);
-        Rect::from_min_size(pos2(inner.left(), inner.bottom() - line_h), vec2(0.0, line_h))
-    } else {
-        // The last lines stay in view (the start scrolls up out of the box).
-        let at = pos2(inner.left(), inner.bottom() - galley.size().y);
-        let end = galley.pos_from_cursor(egui::text::CCursor::new(bp.message.chars().count()));
-        p.with_clip_rect(inner.expand2(vec2(4.0 * s, 0.0))).galley(at, galley, f.t.text);
-        end.translate(at.to_vec2())
-    };
-    let blink = ((f.now * 3.0).sin() as f32 * 0.5 + 0.5).powf(0.6);
-    p.vline(caret.right() + 3.0 * s, (caret.top() + 3.0 * s)..=(caret.bottom() - 3.0 * s), egui::Stroke::new(3.0 * s, f.t.accent.gamma_multiply(blink)));
-    // A on the box: straight to the letters.
-    if hit.activated {
-        bp.focus.current = Some(Id::unique(("bp-key", 1, 0)));
-    }
-    let empty_box = bp.message.trim().is_empty();
-    let (_, send_hit) = button(bp, ui, f, Id::unique(("bp-chat-send", id)), pos2(field.right() + 18.0 * s, bottom - 72.0 * s), send_w, Some(icons::SEND), send_label, if empty_box { Kind::Secondary } else { Kind::Primary }, None);
-    if send_hit.activated {
-        send = true;
-    }
-    bp.preferred = Some(input_id);
-    let text = bp.message.trim().to_string();
-    if send && !text.is_empty() {
-        f.app.client.send(Command::SendMessage { to: id, text });
-        bp.message.clear();
-        bp.chat_follow = true;
-    }
-
-    // The history fills the rest and scrolls; newest at the bottom.
-    let area = Rect::from_min_max(pos2(left, head_bottom), pos2(right, field.top() - 18.0 * s));
-    if area.height() < 40.0 * s {
-        return f.view.height();
-    }
-    let me = f.app.state.steam_id;
-    let messages: Vec<model::ChatMessage> = f.app.state.chats.get(&id).cloned().unwrap_or_default();
-    let hist = bp.focus.item(ui, chat_history_id(), area, ui.clip_rect(), Place::Page);
-    p.rect_filled(area, paint::radius(18.0 * s), Color32::from_black_alpha(90));
-    if hist.focused {
-        bp.focus.ring_around(area, 18.0 * s);
-    }
-    let pad = 22.0 * s;
-    let wrap = (area.width() * 0.68).max(200.0 * s);
-    let body = w::font(22.0 * s);
-    let mut laid = Vec::with_capacity(messages.len());
-    let mut total = pad;
-    for m in &messages {
-        let job = egui::text::LayoutJob::simple(m.text.clone(), body.clone(), f.t.text, wrap);
-        let g = ui.fonts_mut(|fonts| fonts.layout_job(job));
-        let size = g.size() + vec2(36.0 * s, 24.0 * s);
-        laid.push((total, size, m.from == me, g, m.time));
-        total += size.y + 30.0 * s;
-    }
-    total += pad - 8.0 * s;
-    let view_h = area.height();
-    let max = (total - view_h).max(0.0);
-    let key = format!("chat-{id}");
-    // The mouse wheel; up/down while the history is focused (see mod.rs).
-    let wheel = if ui.rect_contains_pointer(area) { ui.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
-    let nudge = std::mem::take(&mut bp.chat_nudge);
-    let mut follow = bp.chat_follow;
-    let sc = bp.scroller(&key);
-    if wheel != 0.0 {
-        sc.target -= wheel;
-        follow = false;
-    }
-    if nudge != 0.0 {
-        sc.target += nudge * 180.0 * s;
-        follow = false;
-    }
-    if follow {
-        sc.target = max;
-    }
-    sc.clamp(total, view_h);
-    // Back at the bottom: new messages keep it there again.
-    if sc.target >= max - 1.0 {
-        follow = true;
-    }
-    sc.step(ui);
-    let pos = sc.pos;
-    let edges = (sc.target <= 0.5, sc.target >= max - 0.5);
-    bp.chat_follow = follow;
-    bp.chat_edges = edges;
-    let clip = p.with_clip_rect(area.shrink(2.0));
-    if messages.is_empty() {
-        p.text(area.center(), Align2::CENTER_CENTER, t!("No messages yet"), w::font(22.0 * s), f.t.text_faint);
-    }
-    for (at, size, mine, g, time) in laid {
-        let y = area.top() + at - pos;
-        if y > area.bottom() || y + size.y + 30.0 * s < area.top() {
-            continue;
-        }
-        let bx = if mine { area.right() - pad - size.x } else { area.left() + pad };
-        let bubble = Rect::from_min_size(pos2(bx, y), size);
-        clip.rect_filled(bubble, paint::radius(16.0 * s), if mine { f.t.accent.gamma_multiply(0.55) } else { f.t.raised });
-        clip.galley(bubble.min + vec2(18.0 * s, 12.0 * s), g, f.t.text);
-        let (anchor, align) = if mine { (bubble.right_bottom() + vec2(-4.0 * s, 4.0 * s), Align2::RIGHT_TOP) } else { (bubble.left_bottom() + vec2(4.0 * s, 4.0 * s), Align2::LEFT_TOP) };
-        clip.text(anchor, align, ui::ago(time), w::font(15.0 * s), f.t.text_faint);
-    }
-    // Where you are in a long conversation.
-    if max > 0.0 {
-        let track = Rect::from_min_max(pos2(area.right() - 10.0 * s, area.top() + 14.0 * s), pos2(area.right() - 5.0 * s, area.bottom() - 14.0 * s));
-        let h = (track.height() * view_h / total).max(30.0 * s);
-        let y = track.top() + (track.height() - h) * (pos / max).clamp(0.0, 1.0);
-        p.rect_filled(Rect::from_min_size(pos2(track.left(), y), vec2(track.width(), h)), paint::radius(3.0 * s), Color32::from_white_alpha(70));
-    }
-    f.view.height()
 }
 
 // ---------- Settings ----------

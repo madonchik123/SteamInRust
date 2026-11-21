@@ -458,6 +458,10 @@ pub struct Layout {
     /// 0.85 draws everything 15% smaller. Lets a theme keep its design's
     /// numbers while showing at a comfortable size.
     pub scale: f32,
+    /// Extra size for a screen read from across the room: Big Picture draws
+    /// the normal window's chat and pages with it. Never saved.
+    #[serde(skip, default = "one")]
+    pub tv: f32,
 }
 
 impl Default for Layout {
@@ -477,6 +481,7 @@ impl Default for Layout {
             density: Density::Comfortable,
             corners: Corners::Rounded,
             scale: 1.0,
+            tv: 1.0,
         }
     }
 }
@@ -995,8 +1000,25 @@ impl Theme {
         })
     }
 
+    /// This theme with text, spacing and sizes `k` times larger, for drawing
+    /// the normal window's widgets on a TV.
+    pub fn for_tv(&self, k: f32) -> Theme {
+        let mut t = self.clone();
+        t.layout.tv = k;
+        let s = &mut t.spacing;
+        for x in [&mut s.xs, &mut s.sm, &mut s.md, &mut s.lg, &mut s.xl, &mut s.item, &mut s.card] {
+            *x *= k;
+        }
+        let f = &mut t.typography;
+        for x in [&mut f.heading_l, &mut f.heading_m, &mut f.heading_s, &mut f.body_l, &mut f.body_m, &mut f.body_s, &mut f.button, &mut f.button_large, &mut f.section, &mut f.tab, &mut f.caption, &mut f.menu, &mut f.price] {
+            x.size *= k;
+        }
+        t
+    }
+
     /// Scale a size by the theme's density (compact is 15% smaller).
     pub fn dense(&self, x: f32) -> f32 {
+        let x = x * self.layout.tv;
         match self.layout.density {
             Density::Comfortable => x,
             Density::Compact => (x * 0.85).round(),

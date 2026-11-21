@@ -2835,3 +2835,18 @@
 "waiting for your confirmation" = "等待你确认"
 "That family or account isn't valid" = "该家庭或账户无效"
 "Choose Adult or Child" = "请选择成人或儿童"
+
+# --- Big Picture chat ---
+"Message the group" = "发消息到群组"
+"Replying to {name}: {text}" = "回复 {name}：{text}"
+"This page isn't available" = "此页面不可用"
+"Press Back to close" = "按“返回”关闭"
+"Reply with a quote" = "引用回复"
+"Show spoiler" = "显示剧透"
+"View picture" = "查看图片"
+"Open: {name}" = "打开：{name}"
+"Browse files…" = "浏览文件…"
+"Send this picture?" = "发送这张图片？"
+"Anyone in this chat can use it to send you trade offers." = "此聊天中的任何人都可以用它向你发送交易报价。"
+"Chat commands" = "聊天命令"
+"Copied" = "已复制"

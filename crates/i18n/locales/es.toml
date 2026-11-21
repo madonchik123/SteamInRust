@@ -2835,3 +2835,18 @@
 "waiting for your confirmation" = "esperando tu confirmación"
 "That family or account isn't valid" = "Esa familia o cuenta no es válida"
 "Choose Adult or Child" = "Elige Adulto o Menor"
+
+# --- Big Picture chat ---
+"Message the group" = "Escribe al grupo"
+"Replying to {name}: {text}" = "Respondiendo a {name}: {text}"
+"This page isn't available" = "Esta página no está disponible"
+"Press Back to close" = "Pulsa Atrás para cerrar"
+"Reply with a quote" = "Responder con una cita"
+"Show spoiler" = "Mostrar spoiler"
+"View picture" = "Ver imagen"
+"Open: {name}" = "Abrir: {name}"
+"Browse files…" = "Buscar archivos…"
+"Send this picture?" = "¿Enviar esta imagen?"
+"Anyone in this chat can use it to send you trade offers." = "Cualquiera en este chat podrá usarlo para enviarte ofertas de intercambio."
+"Chat commands" = "Comandos del chat"
+"Copied" = "Copiado"

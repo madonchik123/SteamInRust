@@ -441,7 +441,7 @@ fn group_chat(me: u64, ferris: u64, now: u64) -> Vec<Event> {
     use model::{ChatGroup, ChatRoom, GroupMessage};
     let (nova, quartz) = (ferris + 1, ferris + 3);
     let group = 4_200_001;
-    let said = [(ferris, "who's in for Portal 2 co-op tonight?", 3600), (quartz, "me! after 9", 3400), (nova, "I'll join after this match", 3300), (me, "count me in", 1500), (ferris, "great, I'll set it up", 1200)];
+    let said = [(ferris, "who's in for Portal 2 co-op tonight?", 3600), (quartz, "me! after 9", 3400), (nova, "I'll join after this match", 3300), (me, "count me in", 1500), (ferris, "great, I'll set it up", 1200), (quartz, "map for after: https://steamcommunity.com/sharedfiles/filedetails/?id=2177193451", 900)];
     let messages: Vec<GroupMessage> = said
         .iter()
         .enumerate()
@@ -557,4 +557,29 @@ fn owned_group_chat(me: u64, ferris: u64, now: u64) -> Vec<Event> {
             }),
         }),
     ]
+}
+
+/// The demo's chat answers itself: what you send shows up as if Steam had
+/// taken it, and nothing leaves this computer.
+pub fn echo(tx: &std::sync::mpsc::Sender<Event>, me: u64, cmd: client::Command) {
+    use client::{ChatTarget, Command};
+    static ORDINAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let ordinal = ORDINAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let say = |to: ChatTarget, text: String| match to {
+        ChatTarget::Friend(friend) => {
+            let (plain, invite) = model::chat::parse(&text);
+            Event::Message(ChatMessage { friend, from: me, text: plain, time, invite, raw: text, ordinal, reactions: Vec::new() })
+        }
+        ChatTarget::Group { group, room } => Event::GroupMessage(model::GroupMessage { group, room, sender: me, text, time: time as u32, ordinal, reactions: Vec::new() }),
+    };
+    let event = match cmd {
+        Command::SendChat { to, text } => say(to, text),
+        Command::SendChatImage { to, .. } => say(to, model::chat::image("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/620/header.jpg", 460, 215)),
+        Command::ReactToMessage { to, time, ordinal, reaction, sticker, add } => Event::MessageReaction { to, time, ordinal, reactor: me, reaction, sticker, add },
+        Command::ReportMessage { .. } => Event::MessageReported(Ok(())),
+        Command::LoadTradeLink { .. } => Event::TradeLink(Ok("https://steamcommunity.com/tradeoffer/new/?partner=1&token=demo".into())),
+        _ => return,
+    };
+    let _ = tx.send(event);
 }

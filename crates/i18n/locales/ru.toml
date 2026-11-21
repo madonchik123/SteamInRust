@@ -2835,3 +2835,18 @@
 "waiting for your confirmation" = "ждёт вашего подтверждения"
 "That family or account isn't valid" = "Эта семья или аккаунт недействительны"
 "Choose Adult or Child" = "Выберите: взрослый или ребёнок"
+
+# --- Big Picture chat ---
+"Message the group" = "Написать в группу"
+"Replying to {name}: {text}" = "Ответ для {name}: {text}"
+"This page isn't available" = "Эта страница недоступна"
+"Press Back to close" = "Нажмите «Назад», чтобы закрыть"
+"Reply with a quote" = "Ответить с цитатой"
+"Show spoiler" = "Показать спойлер"
+"View picture" = "Посмотреть картинку"
+"Open: {name}" = "Открыть: {name}"
+"Browse files…" = "Выбрать файл…"
+"Send this picture?" = "Отправить эту картинку?"
+"Anyone in this chat can use it to send you trade offers." = "По этой ссылке любой участник чата сможет отправлять вам предложения обмена."
+"Chat commands" = "Команды чата"
+"Copied" = "Скопировано"
