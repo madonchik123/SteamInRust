@@ -662,6 +662,9 @@ pub struct InventoryItem {
     pub commodity: bool,
     /// The game's own market fee (e.g. 0.10); Steam's is separate.
     pub market_fee: Option<f64>,
+    /// Actions only the owner has, e.g. "Turn into Gems..." (name, link).
+    #[serde(default)]
+    pub owner_actions: Vec<(String, String)>,
 }
 
 /// What an item sells for on the Community Market, in the wallet currency.
@@ -2749,3 +2752,4 @@ mod steam_id_tests {
 
 /// Managing group chats (roles, invites, bans, notifications).
 pub mod chat_admin;
+pub mod economy;

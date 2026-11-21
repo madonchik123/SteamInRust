@@ -328,6 +328,8 @@ impl Inventory {
                     super::market::chart(ui, t, &p, currency);
                     ui.add_space(6.0);
                     super::market::ladders(ui, t, &p, currency);
+                    ui.add_space(t.spacing.sm);
+                    self.buy_buttons(ui, t, ctx, item.app_id, &item.hash_name, &item.name, &item.icon, Some(&p));
                 }
             }
         });
