@@ -32,6 +32,10 @@ mod home;
 mod store_page;
 #[path = "store_points.rs"]
 mod points;
+#[path = "store_offers.rs"]
+mod offers;
+#[path = "store_curators.rs"]
+mod curators;
 #[path = "store_suggest.rs"]
 pub(crate) mod suggest;
 #[path = "store_demo.rs"]
@@ -67,6 +71,12 @@ enum View {
     Discover,
     /// The Points Shop.
     Points,
+    /// A bundle's or package's page.
+    Offer(store::offers::OfferKind, u32),
+    /// The curators you follow, and the most followed.
+    Curators,
+    /// One curator's page.
+    Curator(u32),
 }
 
 pub struct Store {
@@ -158,6 +168,12 @@ pub struct Store {
     points: points::Points,
     /// The wishlist's sorting and filters.
     wish: more::WishView,
+    /// Bundle and package pages.
+    offers: offers::Offers,
+    /// Curators, and what Steam says you follow and own.
+    curators: curators::Curators,
+    /// Names of the bundles in the cart.
+    cart_bundles: Option<(Vec<u32>, Shared<Vec<(u32, String, String, AppId)>>)>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -218,6 +234,9 @@ impl Store {
             suggest: Default::default(),
             points: Default::default(),
             wish: Default::default(),
+            offers: Default::default(),
+            curators: Default::default(),
+            cart_bundles: None,
             search: None,
             view: View::Home,
             hero: 0,
@@ -369,6 +388,9 @@ impl Store {
             self.query = None;
             self.tags = None;
             self.ratings.lock().unwrap().clear();
+            self.offers.clear();
+            self.curators.clear();
+            self.cart_bundles = None;
         }
         true
     }
@@ -530,6 +552,7 @@ impl Extension for Store {
             self.discovery_late = false;
         }
         self.review.on_event(event, ctx);
+        self.curators_event(event, ctx);
         if let client::Event::FreeLicense { app_id, result } = event {
             if self.free_pending == Some(*app_id) {
                 self.free_pending = None;
@@ -561,6 +584,22 @@ impl Extension for Store {
             Some("cart") => self.open(View::Cart),
             Some("discover") => self.open(View::Discover),
             Some("points") => self.open(View::Points),
+            Some("curators") => self.open(View::Curators),
+            Some(a) if a.starts_with("curator:") => {
+                if let Ok(id) = a.trim_start_matches("curator:").parse() {
+                    self.open(View::Curator(id));
+                }
+            }
+            Some(a) if a.starts_with("bundle:") => {
+                if let Ok(id) = a.trim_start_matches("bundle:").parse() {
+                    self.open(View::Offer(store::offers::OfferKind::Bundle, id));
+                }
+            }
+            Some(a) if a.starts_with("sub:") => {
+                if let Ok(id) = a.trim_start_matches("sub:").parse() {
+                    self.open(View::Offer(store::offers::OfferKind::Package, id));
+                }
+            }
             Some(a) if a.starts_with("discovery") => self.open(View::Discovery(a.trim_start_matches("discovery").trim_start_matches(':').parse().unwrap_or(0))),
             Some(a) => {
                 if let Ok(id) = a.trim_start_matches("app:").parse() {
@@ -598,6 +637,7 @@ impl Extension for Store {
             w::skeleton(ui, &t, r.shrink(28.0), t.corner());
             return;
         }
+        self.curators_tick(ctx);
         if !self.lists_requested && ctx.state.steam_id != 0 {
             self.lists_requested = true;
             ctx.send(client::Command::LoadWishlist);
@@ -641,6 +681,9 @@ impl Extension for Store {
                             View::Cart => self.cart_page(ui, &t, ctx),
                             View::Discover => self.discover_page(ui, &t, ctx),
                             View::Points => self.points_page(ui, &t, ctx),
+                            View::Offer(kind, id) => self.offer_page(ui, &t, ctx, kind, id),
+                            View::Curators => self.curators_page(ui, &t, ctx),
+                            View::Curator(id) => self.curator_page(ui, &t, ctx, id),
                             View::App(_) | View::Discovery(_) => {}
                         }
                         ui.add_space(t.dense(80.0));
@@ -726,6 +769,10 @@ fn view_key(v: &View) -> String {
         View::Discovery(i) => format!("d:{i}"),
         View::Discover => "discover".into(),
         View::Points => "points".into(),
+        View::Offer(store::offers::OfferKind::Bundle, id) => format!("bundle:{id}"),
+        View::Offer(store::offers::OfferKind::Package, id) => format!("sub:{id}"),
+        View::Curators => "curators".into(),
+        View::Curator(id) => format!("curator:{id}"),
     }
 }
 
@@ -784,6 +831,9 @@ impl Store {
         });
         if ctx.state.steam_id != 0 && nav_tab(ui, t, t!("Discover"), matches!(self.view, View::Discover | View::Discovery(_))).clicked() {
             self.open(View::Discover);
+        }
+        if nav_tab(ui, t, t!("Curators"), matches!(self.view, View::Curators | View::Curator(_))).clicked() {
+            self.open(View::Curators);
         }
         if nav_tab(ui, t, t!("Points Shop"), self.view == View::Points).clicked() {
             self.open(View::Points);
@@ -1047,6 +1097,10 @@ fn view_arg(view: &View) -> Option<String> {
         View::Discovery(i) => Some(format!("discovery:{i}")),
         View::Discover => Some("discover".into()),
         View::Points => Some("points".into()),
+        View::Offer(store::offers::OfferKind::Bundle, id) => Some(format!("bundle:{id}")),
+        View::Offer(store::offers::OfferKind::Package, id) => Some(format!("sub:{id}")),
+        View::Curators => Some("curators".into()),
+        View::Curator(id) => Some(format!("curator:{id}")),
     }
 }
 

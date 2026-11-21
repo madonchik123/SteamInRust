@@ -1257,6 +1257,21 @@ async fn online(
                 Some(Command::WishlistMove { app_id, to }) => st.wishlist_move(app_id, to, sink),
                 Some(Command::LoadCart) => st.load_cart(sink),
                 Some(Command::CartAdd { package_id, gift, gift_to }) => st.cart_add(package_id, gift, gift_to, sink),
+                Some(Command::CartAddBundle { bundle_id, gift }) => st.cart_add_item(crate::store_user::bundle_cart_item(bundle_id, gift), format!("bundle {bundle_id}"), sink),
+                Some(Command::LoadStoreUser) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::store_user::load(&w).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::StoreUser(result));
+                }),
+                Some(Command::FollowCurator { clan, follow }) => st.with_web(sink, move |web, sink| async move {
+                    let result = match web {
+                        Ok(w) => crate::store_user::follow(&w, clan, follow).await,
+                        Err(e) => Err(e),
+                    };
+                    sink(Event::CuratorFollowed { clan, follow, result });
+                }),
                 Some(Command::CartModify { line_item_id, gift, gift_to }) => st.cart_modify(line_item_id, gift, gift_to, sink),
                 Some(Command::RequestFreeLicense { app_id }) => {
                     let (conn, sink) = (conn.clone(), sink.clone());
@@ -2254,16 +2269,21 @@ impl Online {
     }
 
     fn cart_add(&self, package_id: u32, gift: bool, gift_to: Option<SteamId>, sink: &Sink) {
+        use proto::webui::*;
+        let gift = gift || gift_to.is_some();
+        let item = CAccountCartAddItemsToCartRequestItemToAdd {
+            packageid: Some(package_id),
+            gift_info: gift_to.map(|id| CartGiftInfo { accountid_giftee: Some(model::account_id(id) as i32), ..Default::default() }),
+            flags: Some(AccountCartLineItemFlags { is_gift: Some(gift), is_private: None }),
+            ..Default::default()
+        };
+        self.cart_add_item(item, format!("package {package_id}"), sink);
+    }
+
+    fn cart_add_item(&self, item: proto::webui::CAccountCartAddItemsToCartRequestItemToAdd, what: String, sink: &Sink) {
         let (conn, sink, country) = (self.conn.clone(), sink.clone(), self.cart_country());
         tokio::spawn(async move {
             use proto::webui::*;
-            let gift = gift || gift_to.is_some();
-            let item = CAccountCartAddItemsToCartRequestItemToAdd {
-                packageid: Some(package_id),
-                gift_info: gift_to.map(|id| CartGiftInfo { accountid_giftee: Some(model::account_id(id) as i32), ..Default::default() }),
-                flags: Some(AccountCartLineItemFlags { is_gift: Some(gift), is_private: None }),
-                ..Default::default()
-            };
             let req = CAccountCartAddItemsToCartRequest { user_country: country, items: vec![item], ..Default::default() };
             match conn.call::<_, CAccountCartAddItemsToCartResponse>("AccountCart.AddItemsToCart#1", &req).await {
                 Ok(r) => {
@@ -2271,7 +2291,7 @@ impl Online {
                     // Steam can answer "OK" without adding anything: check.
                     let added = !r.line_item_ids.is_empty() && lines.iter().any(|l| r.line_item_ids.contains(&l.line_item_id));
                     if !added {
-                        tracing::warn!("cart: package {package_id} not added (line items {:?})", r.line_item_ids);
+                        tracing::warn!("cart: {what} not added (line items {:?})", r.line_item_ids);
                         sink(Event::StoreError("Steam didn't add it to your cart. It may not be sold in your region, or gifting it isn't allowed.".into()));
                     }
                     sink(Event::Cart(lines));
@@ -3523,6 +3543,7 @@ fn cart_lines(cart: Option<proto::webui::AccountCartContents>) -> Vec<model::Car
             .map(|l| model::CartLine {
                 line_item_id: l.line_item_id(),
                 package_id: l.packageid(),
+                bundle_id: l.bundleid(),
                 price: l.price_when_added.as_ref().map(|p| p.formatted_amount().to_string()).unwrap_or_default(),
                 gift_to: l.gift_info.as_ref().map(|g| g.accountid_giftee() as u32).filter(|a| *a != 0),
                 is_gift: l.flags.as_ref().is_some_and(|f| f.is_gift()) || l.gift_info.as_ref().is_some_and(|g| g.accountid_giftee() != 0),

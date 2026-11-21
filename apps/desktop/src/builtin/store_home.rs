@@ -57,9 +57,10 @@ impl Store {
         let v = self.view.clone();
         let signed_in = ctx.state.steam_id != 0;
         let tabs = [
-            (t!("Home").to_string(), matches!(v, View::Home | View::App(_)), View::Home, true),
+            (t!("Home").to_string(), matches!(v, View::Home | View::App(_) | View::Offer(..)), View::Home, true),
             (t!("Browse|store").to_string(), matches!(v, View::Browse | View::Section(_) | View::Search(_) | View::Creator(..)), View::Browse, true),
             (t!("Discover").to_string(), matches!(v, View::Discover | View::Discovery(_)), View::Discover, signed_in),
+            (t!("Curators").to_string(), matches!(v, View::Curators | View::Curator(_)), View::Curators, true),
             (t!("Points Shop").to_string(), v == View::Points, View::Points, true),
         ];
         for (label, on, view, show) in tabs {

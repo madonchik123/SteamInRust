@@ -25,7 +25,7 @@ pub struct Gift {
     pub checks: std::collections::HashMap<SteamId, Shared<store::gift::GiftCheck>>,
 }
 
-fn snapshot<T: Clone>(slot: &Shared<T>) -> Option<Result<T, String>> {
+pub(super) fn snapshot<T: Clone>(slot: &Shared<T>) -> Option<Result<T, String>> {
     match &*slot.lock().unwrap() {
         Load::Loading => None,
         Load::Ready(v) => Some(Ok(v.clone())),
@@ -918,18 +918,25 @@ impl Store {
             w::loading(ui, t, t!("Loading…"));
             return;
         };
-        let pkgs: Vec<u32> = lines.iter().map(|l| l.package_id).collect();
-        if !lines.is_empty() && self.cart_names.as_ref().is_none_or(|(k, _)| *k != pkgs) {
+        let pkgs: Vec<u32> = lines.iter().filter(|l| l.bundle_id == 0).map(|l| l.package_id).collect();
+        if !pkgs.is_empty() && self.cart_names.as_ref().is_none_or(|(k, _)| *k != pkgs) {
             let (api, p2) = (self.api.clone(), pkgs.clone());
             let slot = self.fetch(async move { api.packages(&p2).await });
             self.cart_names = Some((pkgs.clone(), slot));
         }
         let names = self.cart_names.as_ref().and_then(|(_, s)| snapshot(s)).and_then(|r| r.ok()).unwrap_or_default();
+        let bundles: Vec<u32> = lines.iter().filter(|l| l.bundle_id != 0).map(|l| l.bundle_id).collect();
+        if !bundles.is_empty() && self.cart_bundles.as_ref().is_none_or(|(k, _)| *k != bundles) {
+            let (api, b2) = (self.api.clone(), bundles.clone());
+            let slot = self.fetch(async move { api.bundle_names(&b2).await });
+            self.cart_bundles = Some((bundles.clone(), slot));
+        }
+        let bundle_names = self.cart_bundles.as_ref().and_then(|(_, s)| snapshot(s)).and_then(|r| r.ok()).unwrap_or_default();
         let gap = t.dense(17.0);
         let total_w = ui.available_width();
         let right_w = if total_w > t.dense(900.0) { (total_w * 449.0 / 1560.0).clamp(300.0, 449.0) } else { 0.0 };
         let left_w = if right_w > 0.0 { total_w - right_w - gap } else { total_w };
-        let in_cart: Vec<AppId> = names.iter().map(|n| n.3).collect();
+        let in_cart: Vec<AppId> = names.iter().chain(&bundle_names).map(|n| n.3).collect();
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             ui.vertical(|ui| {
@@ -941,19 +948,27 @@ impl Store {
                 }
                 let mut acts = Vec::new();
                 for l in &lines {
-                    let (name, art, app) = names.iter().find(|n| n.0 == l.package_id).map(|n| (n.1.clone(), n.2.clone(), n.3)).unwrap_or_else(|| (String::new(), String::new(), 0));
-                    let owned = app != 0 && self.owned.contains(&app);
-                    let same: Vec<model::CartLine> = lines.iter().filter(|x| x.package_id == l.package_id).cloned().collect();
+                    let found = if l.bundle_id != 0 { bundle_names.iter().find(|n| n.0 == l.bundle_id) } else { names.iter().find(|n| n.0 == l.package_id) };
+                    let (name, art, app) = found.map(|n| (n.1.clone(), n.2.clone(), n.3)).unwrap_or_else(|| (String::new(), String::new(), 0));
+                    // Owning a bundle's first game says nothing about the rest.
+                    let owned = l.bundle_id == 0 && app != 0 && self.owned.contains(&app);
+                    let same: Vec<model::CartLine> = lines.iter().filter(|x| x.package_id == l.package_id && x.bundle_id == l.bundle_id).cloned().collect();
                     let (act, open) = cart_row(ui, t, ctx, l, &same, &name, &art, None, owned);
                     if let Some(a) = act {
-                        acts.push((a, app, l.package_id, name.clone()));
+                        acts.push((a, app, l.package_id, l.bundle_id, name.clone()));
                     }
-                    if open && app != 0 {
+                    if open && l.bundle_id != 0 {
+                        self.open(View::Offer(store::offers::OfferKind::Bundle, l.bundle_id));
+                    } else if open && app != 0 {
                         self.open(View::App(app));
                     }
                 }
-                for (a, app, pkg, name) in acts {
-                    self.cart_act(ctx, a, app, pkg, &name);
+                for (a, app, pkg, bundle, name) in acts {
+                    if bundle != 0 && matches!(a, CartAct::AddCopy) {
+                        ctx.send(Command::CartAddBundle { bundle_id: bundle, gift: true });
+                    } else {
+                        self.cart_act(ctx, a, app, pkg, &name);
+                    }
                 }
                 self.cart_total(ui, t, ctx, &lines);
             });

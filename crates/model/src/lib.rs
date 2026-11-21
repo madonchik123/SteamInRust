@@ -252,6 +252,9 @@ pub struct CartLine {
     /// A gift (Steam's "This is a gift"), with or without a recipient yet.
     #[serde(default)]
     pub is_gift: bool,
+    /// A whole bundle rather than a package (`package_id` is then 0).
+    #[serde(default)]
+    pub bundle_id: u32,
 }
 
 /// Live state of one download, as shown on the Downloads page.

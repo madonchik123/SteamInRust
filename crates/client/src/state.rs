@@ -458,7 +458,7 @@ impl State {
                 *self = State { last_error: Some(reason.clone()), ..Default::default() };
             }
             Event::Error(msg) => self.last_error = Some(msg.clone()),
-            Event::KeyActivated(_) | Event::WorkshopUnsubscribed { .. } | Event::StoreError(_) => {}
+            Event::KeyActivated(_) | Event::WorkshopUnsubscribed { .. } | Event::StoreError(_) | Event::StoreUser(_) | Event::CuratorFollowed { .. } => {}
             Event::WorkshopResults { .. } | Event::WorkshopSubscribed { .. } | Event::WorkshopSync { .. } | Event::FreeLicense { .. } => {}
             Event::Download(d) => {
                 self.set_aside.remove(&d.app_id);

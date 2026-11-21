@@ -273,6 +273,11 @@ pub fn route(url: &str) -> Option<View> {
         },
         "store.steampowered.com" => match parts.as_slice() {
             ["app", id, ..] => Some(View::Page("store".into(), Some(format!("app:{}", id.parse::<AppId>().ok()?)))),
+            ["bundle", id, ..] => Some(View::Page("store".into(), Some(format!("bundle:{}", id.parse::<u32>().ok()?)))),
+            ["sub", id, ..] => Some(View::Page("store".into(), Some(format!("sub:{}", id.parse::<u32>().ok()?)))),
+            // /curator/1850-PC-Gamer/: the number comes first.
+            ["curator", id, ..] => Some(View::Page("store".into(), Some(format!("curator:{}", id.split('-').next()?.parse::<u32>().ok()?)))),
+            ["curators", ..] => Some(View::Page("store".into(), Some("curators".into()))),
             _ => None,
         },
         _ => None,
@@ -936,6 +941,12 @@ mod tests {
         assert_eq!(route("https://steamcommunity.com/linkfilter/?u=https%3A%2F%2Fstardewvalleywiki.com"), None);
         assert_eq!(route("https://stardewvalleywiki.com/Tools"), None);
         assert_eq!(route("https://store.steampowered.com/checkout/"), None);
+        assert_eq!(route("https://store.steampowered.com/bundle/232/Valve_Complete_Pack/"), Some(View::Page("store".into(), Some("bundle:232".into()))));
+        assert_eq!(route("https://store.steampowered.com/sub/7877/"), Some(View::Page("store".into(), Some("sub:7877".into()))));
+        assert_eq!(route("https://store.steampowered.com/curator/1850-PC-Gamer/"), Some(View::Page("store".into(), Some("curator:1850".into()))));
+        assert_eq!(route("https://store.steampowered.com/curator/1850/"), Some(View::Page("store".into(), Some("curator:1850".into()))));
+        assert_eq!(route("https://store.steampowered.com/curators/"), Some(View::Page("store".into(), Some("curators".into()))));
+        assert_eq!(route("https://store.steampowered.com/curator/not-a-number/"), None);
         assert_eq!(route("https://steamcommunity.com/groups/SteamClientBeta"), Some(View::Group("steamclientbeta".into())));
         assert_eq!(route("https://steamcommunity.com/groups/SteamClientBeta/announcements"), Some(View::Group("steamclientbeta".into())));
         assert_eq!(route("https://steamcommunity.com/gid/103582791433918461/"), Some(View::Group("103582791433918461".into())));
