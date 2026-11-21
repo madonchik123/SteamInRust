@@ -214,6 +214,10 @@ impl Extension for Downloads {
         }
     }
 
+    fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn save(&self) -> Option<String> {
         serde_json::to_string(&self.settings).ok()
     }
@@ -224,6 +228,31 @@ impl Extension for Downloads {
 }
 
 impl Downloads {
+    /// The settings, for Big Picture's settings page.
+    pub(crate) fn tv_settings(&self) -> DownloadSettings {
+        self.settings.clone()
+    }
+
+    /// Apply settings changed in Big Picture, like this page would.
+    pub(crate) fn tv_apply(&mut self, ctx: &Ctx, s: DownloadSettings) {
+        let moved = s.region != self.settings.region;
+        self.settings = s;
+        self.sync_limits(ctx);
+        if moved {
+            ctx.send(region_command(&self.settings.region));
+        }
+    }
+
+    /// The regions to pick from, fastest first: (id, name). Measures them
+    /// the first time.
+    pub(crate) fn tv_regions(&mut self, ctx: &Ctx) -> Vec<(String, String)> {
+        if self.regions.is_none() && !self.probing {
+            self.probing = true;
+            ctx.send(client::Command::ProbeRegions);
+        }
+        self.regions.iter().flatten().map(|r| (if r.cell_id == 0 { format!("host:{}", r.host) } else { r.cell_id.to_string() }, r.name.clone())).collect()
+    }
+
     fn sync_limits(&mut self, ctx: &Ctx) {
         let want = (if self.settings.limit_bandwidth { self.settings.limit_kbps as u64 } else { 0 }, self.settings.connections);
         if self.sent != Some(want) {
