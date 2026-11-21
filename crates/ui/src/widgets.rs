@@ -2022,30 +2022,57 @@ pub fn page_numbers(ui: &mut Ui, t: &Theme, page: u32, pages: u32) -> Option<u32
     }
     shown.sort_unstable();
     shown.dedup();
+    enum Part {
+        Prev,
+        Number(u32),
+        Gap,
+        Space,
+        Next,
+    }
+    let mut parts = vec![Part::Prev, Part::Space];
+    let mut last = 0;
+    for p in shown {
+        if p > last + 1 {
+            parts.push(Part::Gap);
+        }
+        parts.push(Part::Number(p));
+        last = p;
+    }
+    parts.extend([Part::Space, Part::Next]);
+    // A right-aligned row is laid out from its right edge: hand it the parts
+    // last first, so they still read Prev 1 2 3 Next.
+    if ui.layout().prefer_right_to_left() {
+        parts.reverse();
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = t.spacing.xs;
-        ui.add_enabled_ui(page > 1, |ui| {
-            if sort_chip(ui, t, i18n::t!("Prev"), false).clicked() {
-                to = Some(page - 1);
+        for part in parts {
+            match part {
+                Part::Prev => {
+                    ui.add_enabled_ui(page > 1, |ui| {
+                        if sort_chip(ui, t, i18n::t!("Prev"), false).clicked() {
+                            to = Some(page - 1);
+                        }
+                    });
+                }
+                Part::Next => {
+                    ui.add_enabled_ui(page < pages, |ui| {
+                        if sort_chip(ui, t, i18n::t!("Next"), false).clicked() {
+                            to = Some(page + 1);
+                        }
+                    });
+                }
+                Part::Number(p) => {
+                    if sort_chip(ui, t, &p.to_string(), p == page).clicked() && p != page {
+                        to = Some(p);
+                    }
+                }
+                Part::Gap => {
+                    ui.label(styled("…", t.text_style(&t.components.sort.text), t.text_dim));
+                }
+                Part::Space => ui.add_space(t.spacing.md),
             }
-        });
-        ui.add_space(t.spacing.md);
-        let mut last = 0;
-        for p in shown {
-            if p > last + 1 {
-                ui.label(styled("…", t.text_style(&t.components.sort.text), t.text_dim));
-            }
-            if sort_chip(ui, t, &p.to_string(), p == page).clicked() && p != page {
-                to = Some(p);
-            }
-            last = p;
         }
-        ui.add_space(t.spacing.md);
-        ui.add_enabled_ui(page < pages, |ui| {
-            if sort_chip(ui, t, i18n::t!("Next"), false).clicked() {
-                to = Some(page + 1);
-            }
-        });
     });
     to
 }
