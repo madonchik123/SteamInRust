@@ -2763,3 +2763,18 @@
 "No friends match" = "Keine passenden Freunde"
 "Only the owner can delete a group chat" = "Nur der Besitzer kann einen Gruppenchat löschen"
 "That file isn't a picture" = "Diese Datei ist kein Bild"
+
+# --- Big Picture chat ---
+"Message the group" = "Nachricht an die Gruppe"
+"Replying to {name}: {text}" = "Antwort an {name}: {text}"
+"This page isn't available" = "Diese Seite ist nicht verfügbar"
+"Press Back to close" = "Zum Schließen Zurück drücken"
+"Reply with a quote" = "Mit Zitat antworten"
+"Show spoiler" = "Spoiler anzeigen"
+"View picture" = "Bild ansehen"
+"Open: {name}" = "Öffnen: {name}"
+"Browse files…" = "Dateien durchsuchen…"
+"Send this picture?" = "Dieses Bild senden?"
+"Anyone in this chat can use it to send you trade offers." = "Alle in diesem Chat können dir damit Tauschangebote schicken."
+"Chat commands" = "Chat-Befehle"
+"Copied" = "Kopiert"

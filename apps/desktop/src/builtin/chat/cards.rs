@@ -272,6 +272,37 @@ pub(super) fn card(ui: &mut Ui, t: &Theme, env: &Env, url: &str, out: &mut Vec<A
     }
 }
 
+/// What a link is, for a menu row: an icon and a name ("Portal 2").
+pub(crate) fn link_label(env: &Env, url: &str) -> (&'static str, String) {
+    let state = env.state;
+    if let Some(app) = store_app(url) {
+        let lang = i18n::language().steam_name().to_string();
+        let card = store_card(app, &state.country, &lang);
+        let name = state.app_name(app).map(String::from).or_else(|| card.and_then(|c| c.ok()).map(|c| c.name)).unwrap_or_else(|| t!("App {id}", id = app).to_string());
+        return (icons::STORE, name);
+    }
+    if client::trade::parse_link(url).is_some() {
+        return (icons::SWAP, t!("Trade offer link").to_string());
+    }
+    if let Some(id) = profile_id(url) {
+        let p = state.persona(id);
+        return (icons::USER_CIRCLE, if p.name.is_empty() { t!("View profile").to_string() } else { p.display_name() });
+    }
+    use crate::builtin::hub::View;
+    match crate::builtin::hub::route(url) {
+        Some(View::Item(id)) => match state.hub.items.get(&id) {
+            Some(Ok(item)) => (icons::CUBE, item.entry.title.clone()),
+            _ => (icons::CUBE, t!("View item").to_string()),
+        },
+        Some(View::Group(key)) => match state.hub.groups.get(&key) {
+            Some(Ok(g)) => (icons::USERS_THREE, g.name.clone()),
+            _ => (icons::USERS_THREE, t!("View group").to_string()),
+        },
+        Some(_) => (icons::USERS_THREE, url.split("//").nth(1).unwrap_or(url).trim_end_matches('/').to_string()),
+        None => (icons::EXTERNAL, url.split("//").nth(1).unwrap_or(url).trim_end_matches('/').to_string()),
+    }
+}
+
 /// The picture viewer: the picture as large as the window allows.
 pub(super) fn viewer(ui: &mut Ui, t: &Theme, mem: &mut ChatUi) {
     let Some(src) = mem.viewing.clone() else { return };

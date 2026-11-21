@@ -10,6 +10,8 @@ mod input;
 mod render;
 
 pub use cards::init;
+pub(crate) use cards::{is_image, link_label};
+pub(crate) use input::{EMOJI, ask_trade_link, command_help, picker_items, send, share_trade_when_ready, slash_rows, use_picked, use_slash_row};
 
 use client::{ChatTarget, Command, State};
 use egui::{Align, Layout, Margin, Rect, Sense, Ui, pos2, vec2};
@@ -62,8 +64,41 @@ impl Msg {
         let (plain, invite) = model::chat::parse(&m.text);
         Msg { from: m.sender, time: m.time as u64, ordinal: m.ordinal, raw: m.text.clone(), plain, invite, reactions: m.reactions.clone() }
     }
-    fn key(&self) -> (u64, u32) {
+    pub(crate) fn key(&self) -> (u64, u32) {
         (self.time, self.ordinal)
+    }
+}
+
+/// How many spoilers a message has (inside quotes and `/me` too).
+fn count_spoilers(parts: &[model::chat::Part]) -> usize {
+    use model::chat::Part;
+    parts
+        .iter()
+        .map(|p| match p {
+            Part::Spoiler(i) => 1 + count_spoilers(i),
+            Part::Me(i) | Part::Quote { parts: i, .. } => count_spoilers(i),
+            _ => 0,
+        })
+        .sum()
+}
+
+impl ChatUi {
+    /// The picture clicked in a message, for a viewer of the caller's own.
+    pub(crate) fn take_viewing(&mut self) -> Option<String> {
+        self.viewing.take()
+    }
+
+    /// Does this message still hide a spoiler?
+    pub(crate) fn has_hidden_spoiler(&self, m: &Msg) -> bool {
+        let n = count_spoilers(&model::chat::rich(&m.raw));
+        (0..n).any(|i| !self.revealed.contains(&(m.time, m.ordinal, i)))
+    }
+
+    /// Show every spoiler in this message.
+    pub(crate) fn reveal_spoilers(&mut self, m: &Msg) {
+        for i in 0..count_spoilers(&model::chat::rich(&m.raw)) {
+            self.revealed.insert((m.time, m.ordinal, i));
+        }
     }
 }
 
@@ -156,7 +191,7 @@ pub fn conversation(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, msgs: &[M
             let mut last: Option<(SteamId, u64)> = None;
             for m in msgs.iter().filter(|m| !m.raw.trim().is_empty() || m.invite.is_some()) {
                 let first = last.is_none_or(|(from, time)| from != m.from || m.time.saturating_sub(time) > 300);
-                message(ui, t, env, to, m, first, &mut mem, &mut out);
+                message(ui, t, env, to, m, first, true, &mut mem, &mut out);
                 last = Some((m.from, m.time));
             }
             if let ChatTarget::Friend(friend) = to {
@@ -186,7 +221,7 @@ pub fn conversation(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, msgs: &[M
 /// run), its reactions, and the react button and menu while the pointer is
 /// on it.
 #[allow(clippy::too_many_arguments)]
-fn message(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, m: &Msg, first: bool, mem: &mut ChatUi, out: &mut Vec<Action>) {
+fn message(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, m: &Msg, first: bool, buttons: bool, mem: &mut ChatUi, out: &mut Vec<Action>) -> Rect {
     let state = env.state;
     let av = t.dense(34.0);
     if first {
@@ -236,7 +271,27 @@ fn message(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, m: &Msg, first: bo
         if let ui::theme::ResolvedFill::Color(c) = look.fill {
             ui.painter().set(bg, egui::Shape::rect_filled(rect, t.corner_small(), c));
         }
-        actions(ui, t, env, to, m, &name, rect, menu_id, mem);
+        if buttons {
+            actions(ui, t, env, to, m, &name, rect, menu_id, mem);
+        }
+    }
+    rect
+}
+
+/// One message drawn like the normal chat's, without the mouse-only buttons
+/// (Big Picture has its own menu for a message). Returns where it is.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn message_row(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, m: &Msg, first: bool, mem: &mut ChatUi, out: &mut Vec<Action>) -> Rect {
+    message(ui, t, env, to, m, first, false, mem, out)
+}
+
+/// The name a message is quoted under.
+pub(crate) fn sender_name(state: &State, m: &Msg) -> String {
+    let p = state.persona(m.from);
+    if p.name.is_empty() {
+        if m.from == state.steam_id { t!("You").to_string() } else { m.from.to_string() }
+    } else {
+        p.display_name()
     }
 }
 
@@ -318,7 +373,7 @@ fn reactions(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, m: &Msg) {
 }
 
 /// Steam's report reasons offered for a message, in its own words.
-fn reasons() -> [(i32, &'static str); 7] {
+pub(crate) fn reasons() -> [(i32, &'static str); 7] {
     [
         (28, t!("Spam")),
         (3, t!("Harassment")),

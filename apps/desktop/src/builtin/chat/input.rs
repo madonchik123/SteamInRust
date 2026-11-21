@@ -14,12 +14,12 @@ use ui::widgets::EditMenu;
 use ui::{Theme, icons, widgets as w};
 
 /// Everyday emoji offered beside Steam's emoticons.
-const EMOJI: &[&str] = &[
+pub(crate) const EMOJI: &[&str] = &[
     "😀", "😁", "😂", "🤣", "😊", "😍", "😘", "😎", "🤔", "😏", "😴", "😢", "😭", "😡", "😱", "🥳", "🤯", "🙄", "😅", "😇", "👍", "👎", "👌", "👏", "🙏", "💪", "👋", "✌", "🤝", "❤", "💔", "🔥", "⭐", "✨", "🎉", "🎮", "🕹", "🏆", "💀", "👀", "💯", "✅", "❌", "❓", "❗", "☕", "🍕", "🍺", "🌙", "☀",
 ];
 
 /// What a slash command does, in the user's language.
-fn command_help(name: &str) -> &'static str {
+pub(crate) fn command_help(name: &str) -> &'static str {
     match name {
         "me" => t!("Say what you're doing (in the third person)"),
         "code" => t!("Show the rest as code"),
@@ -40,20 +40,7 @@ pub(super) fn composer(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, input:
     if let Some(q) = ui.data_mut(|d| d.remove_temp::<String>(quote_id)) {
         *input = format!("{q}{input}");
     }
-    // The trade link, once Steam gives it.
-    if mem.share_trade {
-        match &env.state.trade_link {
-            Some(Ok(link)) => {
-                env.client.send(Command::SendChat { to, text: model::chat::escape(link) });
-                mem.share_trade = false;
-            }
-            Some(Err(e)) => {
-                out.push(Action::Toast(t!("Couldn't get your trade link: {error}", error = e).to_string()));
-                mem.share_trade = false;
-            }
-            None => {}
-        }
-    }
+    share_trade_when_ready(env, to, mem, out);
     let preview = preview_flag();
     if preview.as_deref() == Some("slash") && input.is_empty() {
         input.push('/');
@@ -131,6 +118,32 @@ pub(super) fn composer(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, input:
     r.response.rect
 }
 
+/// Ask Steam for your trade link, to send it once it's here.
+pub(crate) fn ask_trade_link(env: &Env, mem: &mut ChatUi) {
+    if env.state.trade_link.as_ref().is_none_or(|r| r.is_err()) {
+        env.client.send(Command::LoadTradeLink { new: false });
+    }
+    mem.share_trade = true;
+}
+
+/// The trade link, once Steam gives it.
+pub(crate) fn share_trade_when_ready(env: &Env, to: ChatTarget, mem: &mut ChatUi, out: &mut Vec<Action>) {
+    if !mem.share_trade {
+        return;
+    }
+    match &env.state.trade_link {
+        Some(Ok(link)) => {
+            env.client.send(Command::SendChat { to, text: model::chat::escape(link) });
+            mem.share_trade = false;
+        }
+        Some(Err(e)) => {
+            out.push(Action::Toast(t!("Couldn't get your trade link: {error}", error = e).to_string()));
+            mem.share_trade = false;
+        }
+        None => {}
+    }
+}
+
 /// `--chat-preview=picker` or `=slash` (previews of an off-screen copy,
 /// which no mouse can reach): open the picker or the command list once.
 fn preview_flag() -> Option<String> {
@@ -156,7 +169,7 @@ fn owns(env: &Env, name: &str) -> bool {
     env.state.emoticons.as_ref().is_some_and(|e| e.emoticons.iter().any(|x| x.name == name))
 }
 
-fn send(env: &Env, to: ChatTarget, input: &mut String, mem: &mut ChatUi, out: &mut Vec<Action>) {
+pub(crate) fn send(env: &Env, to: ChatTarget, input: &mut String, mem: &mut ChatUi, out: &mut Vec<Action>) {
     // `/store <game>` sends that game's Store link.
     if let Some(name) = model::chat::store_command(input) {
         match store_matches(env, name).first() {
@@ -168,7 +181,9 @@ fn send(env: &Env, to: ChatTarget, input: &mut String, mem: &mut ChatUi, out: &m
         }
         return;
     }
-    let text = model::chat::compose(input, |n| owns(env, n));
+    // A quote from a message's menu is markup; only what's typed is escaped.
+    let (quote, typed) = model::chat::split_quote(input);
+    let text = format!("{quote}{}", model::chat::compose(typed, |n| owns(env, n)));
     for name in model::chat::rich(&text).iter().filter_map(|p| if let model::chat::Part::Emoticon(n) = p { Some(n.clone()) } else { None }) {
         remember(mem, &name, false);
     }
@@ -206,21 +221,28 @@ fn store_matches(env: &Env, name: &str) -> Vec<(AppId, String)> {
     out
 }
 
-/// The list over the box while typing `/…`, or games for `/store …`.
-/// Arrows move, Tab or Enter picks. Returns the new text.
-#[allow(clippy::too_many_arguments)]
-fn slash_popup(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, input: &mut String, mem: &mut ChatUi, anchor: Rect, edit: Option<egui::Id>) -> Option<String> {
-    let has_focus = edit.is_some_and(|id| ui.memory(|m| m.has_focus(id)));
-    // (label, help, text it puts in the box, or a game to send)
-    let mut rows: Vec<(String, String, Option<String>, Option<AppId>)> = Vec::new();
+/// A row of the list over the message box.
+#[derive(Clone)]
+pub(crate) struct SlashRow {
+    pub label: String,
+    pub help: String,
+    /// The text it puts in the box.
+    pub text: Option<String>,
+    /// A game whose Store page it sends.
+    pub game: Option<AppId>,
+}
+
+/// What the list shows for what's typed: commands for `/…`, games for
+/// `/store …` (asking the Store once typing pauses).
+pub(crate) fn slash_rows(ctx: &egui::Context, env: &Env, input: &str, mem: &mut ChatUi) -> Vec<SlashRow> {
+    let mut rows = Vec::new();
     if let Some(typed) = model::chat::typing_command(input) {
         let typed = typed.to_lowercase();
         for c in model::chat::COMMANDS.iter().filter(|c| c.starts_with(&typed)) {
-            rows.push((format!("/{c}"), command_help(c).to_string(), Some(format!("/{c} ")), None));
+            rows.push(SlashRow { label: format!("/{c}"), help: command_help(c).to_string(), text: Some(format!("/{c} ")), game: None });
         }
     } else if let Some(name) = model::chat::store_command(input) {
-        // Ask the Store once typing pauses.
-        let now = ui.input(|i| i.time);
+        let now = ctx.input(|i| i.time);
         if name != mem.store_sent {
             if mem.store_typed == 0.0 || mem.store_sent.is_empty() && name.is_empty() {
                 mem.store_typed = now;
@@ -230,16 +252,35 @@ fn slash_popup(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, input: &mut St
                 mem.store_sent = name.to_string();
                 mem.store_typed = 0.0;
             } else {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
             }
         }
         for (id, n) in store_matches(env, name) {
-            rows.push((n, t!("Send its Store page").to_string(), None, Some(id)));
+            rows.push(SlashRow { label: n, help: t!("Send its Store page").to_string(), text: None, game: Some(id) });
         }
         if rows.is_empty() && !name.is_empty() {
-            rows.push((t!("Searching the Store…").to_string(), String::new(), None, None));
+            rows.push(SlashRow { label: t!("Searching the Store…").to_string(), help: String::new(), text: None, game: None });
         }
     }
+    rows
+}
+
+/// Do what a row says: complete the command, or send the game's page.
+pub(crate) fn use_slash_row(env: &Env, to: ChatTarget, input: &mut String, row: &SlashRow) {
+    if let Some(id) = row.game {
+        env.client.send(Command::SendChat { to, text: format!("https://store.steampowered.com/app/{id}/") });
+        input.clear();
+    } else if let Some(text) = &row.text {
+        *input = text.clone();
+    }
+}
+
+/// The list over the box while typing `/…`, or games for `/store …`.
+/// Arrows move, Tab or Enter picks. Returns the new text.
+#[allow(clippy::too_many_arguments)]
+fn slash_popup(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, input: &mut String, mem: &mut ChatUi, anchor: Rect, edit: Option<egui::Id>) -> Option<String> {
+    let has_focus = edit.is_some_and(|id| ui.memory(|m| m.has_focus(id)));
+    let rows = slash_rows(ui.ctx(), env, input, mem);
     if rows.is_empty() || !has_focus {
         mem.slash_pick = 0;
         return None;
@@ -262,7 +303,7 @@ fn slash_popup(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, input: &mut St
         .show(ui.ctx(), |ui| {
             w::component_frame(t, &t.components.menu).show(ui, |ui| {
                 ui.set_width(width);
-                for (i, (label, help, _, _)) in rows.iter().enumerate() {
+                for (i, SlashRow { label, help, .. }) in rows.iter().enumerate() {
                     let (r, resp) = ui.allocate_exact_size(vec2(width, row_h), Sense::click());
                     let c = &t.components.menu_item;
                     let look = t.look(c, w::interact(ui, &resp, i == mem.slash_pick));
@@ -283,15 +324,13 @@ fn slash_popup(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, input: &mut St
                 }
             });
         });
-    let (_, _, text, game) = rows.get(chosen?)?.clone();
-    if let Some(id) = game {
-        env.client.send(Command::SendChat { to, text: format!("https://store.steampowered.com/app/{id}/") });
-        input.clear();
-        mem.slash_pick = 0;
+    let row = rows.get(chosen?)?.clone();
+    mem.slash_pick = 0;
+    if row.game.is_some() {
+        use_slash_row(env, to, input, &row);
         return None;
     }
-    mem.slash_pick = 0;
-    text
+    row.text
 }
 
 /// A grid of pictures (emoticons or stickers); returns the one clicked.
@@ -330,6 +369,26 @@ fn recent(env: &Env, mem: &ChatUi) -> Vec<(String, bool)> {
     }
     out.truncate(24);
     out
+}
+
+/// What a tab of the picker offers: (name, is it a sticker). Recent falls
+/// back to your emoticons so it's never empty when you have some.
+pub(crate) fn picker_items(env: &Env, mem: &ChatUi, tab: PickerTab) -> Vec<(String, bool)> {
+    let Some(e) = &env.state.emoticons else { return Vec::new() };
+    match tab {
+        PickerTab::Recent => {
+            let items = recent(env, mem);
+            if items.is_empty() { e.emoticons.iter().map(|x| (x.name.clone(), false)).collect() } else { items }
+        }
+        PickerTab::Emoticons => e.emoticons.iter().map(|x| (x.name.clone(), false)).collect(),
+        PickerTab::Stickers => e.stickers.iter().map(|x| (x.name.clone(), true)).collect(),
+        PickerTab::Effects => e.effects.iter().map(|x| (x.name.clone(), false)).collect(),
+    }
+}
+
+/// An emoticon goes in the box; a sticker is sent right away.
+pub(crate) fn use_picked(env: &Env, to: ChatTarget, input: &mut String, mem: &mut ChatUi, name: &str, sticker: bool) {
+    use_item(env, to, input, mem, name, sticker);
 }
 
 /// The emoticon grid for reacting to a message.
