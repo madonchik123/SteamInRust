@@ -593,6 +593,8 @@ fn apply(e: GameEvent) {
         }
         GameEvent::Signal { from, data } => crate::p2p::signal(from, &data),
         GameEvent::Rendezvous { from, data } => crate::sns::rendezvous(from, &data),
+        GameEvent::GsRendezvous { from, data } => crate::sns::server_rendezvous(from, &data),
+        GameEvent::GsStatus { connected, eresult, steam_id, public_ip } => crate::gameserver::on_status(connected, eresult, steam_id, public_ip),
         GameEvent::JoinRequested { lobby, friend, connect } => {
             crate::log!("join requested: lobby {lobby}, connect {connect:?}");
             if lobby != 0 {

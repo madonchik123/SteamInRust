@@ -28,6 +28,7 @@ pub fn slot_of(version: &str, method: &str) -> Option<usize> {
 }
 
 mod extras;
+mod gameserver;
 mod gns;
 mod ifaces;
 mod input;
@@ -153,7 +154,7 @@ fn create_interface(version: usize, err: usize) -> usize {
     p as usize
 }
 
-fn get_callback(_pipe: usize, msg: usize) -> usize {
+fn get_callback(pipe: usize, msg: usize) -> usize {
     let msg = msg as *mut CallbackMsg;
     if msg.is_null() {
         return 0;
@@ -162,15 +163,13 @@ fn get_callback(_pipe: usize, msg: usize) -> usize {
     sns::run_callbacks();
     state::run_game_thread_tasks();
     let mut g = state::lock();
-    let Some((callback, data)) = g.queue.pop_front() else { return 0 };
-    g.current = Some(data);
-    let cur = g.current.as_mut().expect("just set");
-    unsafe { msg.write_unaligned(CallbackMsg { user: 1, callback, param: cur.as_mut_ptr(), size: cur.len() as i32 }) };
+    let Some((user, callback, param, size)) = g.next_callback(pipe as i32) else { return 0 };
+    unsafe { msg.write_unaligned(CallbackMsg { user, callback, param, size }) };
     1
 }
 
-fn free_last_callback(_pipe: usize) -> usize {
-    state::lock().current = None;
+fn free_last_callback(pipe: usize) -> usize {
+    state::lock().free_callback(pipe as i32);
     1
 }
 
@@ -197,7 +196,7 @@ exports! {
     Steam_FreeLastCallback => |a, _, _, _, _, _| free_last_callback(a);
     Steam_IsKnownInterface => |a, _, _, _, _, _| known_interface(a);
     Steam_NotifyMissingInterface => |_, b, _, _, _, _| { known_interface(b); 0 };
-    Steam_CreateSteamPipe => |_, _, _, _, _, _| 1;
+    Steam_CreateSteamPipe => |_, _, _, _, _, _| state::lock().new_pipe() as usize;
     Steam_BReleaseSteamPipe => |_, _, _, _, _, _| 1;
     Steam_ConnectToGlobalUser => |_, _, _, _, _, _| connected();
     Steam_CreateGlobalUser => |a, _, _, _, _, _| { if a != 0 { unsafe { (a as *mut i32).write_unaligned(1) } } connected() };

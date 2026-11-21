@@ -119,6 +119,52 @@ pub enum Request {
     /// A SteamNetworkingSockets signal (serialized
     /// `CMsgSteamNetworkingP2PRendezvous`) for another player, through Steam.
     Rendezvous { to: u64, data: Vec<u8> },
+    /// Sign the game's server in to Steam on a connection of its own (empty
+    /// `token`: anonymous). Answered with [`Reply::GsLoggedOn`].
+    GsLogOn { token: String, info: Box<GsInfo> },
+    GsLogOff,
+    /// The server's details changed (what the server browser shows).
+    GsUpdate(Box<GsInfo>),
+    /// Check a player's ticket with Steam, as the server.
+    GsBeginAuth { steam_id: u64, ticket: Vec<u8> },
+    GsEndAuth { steam_id: u64 },
+    /// A player's stats, read as the server.
+    GsUserStats { steam_id: u64 },
+    /// Save a player's changed stats, as the server.
+    GsStoreStats { steam_id: u64, stats: Vec<(u32, u32)>, crc: u32 },
+    /// Like `NetworkingCert`, for the server's own identity.
+    GsNetworkingCert { public_key: Vec<u8> },
+    /// Like `Rendezvous`, from the server's own identity.
+    GsRendezvous { to: u64, data: Vec<u8> },
+}
+
+/// What a game server tells Steam about itself.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GsInfo {
+    pub app_id: u32,
+    /// Address it was asked to bind (0: any).
+    pub ip: u32,
+    pub game_port: u16,
+    pub query_port: u16,
+    pub spectator_port: u16,
+    pub version: String,
+    pub product: String,
+    pub description: String,
+    pub mod_dir: String,
+    pub dedicated: bool,
+    pub max_players: i32,
+    pub bots: i32,
+    /// Players on the server right now.
+    pub players: Vec<u64>,
+    pub name: String,
+    pub map: String,
+    pub password: bool,
+    pub spectator_name: String,
+    pub tags: String,
+    pub game_data: String,
+    pub region: String,
+    /// Show it in the server browser (SetAdvertiseServerActive).
+    pub active: bool,
 }
 
 /// A game server as Steam's server browser lists it.
@@ -318,6 +364,10 @@ pub enum GameEvent {
     /// runs: GameLobbyJoinRequested_t for a lobby, else
     /// GameRichPresenceJoinRequested_t with the connect string.
     JoinRequested { lobby: u64, friend: u64, connect: String },
+    /// The game server's connection to Steam came back or went away.
+    GsStatus { connected: bool, eresult: i32, steam_id: u64, public_ip: u32 },
+    /// A SteamNetworkingSockets signal addressed to the game server.
+    GsRendezvous { from: u64, data: Vec<u8> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,6 +408,8 @@ pub enum Reply {
     HttpDone { status: i32, headers: Vec<(String, String)>, body: Vec<u8>, timed_out: bool },
     /// A signed `CMsgSteamDatagramCertificate` (serialized) for our key.
     NetworkingCert { cert: Vec<u8>, ca_key_id: u64, ca_signature: Vec<u8> },
+    /// A game server's sign-in: EResult (1 = OK), its Steam ID and public IP.
+    GsLoggedOn { eresult: i32, steam_id: u64, public_ip: u32 },
     Ok,
     Err { message: String },
 }

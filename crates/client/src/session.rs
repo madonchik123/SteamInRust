@@ -90,7 +90,7 @@ pub async fn run(mut cmds: Cmds, sink: Sink) {
     }
 }
 
-async fn connect_any() -> Result<(Connection, net::connection::Events), Error> {
+pub(crate) async fn connect_any() -> Result<(Connection, net::connection::Events), Error> {
     let servers = net::directory::websocket_servers().await?;
     let mut last = None;
     for server in servers.iter().take(4) {
@@ -368,6 +368,8 @@ struct Online {
     wallet_currency: Option<i32>,
     /// Auth session tickets for games with our steamclient.
     auth: crate::ipc::SharedAuth,
+    /// Game servers hosted by running games (each has its own Steam sign-in).
+    game_servers: crate::gameserver::Hosts,
     /// Online, offline mode or reconnecting.
     link: Link,
     /// The player wants to be online (false after "Go offline").
@@ -488,6 +490,7 @@ async fn online(
         country: String::new(),
         wallet_currency: None,
         auth: crate::ipc::Auth::new(info.public_ip),
+        game_servers: Default::default(),
         link: if offline_start { Link::Offline } else { Link::Online },
         want_online: !offline_start,
         generation: 0,
@@ -1452,6 +1455,7 @@ async fn online(
                 st.official.remove(&app_id);
                 if let Some(token) = st.launch_tokens.remove(&app_id) {
                     launch::swap_exited(&token);
+                    st.game_servers.stop(&token);
                     st.ipc.forget(&token);
                     crate::ipc::game_closed(&conn, &st.auth, app_id);
                 }
@@ -3180,6 +3184,16 @@ impl Online {
                 crate::ipc::rendezvous(&conn, app_id, me, to, &data);
                 let _ = reply.send(Reply::Ok);
             }
+            // A game server has its own sign-in and connection to Steam.
+            req @ (Request::GsLogOn { .. }
+            | Request::GsLogOff
+            | Request::GsUpdate(_)
+            | Request::GsBeginAuth { .. }
+            | Request::GsEndAuth { .. }
+            | Request::GsUserStats { .. }
+            | Request::GsStoreStats { .. }
+            | Request::GsNetworkingCert { .. }
+            | Request::GsRendezvous { .. }) => self.game_servers.call(&self.ipc, app_id, &token, pid, req, reply),
         }
     }
 
