@@ -11,6 +11,7 @@
 pub mod download;
 pub mod workshop;
 pub mod hub;
+pub mod broadcast;
 pub mod feed;
 pub mod community_actions;
 pub mod ingame;

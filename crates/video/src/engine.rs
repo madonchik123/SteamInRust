@@ -31,7 +31,8 @@ pub fn video_thread(sh: Arc<Shared>) {
     let mut track: Option<(String, Track)> = None;
     let mut epoch = u64::MAX;
     let mut target = 0.0;
-    let mut seg = 0usize;
+    // The segment's number (its index, except in a live stream's moving list).
+    let mut seg = 0u64;
     let mut plan: Option<Arc<Plan>> = None;
     let (mut au, mut pics, mut px) = (Vec::new(), Vec::new(), Vec::new());
 
@@ -42,10 +43,13 @@ pub fn video_thread(sh: Arc<Shared>) {
                 epoch = st.epoch;
                 target = st.target;
                 plan = st.video.clone();
-                seg = plan.as_ref().map_or(0, |p| p.index_at(target));
+                seg = plan.as_ref().map_or(0, |p| p.number_at(target));
                 if let Some((d, _)) = dec.as_mut() {
                     d.flush();
                 }
+            } else if plan.as_ref().is_some_and(|p| p.live) {
+                // A live stream's list moves on without a restart.
+                plan = st.video.clone();
             }
             if plan.is_none() {
                 drop(sh.wait(st, 100));
@@ -53,7 +57,7 @@ pub fn video_thread(sh: Arc<Shared>) {
             }
         }
         let p = plan.clone().unwrap();
-        let n = if p.single { 1 } else { p.segs.len() };
+        let n = p.end_number();
 
         // The track header (init segment, or the whole file).
         let init_url = p.init_url().to_string();
@@ -83,6 +87,11 @@ pub fn video_thread(sh: Arc<Shared>) {
         }
         let d = &mut dec.as_mut().unwrap().0;
 
+        if seg >= n && p.live {
+            // Caught up with the broadcast: wait for its next segment.
+            drop(sh.wait(sh.lock(), 100));
+            continue;
+        }
         if seg >= n {
             // End of stream: flush out the last pictures, then wait for a seek.
             tracing::debug!("video: end of video stream (segment {seg}/{n}, epoch {epoch})");
@@ -106,7 +115,12 @@ pub fn video_thread(sh: Arc<Shared>) {
         let data = if p.single {
             init.clone()
         } else {
-            match sh.wait_data(&p.segs[seg].url, Some(epoch)) {
+            // Gone from a live list (long stall): the downloader restarts us.
+            let Some(s) = p.seg(seg) else {
+                drop(sh.wait(sh.lock(), 100));
+                continue;
+            };
+            match sh.wait_data(&s.url, Some(epoch)) {
                 Some(d) => d,
                 None => continue,
             }
@@ -190,7 +204,7 @@ pub fn audio_thread(sh: Arc<Shared>) {
     if sh.stopped() {
         return;
     }
-    let Some(plan) = plan else { return audio_off(&sh, "no audio stream") };
+    let Some(mut plan) = plan else { return audio_off(&sh, "no audio stream") };
     let Some(init) = sh.wait_data(plan.init_url(), None) else { return };
     let Some(track) = track_of(&init, false) else { return audio_off(&sh, "no AAC track") };
     let Codec::Aac { config, channels, rate } = &track.codec else { return };
@@ -211,7 +225,7 @@ pub fn audio_thread(sh: Arc<Shared>) {
     let fr = rate as f64;
     let mut epoch = u64::MAX;
     let mut target = 0.0;
-    let mut seg = 0usize;
+    let mut seg = 0u64;
     let mut pcm: VecDeque<f32> = VecDeque::new();
     // Time of the next sample in `pcm`.
     let mut pcm_pts = 0.0;
@@ -231,6 +245,11 @@ pub fn audio_thread(sh: Arc<Shared>) {
                 st.auto_paused = true;
             }
             let vol = if st.muted { 0.0 } else { st.volume * st.volume };
+            if plan.live {
+                if let Some(p) = &st.audio_plan {
+                    plan = p.clone();
+                }
+            }
             (st.epoch, st.target, !st.paused && !st.auto_paused, vol, st.has_frame || st.video_eos)
         };
         if g != epoch {
@@ -242,7 +261,7 @@ pub fn audio_thread(sh: Arc<Shared>) {
             pcm.clear();
             first = None;
             eos = false;
-            seg = plan.index_at(t);
+            seg = plan.number_at(t);
         }
         if vol != vol_set && out.set_volume(vol).is_ok() {
             vol_set = vol;
@@ -250,13 +269,16 @@ pub fn audio_thread(sh: Arc<Shared>) {
 
         // Decode ahead, up to two seconds.
         if !eos && pcm.len() < 2 * rate as usize * ch {
-            let n = if plan.single { 1 } else { plan.segs.len() };
+            let n = plan.end_number();
             chunks.clear();
             if seg >= n {
-                let _ = aac.drain(&mut chunks);
-                eos = true;
+                // A live stream's next segment just isn't there yet.
+                if !plan.live {
+                    let _ = aac.drain(&mut chunks);
+                    eos = true;
+                }
             } else {
-                let url = if plan.single { plan.init_url() } else { &plan.segs[seg].url };
+                let url = if plan.single { plan.init_url() } else { plan.seg(seg).map_or("", |s| s.url.as_str()) };
                 let data = sh.lock().cache.get(url).cloned();
                 if let Some(data) = data {
                     for s in samples(&plan, &track, &data, target) {

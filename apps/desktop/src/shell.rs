@@ -209,7 +209,7 @@ pub fn section_of(page: &str) -> &str {
         "library" => "library",
         "downloads" => "downloads",
         "profile" | "inventory" => "profile",
-        "community" | "workshop" | crate::builtin::community_home::PAGE => "community",
+        "community" | "workshop" | "broadcast" | crate::builtin::community_home::PAGE => "community",
         p if crate::builtin::hub::PAGES.contains(&p) => "community",
         p => p,
     }

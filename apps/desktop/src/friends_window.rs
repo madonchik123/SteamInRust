@@ -651,7 +651,7 @@ fn friend_menu(app: &mut SteamApp, resp: &egui::Response, t: &Theme, persona: &P
                 }
             }
             if persona.broadcasting && w::menu_item(ui, t, icons::EYE, t!("Watch game")).on_hover_text(t!("Opens their Steam broadcast")).clicked() {
-                crate::links::open_http(&format!("https://steamcommunity.com/broadcast/watch/{}", persona.steam_id));
+                actions.push(Action::Navigate { page: "broadcast".into(), arg: Some(persona.steam_id.to_string()) });
                 ui.close();
             }
             if w::menu_item(ui, t, icons::CONTROLLER, t!("View game info")).clicked() {
