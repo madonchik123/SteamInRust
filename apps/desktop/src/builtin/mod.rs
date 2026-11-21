@@ -3,6 +3,7 @@
 //! implements `extensions::Extension` and register it below. For scripts that
 //! users install themselves, see the `plugins` crate.
 
+mod broadcast;
 pub mod community_home;
 pub mod friends;
 pub mod chat;
@@ -33,6 +34,7 @@ pub fn registry(rt: tokio::runtime::Handle, ctx: egui::Context, flags: settings:
     r.register(downloads::Downloads::new(flags.clone()));
     r.register(workshop::Workshop::default());
     r.register(hub::Hub::new(rt.clone(), ctx.clone()));
+    r.register(broadcast::Broadcast::new(rt.clone(), ctx.clone()));
     r.register(inventory::Inventory::default());
     r.register(support::Support::default());
     r.register(plugins::Plugins::new(rt.clone(), ctx.clone()));

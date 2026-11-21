@@ -1,5 +1,6 @@
 //! Headless check of the player against a real stream:
 //! `cargo run -p video --example probe -- <url> [seconds] [seek]`
+//! (`live:<url>` plays a broadcast's master playlist as a live stream).
 //! Prints status, clock, frames shown and the buffered range; muted.
 
 use std::time::{Duration, Instant};
@@ -14,7 +15,11 @@ fn main() {
     let seek: Option<f64> = args.next().and_then(|s| s.parse().ok());
     let rt = tokio::runtime::Runtime::new().unwrap();
     let ctx = egui::Context::default();
-    let src = if url.contains(".m3u8") { video::Source::Hls(url) } else { video::Source::Mp4(url) };
+    let src = match url.strip_prefix("live:") {
+        Some(u) => video::Source::Live(u.to_string()),
+        None if url.contains(".m3u8") => video::Source::Hls(url),
+        None => video::Source::Mp4(url),
+    };
     let mut p = video::Player::new(rt.handle(), &ctx, src, video::Options { muted: true, width: 1280, ..Default::default() });
     let start = Instant::now();
     let mut last_tex = None;
@@ -39,7 +44,8 @@ fn main() {
         if t - last_print >= 1.0 {
             last_print = t;
             println!(
-                "t={t:5.2} audio={} status={:?} pos={:6.2} dur={:6.2} buffered={:6.2} q={:?} err={:?}",
+                "t={t:5.2} live_delay={:.1} audio={} status={:?} pos={:6.2} dur={:6.2} buffered={:6.2} q={:?} err={:?}",
+                p.live_delay(),
                 p.has_audio(),
                 p.status(),
                 p.position(),

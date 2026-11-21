@@ -248,6 +248,7 @@ pub fn route(url: &str) -> Option<View> {
                     _ => View::Hub { app, tab: HubTab::All },
                 })
             }
+            ["broadcast", "watch", id, ..] => Some(View::Page("broadcast".into(), Some(num(Some(id))?.to_string()))),
             ["stats", id, ..] => Some(View::Achievements { app: id.parse().ok()?, friend: None }),
             ["profiles", id, "stats", app, ..] => Some(View::Achievements { app: app.parse().ok()?, friend: id.parse().ok() }),
             ["profiles", id, what @ ("screenshots" | "images" | "videos" | "myworkshopfiles"), ..] => {

@@ -12,6 +12,9 @@ use i18n::t;
 use model::art;
 
 const BASE: u64 = 76561197960265728;
+/// A broadcast link for an id Steam has no account for: it opens the watch
+/// page without ever asking a real person to broadcast.
+const DEMO_BROADCAST: &str = "https://steamcommunity.com/broadcast/watch/76561199999999990";
 /// The demo friends (`demo.rs`): Ferris, Nova, Pixel, Quartz, Juniper, Marlow.
 const fn friend(i: u64) -> u64 {
     BASE + 100 + i
@@ -96,7 +99,7 @@ pub fn events() -> Vec<Event> {
             time: now - 86_400 * 67,
             ..Default::default()
         },
-        Post { kind: PostKind::Broadcast, app_id: 1145360, game: "Hades".into(), author_name: "Pixel".into(), author: friend(2), avatar: avatar.clone(), title: "Hades".into(), images: vec![art::hero(1145360)], views: 50_600, live: true, ..Default::default() },
+        Post { kind: PostKind::Broadcast, app_id: 1145360, game: "Hades".into(), author_name: "Pixel".into(), author: friend(2), avatar: avatar.clone(), title: "Hades".into(), images: vec![art::hero(1145360)], views: 50_600, live: true, url: DEMO_BROADCAST.into(), ..Default::default() },
         Post { kind: PostKind::Guide, app_id: 1145360, game: "Hades".into(), author_name: "Nova".into(), author: friend(1), avatar: avatar.clone(), title: "Your first escape: a calm walkthrough".into(), text: "Everything a new player needs for the first clear, step by step: weapons, boons and when to spend your darkness.".into(), votes_up: 980, comments: 21, file_id: 2001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=2001".into(), time: now - 86_400 * 2, ..Default::default() },
         Post { kind: PostKind::Artwork, app_id: 620, game: "Portal 2".into(), author_name: "Quartz".into(), author: friend(3), avatar: avatar.clone(), title: "Wheatley, in ink".into(), images: vec![art::capsule(620)], votes_up: 155, comments: 7, file_id: 1001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=1001".into(), time: now - 86_400, ..Default::default() },
         Post { kind: PostKind::Video, app_id: 570, game: "Dota 2".into(), author_name: "Ferris".into(), author: friend(0), avatar: avatar.clone(), title: "Rampage in 40 seconds".into(), images: vec![art::hero(570)], votes_up: 88, comments: 12, file_id: 1001, url: "https://steamcommunity.com/sharedfiles/filedetails/?id=1001".into(), time: now - 86_400 * 3, ..Default::default() },
@@ -214,6 +217,11 @@ pub fn events() -> Vec<Event> {
         market,
         Event::Hub(Response::Activity { start: 0, result: Ok(Feed { posts: friends, next: 0 }) }),
         explore(Section::All, explore_posts),
+        // The store page's "live now" strip for Hades.
+        Event::Hub(Response::Explore {
+            key: ExploreQuery { section: Section::Broadcasts, page: 1, language: i18n::language().steam_name().to_string(), app: 1145360, ..Default::default() }.key(),
+            result: Ok(Feed { posts: broadcasts.clone(), next: 0 }),
+        }),
         explore(Section::Broadcasts, broadcasts),
         hub_feed,
         news(620, &[("Portal 2 turns another year older", "Thank you for testing with us. A weekend of free co-op maps starts Friday.", 2)]),

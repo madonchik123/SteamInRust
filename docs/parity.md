@@ -139,6 +139,7 @@ All native, no web view.
 | Edit your profile: General, Avatar (animated avatars and frames), Profile background (full screen or original size), Mini profile, Theme, Featured badge, and Steam's full Privacy page with its checkboxes | Done, with a preview before saving. The Showcase Manager isn't there yet. Saving wasn't tested on a real account |
 | Someone's games, inventory, screenshots, artwork, videos, Workshop items and guides | Done |
 | Community hub per game: screenshots, artwork, videos, news | Done |
+| Watching broadcasts | Native page with the app's own player. Opens from Community → Broadcasts, a game's hub, a "live now" strip on store pages, a friend's "Watch game" and broadcast links. Quality (or automatic), volume, full screen, pause and "Back to live", title, broadcaster, game, viewer count, and the chat beside it (read-only: you can't post). Played with public broadcasts on Windows. Not tried yet: a Mac, and friends-only or private broadcasts. Steam gives one answer for ended, private and friends-only, so the app says it may be any of them |
 | Workshop item pages: media, description, required items, change notes, comments; subscribe, rate, favorite | Done. Rating and favoriting weren't tested on a real account |
 | Guides: list, sorts, search, reader with contents | Done |
 | Discussions: forums, topics, threads with quotes and spoilers; reply to a thread | Done, in the app. Starting a new topic opens Steam's website. Sending a reply wasn't tested on a real account |
