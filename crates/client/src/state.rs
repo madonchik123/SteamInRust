@@ -274,6 +274,8 @@ impl State {
                 self.locations.insert((country.clone(), state.clone()), l.clone());
             }
             Event::Locations { .. } | Event::ProfileSaved { .. } => {}
+            // The store keeps these.
+            Event::PointsBalance(_) | Event::RewardEligible(_) | Event::RewardInventory { .. } | Event::PointsRedeemed { .. } => {}
             // Shown right away; the list is loaded again afterwards.
             Event::TradeOfferAnswered { id, action, result: Ok(confirm) } => {
                 if let Some(Ok(o)) = &mut self.trade_offers {

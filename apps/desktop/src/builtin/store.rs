@@ -32,6 +32,8 @@ mod home;
 mod store_page;
 #[path = "store_points.rs"]
 mod points;
+#[path = "store_redeem.rs"]
+mod redeem;
 #[path = "store_suggest.rs"]
 pub(crate) mod suggest;
 #[path = "store_demo.rs"]
@@ -520,6 +522,7 @@ impl Extension for Store {
     }
 
     fn on_event(&mut self, event: &client::Event, ctx: &mut Ctx) {
+        self.wallet_event(event);
         // Steam's wishlist (after a move, or anything else) replaces the order shown.
         if let client::Event::Wishlist(_) = event {
             self.wish.pending = None;
@@ -652,6 +655,7 @@ impl Extension for Store {
         self.micro_end_frame();
         self.gift_dialog(ui, &t, ctx);
         self.cart_popup_ui(ui, &t, ctx);
+        self.points_dialog(ui, &t, ctx);
     }
 
     fn page_bar(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) -> bool {
