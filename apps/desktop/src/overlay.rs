@@ -4,7 +4,7 @@
 //! can move, resize and pin. A pinned window stays over the game after the
 //! overlay closes, at the opacity you pick, and lets clicks through to it.
 //!
-//! For D3D11 games we start with our steamclient DLL it is drawn inside the
+//! For D3D11 and D3D12 games we start with our steamclient DLL it is drawn inside the
 //! game, like Steam's (see `ingame.rs` and `crates/steamclient/src/overlay`),
 //! so it works in exclusive fullscreen and the game keeps focus. Other games
 //! (other graphics APIs, anti-cheat games real Steam runs) get it as a
@@ -525,7 +525,8 @@ fn ingame_extras(ui: &mut Ui, t: &Theme, corner: crate::builtin::settings::FpsCo
         };
         egui::Area::new(egui::Id::unique("ingame-fps")).order(egui::Order::Foreground).anchor(align, offset).interactable(false).show(&ctx, |ui| {
             egui::Frame::new().fill(Color32::from_black_alpha(150)).corner_radius(CornerRadius::same(4)).inner_margin(Margin::symmetric(6, 2)).show(ui, |ui| {
-                ui.label(w::text_bold(n.to_string(), 14.0, Color32::from_rgb(120, 230, 120)));
+                // Never wrapped: at a screen edge the first layout is very narrow.
+                ui.add(egui::Label::new(w::text_bold(n.to_string(), 14.0, Color32::from_rgb(120, 230, 120))).wrap_mode(egui::TextWrapMode::Extend));
             });
         });
     }

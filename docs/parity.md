@@ -19,7 +19,7 @@ Steam's website" still works; it just isn't native yet.
 | Inventory and Market | 1 | |
 | Steam Cloud | 1 | |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers |
-| Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
+| Shift+Tab overlay | 0.75 | Drawn inside D3D11 and D3D12 games on Windows (Vulkan, OpenGL and D3D9 games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | Seven languages (Steam has about 30); no Linux version; Mac builds aren't signed with an Apple developer ID |
 | Big Picture | 0.75 | Buying and most settings move to the normal window |
@@ -195,15 +195,15 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | | |
 | --- | --- |
 | Opens over the running game with Shift+Tab, only while the game's window is in front | Done |
-| Drawn inside the game, like Steam's, so it works in exclusive full screen and the game keeps focus | Done for D3D11 games SteamInRust starts with its steamclient (32- and 64-bit). D3D9, D3D12, OpenGL and Vulkan games get the window overlay, which shows over windowed and borderless games only |
+| Drawn inside the game, like Steam's, so it works in exclusive full screen and the game keeps focus | Done for D3D11 and D3D12 games SteamInRust starts with its steamclient (32- and 64-bit). D3D12 tested in Knights End (Unreal, 64-bit), Grr Grr Gnomes Demo (Unity 6, 64-bit) and Mechanica (Unity 2019, 32-bit). Vulkan, OpenGL and D3D9 aren't done (no installed game without anti-cheat could test them): those games get the window overlay, which shows over windowed and borderless games only. If drawing keeps failing in a game, the overlay stops drawing there, the game carries on, and the window overlay takes over |
 | On a Mac | A window over the game that also works over full-screen games. Shift+Tab needs the Input Monitoring permission; SteamInRust explains it on first start |
-| While it's open the game gets no mouse, keyboard or controller input (window messages on any of its windows, raw input, XInput) and can't hide or lock the cursor; it gets `GameOverlayActivated_t` | Done. DirectInput and Windows.Gaming.Input controllers still reach the game |
+| While it's open the game gets no mouse, keyboard or controller input (window messages on any of its windows, including the pointer input Unity 6 uses, raw input, XInput) and can't hide or lock the cursor; it gets `GameOverlayActivated_t` | Done. DirectInput and Windows.Gaming.Input controllers still reach the game |
 | Open and close with a controller: the Guide (Xbox) button, like Steam; B also closes it | Done for XInput controllers. Windows' Game Bar may open on the Guide button too unless it's turned off for controllers |
 | Game overview, achievements, friends, chat, notes, guides, discussions, hub, store page | Done, in floating windows |
 | Pin windows over the game with adjustable opacity | Done |
 | Games with anti-cheat | They start through the official client, so they get Steam's own overlay |
 | Game invites in chat show as cards with a Join button (Steam's `[gameinvite]` markup). Friend menus offer "Invite to lobby" or "Invite to game" from what the game reports, else "Invite to play", all sent as real Steam invites | Done |
-| Screenshots with F12 into Steam's screenshot folder, with a "Screenshot saved" notice; FPS counter in a corner you pick (Settings → In game) | Done for games the overlay is drawn inside (D3D11). The frame is copied before the overlay is drawn on it; games that take their own screenshots get Steam's request instead. Not tested in a real game yet |
+| Screenshots with F12 into Steam's screenshot folder, with a "Screenshot saved" notice; FPS counter in a corner you pick (Settings → In game) | Done for games the overlay is drawn inside (D3D11 and D3D12). The frame is copied before the overlay is drawn on it; games that take their own screenshots get Steam's request instead. Tested on D3D11 in Mechanica and Grr Grr Gnomes Demo, and on D3D12 in those two and Knights End |
 | In-game web browser | Not yet |
 
 ## Notifications and tray

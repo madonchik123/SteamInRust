@@ -55,6 +55,9 @@ pub enum FromGame {
     Fps(u32),
     /// An F12 screenshot was saved (true) or failed.
     Screenshot(bool),
+    /// The renderer started over (a new swap chain or device) and lost its
+    /// textures: send them all again.
+    NeedTextures,
 }
 
 /// One texture change, in egui's terms (`TexturesDelta`).
@@ -110,6 +113,7 @@ const OPENED: u8 = 3;
 const INPUT: u8 = 4;
 const FPS: u8 = 5;
 const SCREENSHOT: u8 = 6;
+const NEED_TEXTURES: u8 = 7;
 const FRAME: u8 = 10;
 const SET_OPEN: u8 = 11;
 
@@ -250,6 +254,7 @@ impl FromGame {
                 w.u8(SCREENSHOT);
                 w.u8(*ok as u8);
             }
+            FromGame::NeedTextures => w.u8(NEED_TEXTURES),
         }
         w.0
     }
@@ -280,6 +285,7 @@ impl FromGame {
             }
             FPS => FromGame::Fps(r.u32()?),
             SCREENSHOT => FromGame::Screenshot(r.u8()? != 0),
+            NEED_TEXTURES => FromGame::NeedTextures,
             _ => return Err(bad()),
         })
     }
@@ -413,6 +419,7 @@ mod tests {
             FromGame::Resize { width: 1, height: 2 },
             FromGame::Opened(true),
             FromGame::Fps(144),
+            FromGame::NeedTextures,
             FromGame::Screenshot(true),
             FromGame::Input {
                 modifiers: MOD_SHIFT | MOD_CTRL,
