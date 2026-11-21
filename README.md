@@ -98,7 +98,7 @@ Everything below is in the current release. Area-by-area status:
   ([how](docs/steam-compatibility.md)).
 - **Overlay.** Shift+Tab in the running game opens friends, chat,
   achievements, guides and notes. Like Steam's, it's drawn inside the game
-  (D3D11 games), so it works in full screen, and the game gets no input while
+  (D3D11 and D3D12 games), so it works in full screen, and the game gets no input while
   it's open. The controller's Guide button opens it too. You can pin any of
   them over the game, take screenshots with F12 and show an FPS counter.
 - **Offline mode.** It works like Steam's. If the connection drops, SteamInRust

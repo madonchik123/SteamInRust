@@ -19,6 +19,8 @@ pub mod wire;
 #[cfg(windows)]
 mod d3d11;
 #[cfg(windows)]
+mod d3d12;
+#[cfg(windows)]
 mod input;
 #[cfg(windows)]
 mod hook;
@@ -36,6 +38,31 @@ pub struct Frame {
 pub enum TexOp {
     Set(TexSet),
     Free(u64),
+}
+
+/// Counts a game's frames for the app's FPS counter (any renderer).
+#[cfg(windows)]
+struct Fps {
+    frames: u32,
+    since: std::time::Instant,
+}
+
+#[cfg(windows)]
+impl Fps {
+    fn new() -> Self {
+        Self { frames: 0, since: std::time::Instant::now() }
+    }
+
+    /// One frame; tells the app the rate once a second.
+    fn tick(&mut self) {
+        self.frames += 1;
+        let elapsed = self.since.elapsed().as_secs_f32();
+        if elapsed >= 1.0 {
+            tell_app(wire::FromGame::Fps((self.frames as f32 / elapsed).round() as u32));
+            self.frames = 0;
+            self.since = std::time::Instant::now();
+        }
+    }
 }
 
 /// F12 asked for a screenshot; the next frame drawn through our hook takes it.
@@ -88,6 +115,8 @@ fn hooked(size: (u32, u32)) {
         s.size = size;
     });
     input::set_size(size);
+    // A renderer that started over has no textures; the app has them all.
+    shared::tell(wire::FromGame::NeedTextures);
 }
 
 #[cfg(windows)]
@@ -99,6 +128,22 @@ fn resized(size: (u32, u32)) {
         }
     });
     input::set_size(size);
+}
+
+/// Drawing kept failing: stop, and drop the connection so the app goes back
+/// to its window overlay for this game.
+#[cfg(windows)]
+static GAVE_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+fn gave_up() -> bool {
+    GAVE_UP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(windows)]
+fn give_up() {
+    GAVE_UP.store(true, std::sync::atomic::Ordering::Relaxed);
+    shared::wake();
 }
 
 /// GameOverlayActivated_t, so games pause or show their cursor like they do
@@ -229,8 +274,16 @@ mod shared {
                 }
                 Err(e) => crate::log!("overlay: can't reach the app at {pipe}: {e}"),
             }
+            if super::gave_up() {
+                return;
+            }
             std::thread::sleep(Duration::from_secs(2));
         }
+    }
+
+    /// Get the pipe thread to look at its state now.
+    pub fn wake() {
+        WAKE.notify_one();
     }
 
     fn available(f: &std::fs::File) -> std::io::Result<u32> {
@@ -254,6 +307,9 @@ mod shared {
         let mut guide = super::pad::Guide::new();
         let (mut last_pad, mut last_hook) = (std::time::Instant::now(), std::time::Instant::now());
         loop {
+            if super::gave_up() {
+                return Err(std::io::Error::other("the renderer gave up"));
+            }
             while available(f)? >= 4 {
                 let msg = wire::read_message(&mut &*f)?;
                 match ToGame::decode(&msg)? {

@@ -101,13 +101,14 @@ While developing, the launcher also finds
 - **Friends**: friends list, names, online state, what they're playing.
 - **Rich presence**: what the game sets is sent to Steam, so friends see it.
 - **Playing status and playtime**: SteamInRust reports the game as played.
-- **In-game overlay**: in D3D11 games our steamclient draws SteamInRust's
+- **In-game overlay**: in D3D11 and D3D12 games our steamclient draws SteamInRust's
   Shift+Tab overlay inside the game, like Steam's, and sends the game
   `GameOverlayActivated_t` when it opens and closes. While it's open the game
   doesn't get mouse, keyboard or controller input: input messages for any of
   its windows go to the overlay, its raw input is paused, and XInput reports a
-  neutral controller. The Guide (Xbox) button opens and closes it. Other games get a separate overlay
-  window. Set `STEAMINRUST_NO_INGAME_OVERLAY=1` to turn the in-game one off.
+  neutral controller. The Guide (Xbox) button opens and closes it. Vulkan, OpenGL and D3D9 games
+  get a separate overlay window, and so does a game where drawing keeps failing
+  (the overlay stops drawing there and the game carries on). Set `STEAMINRUST_NO_INGAME_OVERLAY=1` to turn the in-game one off.
 - **Invites**: the game's lobby and its rich presence `connect` decide what
   the friend menus offer ("Invite to lobby", "Invite to game", or just
   "Invite to play"). All are sent as Steam's own chat invites.
