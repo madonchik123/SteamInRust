@@ -68,7 +68,13 @@ impl Friends {
     pub(super) fn room_voice_button(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, group: u64, room: u64) {
         let target = CallTarget::Room { group, room };
         let here = ctx.state.voice.call.as_ref().is_some_and(|c| c.target == target);
-        let r = if here { w::button(ui, t, Some(icons::PHONE_DISCONNECT), t!("Leave voice"), w::Kind::Danger, w::Size::Sm) } else { w::button(ui, t, Some(icons::MICROPHONE), t!("Join voice"), w::Kind::Primary, w::Size::Sm) };
+        let (icon, label) = if here { (icons::PHONE_DISCONNECT, t!("Leave voice")) } else { (icons::MICROPHONE, t!("Join voice")) };
+        // In a narrow window just the icon, so the group's name stays readable.
+        let r = if ui.max_rect().width() < t.dense(640.0) {
+            w::icon_button(ui, t, icon, label, here, 0)
+        } else {
+            w::button(ui, t, Some(icon), label, if here { w::Kind::Danger } else { w::Kind::Primary }, w::Size::Sm)
+        };
         if r.clicked() {
             send(ctx, if here { VoiceOp::Leave } else { VoiceOp::JoinRoom { group, room } });
         }

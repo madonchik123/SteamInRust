@@ -15,7 +15,7 @@ Steam's website" still works; it just isn't native yet.
 | Library | 0.75 | Dynamic collections can be made and edited here, but saving them hasn't been tried on a real Steam account yet |
 | Downloads and installs | 1 | |
 | Store | 1 | Checkout happens on Steam's website (Steam requires it) |
-| Friends and chat | 0.75 | No voice chat; no polls in group chats |
+| Friends and chat | 0.75 | Voice chat is built but hasn't been tried in a real call; no polls in group chats |
 | Community | 0.75 | No Showcase Manager. New discussions, joining, leaving and group invites are in the app but haven't been tried on a real account |
 | Inventory and Market | 0.75 | Buying, buy orders, gems, booster packs and pending gifts are in the app but haven't been tried on a real account |
 | Steam Cloud | 1 | |
@@ -130,8 +130,8 @@ All native, no web view.
 | Group chats: your groups with unread marks, rooms, history, sending, live messages, who's online in a members list | Done, in the app. Polls aren't there yet |
 | Chat like Steam's: Steam emoticons and emoji with a picker (recent, emoticons, stickers, effects, search), slash commands (`/me`, `/code`, `/pre`, `/quote`, `/spoiler`, `/random`, `/flip`, `/store`), reactions, a menu on each message (copy, select, react, quote, report), cards for Store, Workshop and community links, pictures shown in the chat and opened large | Done |
 | Sending more than text: a picture, your latest screenshot, your trade offer link; inviting a friend into the conversation | Done. These weren't tried on a real account |
-| Group chat management, like Steam's: notifications per group and per channel, invite links and inviting friends, the settings window (name, tagline, icon, channels, roles and what they allow, invite links, invited accounts, bans, leave), a member's right-click Manage menu (roles, make admin, kick, ban), making and deleting group chats | Done. Everything you're not allowed to do is greyed out with the reason. Voice channels are listed but can't be joined |
-| Voice chat | Not yet |
+| Group chat management, like Steam's: notifications per group and per channel, invite links and inviting friends, the settings window (name, tagline, icon, channels, roles and what they allow, invite links, invited accounts, bans, leave), a member's right-click Manage menu (roles, make admin, kick, ban), making and deleting group chats | Done. Everything you're not allowed to do is greyed out with the reason. Voice channels can be made and joined |
+| Voice chat: one-to-one calls and group voice channels with join, leave, answer, decline, mute, deafen, who's talking, volume per person, microphone and speaker choice, and push-to-talk | Built, **not yet proven in a real call**. Proven live: Valve's voice server accepts our encrypted connection and Steam confirms it (nobody was called, no channel joined, no audio sent). Proven only with stand-ins: sending, receiving and mixing voice. Not tried: a real microphone or speakers, a call with someone on the official client, a real voice channel, and macOS audio |
 
 ## Community
 

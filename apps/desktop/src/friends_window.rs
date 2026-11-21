@@ -158,7 +158,10 @@ impl FriendsWindow {
                 self.raise();
             }
             a => {
-                if let Some(g) = a.strip_prefix("group:").and_then(|g| g.parse().ok()) {
+                if let Some((g, room)) = a.strip_prefix("group:").and_then(|g| g.split_once(':')).and_then(|(g, r)| Some((g.parse().ok()?, r.parse().ok()?))) {
+                    // `group:<id>:<room>`: one channel of it.
+                    self.show(Pane::Group(g, room));
+                } else if let Some(g) = a.strip_prefix("group:").and_then(|g| g.parse().ok()) {
                     self.show(Pane::Group(g, 0));
                 } else if let Ok(id) = a.parse::<SteamId>() {
                     self.show(Pane::Chat(id));
