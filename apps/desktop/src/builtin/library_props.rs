@@ -472,6 +472,11 @@ impl Library {
                 if w::button(ui, t, Some(icons::DESKTOP), t!("Add desktop shortcut"), w::Kind::Secondary, w::Size::Sm).clicked() {
                     self.add_shortcut(ctx, app, g);
                 }
+                let moving = local::relocate::is_moving(app);
+                let label = if moving { t!("Moving…") } else { t!("Move install folder…") };
+                if ui.add_enabled_ui(!moving, |ui| w::button(ui, t, Some(icons::DRIVES), label, w::Kind::Secondary, w::Size::Sm)).inner.clicked() {
+                    self.open_move(ui.ctx(), app);
+                }
             });
         });
         if let Some(d) = ctx.state.downloads.get(&app).filter(|d| d.verifying()) {

@@ -282,7 +282,9 @@ impl SteamApp {
         );
 
         // `--no-local`: don't read this PC's Steam library (clean demo screenshots).
-        let local = if std::env::args().any(|a| a == "--no-local") {
+        let local = if let Some(dir) = crate::demo::fake_library_path() {
+            local::load_with(Some(dir), &[]).unwrap_or_default()
+        } else if std::env::args().any(|a| a == "--no-local") {
             LocalState::default()
         } else {
             client::store::load_local(None).unwrap_or_else(|e| {
@@ -506,7 +508,11 @@ impl SteamApp {
                 }
                 Event::GameStopped { .. } => {
                     self.overlay.game_stopped();
-                    if let Ok(l) = client::store::load_local(Some(self.local.steam_root.clone())) {
+                    let fresh = match crate::demo::fake_library_path() {
+                        Some(dir) => local::load_with(Some(dir), &[]),
+                        None => client::store::load_local(Some(self.local.steam_root.clone())),
+                    };
+                    if let Ok(l) = fresh {
                         self.local = l;
                     }
                 }

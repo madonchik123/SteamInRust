@@ -610,6 +610,10 @@ impl Library {
                 ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::TRASH), t!("Uninstall"), w::Kind::Danger, size));
                 None
             }
+            MainAction::Moving => {
+                ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::DRIVES), t!("Moving…"), w::Kind::Pause, size));
+                None
+            }
         }
     }
 

@@ -14,3 +14,4 @@ open.workspace = true
 proto.workspace = true
 prost.workspace = true
 sha1 = "0.10"
+fs4 = "1"

@@ -272,30 +272,7 @@ pub fn uninstall_with(game: &InstalledGame, progress: &Progress) -> Result<(), S
     let rm_dir = collect_contained_entries(&common, dir, &mut files)?;
     let rm_ws = collect_contained_entries(&ws_content, &workshop, &mut files)?;
 
-    if !files.is_empty() {
-        progress.total_bytes.store(files.iter().map(|f| f.1).sum::<u64>().max(1), Ordering::Relaxed);
-        for (path, size, is_link) in files {
-            if is_link {
-                if let Ok(m) = fs::symlink_metadata(&path)
-                    && crate::is_symlink_or_reparse(&m)
-                {
-                    let _ = crate::unlink_symlink_or_junction(&path, &m);
-                }
-            } else if fs::remove_file(&path).is_err() {
-                // Read-only files: clear the flag (only if not a symlink) and try again.
-                if let Ok(m) = fs::symlink_metadata(&path)
-                    && !crate::is_symlink_or_reparse(&m)
-                {
-                    let mut perms = m.permissions();
-                    #[allow(clippy::permissions_set_readonly_false)]
-                    perms.set_readonly(false);
-                    let _ = fs::set_permissions(&path, perms);
-                    let _ = fs::remove_file(&path);
-                }
-            }
-            progress.done_bytes.fetch_add(size, Ordering::Relaxed);
-        }
-    }
+    delete_entries(files, progress);
     if rm_dir && dir.exists() {
         fs::remove_dir_all(dir).map_err(|e| format!("could not delete {}: {e}", dir.display()))?;
     }
@@ -309,6 +286,47 @@ pub fn uninstall_with(game: &InstalledGame, progress: &Progress) -> Result<(), S
     let manifest = manifest_file(game);
     if fs::symlink_metadata(&manifest).is_ok() {
         fs::remove_file(&manifest).map_err(|e| format!("could not delete {}: {e}", manifest.display()))?;
+    }
+    Ok(())
+}
+
+/// Delete listed files and links, counting bytes in `progress`.
+fn delete_entries(files: Vec<(PathBuf, u64, bool)>, progress: &Progress) {
+    if files.is_empty() {
+        return;
+    }
+    progress.total_bytes.store(files.iter().map(|f| f.1).sum::<u64>().max(1), Ordering::Relaxed);
+    for (path, size, is_link) in files {
+        if is_link {
+            if let Ok(m) = fs::symlink_metadata(&path)
+                && crate::is_symlink_or_reparse(&m)
+            {
+                let _ = crate::unlink_symlink_or_junction(&path, &m);
+            }
+        } else if fs::remove_file(&path).is_err() {
+            // Read-only files: clear the flag (only if not a symlink) and try again.
+            if let Ok(m) = fs::symlink_metadata(&path)
+                && !crate::is_symlink_or_reparse(&m)
+            {
+                let mut perms = m.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                let _ = fs::set_permissions(&path, perms);
+                let _ = fs::remove_file(&path);
+            }
+        }
+        progress.done_bytes.fetch_add(size, Ordering::Relaxed);
+    }
+}
+
+/// Delete the folder `dir`, a direct child of `parent`, with the same
+/// checks as uninstalling (nothing outside it, links aren't followed).
+pub(crate) fn remove_contained_dir(parent: &Path, dir: &Path, progress: &Progress) -> Result<(), String> {
+    let mut files = Vec::new();
+    let is_dir = collect_contained_entries(parent, dir, &mut files)?;
+    delete_entries(files, progress);
+    if is_dir && dir.exists() {
+        fs::remove_dir_all(dir).map_err(|e| format!("could not delete {}: {e}", dir.display()))?;
     }
     Ok(())
 }

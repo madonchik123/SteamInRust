@@ -1061,6 +1061,9 @@ fn folders(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
                 local::open_folder(lib);
             }
         }
+        if !ctx.local.games.is_empty() && w::button(ui, t, Some(icons::DRIVES), t!("Move games to another folder…"), w::Kind::Secondary, w::Size::Md).clicked() {
+            super::library::game_move::request_open(Vec::new());
+        }
     });
 }
 

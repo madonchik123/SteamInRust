@@ -642,6 +642,16 @@ async fn online(
                     let token = st.ipc.register(app_id);
                     sink(Event::GameAttached { app_id, env: st.ipc.env_value(&token) });
                 }
+                // No playing, updating or checking a game while its files move.
+                Some(Command::Launch { app_id, .. } | Command::LaunchWithoutCloud { app_id, .. }) if local::relocate::is_moving(app_id) => {
+                    sink(Event::StoreError("This game is being moved. Try again when that finishes.".into()));
+                }
+                Some(Command::Install(req)) if local::relocate::is_moving(req.app_id) => {
+                    sink(Event::StoreError("This game is being moved. Try again when that finishes.".into()));
+                }
+                Some(Command::VerifyGame { game, .. }) if local::relocate::is_moving(game.app_id) => {
+                    sink(Event::VerifyFinished { app_id: game.app_id, result: Err("This game is being moved. Try again when that finishes.".into()) });
+                }
                 // Like Steam: no playing while the game's files are changing.
                 Some(Command::Launch { app_id, .. }) if st.verifying.contains_key(&app_id) || st.active.as_ref().is_some_and(|(a, _)| *a == app_id) => {
                     sink(Event::StoreError("This game is being updated or verified. You can play when that finishes.".into()));

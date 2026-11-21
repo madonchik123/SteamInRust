@@ -69,6 +69,7 @@ Steam's website" still works; it just isn't native yet.
 | Install states everywhere: list row with progress, game page, right-click menu, Properties | Done |
 | Properties: general, launch options, language, updates, installed files, versions and betas (with private beta codes), DLC, Steam Cloud, Workshop, controller, privacy | Done |
 | Verify files, uninstall, desktop shortcuts, browse local files (also while installing) | Done. Uninstalling also removes the game's Workshop items and unused download manifests, like Steam |
+| Move a game to another library folder (Properties → Installed files, the game's Manage menu, Settings → Storage): several games at once, space needed and free, progress with Cancel | Done. Files are copied, checked by hash, and the originals deleted only after the switch; a move cut off by a crash is finished or undone at the next start. Workshop items, the Proton prefix and shader cache move too. Tested only on made-up libraries in a temp folder, never on a real game, a second physical drive, or with Steam's own app open (it may need a restart to see the new location). Moving within one drive still copies, so it needs the free space |
 | Achievements with rarity, sorting and comparing with a friend | Done |
 
 ## Downloads and installs

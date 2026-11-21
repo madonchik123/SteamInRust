@@ -4,6 +4,7 @@
 //! handed to the official client through `steam://` URLs.
 
 pub mod manage;
+pub mod relocate;
 
 use model::{AppId, InstallState, InstalledGame, LocalAccount};
 use std::collections::HashMap;
