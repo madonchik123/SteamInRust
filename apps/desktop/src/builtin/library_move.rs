@@ -257,7 +257,7 @@ impl Library {
         }
         let mut close = false;
         let mut start = false;
-        egui::Modal::new(egui::Id::new("move-games")).show(ui.ctx(), |ui| {
+        egui::Modal::new(egui::Id::unique("move-games")).show(ui.ctx(), |ui| {
             ui.set_width(t.dense(620.0));
             ui.spacing_mut().item_spacing.y = t.spacing.sm;
             ui.horizontal(|ui| {
