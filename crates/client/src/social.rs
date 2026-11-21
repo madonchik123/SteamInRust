@@ -444,11 +444,15 @@ pub fn collections<'a>(entries: impl Iterator<Item = (&'a str, bool, &'a str)>) 
             let id = v.get("id")?.as_str()?.to_string();
             let added: Vec<u32> = v.get("added").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect()).unwrap_or_default();
             let removed: Vec<u32> = v.get("removed").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect()).unwrap_or_default();
+            // The filters exactly as Steam wrote them (parsing would reorder them).
+            let filter = crate::collections::raw_field(value, "filterSpec").filter(|f| f != "null");
             Some(model::SteamCollection {
                 name: v.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
-                games: added.into_iter().filter(|a| !removed.contains(a)).collect(),
-                dynamic: v.get("filterSpec").is_some(),
-                filter: v.get("filterSpec").map(|f| f.to_string()),
+                games: added.iter().copied().filter(|a| !removed.contains(a)).collect(),
+                dynamic: filter.is_some(),
+                filter,
+                added,
+                removed,
                 id,
             })
         })
