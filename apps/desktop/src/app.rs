@@ -51,6 +51,14 @@ pub struct Prefs {
     pub bigpicture_scale: f32,
     /// Open in Big Picture at startup.
     pub bigpicture_start: bool,
+    /// What Big Picture's library opens on: 0 installed, 1 runs here, 2 all.
+    pub bigpicture_library: u8,
+    /// Controller: A and B swapped.
+    pub bigpicture_swap_ab: bool,
+    /// Controller: how fast a held direction repeats (0 slow, 1 normal, 2 fast).
+    pub bigpicture_repeat: u8,
+    /// Controller: how little the stick needs to move (0 low, 1 normal, 2 high).
+    pub bigpicture_stick: u8,
     /// Which version of the logo the taskbar button and tray icon show.
     pub tray_icon: ui::brand::Logo,
     /// The one-time "try the new look" question has been answered (or
@@ -138,6 +146,10 @@ impl Default for Prefs {
             favorite_friends: Vec::new(),
             bigpicture_scale: 1.0,
             bigpicture_start: false,
+            bigpicture_library: 0,
+            bigpicture_swap_ab: false,
+            bigpicture_repeat: 1,
+            bigpicture_stick: 1,
             tray_icon: ui::brand::Logo::default(),
             new_look_offered: false,
             fps_corner: Default::default(),
@@ -1131,6 +1143,11 @@ impl SteamApp {
 impl SteamApp {
     pub(crate) fn demo_sender(&self) -> Option<&mpsc::Sender<Event>> {
         self.demo_events.as_ref()
+    }
+
+    /// The on/off settings the Settings pages share.
+    pub(crate) fn shared_flags(&self) -> crate::builtin::settings::SharedFlags {
+        self.flags.clone()
     }
 }
 

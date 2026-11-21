@@ -119,6 +119,11 @@ impl chat::Sender for Outbox<'_> {
     }
 }
 
+/// Send a command to Steam (in the demo, it answers itself).
+pub(super) fn send(f: &Frame, cmd: Command) {
+    chat::Sender::send(&Outbox { client: &f.app.client, demo: f.app.demo_sender(), me: f.app.state.steam_id }, cmd);
+}
+
 fn with_env<R>(f: &Frame, g: impl FnOnce(&chat::Env) -> R) -> R {
     let outbox = Outbox { client: &f.app.client, demo: f.app.demo_sender(), me: f.app.state.steam_id };
     let env = chat::Env { state: &f.app.state, client: &outbox, steam_root: Some(&f.app.local.steam_root), language: i18n::language().steam_name().to_string() };

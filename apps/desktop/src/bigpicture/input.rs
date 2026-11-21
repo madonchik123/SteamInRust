@@ -3,6 +3,7 @@
 //! (menu) and Guide.
 
 use egui::{Key, Modifiers};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -45,12 +46,57 @@ pub fn spawn(ctx: egui::Context) -> mpsc::Receiver<PadEvent> {
     rx
 }
 
-/// A held direction repeats like a held key: once, then after a pause, steadily.
-const FIRST_REPEAT: Duration = Duration::from_millis(380);
-const REPEAT: Duration = Duration::from_millis(120);
-/// Stick thresholds (with a gap so a stick near the edge doesn't flicker).
-const STICK_ON: f32 = 0.55;
-const STICK_OFF: f32 = 0.35;
+/// The controller settings, read by the thread that reads the pads.
+static SWAP_AB: AtomicBool = AtomicBool::new(false);
+static REPEAT_LEVEL: AtomicU8 = AtomicU8::new(1);
+static STICK_LEVEL: AtomicU8 = AtomicU8::new(1);
+
+/// Apply the controller settings.
+pub fn tune(swap_ab: bool, repeat: u8, stick: u8) {
+    SWAP_AB.store(swap_ab, Ordering::Relaxed);
+    REPEAT_LEVEL.store(repeat, Ordering::Relaxed);
+    STICK_LEVEL.store(stick, Ordering::Relaxed);
+}
+
+/// A held direction repeats like a held key: once, then after a pause,
+/// steadily. (First repeat, then every…) for slow, normal and fast.
+fn repeat_times(level: u8) -> (Duration, Duration) {
+    let (first, every) = match level {
+        0 => (500, 200),
+        2 => (280, 70),
+        _ => (380, 120),
+    };
+    (Duration::from_millis(first), Duration::from_millis(every))
+}
+
+/// How far the stick goes to start a move, and to end it (with a gap so a
+/// stick near the edge doesn't flicker), for low, normal and high sensitivity.
+fn stick_edges(level: u8) -> (f32, f32) {
+    match level {
+        0 => (0.72, 0.5),
+        2 => (0.4, 0.25),
+        _ => (0.55, 0.35),
+    }
+}
+
+/// What a face or menu button means. `swap`: for pads with A and B the other
+/// way round, the right button confirms and the bottom one goes back.
+fn button_press(b: gilrs::Button, swap: bool) -> Option<Press> {
+    use gilrs::Button;
+    Some(match b {
+        Button::South if swap => Press::B,
+        Button::East if swap => Press::A,
+        Button::South => Press::A,
+        Button::East => Press::B,
+        Button::West => Press::X,
+        Button::North => Press::Y,
+        Button::LeftTrigger => Press::Lb,
+        Button::RightTrigger => Press::Rb,
+        Button::Start => Press::Start,
+        Button::Mode => Press::Guide,
+        _ => return None,
+    })
+}
 
 /// On Windows the gamepad library reads every pad 125 times a second, even
 /// with none plugged in, which was nearly all of the app's CPU use while
@@ -149,14 +195,6 @@ fn read_connected(mut gilrs: gilrs::Gilrs, tx: &mpsc::Sender<PadEvent>, ctx: &eg
         while let Some(ev) = gilrs.next_event_blocking(Some(Duration::from_millis(30))) {
             let press = match ev.event {
                 EventType::ButtonPressed(b, _) => match b {
-                    Button::South => Some(Press::A),
-                    Button::East => Some(Press::B),
-                    Button::West => Some(Press::X),
-                    Button::North => Some(Press::Y),
-                    Button::LeftTrigger => Some(Press::Lb),
-                    Button::RightTrigger => Some(Press::Rb),
-                    Button::Start => Some(Press::Start),
-                    Button::Mode => Some(Press::Guide),
                     Button::DPadUp => {
                         dpad[0] = true;
                         None
@@ -173,7 +211,7 @@ fn read_connected(mut gilrs: gilrs::Gilrs, tx: &mpsc::Sender<PadEvent>, ctx: &eg
                         dpad[3] = true;
                         None
                     }
-                    _ => None,
+                    other => button_press(other, SWAP_AB.load(Ordering::Relaxed)),
                 },
                 EventType::ButtonReleased(b, _) => {
                     match b {
@@ -187,7 +225,8 @@ fn read_connected(mut gilrs: gilrs::Gilrs, tx: &mpsc::Sender<PadEvent>, ctx: &eg
                 }
                 EventType::AxisChanged(axis, v, _) => {
                     // Past the "on" line to start, back inside the "off" line to stop.
-                    let edge = |held: bool| if held { STICK_OFF } else { STICK_ON };
+                    let (on, off) = stick_edges(STICK_LEVEL.load(Ordering::Relaxed));
+                    let edge = |held: bool| if held { off } else { on };
                     match axis {
                         // Up is positive on the stick's Y axis.
                         Axis::LeftStickY => {
@@ -225,18 +264,19 @@ fn read_connected(mut gilrs: gilrs::Gilrs, tx: &mpsc::Sender<PadEvent>, ctx: &eg
             }
         }
         // Held directions: fire on press, then repeat.
+        let (first_repeat, repeat) = repeat_times(REPEAT_LEVEL.load(Ordering::Relaxed));
         let now = Instant::now();
         for i in 0..4 {
             let held = dpad[i] || stick[i];
             match (held, next[i]) {
                 (true, None) => {
-                    next[i] = Some(now + FIRST_REPEAT);
+                    next[i] = Some(now + first_repeat);
                     if !send(PadEvent::Press(Press::Move(dirs[i]))) {
                         return false;
                     }
                 }
                 (true, Some(at)) if now >= at => {
-                    next[i] = Some(now + REPEAT);
+                    next[i] = Some(now + repeat);
                     if !send(PadEvent::Press(Press::Move(dirs[i]))) {
                         return false;
                     }
@@ -318,6 +358,31 @@ pub fn keyboard(ctx: &egui::Context, typing: bool) -> Vec<Press> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swapping_a_and_b() {
+        use gilrs::Button;
+        assert_eq!(button_press(Button::South, false), Some(Press::A));
+        assert_eq!(button_press(Button::East, false), Some(Press::B));
+        assert_eq!(button_press(Button::South, true), Some(Press::B));
+        assert_eq!(button_press(Button::East, true), Some(Press::A));
+        // Only A and B swap.
+        assert_eq!(button_press(Button::West, true), Some(Press::X));
+        assert_eq!(button_press(Button::Mode, true), Some(Press::Guide));
+        assert_eq!(button_press(Button::DPadUp, false), None);
+    }
+
+    #[test]
+    fn controller_levels_keep_their_order() {
+        let (slow, normal, fast) = (repeat_times(0), repeat_times(1), repeat_times(2));
+        assert!(slow.1 > normal.1 && normal.1 > fast.1);
+        assert!(slow.0 > normal.0 && normal.0 > fast.0);
+        for level in 0..3 {
+            let (on, off) = stick_edges(level);
+            assert!(on > off && off > 0.0 && on < 1.0, "the stick needs a gap between on and off");
+        }
+        assert!(stick_edges(0).0 > stick_edges(1).0 && stick_edges(1).0 > stick_edges(2).0);
+    }
 
     #[test]
     fn backspace_never_goes_back() {

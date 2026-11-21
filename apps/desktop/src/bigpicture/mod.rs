@@ -13,6 +13,7 @@ mod input;
 mod menu;
 mod paint;
 mod screens;
+mod settings;
 
 use crate::app::SteamApp;
 use egui::{Align2, Color32, Id, Rect, Ui, pos2, vec2};
@@ -129,6 +130,7 @@ pub struct BigPicture {
     message: String,
     send_now: bool,
     chat: chat::ChatState,
+    settings: settings::SettingsState,
     /// Up/down on a page from the normal window: wheel turns to feed it.
     wheel: f32,
     /// Background art: games and when each started fading in.
@@ -167,6 +169,11 @@ impl BigPicture {
             let id = id.parse().unwrap_or(0);
             match kind {
                 "library" => bp.tab = Tab::Library,
+                // `settings:<section number>`.
+                "settings" => {
+                    bp.settings.open_at(id as usize);
+                    bp.stack.push(Page::Settings);
+                }
                 "store" => bp.stack.push(Page::StoreApp(id)),
                 "shots" => bp.stack.extend([Page::StoreApp(id), Page::Shots(id, 0)]),
                 "search" => {
@@ -309,6 +316,7 @@ impl BigPicture {
 
 /// Read controllers every frame. Outside Big Picture, Guide opens it.
 pub fn poll(app: &mut SteamApp, ctx: &egui::Context) {
+    input::tune(app.prefs.bigpicture_swap_ab, app.prefs.bigpicture_repeat, app.prefs.bigpicture_stick);
     let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
     let mut events = Vec::new();
     if let Some(rx) = &app.bigpicture.pad {

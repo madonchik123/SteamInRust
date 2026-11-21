@@ -43,7 +43,7 @@ pub fn draw(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, pos: f32) -> f32 {
         Page::StoreApp(id) => store_app(bp, ui, f, top, id),
         Page::Search => search(bp, ui, f, top),
         Page::Shots(id, i) => shots(bp, ui, f, id, i),
-        Page::Settings => settings(bp, ui, f, top),
+        Page::Settings => super::settings::page(bp, ui, f),
         Page::Friend(id) => friend_page(bp, ui, f, top, id),
         Page::Chat(to) => super::chat::page(bp, ui, f, to),
         Page::Embedded(page, arg) => super::chat::embedded(bp, ui, f, &page, arg.as_deref()),
@@ -372,7 +372,13 @@ fn library_tab(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32
     games.sort_by_key(|g| g.1.to_lowercase());
     let n_installed = games.iter().filter(|g| g.2).count();
     let n_runs = games.iter().filter(|g| runs.contains(&g.0)).count();
-    let installed_only = *bp.installed_only.get_or_insert(n_installed > 0);
+    if bp.installed_only.is_none() {
+        // The first visit: what Settings says it opens on.
+        let open_on = f.app.prefs.bigpicture_library;
+        bp.this_os_only = open_on == 1;
+        bp.installed_only = Some(open_on == 0 && n_installed > 0);
+    }
+    let installed_only = bp.installed_only.unwrap_or(false);
     // Installed, runs on this computer (only when some don't), or all.
     let mut chips: Vec<(u8, String)> = vec![(0, t!("Installed ({n})", n = n_installed))];
     if n_runs < games.len() {
@@ -1445,61 +1451,4 @@ fn friend_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: mo
 pub(super) fn is_key(id: Option<Id>) -> bool {
     let Some(id) = id else { return false };
     (0..4).any(|r| (0..11).any(|c| id == Id::unique(("bp-key", r, c)))) || (0..4).any(|i| id == Id::unique(("bp-key-special", i)))
-}
-
-// ---------- Settings ----------
-
-const SIZES: [f32; 4] = [0.85, 1.0, 1.15, 1.3];
-
-fn settings(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32 {
-    let s = f.s;
-    let mut y = top + 16.0 * s;
-    let left = f.view.left() + f.pad;
-    let p = ui.painter().clone();
-    p.text(pos2(left, y), Align2::LEFT_TOP, t!("Big Picture settings"), w::font_bold(40.0 * s), f.t.text);
-    y += 80.0 * s;
-    let lang = i18n::language();
-    // Selecting the row moves to the next language.
-    let all = i18n::Lang::ALL;
-    let other = all[(all.iter().position(|l| *l == lang).unwrap_or(0) + 1) % all.len()];
-    let rows = [
-        (icons::MONITOR, t!("Interface size"), format!("{}%", (f.app.prefs.bigpicture_scale * 100.0).round() as u32)),
-        (icons::DESKTOP, t!("Start SteamInRust in Big Picture"), if f.app.prefs.bigpicture_start { t!("On") } else { t!("Off") }.to_string()),
-        (icons::GLOBE, t!("Language"), lang.native_name().to_string()),
-        (icons::GEAR, t!("All settings (leaves Big Picture)"), String::new()),
-    ];
-    let width = (f.view.width() - 2.0 * f.pad).min(1100.0 * s);
-    for (i, (icon, label, value)) in rows.iter().enumerate() {
-        let r = Rect::from_min_size(pos2(left, y), vec2(width, 88.0 * s));
-        let hit = bp.focus.item(ui, Id::unique(("bp-set", i)), r, ui.clip_rect(), Place::Page);
-        let (k, dy) = appear(ui, bp, i);
-        let r = r.translate(vec2(0.0, dy * s));
-        let c = paint::faded(ui, r.expand(20.0 * s), k);
-        let shown = paint::grow(r, 1.0 + 0.02 * hit.glow);
-        c.painter().rect_filled(shown, paint::radius(16.0 * s), w::mix(Color32::from_black_alpha(100), Color32::from_white_alpha(26), hit.glow));
-        c.painter().text(pos2(shown.left() + 30.0 * s, shown.center().y), Align2::LEFT_CENTER, *icon, w::font(30.0 * s), f.t.text_dim);
-        c.painter().text(pos2(shown.left() + 84.0 * s, shown.center().y), Align2::LEFT_CENTER, *label, w::font_semibold(25.0 * s), f.t.text);
-        if !value.is_empty() {
-            c.painter().text(pos2(shown.right() - 30.0 * s, shown.center().y), Align2::RIGHT_CENTER, format!("{value}   {}", icons::CARET_RIGHT), w::font_medium(23.0 * s), f.t.accent);
-        }
-        if hit.focused {
-            bp.focus.ring_around(shown, 16.0 * s);
-        }
-        if hit.activated {
-            match i {
-                0 => {
-                    let cur = SIZES.iter().position(|x| (*x - f.app.prefs.bigpicture_scale).abs() < 0.01).unwrap_or(1);
-                    f.app.prefs.bigpicture_scale = SIZES[(cur + 1) % SIZES.len()];
-                }
-                1 => f.app.prefs.bigpicture_start = !f.app.prefs.bigpicture_start,
-                2 => f.actions.push(Action::SetLanguage(other.code().into())),
-                _ => {
-                    bp.leave(ui.ctx());
-                    f.actions.push(Action::Navigate { page: "settings".into(), arg: None });
-                }
-            }
-        }
-        y += 88.0 * s + 16.0 * s;
-    }
-    y - top + 20.0 * s
 }
