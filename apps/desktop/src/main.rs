@@ -82,6 +82,8 @@ fn main() -> eframe::Result {
             // (the app paints its own background anyway).
             .with_transparent(cfg!(target_os = "macos"))
             .with_icon(std::sync::Arc::new(egui::IconData { rgba: ui::brand::icon_rgba(256), width: 256, height: 256 })),
+        // A test copy must not save its off-screen window position.
+        persist_window: !app::offscreen(),
         ..Default::default()
     };
     eframe::run_native("SteamInRust", options, Box::new(move |cc| Ok(Box::new(app::SteamApp::new(cc, link)))))
