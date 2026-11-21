@@ -72,6 +72,8 @@ fn main() -> eframe::Result {
         viewport = viewport.with_position(app::OFFSCREEN_POS);
     }
     let options = eframe::NativeOptions {
+        // A test copy's off-screen window must never become the real app's.
+        persist_window: !app::offscreen(),
         // Our own title bar (see chrome.rs) instead of the Windows one.
         viewport: chrome::frame(viewport)
             .with_title("SteamInRust")
@@ -82,8 +84,6 @@ fn main() -> eframe::Result {
             // (the app paints its own background anyway).
             .with_transparent(cfg!(target_os = "macos"))
             .with_icon(std::sync::Arc::new(egui::IconData { rgba: ui::brand::icon_rgba(256), width: 256, height: 256 })),
-        // A test copy must not save its off-screen window position.
-        persist_window: !app::offscreen(),
         ..Default::default()
     };
     eframe::run_native("SteamInRust", options, Box::new(move |cc| Ok(Box::new(app::SteamApp::new(cc, link)))))

@@ -101,13 +101,14 @@ While developing, the launcher also finds
 - **Friends**: friends list, names, online state, what they're playing.
 - **Rich presence**: what the game sets is sent to Steam, so friends see it.
 - **Playing status and playtime**: SteamInRust reports the game as played.
-- **In-game overlay**: in D3D11 games our steamclient draws SteamInRust's
+- **In-game overlay**: in D3D11 and D3D12 games our steamclient draws SteamInRust's
   Shift+Tab overlay inside the game, like Steam's, and sends the game
   `GameOverlayActivated_t` when it opens and closes. While it's open the game
   doesn't get mouse, keyboard or controller input: input messages for any of
   its windows go to the overlay, its raw input is paused, and XInput reports a
-  neutral controller. The Guide (Xbox) button opens and closes it. Other games get a separate overlay
-  window. Set `STEAMINRUST_NO_INGAME_OVERLAY=1` to turn the in-game one off.
+  neutral controller. The Guide (Xbox) button opens and closes it. Vulkan, OpenGL and D3D9 games
+  get a separate overlay window, and so does a game where drawing keeps failing
+  (the overlay stops drawing there and the game carries on). Set `STEAMINRUST_NO_INGAME_OVERLAY=1` to turn the in-game one off.
 - **Invites**: the game's lobby and its rich presence `connect` decide what
   the friend menus offer ("Invite to lobby", "Invite to game", or just
   "Invite to play"). All are sent as Steam's own chat invites.
@@ -234,6 +235,30 @@ While developing, the launcher also finds
   reach the game's response objects on its thread. Tested: 2185 Team
   Fortress 2 servers, 1770 answering with real pings; players and rules of
   one server.
+- **Hosting game servers** (`ISteamGameServer`, `ISteamGameServerStats`),
+  listen and dedicated. A server is its own Steam identity: SteamInRust
+  signs it in on a separate connection (anonymous, or `ClientLogonGameServer`
+  with a login token), sends its details (`GSServerType`, `AMGameServerUpdate`)
+  and heartbeats, and removes it from the list when it stops. The DLL answers
+  server-browser queries (A2S info, players and rules, with challenges and
+  split replies) on the query port, or through `HandleIncomingPacket` when the
+  game shares its socket. Server callbacks arrive on the server's own pipe, so
+  a game can be a player and a server at once. `BeginAuthSession` asks Steam
+  about a player's ticket from the server's connection, refuses a ticket made
+  for someone else, and `UserHasLicenseForApp` answers from the ticket's app
+  and DLC list. `ISteamNetworkingSockets` and `ISteamNetworkingMessages`
+  obtained for the server run under the server's Steam ID with their own
+  certificate. Servers are never advertised as VAC-secured.
+  Tested live on Spacewar (480), with a real `steam_api64.dll` (SDK 1.57):
+  - anonymous sign-in, as a dedicated server and as a listen server next to
+    a signed-in player, each on its own callback pipe;
+  - the server appeared in Steam's server browser and was gone after it
+    signed off; it answered A2S queries;
+  - Steam accepted a real player's ticket for the server (`OK`);
+  - a player's stats read as the server;
+  - two game servers connected by Steam ID and exchanged data over sockets
+    and messages, in both directions;
+  - Steam refused a made-up login token, and the game got the failure.
 - **Screenshots** (`ISteamScreenshots`): `WriteScreenshot` and
   `AddScreenshotToLibrary` save a JPEG and thumbnail into
   `userdata/<account>/760/remote/<app>/screenshots`; `TriggerScreenshot`
@@ -267,10 +292,21 @@ While developing, the launcher also finds
   SteamInRust doesn't implement it, so these connections fail at once with
   a clear end reason instead of hanging. Listen sockets by IP get only P2P
   connections.
-- **Game servers** (`ISteamGameServer`): hosting a server Steam lists needs
-  its own anonymous game-server sign-in to Steam and callbacks routed to the
-  server's pipe; not done yet, so in-process servers stay anonymous and
-  offline.
+- **Game servers**, what isn't proven or done:
+  - Signing in with a *real* login token: the code path reaches Steam (a
+    made-up token is refused), but no real token was used.
+  - A player connecting to a server over networking sockets or messages:
+    the player's request reaches the server, but the server's answer never
+    arrived. The test session wasn't reported as playing the game, which
+    may be why (unconfirmed). Not yet tried from a real game launch.
+  - Saving stats as the server (`StoreUserStats`) is written but was never
+    run, so a real account's stats weren't changed.
+  - The 32-bit DLL builds with all of this but wasn't run as a server.
+  - A server's own tickets (`GetAuthSessionTicket` on the server), clan
+    association, reputation, player compatibility and the old
+    `SendUserConnectAndAuthenticate` sign-in return "not available".
+  - A dedicated server that ships Valve's `steamclient64.dll` beside its exe
+    loads that file, not ours, so it talks to Steam by itself.
 - **Workshop publishing** (`CreateItem`, `SubmitItemUpdate`) fails with
   k_EResultFail.
 - **Inventory**: item definitions need a digest Steam's Inventory service

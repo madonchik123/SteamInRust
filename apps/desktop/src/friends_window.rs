@@ -448,7 +448,7 @@ fn header(app: &mut SteamApp, ui: &mut Ui, t: &Theme) {
         ui.spacing_mut().item_spacing.x = t.spacing.sm;
         // The button first (right to left), so the name takes what's left.
         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-            let invites = app.state.friends.values().filter(|r| **r == model::Relationship::RequestRecipient).count();
+            let invites = app.state.friends.values().filter(|r| **r == model::Relationship::RequestRecipient).count() + crate::builtin::hub::pending_invites(&app.state).len();
             let managing = matches!(app.friends_window.convs.open, Some(Pane::Add | Pane::Invites | Pane::Blocked));
             let r = w::icon_button(ui, t, icons::USER_PLUS, t!("Add a friend"), managing, invites);
             if r.clicked() {
@@ -663,7 +663,7 @@ fn friend_menu(app: &mut SteamApp, resp: &egui::Response, t: &Theme, persona: &P
                 }
             }
             if persona.broadcasting && w::menu_item(ui, t, icons::EYE, t!("Watch game")).on_hover_text(t!("Opens their Steam broadcast")).clicked() {
-                crate::links::open_http(&format!("https://steamcommunity.com/broadcast/watch/{}", persona.steam_id));
+                actions.push(Action::Navigate { page: "broadcast".into(), arg: Some(persona.steam_id.to_string()) });
                 ui.close();
             }
             if w::menu_item(ui, t, icons::CONTROLLER, t!("View game info")).clicked() {

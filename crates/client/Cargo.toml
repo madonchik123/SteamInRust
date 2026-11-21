@@ -17,7 +17,7 @@ image.workspace = true
 reqwest.workspace = true
 flate2.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 directories.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

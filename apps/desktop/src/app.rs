@@ -51,6 +51,14 @@ pub struct Prefs {
     pub bigpicture_scale: f32,
     /// Open in Big Picture at startup.
     pub bigpicture_start: bool,
+    /// What Big Picture's library opens on: 0 installed, 1 runs here, 2 all.
+    pub bigpicture_library: u8,
+    /// Controller: A and B swapped.
+    pub bigpicture_swap_ab: bool,
+    /// Controller: how fast a held direction repeats (0 slow, 1 normal, 2 fast).
+    pub bigpicture_repeat: u8,
+    /// Controller: how little the stick needs to move (0 low, 1 normal, 2 high).
+    pub bigpicture_stick: u8,
     /// Which version of the logo the taskbar button and tray icon show.
     pub tray_icon: ui::brand::Logo,
     /// The one-time "try the new look" question has been answered (or
@@ -138,6 +146,10 @@ impl Default for Prefs {
             favorite_friends: Vec::new(),
             bigpicture_scale: 1.0,
             bigpicture_start: false,
+            bigpicture_library: 0,
+            bigpicture_swap_ab: false,
+            bigpicture_repeat: 1,
+            bigpicture_stick: 1,
             tray_icon: ui::brand::Logo::default(),
             new_look_offered: false,
             fps_corner: Default::default(),
@@ -323,6 +335,9 @@ impl SteamApp {
                 let _ = demo_tx.send(e);
             }
             for e in crate::demo::voice_preview(&client) {
+                let _ = demo_tx.send(e);
+            }
+            for e in crate::builtin::inventory::economy_demo::install(demo_tx.clone()) {
                 let _ = demo_tx.send(e);
             }
         } else if let Some(acc) = prefs.auto_login.as_ref().filter(|_| !prefs.ask_account && !std::env::args().any(|a| a == "--no-auto-login")) {
@@ -964,8 +979,8 @@ impl SteamApp {
     }
 }
 
-/// `--keys=Down;Down;Enter;text:hello;wheel:960:540:-300;wait` (with
-/// `--offscreen`): replays keys, typing and mouse-wheel turns into a preview
+/// `--keys=Down;Down;Enter;text:hello;wheel:960:540:-300;click:640:300;wait` (with
+/// `--offscreen`): replays keys, typing, wheel turns and clicks into a preview
 /// copy, one every 0.4 s from 4 s in (`--keys-after=<seconds>`), so screens
 /// that need the keyboard or a controller can be checked off-screen. Keys
 /// use egui's names (Down, Enter, Escape, Backspace, Q…).
@@ -989,6 +1004,15 @@ fn preview_keys(ctx: &egui::Context, raw_input: &mut egui::RawInput, time: f64) 
         if let [x, y, dy] = n[..] {
             raw_input.events.push(egui::Event::PointerMoved(egui::pos2(x, y)));
             raw_input.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, dy), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers });
+        }
+    } else if let Some(c) = step.strip_prefix("click:") {
+        let n: Vec<f32> = c.split(':').filter_map(|v| v.parse().ok()).collect();
+        if let [x, y] = n[..] {
+            let pos = egui::pos2(x, y);
+            raw_input.events.push(egui::Event::PointerMoved(pos));
+            for pressed in [true, false] {
+                raw_input.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers });
+            }
         }
     } else if let Some(key) = egui::Key::from_name(step) {
         for pressed in [true, false] {
@@ -1070,23 +1094,13 @@ impl SteamApp {
     }
 }
 
-impl eframe::App for SteamApp {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // Transparent so the overlay window can see through; the main window
-        // paints its own background.
-        [0.0, 0.0, 0.0, 0.0]
-    }
-
-    /// Previews of an `--offscreen` copy can't be pointed at with the real
-    /// mouse: `--pointer=x,y` keeps a pretend pointer there (hover states),
-    /// and `--click=x,y` clicks there once, 4 seconds in (or
-    /// `--click-after=<seconds>`; `--type=<text>` then types into what it
-    /// focused, `--type-submit` adds Ctrl+Enter).
-    /// `--drag=x1,y1,x2,y2` drags.
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        if !offscreen() || raw_input.viewport_id != egui::ViewportId::ROOT {
+impl SteamApp {
+    /// The preview helpers of an `--offscreen` copy (see `raw_input_hook`).
+    fn preview_input(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if !offscreen() {
             return;
         }
+
         let at = |name: &str| -> Option<egui::Pos2> {
             let v = std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from))?;
             let (x, y) = v.split_once(',')?;
@@ -1161,6 +1175,40 @@ impl eframe::App for SteamApp {
         }
         preview_keys(ctx, raw_input, time);
         soak_scroll(raw_input, time);
+    }
+}
+
+/// The demo's way to answer the chat (nothing leaves this computer).
+impl SteamApp {
+    pub(crate) fn demo_sender(&self) -> Option<&mpsc::Sender<Event>> {
+        self.demo_events.as_ref()
+    }
+
+    /// The on/off settings the Settings pages share.
+    pub(crate) fn shared_flags(&self) -> crate::builtin::settings::SharedFlags {
+        self.flags.clone()
+    }
+}
+
+impl eframe::App for SteamApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Transparent so the overlay window can see through; the main window
+        // paints its own background.
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
+    /// Previews of an `--offscreen` copy can't be pointed at with the real
+    /// mouse: `--pointer=x,y` keeps a pretend pointer there (hover states),
+    /// and `--click=x,y` clicks there once, 4 seconds in (or
+    /// `--click-after=<seconds>`; `--type=<text>` then types into what it
+    /// focused, `--type-submit` adds Ctrl+Enter).
+    /// `--drag=x1,y1,x2,y2` drags.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if raw_input.viewport_id != egui::ViewportId::ROOT {
+            return;
+        }
+        self.preview_input(ctx, raw_input);
+        self.bigpicture.feed_wheel(raw_input);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {

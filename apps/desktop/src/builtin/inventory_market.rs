@@ -56,7 +56,7 @@ pub(super) fn money(cents: u64, currency: i32) -> String {
 }
 
 /// "12,50" / "12.5" / "12" -> cents.
-fn parse_amount(s: &str) -> Option<u64> {
+pub(super) fn parse_amount(s: &str) -> Option<u64> {
     let s = s.trim().replace(' ', "").replace(',', ".");
     let s: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
     let v: f64 = s.parse().ok()?;
@@ -98,6 +98,10 @@ impl Inventory {
             }
             if !item.tradable && item.trade_hold_days > 0 && item.owner_notes.is_empty() {
                 ui.label(w::text(t!("New items of this kind can't be traded for {n} days.", n = item.trade_hold_days), 12.5, t.text_faint));
+            }
+
+            if mine && app == 753 {
+                self.item_economy(ui, t, ctx, item);
             }
 
             if item.marketable && !item.market_hash_name.is_empty() {
@@ -215,6 +219,10 @@ impl Inventory {
             }
             _ => {}
         }
+        // Next to the price, not under the chart where you'd have to scroll.
+        ui.add_space(t.spacing.sm);
+        let image = art::econ(&item.icon, 192);
+        self.buy_buttons(ui, t, ctx, app, &item.market_hash_name, &item.name, &image, Some(&price));
         if !price.history.is_empty() {
             ui.add_space(8.0);
             chart(ui, t, &price, currency);

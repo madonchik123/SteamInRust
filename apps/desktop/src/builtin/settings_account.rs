@@ -1,7 +1,8 @@
 //! Account pages inside Settings, read natively from Steam: account
 //! details, purchase history, licenses and your Steam Family. They only
-//! read; changing something (password, email, family members) still opens
-//! Steam's site, where Steam asks to confirm it.
+//! read, except family members (`settings_family.rs`); changing something
+//! else (password, email) still opens Steam's site, where Steam asks to
+//! confirm it.
 
 use super::settings::{info_row, web};
 use client::Command;
@@ -28,6 +29,8 @@ pub struct AccountPages {
     /// Loads already asked for this visit: security, purchases, licenses, family.
     asked: [bool; 4],
     loading_more: bool,
+    /// Inviting, accepting, removing and leaving.
+    pub family_manager: super::settings_family::FamilyManager,
 }
 
 fn language() -> String {
@@ -320,35 +323,35 @@ impl AccountPages {
             self.asked[3] = false;
         }
         let Some(Ok(status)) = status else { return };
+        self.family_manager.dialog(ui, t, ctx, &status);
         let Some(family) = &status.family else {
             w::panel(t).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(w::body_l(t, t!("You're not in a Steam Family"), t.text));
                 ui.add_space(4.0);
-                wrapped(ui, w::body_m(t, t!("A family shares games between up to six accounts, with limits for children. Creating or joining one happens on Steam's site."), t.text_dim));
+                wrapped(ui, w::body_m(t, t!("A family shares games between up to six accounts, with limits for children. You can accept an invitation here; creating a family happens on Steam's site."), t.text_dim));
                 if status.cooldown > 0 {
                     ui.add_space(6.0);
                     ui.label(w::body_m(t, t!("You can join a family again in {days} days.", days = status.cooldown.div_ceil(86_400)), t.away));
                 }
-                for (_, inviter) in &status.invites {
-                    let p = ctx.state.persona(*inviter);
-                    ui.add_space(6.0);
-                    ui.label(w::body_m(t, t!("{name} invited you to their family.", name = p.display_name()), t.accent));
-                }
                 ui.add_space(10.0);
-                if w::button(ui, t, Some(icons::USERS_THREE), t!("Create or join a family"), w::Kind::Primary, w::Size::Md).clicked() {
+                if w::button(ui, t, Some(icons::EXTERNAL), t!("Create a family on Steam"), w::Kind::Secondary, w::Size::Md).clicked() {
                     web("https://store.steampowered.com/account/familymanagement");
                 }
             });
+            self.family_manager.invites_to_you(ui, t, ctx, &status);
+            ui.add_space(t.spacing.sm);
+            self.family_manager.rules(ui, t);
             return;
         };
 
         ui.horizontal(|ui| {
             ui.label(w::heading_m(t, &family.name, t.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if w::button(ui, t, Some(icons::GEAR), t!("Manage family"), w::Kind::Secondary, w::Size::Sm).on_hover_text(t!("Invites, removing members and limits open on Steam's site")).clicked() {
+                if w::button(ui, t, Some(icons::EXTERNAL), t!("More on Steam"), w::Kind::Secondary, w::Size::Sm).on_hover_text(t!("Renaming or deleting the family, its history and children's limits open on Steam's site")).clicked() {
                     web("https://store.steampowered.com/account/familymanagement");
                 }
+                self.family_manager.invite_button(ui, t, &status, family);
             });
         });
         let mut facts = vec![t!("{n} members", n = family.members.len()).to_string(), t!("{n} free spots", n = family.free_spots).to_string()];
@@ -359,6 +362,8 @@ impl AccountPages {
         if family.slot_cooldown > 0 {
             ui.label(w::body_s(t, t!("A new member can join in {days} days.", days = family.slot_cooldown.div_ceil(86_400)), t.away));
         }
+        ui.add_space(t.spacing.sm);
+        self.family_manager.rules(ui, t);
 
         section(ui, t, t!("Members"));
         let me = ctx.state.steam_id;
@@ -392,6 +397,7 @@ impl AccountPages {
                         if w::button(ui, t, None, t!("Profile"), w::Kind::Ghost, w::Size::Sm).clicked() {
                             ctx.navigate("profile", Some(m.steam_id.to_string()));
                         }
+                        self.family_manager.member_actions(ui, t, &status, family, m, me);
                     });
                 });
             });
@@ -399,9 +405,20 @@ impl AccountPages {
         }
         if !family.invites.is_empty() {
             section(ui, t, t!("Invited"));
-            for (id, _) in &family.invites {
+            for (id, role) in &family.invites {
                 let p = ctx.state.persona(*id);
-                info_row(ui, t, &p.display_name(), t!("Hasn't accepted yet"), None);
+                ui.horizontal(|ui| {
+                    let role = match role {
+                        FamilyRole::Child => t!("Child"),
+                        FamilyRole::Adult => t!("Adult"),
+                        FamilyRole::Unknown => t!("Member"),
+                    };
+                    ui.label(w::body_m(t, p.display_name(), t.text));
+                    ui.label(w::body_s(t, format!("{role}  ·  {}", t!("Hasn't accepted yet")), t.text_dim));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.family_manager.invite_actions(ui, t, &status, family, *id);
+                    });
+                });
             }
         }
 

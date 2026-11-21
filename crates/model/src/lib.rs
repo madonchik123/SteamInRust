@@ -121,6 +121,18 @@ pub struct OwnedApp {
     /// Steam Deck: 0 unknown, 1 unsupported, 2 playable, 3 verified.
     #[serde(default)]
     pub deck: u8,
+    /// Steam Machine compatibility, on the same scale.
+    #[serde(default)]
+    pub machine: u8,
+    /// Steam Frame compatibility, on the same scale.
+    #[serde(default)]
+    pub frame: u8,
+    /// Supported languages, one bit per Steam language id (0 = not known).
+    #[serde(default)]
+    pub languages: u64,
+    /// The subscription app this game comes with, like EA Play (0 = none).
+    #[serde(default)]
+    pub master_sub: u32,
     /// Systems the game runs on (`common/oslist`, e.g. "windows,macos");
     /// empty when app info doesn't say.
     #[serde(default)]
@@ -662,6 +674,9 @@ pub struct InventoryItem {
     pub commodity: bool,
     /// The game's own market fee (e.g. 0.10); Steam's is separate.
     pub market_fee: Option<f64>,
+    /// Actions only the owner has, e.g. "Turn into Gems..." (name, link).
+    #[serde(default)]
+    pub owner_actions: Vec<(String, String)>,
 }
 
 /// What an item sells for on the Community Market, in the wallet currency.
@@ -1027,6 +1042,14 @@ pub struct CollectionEdit {
     pub id: String,
     pub name: String,
     pub games: Vec<AppId>,
+    /// A dynamic collection's filters, as Steam stores them. When set, `games`
+    /// is ignored: the games added and removed by hand stay as they are.
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// The filters this edit started from (none for a new collection). If
+    /// Steam's copy has moved on, the edit isn't saved.
+    #[serde(default)]
+    pub based_on: Option<String>,
     pub deleted: bool,
 }
 
@@ -1117,9 +1140,16 @@ pub struct SteamCollection {
     pub games: Vec<AppId>,
     /// Built from filters in Steam (its games aren't listed).
     pub dynamic: bool,
-    /// A dynamic collection's filters, as Steam stores them (`filterSpec`).
+    /// A dynamic collection's filters, exactly as Steam stores them
+    /// (`filterSpec`).
     #[serde(default)]
     pub filter: Option<String>,
+    /// Games put in by hand (on a dynamic collection, on top of its filters).
+    #[serde(default)]
+    pub added: Vec<AppId>,
+    /// Games taken out by hand.
+    #[serde(default)]
+    pub removed: Vec<AppId>,
 }
 
 /// A Steam download region with the connection time measured from this PC.
@@ -1250,6 +1280,13 @@ pub struct Family {
     pub slot_cooldown: u32,
     /// Games shared in the family, with who owns them.
     pub shared: Vec<SharedApp>,
+    /// People who left: they can be invited back during a slot cooldown.
+    #[serde(default)]
+    pub former: Vec<SteamId>,
+    /// Exceptions Steam granted to the slot cooldown (it doesn't apply
+    /// while there are any).
+    #[serde(default)]
+    pub slot_overrides: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1267,6 +1304,15 @@ impl FamilyRole {
             1 => FamilyRole::Adult,
             2 => FamilyRole::Child,
             _ => FamilyRole::Unknown,
+        }
+    }
+
+    /// Back to `EFamilyGroupRole`; `None` for a role Steam can't be sent.
+    pub fn to_steam(self) -> Option<i32> {
+        match self {
+            FamilyRole::Adult => Some(1),
+            FamilyRole::Child => Some(2),
+            FamilyRole::Unknown => None,
         }
     }
 }
@@ -1297,8 +1343,101 @@ pub struct FamilyStatus {
     pub role: FamilyRole,
     /// Seconds before you can join a family again.
     pub cooldown: u32,
-    /// Families that invited you: (family id, inviter).
-    pub invites: Vec<(u64, SteamId)>,
+    /// Families that invited you.
+    pub invites: Vec<FamilyInvite>,
+}
+
+/// A family's invitation to you.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FamilyInvite {
+    pub family: u64,
+    pub inviter: SteamId,
+    /// What you'd join as.
+    pub role: FamilyRole,
+    pub invite_id: u64,
+    /// You accepted and Steam is waiting for your phone or email code.
+    pub awaiting_confirmation: bool,
+}
+
+/// Something done to a Steam Family. Each is one call to Steam's
+/// FamilyGroups service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FamilyAction {
+    Invite { family: u64, steam_id: SteamId, role: FamilyRole },
+    /// Take back an invitation you sent.
+    CancelInvite { family: u64, steam_id: SteamId },
+    /// Accept an invitation to you.
+    Accept { family: u64 },
+    /// The code Steam emailed you after accepting.
+    ConfirmJoin { family: u64, invite_id: u64, code: u64 },
+    /// Turn down an invitation to you.
+    Decline { family: u64 },
+    Remove { family: u64, steam_id: SteamId },
+    /// Remove yourself.
+    Leave { family: u64 },
+}
+
+/// How Steam answered a family action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FamilyOutcome {
+    Done,
+    /// Waiting for approval in the Steam Mobile app.
+    ConfirmOnPhone,
+    /// Waiting for the email: a link (inviting) or a code (joining).
+    ConfirmByEmail,
+    /// Already accepted: a confirmation request is waiting.
+    AlreadyAccepted,
+    /// Steam asked for a confirmation this app doesn't know.
+    ConfirmOther,
+}
+
+/// Why you can't invite someone new right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InviteBlock {
+    /// Only adults can invite.
+    NotAdult,
+    /// All six places are taken.
+    Full,
+    /// A place was left recently: only former members can be invited,
+    /// for this many more seconds.
+    SlotCooldown(u32),
+}
+
+impl FamilyStatus {
+    /// What stops you inviting someone who was never in this family.
+    pub fn invite_block(&self) -> Option<InviteBlock> {
+        let f = self.family.as_ref()?;
+        if self.role != FamilyRole::Adult {
+            return Some(InviteBlock::NotAdult);
+        }
+        if f.free_spots == 0 {
+            return Some(InviteBlock::Full);
+        }
+        (f.slot_cooldown > 0 && f.slot_overrides == 0).then_some(InviteBlock::SlotCooldown(f.slot_cooldown))
+    }
+
+    /// Whether `who` can be invited now: not already in or invited, and
+    /// allowed by [`Self::invite_block`] (a slot cooldown still lets former
+    /// members back in).
+    pub fn can_invite(&self, who: SteamId) -> bool {
+        let Some(f) = &self.family else { return false };
+        if who == 0 || f.members.iter().any(|m| m.steam_id == who) || f.invites.iter().any(|i| i.0 == who) {
+            return false;
+        }
+        match self.invite_block() {
+            None => true,
+            Some(InviteBlock::SlotCooldown(_)) => f.former.contains(&who),
+            Some(_) => false,
+        }
+    }
+
+    /// Whether you can remove `who` (yourself = leaving). As on Steam's
+    /// page: adults only, and not the last member (that's deleting the
+    /// family, which stays on Steam's site).
+    pub fn can_remove(&self, who: SteamId) -> bool {
+        let Some(f) = &self.family else { return false };
+        self.role == FamilyRole::Adult && f.members.len() > 1 && f.members.iter().any(|m| m.steam_id == who)
+    }
 }
 
 /// What happened in a row of your Community Market history.
@@ -2359,6 +2498,19 @@ pub mod chat {
         format!("[quote={}]{}[/quote]\n", author.replace([']', '['], ""), escape(text))
     }
 
+    /// A `[quote…]…[/quote]` at the start of what's typed (from "Quote"),
+    /// and the rest. The quote is markup; the rest is text to escape.
+    pub fn split_quote(input: &str) -> (&str, &str) {
+        if !input.starts_with("[quote") {
+            return ("", input);
+        }
+        let Some(open) = input.find(']') else { return ("", input) };
+        match closing(&input[open + 1..], "quote") {
+            Some((_, end)) => input.split_at(open + 1 + end),
+            None => ("", input),
+        }
+    }
+
     /// The slash commands the chat offers, Steam's first; `store` is
     /// SteamInRust's own (it sends a Store link).
     pub const COMMANDS: [&str; 8] = ["me", "code", "pre", "quote", "spoiler", "random", "flip", "store"];
@@ -2422,6 +2574,13 @@ pub mod chat {
             assert_eq!(store_command("/store portal 2"), Some("portal 2"));
             assert_eq!(store_command("/storefront"), None);
             assert_eq!(rich(&quote("Ferris", "a [b]")), vec![Part::Quote { author: "Ferris".into(), parts: vec![Part::Text("a [b]".into())] }, Part::Text("\n".into())]);
+            // A quote stays a quote when sent; what's typed after it is escaped.
+            let typed = format!("{}my [reply]", quote("Ferris", "a [b]"));
+            let (q, rest) = split_quote(&typed);
+            assert_eq!(rich(&format!("{q}{}", compose(rest, owned))).first(), Some(&Part::Quote { author: "Ferris".into(), parts: vec![Part::Text("a [b]".into())] }));
+            assert_eq!(rest, "\nmy [reply]");
+            assert_eq!(split_quote("no quote"), ("", "no quote"));
+            assert_eq!(split_quote("[quote=x]never closed"), ("", "[quote=x]never closed"));
         }
 
         #[test]
@@ -2623,6 +2782,7 @@ mod steam_id_tests {
 
 /// Managing group chats (roles, invites, bans, notifications).
 pub mod chat_admin;
+pub mod economy;
 
 /// Voice chat: calls, who's in them, and audio settings.
 pub mod voice;

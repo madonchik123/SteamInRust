@@ -8,12 +8,15 @@
 //! here opens a browser except links to other websites.
 
 mod achievements;
+mod compose;
 pub mod demo;
 mod files;
 mod forum;
 mod group;
 pub mod post;
 pub mod rich;
+
+pub use group::{answer_invite, pending_invites};
 
 use client::hub::{self, FileKind, FileQuery, Request};
 use client::{Command, Event, State};
@@ -102,12 +105,15 @@ pub enum View {
     UserFiles { user: SteamId, kind: FileKind },
     /// A Steam group by its 64-bit id or address name.
     Group(String),
+    /// A group's forum (`forum` is its path after the group's address,
+    /// e.g. `discussions/3/`; empty = its main forum).
+    GroupForum { group: String, forum: String },
     /// Another page of the app (store, Workshop browser, profile).
     Page(String, Option<String>),
 }
 
 /// The pages this extension draws.
-pub const PAGES: [&str; 8] = ["hub", "workshop_item", "guides", "discussions", "thread", "achievements", "user_files", "group"];
+pub const PAGES: [&str; 9] = ["hub", "workshop_item", "guides", "discussions", "thread", "achievements", "user_files", "group", "group_forum"];
 
 /// URL-ish names for kinds of shared files (page arguments).
 pub fn kind_slug(k: FileKind) -> &'static str {
@@ -140,6 +146,8 @@ impl View {
             View::Achievements { app, friend: Some(f) } => (p("achievements"), Some(format!("{app}/{f}"))),
             View::UserFiles { user, kind } => (p("user_files"), Some(format!("{user}/{}", kind_slug(*kind)))),
             View::Group(key) => (p("group"), Some(key.clone())),
+            View::GroupForum { group, forum } if forum.is_empty() => (p("group_forum"), Some(group.clone())),
+            View::GroupForum { group, forum } => (p("group_forum"), Some(format!("{group}/{forum}"))),
             View::Page(page, arg) => (page.clone(), arg.clone()),
         }
     }
@@ -157,6 +165,7 @@ impl View {
             "achievements" => View::Achievements { app: app?, friend: rest.parse().ok() },
             "user_files" => View::UserFiles { user: first.parse().ok()?, kind: kind_from_slug(rest) },
             "group" => View::Group(hub::group_path(arg).map(|_| arg.to_string())?),
+            "group_forum" => View::GroupForum { group: hub::group_path(first).map(|_| first.to_string())?, forum: rest.to_string() },
             _ => return None,
         })
     }
@@ -195,6 +204,10 @@ impl View {
             View::Group(key) => match state.hub.groups.get(key) {
                 Some(Ok(g)) => g.name.clone(),
                 _ => t!("Group").to_string(),
+            },
+            View::GroupForum { group, .. } => match state.hub.groups.get(group) {
+                Some(Ok(g)) => format!("{} · {}", g.name, t!("Discussions")),
+                _ => t!("Discussions").to_string(),
             },
             View::Page(p, _) => p.clone(),
         }
@@ -248,6 +261,7 @@ pub fn route(url: &str) -> Option<View> {
                     _ => View::Hub { app, tab: HubTab::All },
                 })
             }
+            ["broadcast", "watch", id, ..] => Some(View::Page("broadcast".into(), Some(num(Some(id))?.to_string()))),
             ["stats", id, ..] => Some(View::Achievements { app: id.parse().ok()?, friend: None }),
             ["profiles", id, "stats", app, ..] => Some(View::Achievements { app: app.parse().ok()?, friend: id.parse().ok() }),
             ["profiles", id, what @ ("screenshots" | "images" | "videos" | "myworkshopfiles"), ..] => {
@@ -265,6 +279,11 @@ pub fn route(url: &str) -> Option<View> {
                 hub::group_path(name)?;
                 Some(View::Thread(format!("https://steamcommunity.com/groups/{name}/discussions/{n}/{topic}/")))
             }
+            // A group's forum.
+            ["groups", name, "discussions"] => Some(View::GroupForum { group: hub::group_path(name).map(|_| name.to_string())?, forum: String::new() }),
+            ["groups", name, "discussions", n] if n.chars().all(|c| c.is_ascii_digit()) => Some(View::GroupForum { group: hub::group_path(name).map(|_| name.to_string())?, forum: format!("discussions/{n}/") }),
+            ["gid", id, "discussions"] => Some(View::GroupForum { group: num(Some(id))?.to_string(), forum: String::new() }),
+            ["gid", id, "discussions", n] if n.chars().all(|c| c.is_ascii_digit()) => Some(View::GroupForum { group: num(Some(id))?.to_string(), forum: format!("discussions/{n}/") }),
             ["groups", name, ..] => Some(View::Group(hub::group_path(name).map(|_| name.to_string())?)),
             ["gid", id, ..] => Some(View::Group(num(Some(id))?.to_string())),
             ["profiles", id, "inventory", ..] => Some(View::Page("inventory".into(), Some(num(Some(id))?.to_string()))),
@@ -372,6 +391,21 @@ pub struct HubView {
     feed_search: HashMap<AppId, (String, String)>,
     /// The game's store info for the hub (main window only).
     pub store: Option<StoreInfo>,
+    /// The discussion being written.
+    compose: Option<compose::Compose>,
+    /// Discussions "posted" in `--demo`, per forum.
+    local_topics: HashMap<String, Vec<hub::Topic>>,
+    /// Joining, leaving or answering an invite, per group.
+    group_busy: HashMap<SteamId, group::Busy>,
+    /// What Steam said about the last of those, per group.
+    group_notice: HashMap<SteamId, String>,
+    /// "Leave this group?" is open.
+    leave_confirm: Option<SteamId>,
+}
+
+/// Running with made-up data (`--demo`): changes stay on this screen.
+pub(crate) fn is_demo() -> bool {
+    std::env::args().any(|a| a == "--demo")
 }
 
 /// Loads a game's store details for the hub's info card.
@@ -491,9 +525,13 @@ impl HubView {
                     backdrop(ui, *app);
                     w::centered(ui, 1564.0, pad, |ui| {
                         self.hub_header(ui, t, io, *app, HubTab::Discussions);
-                        forum::forum(self, ui, t, io, *app, forum)
+                        forum::forum(self, ui, t, io, forum::Place::App(*app), forum)
                     });
                 }
+                View::GroupForum { group, forum } => w::centered(ui, 1564.0, pad, |ui| {
+                    group::forum_header(ui, t, io, group);
+                    forum::forum(self, ui, t, io, forum::Place::Group(group), forum)
+                }),
                 View::Thread(url) => w::centered(ui, 1564.0, pad, |ui| forum::thread(self, ui, t, io, url)),
                 View::Achievements { app, friend } => w::centered(ui, 1100.0, pad, |ui| achievements::show(self, ui, t, io, *app, *friend)),
                 View::UserFiles { user, kind } => w::centered(ui, 1240.0, pad, |ui| files::user_files(self, ui, t, io, *user, *kind)),
@@ -831,7 +869,7 @@ impl Extension for Hub {
     fn page_bar(&mut self, _page: &str, ui: &mut Ui, ctx: &mut Ctx) -> bool {
         use crate::builtin::community_home::{BarTab, page_bar};
         let tab = match self.view.current() {
-            Some(View::Forum { .. } | View::Thread(_)) => BarTab::Discussions,
+            Some(View::Forum { .. } | View::GroupForum { .. } | View::Thread(_)) => BarTab::Discussions,
             _ => BarTab::Other,
         };
         page_bar(ui, ctx, tab, &mut self.bar_search);
@@ -860,6 +898,13 @@ impl Extension for Hub {
                 (Ok(()), false) => t!("Removed from your favorites").to_string(),
                 (Err(e), _) => t!("Couldn't change favorites: {error}", error = e),
             }),
+            // On a group's page the answer shows beside its button.
+            Event::Hub(hub::Response::GroupChanged { group: id, result: Err(e) }) => {
+                group::invite_failed(*id);
+                if !self.view.group_busy.contains_key(id) {
+                    ctx.toast(t!("Couldn't change your group: {error}", error = i18n::tr_dyn(e)));
+                }
+            }
             Event::Hub(hub::Response::Replied { result, .. }) => ctx.toast(match result {
                 Ok(()) => t!("Reply posted").to_string(),
                 Err(e) => t!("Couldn't post your reply: {error}", error = i18n::tr_dyn(e)),
@@ -944,6 +989,9 @@ mod tests {
             Some(View::Thread("https://steamcommunity.com/groups/x/discussions/0/586188528590954637/".into()))
         );
         assert_eq!(route("https://steamcommunity.com/groups/a.b/"), None);
+        assert_eq!(route("https://steamcommunity.com/groups/SteamClientBeta/discussions/"), Some(View::GroupForum { group: "steamclientbeta".into(), forum: String::new() }));
+        assert_eq!(route("https://steamcommunity.com/groups/x/discussions/3/"), Some(View::GroupForum { group: "x".into(), forum: "discussions/3/".into() }));
+        assert_eq!(route("https://steamcommunity.com/gid/103582791433918461/discussions/1/"), Some(View::GroupForum { group: "103582791433918461".into(), forum: "discussions/1/".into() }));
     }
 
     #[test]
@@ -961,6 +1009,8 @@ mod tests {
             View::UserFiles { user: 76561197960265729, kind: FileKind::Guides },
             View::Group("103582791433918461".into()),
             View::Group("steamclientbeta".into()),
+            View::GroupForum { group: "steamclientbeta".into(), forum: String::new() },
+            View::GroupForum { group: "steamclientbeta".into(), forum: "discussions/3/".into() },
         ] {
             let (page, arg) = v.to_page();
             assert_eq!(View::from_page(&page, arg.as_deref()), Some(v));

@@ -159,7 +159,8 @@ impl Extension for Settings {
         }
     }
 
-    fn on_event(&mut self, event: &client::Event, _ctx: &mut Ctx) {
+    fn on_event(&mut self, event: &client::Event, ctx: &mut Ctx) {
+        self.acct.family_manager.event(event, ctx);
         // Steam refused a privacy change: show what it has again.
         if let client::Event::ProfileSaved { what: model::ProfileSave::Privacy, result } = event {
             if result.is_err() {

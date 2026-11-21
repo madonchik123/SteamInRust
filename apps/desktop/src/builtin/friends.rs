@@ -53,6 +53,8 @@ pub struct Friends {
     find_typed: f64,
     found: Option<Result<model::UserSearch, String>>,
     finding: bool,
+    /// Groups whose details were asked for, for their invites.
+    group_invites_asked: std::collections::HashSet<u64>,
     /// Invites sent from the search results this session.
     invited: HashSet<SteamId>,
     /// Group chat management: its dialogs and the new group page.
@@ -282,7 +284,7 @@ impl Friends {
     /// Adding friends, invites and blocked people, with tabs to move between them.
     fn manage(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, convs: &mut Conversations, pane: Pane) {
         let state = ctx.state;
-        let invites_n = state.friends.values().filter(|r| **r == model::Relationship::RequestRecipient).count();
+        let invites_n = state.friends.values().filter(|r| **r == model::Relationship::RequestRecipient).count() + crate::builtin::hub::pending_invites(state).len();
         let blocked_n = state.friends.values().filter(|r| matches!(r, model::Relationship::Blocked | model::Relationship::Ignored)).count();
         let x = t.spacing.xl as i8;
         egui::Frame::new().inner_margin(Margin { left: x, right: x, top: 0, bottom: t.spacing.lg as i8 }).show(ui, |ui| {
@@ -593,9 +595,11 @@ impl Friends {
         let pick = |rel: model::Relationship| -> Vec<model::Persona> { ctx.state.friends.iter().filter(|(_, r)| **r == rel).map(|(id, _)| ctx.state.persona(*id)).collect() };
         let received = pick(model::Relationship::RequestRecipient);
         let sent = pick(model::Relationship::RequestInitiator);
-        if received.is_empty() && sent.is_empty() {
+        let groups = crate::builtin::hub::pending_invites(ctx.state);
+        if received.is_empty() && sent.is_empty() && groups.is_empty() {
             w::empty(ui, t, icons::USER_PLUS, t!("No pending invites."), "");
         }
+        self.group_invites(ui, t, ctx, &groups);
         for (title, list, incoming) in [(t!("RECEIVED"), received, true), (t!("SENT"), sent, false)] {
             if list.is_empty() {
                 continue;
@@ -635,6 +639,53 @@ impl Friends {
             }
             ui.add_space(t.spacing.md);
         }
+    }
+
+    /// Groups that invited you: accept, ignore, or look at the group first.
+    fn group_invites(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx, groups: &[u64]) {
+        if groups.is_empty() {
+            return;
+        }
+        ui.label(w::caption_text(t, &format!("{}  ·  {}", t!("GROUP INVITES"), groups.len())));
+        ui.add_space(t.spacing.sm);
+        for id in groups {
+            let key = id.to_string();
+            if !ctx.state.hub.groups.contains_key(&key) && self.group_invites_asked.insert(*id) {
+                ctx.send(Command::Hub(client::hub::Request::Group { key: key.clone() }));
+            }
+            let group = ctx.state.hub.groups.get(&key).and_then(|g| g.as_ref().ok());
+            let name = group.map(|g| g.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| t!("Group").to_string());
+            let avatar = group.map(|g| g.avatar.clone()).unwrap_or_default();
+            egui::Frame::new().fill(t.surface).corner_radius(t.corner_small()).inner_margin(Margin::symmetric(t.spacing.md as i8, t.spacing.sm as i8)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let narrow = ui.available_width() < t.dense(470.0);
+                let mut open = false;
+                ends(ui, |ui| {
+                    if action(ui, t, icons::X, t!("Ignore"), w::Kind::Ghost, narrow).clicked() {
+                        if let Some(cmd) = crate::builtin::hub::answer_invite(*id, false) {
+                            ctx.send(cmd);
+                        }
+                    }
+                    if action(ui, t, icons::CHECK, t!("Accept"), w::Kind::Primary, narrow).clicked() {
+                        if let Some(cmd) = crate::builtin::hub::answer_invite(*id, true) {
+                            ctx.send(cmd);
+                        }
+                    }
+                }, |ui| {
+                    let size = t.dense(36.0);
+                    let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
+                    w::image_or_skeleton(ui, t, r, &avatar, t.corner_small());
+                    open |= resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("View group")).clicked();
+                    let l = ui.add(egui::Label::new(strong(t, name.clone(), t.text)).truncate().sense(Sense::click()));
+                    open |= link_hover(ui, l, t.text).on_hover_text(t!("View group")).clicked();
+                });
+                if open {
+                    ctx.navigate("group", Some(key.clone()));
+                }
+            });
+            ui.add_space(t.spacing.sm);
+        }
+        ui.add_space(t.spacing.md);
     }
 
     fn blocked(&mut self, ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {

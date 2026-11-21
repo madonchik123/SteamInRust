@@ -24,6 +24,23 @@ enum Login {
     Offline(store::SavedAccount),
 }
 
+/// Your family as Steam has it now, with names and avatars for members who
+/// aren't friends.
+async fn load_family(conn: &Connection, me: SteamId, language: &str, sink: &Sink) {
+    let r = crate::account::family(conn, me, language).await;
+    if let Ok(f) = &r {
+        let mut ids: Vec<SteamId> = f.invites.iter().map(|i| i.inviter).collect();
+        if let Some(g) = &f.family {
+            ids.extend(g.members.iter().map(|m| m.steam_id).chain(g.invites.iter().map(|i| i.0)).chain(g.former.iter().copied()));
+        }
+        ids.retain(|id| *id != me && *id != 0);
+        if !ids.is_empty() {
+            let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: ids });
+        }
+    }
+    sink(Event::Family(r));
+}
+
 pub async fn run(mut cmds: Cmds, sink: Sink) {
     // A login command that arrived while another login was waiting.
     let mut next: Option<Command> = None;
@@ -95,7 +112,7 @@ pub async fn run(mut cmds: Cmds, sink: Sink) {
     }
 }
 
-async fn connect_any() -> Result<(Connection, net::connection::Events), Error> {
+pub(crate) async fn connect_any() -> Result<(Connection, net::connection::Events), Error> {
     let servers = net::directory::websocket_servers().await?;
     let mut last = None;
     for server in servers.iter().take(4) {
@@ -317,6 +334,7 @@ struct Online {
     me: SteamId,
     account: String,
     friends: HashMap<SteamId, Relationship>,
+    clans: HashMap<SteamId, crate::community_actions::ClanRelationship>,
     personas: HashMap<SteamId, Persona>,
     apps: HashMap<AppId, OwnedApp>,
     playing: Option<AppId>,
@@ -373,6 +391,8 @@ struct Online {
     wallet_currency: Option<i32>,
     /// Auth session tickets for games with our steamclient.
     auth: crate::ipc::SharedAuth,
+    /// Game servers hosted by running games (each has its own Steam sign-in).
+    game_servers: crate::gameserver::Hosts,
     /// Online, offline mode or reconnecting.
     link: Link,
     /// The player wants to be online (false after "Go offline").
@@ -464,6 +484,7 @@ async fn online(
         me,
         account: account.account_name.clone(),
         friends: HashMap::new(),
+        clans: HashMap::new(),
         personas: HashMap::new(),
         apps: HashMap::new(),
         playing: None,
@@ -495,6 +516,7 @@ async fn online(
         country: String::new(),
         wallet_currency: None,
         auth: crate::ipc::Auth::new(info.public_ip),
+        game_servers: Default::default(),
         link: if offline_start { Link::Offline } else { Link::Online },
         want_online: !offline_start,
         generation: 0,
@@ -951,7 +973,13 @@ async fn online(
                 Some(Command::SaveSteamCollections(edits)) => {
                     let (conn, sink, store) = (conn.clone(), sink.clone(), st.collections.clone());
                     tokio::spawn(async move {
-                        let result = crate::collections::save(&conn, &store, &edits).await;
+                        // A filter edit starts from Steam's latest copy, so it
+                        // can't overwrite a change made in the official client.
+                        let fresh = if edits.iter().any(|e| e.filter.is_some()) { crate::collections::download(&conn, &store).await.map(|_| ()) } else { Ok(()) };
+                        let result = match fresh {
+                            Ok(()) => crate::collections::save(&conn, &store, &edits).await,
+                            Err(e) => Err(e),
+                        };
                         if result.is_err() {
                             // Read Steam's copy again, so the next edit starts from it.
                             sink(Event::SteamCollections(crate::collections::download(&conn, &store).await));
@@ -1077,20 +1105,15 @@ async fn online(
                 }
                 Some(Command::LoadFamily { language }) => {
                     let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move { load_family(&conn, me, &language, &sink).await });
+                }
+                Some(Command::FamilyAction { action, language }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
                     tokio::spawn(async move {
-                        let r = crate::account::family(&conn, me, &language).await;
-                        // Names and avatars for members who aren't friends.
-                        if let Ok(f) = &r {
-                            let mut ids: Vec<SteamId> = f.invites.iter().map(|i| i.1).collect();
-                            if let Some(g) = &f.family {
-                                ids.extend(g.members.iter().map(|m| m.steam_id).chain(g.invites.iter().map(|i| i.0)));
-                            }
-                            ids.retain(|id| *id != me && *id != 0);
-                            if !ids.is_empty() {
-                                let _ = conn.send(emsg::CLIENT_REQUEST_FRIEND_DATA, &CMsgClientRequestFriendData { persona_state_requested: Some(PERSONA_FLAGS), friends: ids });
-                            }
-                        }
-                        sink(Event::Family(r));
+                        let result = crate::account::family_action(&conn, me, &action).await;
+                        sink(Event::FamilyActionDone { action, result });
+                        // What Steam has now, whether it worked or not.
+                        load_family(&conn, me, &language, &sink).await;
                     });
                 }
                 Some(Command::LoadPurchases { language, cursor }) => st.with_web(sink, move |web, sink| async move {
@@ -1111,6 +1134,7 @@ async fn online(
                 Some(Command::LoadSupportTicket { id, url }) => st.support_ticket(id, url, sink),
                 Some(Command::CancelListing { listing_id }) => st.cancel_listing(listing_id, sink),
                 Some(Command::CancelBuyOrder { order_id }) => st.cancel_buy_order(order_id, sink),
+                Some(Command::Economy(request)) => st.with_web(sink, move |web, sink| crate::economy::run(web, request, sink)),
                 Some(Command::LoadPlayerGames { steam_id, language }) => st.load_player_games(steam_id, language, sink),
                 Some(Command::LoadAchievementProgress { app_ids }) => st.load_achievement_progress(app_ids, sink),
                 Some(Command::LoadAchievements { app_id, language }) => st.load_achievements(app_id, language, sink),
@@ -1263,6 +1287,32 @@ async fn online(
                 }),
                 Some(Command::WishlistRemove { app_id }) => st.wishlist_change(app_id, false, sink),
                 Some(Command::WishlistMove { app_id, to }) => st.wishlist_move(app_id, to, sink),
+                Some(Command::LoadPoints) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        sink(Event::PointsBalance(crate::points::balance(&conn, me).await));
+                        sink(Event::RewardEligible(crate::points::eligible(&conn).await));
+                    });
+                }
+                Some(Command::LoadRewardInventory { apps }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        let result = crate::points::inventory(&conn, &apps).await;
+                        sink(Event::RewardInventory { apps, result });
+                    });
+                }
+                Some(Command::RedeemPoints { defid, app_id, cost }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        let result = crate::points::redeem(&conn, defid, cost).await;
+                        sink(Event::PointsRedeemed { defid, result });
+                        // Steam's numbers afterwards, whatever happened.
+                        sink(Event::PointsBalance(crate::points::balance(&conn, me).await));
+                        let apps = vec![app_id];
+                        let result = crate::points::inventory(&conn, &apps).await;
+                        sink(Event::RewardInventory { apps, result });
+                    });
+                }
                 Some(Command::LoadCart) => st.load_cart(sink),
                 Some(Command::CartAdd { package_id, gift, gift_to }) => st.cart_add(package_id, gift, gift_to, sink),
                 Some(Command::CartModify { line_item_id, gift, gift_to }) => st.cart_modify(line_item_id, gift, gift_to, sink),
@@ -1462,6 +1512,7 @@ async fn online(
                 st.official.remove(&app_id);
                 if let Some(token) = st.launch_tokens.remove(&app_id) {
                     launch::swap_exited(&token);
+                    st.game_servers.stop(&token);
                     st.ipc.forget(&token);
                     crate::ipc::game_closed(&conn, &st.auth, app_id);
                 }
@@ -1655,10 +1706,26 @@ impl Online {
                 let list: CMsgClientFriendsList = p.body()?;
                 if !list.bincremental() {
                     self.friends.clear();
+                    self.clans.clear();
                 }
                 let mut new_ids = Vec::new();
+                let mut clans_changed = !list.bincremental();
                 for f in &list.friends {
                     let id = f.ulfriendid();
+                    // The list carries your groups too.
+                    if crate::community_actions::is_clan(id) {
+                        use crate::community_actions::ClanRelationship as Clan;
+                        match Clan::from_u32(f.efriendrelationship()) {
+                            Clan::None => {
+                                self.clans.remove(&id);
+                            }
+                            rel => {
+                                self.clans.insert(id, rel);
+                            }
+                        }
+                        clans_changed = true;
+                        continue;
+                    }
                     if !is_individual(id) {
                         continue;
                     }
@@ -1674,6 +1741,9 @@ impl Online {
                     }
                 }
                 sink(Event::Friends(self.friends.iter().map(|(k, v)| (*k, *v)).collect()));
+                if clans_changed {
+                    sink(Event::Clans(self.clans.iter().map(|(k, v)| (*k, *v)).collect()));
+                }
                 self.cache_dirty = true;
                 if !new_ids.is_empty() {
                     self.conn.send(
@@ -3192,6 +3262,16 @@ impl Online {
                 crate::ipc::rendezvous(&conn, app_id, me, to, &data);
                 let _ = reply.send(Reply::Ok);
             }
+            // A game server has its own sign-in and connection to Steam.
+            req @ (Request::GsLogOn { .. }
+            | Request::GsLogOff
+            | Request::GsUpdate(_)
+            | Request::GsBeginAuth { .. }
+            | Request::GsEndAuth { .. }
+            | Request::GsUserStats { .. }
+            | Request::GsStoreStats { .. }
+            | Request::GsNetworkingCert { .. }
+            | Request::GsRendezvous { .. }) => self.game_servers.call(&self.ipc, app_id, &token, pid, req, reply),
         }
     }
 
@@ -3578,6 +3658,7 @@ fn econ_item(owner: SteamId, a: &CEconAsset, d: &CEconItemDescription) -> model:
         market_hold_days: d.market_marketable_restriction().max(0) as u32,
         commodity: d.commodity(),
         market_fee: d.market_fee().parse().ok(),
+        owner_actions: d.owner_actions.iter().map(|x| (x.name().to_string(), x.link().replace("%owner_steamid%", &owner.to_string()).replace("%assetid%", &a.assetid().to_string()))).collect(),
     }
 }
 

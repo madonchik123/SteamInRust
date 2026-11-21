@@ -1,7 +1,8 @@
 # Steam parity
 
 How much of the official Steam desktop client SteamInRust covers, area by
-area. Last checked against the code on 21 November 2026 (v0.13.0 and the chat changes after it).
+area. Last checked against the code on 21 November 2026 (v0.14.0 and the community actions after it).
+area. Last checked against the code on 21 November 2026 (v0.14.0 and the dynamic collection changes after it).
 
 Scores: **0** not started · **0.25** started · **0.5** usable, big parts
 missing · **0.75** mostly there · **1** complete. Anything marked "opens
@@ -11,18 +12,18 @@ Steam's website" still works; it just isn't native yet.
 | --- | ---: | --- |
 | Sign-in and accounts | 0.75 | Changing email, password or phone opens Steam's website |
 | Offline mode and reconnecting | 1 | Whether Steam counts playtime recorded offline is unconfirmed |
-| Library | 0.75 | Dynamic collections show and stay up to date, but their filters can only be changed in Steam |
+| Library | 0.75 | Dynamic collections can be made and edited here, but saving them hasn't been tried on a real Steam account yet |
 | Downloads and installs | 1 | |
 | Store | 1 | Checkout happens on Steam's website (Steam requires it) |
 | Friends and chat | 0.75 | No voice chat; no polls in group chats |
-| Community | 0.75 | Starting a new discussion topic, and joining or leaving a group, open Steam's website |
-| Inventory and Market | 1 | |
+| Community | 0.75 | No Showcase Manager. New discussions, joining, leaving and group invites are in the app but haven't been tried on a real account |
+| Inventory and Market | 0.75 | Buying, buy orders, gems, booster packs and pending gifts are in the app but haven't been tried on a real account |
 | Steam Cloud | 1 | |
-| Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); hosting game servers |
-| Shift+Tab overlay | 0.75 | Drawn inside D3D11 games on Windows only (other games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
+| Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); parts of hosting game servers aren't proven yet (login tokens, players connecting over networking sockets) |
+| Shift+Tab overlay | 0.75 | Drawn inside D3D11 and D3D12 games on Windows (Vulkan, OpenGL and D3D9 games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
 | Notifications and tray | 1 | |
-| Settings, languages, updates | 0.75 | Seven languages (Steam has about 30); no Linux version; Mac builds aren't signed with an Apple developer ID |
-| Big Picture | 0.75 | Buying and most settings move to the normal window |
+| Settings, languages, updates | 0.75 | No Linux version; Mac builds aren't signed with an Apple developer ID |
+| Big Picture | 0.75 | Buying, trade offers and some settings move to the normal window |
 | Remote Play | 0 | Not planned for now. Steam Input for games is under "Steam features inside games" |
 
 ---
@@ -38,7 +39,9 @@ Steam's website" still works; it just isn't native yet.
 | Account details: email, phone, Steam Guard and authenticator with dates, password and email change dates, store country, wallet, VAC | Done, native (Credentials service) |
 | Purchase history with "load more", refunds marked | Done, native (read from Steam's history page, like Steam's client) |
 | Licenses and product key activations, searchable | Done, native |
-| Steam Families: members, roles, cooldowns, invites, shared library with owners | Done, native (FamilyGroups service). Inviting, removing and limits open Steam's website |
+| Steam Families: members, roles, cooldowns, invites, shared library with owners | Done, native (FamilyGroups service) |
+| Steam Families: invite and cancel, accept (with Steam's phone or email confirmation) and decline, remove a member, leave | Done, native (FamilyGroups service), following the calls Steam's own family page makes. The rules and cooldowns show first, and accepting, removing and leaving need an "I understand" tick. **Not tried on a real account**, because these can lock an account out of a family for a year: requests and replies are unit-tested and the screens were checked on the demo account |
+| Steam Families: creating, renaming or deleting a family, its history, a child's playtime, game, store and community limits | Open Steam's website. Limits aren't part of the FamilyGroups service (they're Steam's separate Parental service) |
 | Changing email, password, phone, Steam Guard | Open Steam's website (they need Steam's own confirmation) |
 
 ## Offline mode and reconnecting
@@ -63,7 +66,9 @@ Steam's website" still works; it just isn't native yet.
 | Search, filters (genre, features, Steam Deck status, installed, played), sort by name, recent, hours, size | Done |
 | Home with recent games and shelves, game page with art, play bar, news and achievements | Done |
 | Collections, including your Steam Favorites and Hidden | Done, in step with Steam both ways. Edits made before Steam answers (or offline) are kept and sent once it does |
-| Dynamic collections (made in Steam from filters) | Shown with their games worked out from Steam's filters, so they stay up to date. Their filters are changed in Steam. Filters on friends who own a game, languages and subscriptions aren't checked, so such a collection can show a few extra games |
+| Dynamic collections | Shown with their games worked out from Steam's filters, including games added or removed by hand. Made from the library's filters (**Create Collection**) or edited here (right-click one, or its filter button), saved in Steam's own format. Only what you change is rewritten, and a save is refused if Steam's copy changed meanwhile. Filters this app can't write back exactly stay as they are: you can rename that collection, and change its filters in Steam |
+| Dynamic collections: how far they're tested | The format is unit-tested byte for byte on saved samples, and on read-only copies of the 23 collections (1 dynamic) cached on the test PC. The editor was tried in the demo account. **Not tried live: saving to a real Steam account, or seeing a collection made here in the official client** |
+| Dynamic collection filters | Checked: play state, features, Steam Deck, Steam Machine and Steam Frame status, genres and store tags, store categories, languages, EA Play, and friends who own a game. Not checked, so a collection can show a few extra games: private games, Steam OS compatibility, friends whose game lists are private, and a game borrowed from the friend you filter on. Steam's fuzzy name search and its search suggestions aren't copied, so a text filter can show fewer games. Library filters Steam has no equivalent for (such as Not installed or Type) are named in the editor and left out |
 | Non-Steam games: the same right-click menu as Steam games, collections, a game page with the play bar, and Steam's shortcut properties (name, target, start in, launch options, icon) | Done. Games added in Steam (`shortcuts.vdf`) show up too |
 | Custom artwork for any game, like Steam's: icon, cover, background (hero), logo with its position, and wide header, picked from files on disk | Done. Steam's own custom art in `config/grid` shows up too |
 | Install states everywhere: list row with progress, game page, right-click menu, Properties | Done |
@@ -102,7 +107,7 @@ All native, no web view.
 | Trailers | Native player (`crates/video`): HLS streaming, full screen, quality and volume. Decoded with Media Foundation on Windows and VideoToolbox/AudioToolbox on a Mac |
 | Prices in your wallet's currency, "In library" marks | Done |
 | Cart (the same cart as the website), Steam's "Added to your cart" popup, discount price tags, product keys, wallet balance | Done. Each copy is for your account or a gift to a friend you pick, then one Checkout button |
-| Points Shop: your points, items by category (avatars, frames, backgrounds, mini-profile backgrounds, stickers, chat effects, emoticons…) and items from your games | Done (browsing). Buying with points opens Steam's website |
+| Points Shop: your points, items by category (avatars, frames, backgrounds, mini-profile backgrounds, stickers, chat effects, emoticons…) and items from your games. Get items with your points in the app: a large preview (items that move play), whether you own it, a confirmation with the item and its cost, Steam's errors in plain words, then an offer to wear it (avatar, frame, background, mini-profile) | Done, with Steam's own `LoyaltyRewards` calls. **Redeeming was not tried live**: no points were spent on a real account, so it's covered by unit tests and the demo account only; reading the real balance and owned items wasn't tried live either. Bundles and seasonal badges still open Steam's website. Videos in H.265 (every startup movie checked and a few backgrounds) can't play in the app: the item's window says so and links to Steam's page |
 | Discovery feed: the queue as a feed, "New picks" for a fresh queue | Done. "New picks" wasn't tested on a real account |
 | Search suggestions while you type (picture, name, price), with the arrow keys and Enter | Done |
 | Wishlist in your order: drag games by the handle or type a place, saved to Steam, when sorted by "Your rank" | Done. Saving wasn't tested on a real wishlist |
@@ -139,12 +144,16 @@ All native, no web view.
 | Edit your profile: General, Avatar (animated avatars and frames), Profile background (full screen or original size), Mini profile, Theme, Featured badge, and Steam's full Privacy page with its checkboxes | Done, with a preview before saving. The Showcase Manager isn't there yet. Saving wasn't tested on a real account |
 | Someone's games, inventory, screenshots, artwork, videos, Workshop items and guides | Done |
 | Community hub per game: screenshots, artwork, videos, news | Done |
+| Watching broadcasts | Native page with the app's own player. Opens from Community → Broadcasts, a game's hub, a "live now" strip on store pages, a friend's "Watch game" and broadcast links. Quality (or automatic), volume, full screen, pause and "Back to live", title, broadcaster, game, viewer count, and the chat beside it (read-only: you can't post). Played with public broadcasts on Windows. Not tried yet: a Mac, and friends-only or private broadcasts. Steam gives one answer for ended, private and friends-only, so the app says it may be any of them |
 | Workshop item pages: media, description, required items, change notes, comments; subscribe, rate, favorite | Done. Rating and favoriting weren't tested on a real account |
 | Guides: list, sorts, search, reader with contents | Done |
-| Discussions: forums, topics, threads with quotes and spoilers; reply to a thread | Done, in the app. Starting a new topic opens Steam's website. Sending a reply wasn't tested on a real account |
+| Discussions: forums, topics, threads with quotes and spoilers; reply to a thread | Done, in the app. Sending a reply wasn't tested on a real account |
+| Start a new discussion in a game hub or group forum: title, text, the forum's formatting buttons, a preview, which section to post in, and Steam's errors shown in the box | Done, in the app. **Not tried live:** nothing was posted on a real account. The request and Steam's answers are tested against saved samples, and the screens on the demo account |
 | Steam Support: your requests and replies | Done. New requests open Steam's help site |
 | Someone's friends (online first, searchable), their latest reviews, their groups, and the badges list | Done, in the app |
-| Group pages: name, headline, member counts, description, announcements, members (friends first), a button to the group's chat | Done, in the app, also for steamcommunity.com/groups links. Joining or leaving opens Steam's website |
+| Group pages: name, headline, member counts, description, announcements, members (friends first), a button to the group's chat, and the group's own discussions | Done, in the app, also for steamcommunity.com/groups links |
+| Join or leave a group from its page: open groups, request-to-join groups and invitation-only groups, with the button showing where you really stand. Leaving asks first | Done, in the app. **Not tried live:** no group was joined or left on a real account, and the test account is in no groups, so reading your real standing from Steam's friends list hasn't been seen working either |
+| Accept or ignore group invites, on the group's page and under Invites in Friends | Done, in the app. **Not tried live:** no real invite was answered. The message is built from a public reference and unit-tested |
 
 ## Inventory and Market
 
@@ -157,6 +166,11 @@ All native, no web view.
 | New trade offers: to a friend or by trade link, items from both inventories with a game picker, search, tag filters, sorting and prices | Done, in the app |
 | Market search: by name and game, most popular first, with each item's price history and order book | Done, in the app |
 | Your Market history: sold, bought, listed and removed, with prices and dates, filters, 50 at a time | Done, in the app (My listings → History) |
+| Buy from the Market: the cheapest listing, with the seller's price, Steam's fee, the game's fee, any tax, the total and your wallet after it, then a confirmation | In the app. **Not tried on a real account**: no real purchase was made. The requests follow Steam's current Market pages and are tested against saved samples. If Steam needs a billing address first, it sends you to its website |
+| Buy orders: price, quantity, the most you can pay, a confirmation; cancel them in your lists | In the app. **Placing one wasn't tried on a real account**. Approval in the Steam Mobile app is handled, also untried |
+| Gems: turn an item into gems (shows what you get, and that the item is destroyed), pack gems into sacks, open sacks | In the app. **Not tried on a real account**: nothing was ground, packed or opened |
+| Booster packs: which you can make, their gem cost and when they're next available, make one, open one and see the cards | In the app. **Not tried on a real account**. A pack that would have to use gems you can't trade opens Steam's page, which asks how you want to pay |
+| Pending gifts: see them, add to your library, keep in your inventory, or decline with a note | In the app. **Not tried on a real gift**. The list is read from Steam's inventory page, and that part of the page couldn't be seen without a real gift, so a gift's name or picture may be missing (its buttons still work from Steam's own ids) |
 
 ## Steam Cloud
 
@@ -188,22 +202,22 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Server browser (`ISteamMatchmakingServers`): internet and LAN lists, ping, players, rules | Done |
 | Screenshots (`ISteamScreenshots`) into the Steam screenshot folder | Done. Not uploaded |
 | Steam Input on Xbox-style pads with the game's bindings | Done on Windows. No gyro, trackpads or binding panel; no controllers in games on a Mac yet |
-| Hosting game servers (`ISteamGameServer`) | Not yet: needs a game-server sign-in to Steam |
+| Hosting game servers (`ISteamGameServer`, `ISteamGameServerStats`), listen and dedicated | Partly. Tested on Spacewar through Valve's `steam_api`: anonymous sign-in, listed in Steam's server browser, answering server queries, Steam checking a player's ticket, reading a player's stats, and two game servers connecting over networking sockets and messages. Not proven: signing in with a real login token, saving stats, a player connecting to a server over networking sockets |
 
 ## Shift+Tab overlay
 
 | | |
 | --- | --- |
 | Opens over the running game with Shift+Tab, only while the game's window is in front | Done |
-| Drawn inside the game, like Steam's, so it works in exclusive full screen and the game keeps focus | Done for D3D11 games SteamInRust starts with its steamclient (32- and 64-bit). D3D9, D3D12, OpenGL and Vulkan games get the window overlay, which shows over windowed and borderless games only |
+| Drawn inside the game, like Steam's, so it works in exclusive full screen and the game keeps focus | Done for D3D11 and D3D12 games SteamInRust starts with its steamclient (32- and 64-bit). D3D12 tested in Knights End (Unreal, 64-bit), Grr Grr Gnomes Demo (Unity 6, 64-bit) and Mechanica (Unity 2019, 32-bit). Vulkan, OpenGL and D3D9 aren't done (no installed game without anti-cheat could test them): those games get the window overlay, which shows over windowed and borderless games only. If drawing keeps failing in a game, the overlay stops drawing there, the game carries on, and the window overlay takes over |
 | On a Mac | A window over the game that also works over full-screen games. Shift+Tab needs the Input Monitoring permission; SteamInRust explains it on first start |
-| While it's open the game gets no mouse, keyboard or controller input (window messages on any of its windows, raw input, XInput) and can't hide or lock the cursor; it gets `GameOverlayActivated_t` | Done. DirectInput and Windows.Gaming.Input controllers still reach the game |
+| While it's open the game gets no mouse, keyboard or controller input (window messages on any of its windows, including the pointer input Unity 6 uses, raw input, XInput) and can't hide or lock the cursor; it gets `GameOverlayActivated_t` | Done. DirectInput and Windows.Gaming.Input controllers still reach the game |
 | Open and close with a controller: the Guide (Xbox) button, like Steam; B also closes it | Done for XInput controllers. Windows' Game Bar may open on the Guide button too unless it's turned off for controllers |
 | Game overview, achievements, friends, chat, notes, guides, discussions, hub, store page | Done, in floating windows |
 | Pin windows over the game with adjustable opacity | Done |
 | Games with anti-cheat | They start through the official client, so they get Steam's own overlay |
 | Game invites in chat show as cards with a Join button (Steam's `[gameinvite]` markup). Friend menus offer "Invite to lobby" or "Invite to game" from what the game reports, else "Invite to play", all sent as real Steam invites | Done |
-| Screenshots with F12 into Steam's screenshot folder, with a "Screenshot saved" notice; FPS counter in a corner you pick (Settings → In game) | Done for games the overlay is drawn inside (D3D11). The frame is copied before the overlay is drawn on it; games that take their own screenshots get Steam's request instead. Not tested in a real game yet |
+| Screenshots with F12 into Steam's screenshot folder, with a "Screenshot saved" notice; FPS counter in a corner you pick (Settings → In game) | Done for games the overlay is drawn inside (D3D11 and D3D12). The frame is copied before the overlay is drawn on it; games that take their own screenshots get Steam's request instead. Tested on D3D11 in Mechanica and Grr Grr Gnomes Demo, and on D3D12 in those two and Knights End |
 | In-game web browser | Not yet |
 
 ## Notifications and tray
@@ -221,7 +235,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Settings: account, friends, security, notifications, interface, appearance, store, library, downloads, storage, cloud, in game, accessibility, plugins | Done |
 | Themes: full skins with their own colors, fonts, images, icons, control styles and layout. Built in: **SteamInRust** (the default, after [Juxtopposed's Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign)) and **Classic** (the look before it). Your own themes load from a folder ([docs/themes.md](themes.md)) | Done. People upgrading are asked once whether to try the new look. There's no theme store yet |
 | Accent color, UI scale | Done |
-| English, Russian, Simplified Chinese, Spanish, Brazilian Portuguese, German and French, picked from the system language | Done. Japanese, Korean, Traditional Chinese, Polish, Turkish and others aren't translated yet |
+| English, Russian, Simplified Chinese, Spanish, Brazilian Portuguese, German and French, picked from the system language | Done |
 | Installer, uninstaller, background updates checked with SHA-256 | Done. One download at a time; it continues after a restart or a dropped connection, and old installers are deleted. On a Mac: a disk image, and the app replaces itself on update |
 | Copy, cut and paste in every text field, with a right-click menu | Done |
 | Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done: pages with inputs, switches, tables and images; buttons on game pages; items in friends' menus; timers; web requests to the hosts a plugin lists (https, with your approval); launching games; downloads and wishlist; clipboard; trade offers, inventories and market prices (plugins can decline or cancel offers, and open a trade or an offer's review, but only you can accept or send) |
@@ -238,5 +252,5 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Game page: Play, Install, Update, Pause and Resume, play time, size, achievements | Done |
 | Store: front page, sections, search with an on-screen keyboard (English and Russian), store pages with screenshots you can flip with the mouse wheel, wishlist | Done. Buying moves to the normal window, because Steam only takes payment on its website |
 | Downloads: progress, pause, resume, cancel, queue | Done |
-| Friends | Done: a page per friend (join their game, invite to yours, profile) and a full-screen chat that scrolls, with the on-screen keyboard sliding up when you type, or a real keyboard (Backspace only deletes) |
-| Settings | Interface size, start in Big Picture, language. Everything else moves to the normal window |
+| Friends and chat | Done: a page per friend (join their game, invite to yours, profile), group chats with their rooms, and a full-screen chat for a controller, keyboard or mouse. Pick a message to reply with a quote, react, copy it, show a spoiler, open a picture large, open a link, join a game or report it. Emoticons, stickers, chat effects, link cards and slash commands work, and you can send a screenshot or your trade link. Store, Workshop, community and profile links open inside Big Picture (their pages are read with up and down; their buttons need a mouse). Trade offers, voice rooms, inviting people and managing a group stay in the normal window |
+| Settings | Done for what you'd change from the couch: interface size, start in Big Picture, language; downloads (auto-updates, region, speed limit, schedule, connections); library (what it opens on, Steam Cloud); notifications; controller (swap A and B, repeat speed, stick sensitivity); in-game overlay and FPS counter; theme; status, account picker, close to tray and sign out. The rest stays in the normal window because it needs typing, a file dialog or a browser: profile and privacy, security, family, wallet and purchases, Store content filters, library folders, custom colors, plugins. SteamInRust has no sounds, so there's no audio setting |
