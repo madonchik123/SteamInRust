@@ -1270,6 +1270,32 @@ async fn online(
                 }),
                 Some(Command::WishlistRemove { app_id }) => st.wishlist_change(app_id, false, sink),
                 Some(Command::WishlistMove { app_id, to }) => st.wishlist_move(app_id, to, sink),
+                Some(Command::LoadPoints) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        sink(Event::PointsBalance(crate::points::balance(&conn, me).await));
+                        sink(Event::RewardEligible(crate::points::eligible(&conn).await));
+                    });
+                }
+                Some(Command::LoadRewardInventory { apps }) => {
+                    let (conn, sink) = (st.conn.clone(), sink.clone());
+                    tokio::spawn(async move {
+                        let result = crate::points::inventory(&conn, &apps).await;
+                        sink(Event::RewardInventory { apps, result });
+                    });
+                }
+                Some(Command::RedeemPoints { defid, app_id, cost }) => {
+                    let (conn, sink, me) = (st.conn.clone(), sink.clone(), st.me);
+                    tokio::spawn(async move {
+                        let result = crate::points::redeem(&conn, defid, cost).await;
+                        sink(Event::PointsRedeemed { defid, result });
+                        // Steam's numbers afterwards, whatever happened.
+                        sink(Event::PointsBalance(crate::points::balance(&conn, me).await));
+                        let apps = vec![app_id];
+                        let result = crate::points::inventory(&conn, &apps).await;
+                        sink(Event::RewardInventory { apps, result });
+                    });
+                }
                 Some(Command::LoadCart) => st.load_cart(sink),
                 Some(Command::CartAdd { package_id, gift, gift_to }) => st.cart_add(package_id, gift, gift_to, sink),
                 Some(Command::CartModify { line_item_id, gift, gift_to }) => st.cart_modify(line_item_id, gift, gift_to, sink),

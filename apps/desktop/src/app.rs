@@ -952,8 +952,8 @@ impl SteamApp {
     }
 }
 
-/// `--keys=Down;Down;Enter;text:hello;wheel:960:540:-300;wait` (with
-/// `--offscreen`): replays keys, typing and mouse-wheel turns into a preview
+/// `--keys=Down;Down;Enter;text:hello;wheel:960:540:-300;click:640:300;wait` (with
+/// `--offscreen`): replays keys, typing, wheel turns and clicks into a preview
 /// copy, one every 0.4 s from 4 s in (`--keys-after=<seconds>`), so screens
 /// that need the keyboard or a controller can be checked off-screen. Keys
 /// use egui's names (Down, Enter, Escape, Backspace, Q…).
@@ -977,6 +977,15 @@ fn preview_keys(ctx: &egui::Context, raw_input: &mut egui::RawInput, time: f64) 
         if let [x, y, dy] = n[..] {
             raw_input.events.push(egui::Event::PointerMoved(egui::pos2(x, y)));
             raw_input.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, dy), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers });
+        }
+    } else if let Some(c) = step.strip_prefix("click:") {
+        let n: Vec<f32> = c.split(':').filter_map(|v| v.parse().ok()).collect();
+        if let [x, y] = n[..] {
+            let pos = egui::pos2(x, y);
+            raw_input.events.push(egui::Event::PointerMoved(pos));
+            for pressed in [true, false] {
+                raw_input.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers });
+            }
         }
     } else if let Some(key) = egui::Key::from_name(step) {
         for pressed in [true, false] {
