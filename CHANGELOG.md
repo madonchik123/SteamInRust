@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.15.0](https://github.com/madonchik123/SteamInRust/compare/v0.14.0...v0.15.0) (2026-11-21)
+
+
+### New
+
+* Big Picture chat with message actions, pictures, link cards and group chats ([98c0c70](https://github.com/madonchik123/SteamInRust/commit/98c0c709d16f318875b5da46137df4097cac50f3))
+* Big Picture settings for the TV ([98c0c70](https://github.com/madonchik123/SteamInRust/commit/98c0c709d16f318875b5da46137df4097cac50f3))
+* bundle, package and curator pages in the store ([d7bcba4](https://github.com/madonchik123/SteamInRust/commit/d7bcba43bbed4569c70deeb2fc9d446d263c8ae4))
+* buy on the Market, buy orders, gems, booster packs and pending gifts ([98c0c70](https://github.com/madonchik123/SteamInRust/commit/98c0c709d16f318875b5da46137df4097cac50f3))
+* create and edit dynamic collections in Steam's format ([98c0c70](https://github.com/madonchik123/SteamInRust/commit/98c0c709d16f318875b5da46137df4097cac50f3))
+* draw the overlay inside D3D12 games ([98c0c70](https://github.com/madonchik123/SteamInRust/commit/98c0c709d16f318875b5da46137df4097cac50f3))
+* host game servers through our steamclient ([98c0c70](https://github.com/madonchik123/SteamInRust/commit/98c0c709d16f318875b5da46137df4097cac50f3))
+* manage your Steam Family in the app ([98c0c70](https://github.com/madonchik123/SteamInRust/commit/98c0c709d16f318875b5da46137df4097cac50f3))
+* move a game to another library folder ([d7bcba4](https://github.com/madonchik123/SteamInRust/commit/d7bcba43bbed4569c70deeb2fc9d446d263c8ae4))
+* redeem Points Shop items inside the app ([98c0c70](https://github.com/madonchik123/SteamInRust/commit/98c0c709d16f318875b5da46137df4097cac50f3))
+* screenshot manager like Steam's ([d7bcba4](https://github.com/madonchik123/SteamInRust/commit/d7bcba43bbed4569c70deeb2fc9d446d263c8ae4))
+* start discussions, join and leave groups, answer group invites ([98c0c70](https://github.com/madonchik123/SteamInRust/commit/98c0c709d16f318875b5da46137df4097cac50f3))
+* Steam voice chat - calls, voice channels, mute, volumes, push-to-talk ([d7bcba4](https://github.com/madonchik123/SteamInRust/commit/d7bcba43bbed4569c70deeb2fc9d446d263c8ae4))
+* watch Steam broadcasts in the app ([98c0c70](https://github.com/madonchik123/SteamInRust/commit/98c0c709d16f318875b5da46137df4097cac50f3))
+
 ## [0.14.0](https://github.com/madonchik123/SteamInRust/compare/v0.13.0...v0.14.0) (2026-11-20)
 
 
