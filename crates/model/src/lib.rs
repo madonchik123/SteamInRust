@@ -2356,6 +2356,19 @@ pub mod chat {
         format!("[quote={}]{}[/quote]\n", author.replace([']', '['], ""), escape(text))
     }
 
+    /// A `[quote…]…[/quote]` at the start of what's typed (from "Quote"),
+    /// and the rest. The quote is markup; the rest is text to escape.
+    pub fn split_quote(input: &str) -> (&str, &str) {
+        if !input.starts_with("[quote") {
+            return ("", input);
+        }
+        let Some(open) = input.find(']') else { return ("", input) };
+        match closing(&input[open + 1..], "quote") {
+            Some((_, end)) => input.split_at(open + 1 + end),
+            None => ("", input),
+        }
+    }
+
     /// The slash commands the chat offers, Steam's first; `store` is
     /// SteamInRust's own (it sends a Store link).
     pub const COMMANDS: [&str; 8] = ["me", "code", "pre", "quote", "spoiler", "random", "flip", "store"];
@@ -2419,6 +2432,13 @@ pub mod chat {
             assert_eq!(store_command("/store portal 2"), Some("portal 2"));
             assert_eq!(store_command("/storefront"), None);
             assert_eq!(rich(&quote("Ferris", "a [b]")), vec![Part::Quote { author: "Ferris".into(), parts: vec![Part::Text("a [b]".into())] }, Part::Text("\n".into())]);
+            // A quote stays a quote when sent; what's typed after it is escaped.
+            let typed = format!("{}my [reply]", quote("Ferris", "a [b]"));
+            let (q, rest) = split_quote(&typed);
+            assert_eq!(rich(&format!("{q}{}", compose(rest, owned))).first(), Some(&Part::Quote { author: "Ferris".into(), parts: vec![Part::Text("a [b]".into())] }));
+            assert_eq!(rest, "\nmy [reply]");
+            assert_eq!(split_quote("no quote"), ("", "no quote"));
+            assert_eq!(split_quote("[quote=x]never closed"), ("", "[quote=x]never closed"));
         }
 
         #[test]

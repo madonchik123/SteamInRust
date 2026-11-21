@@ -283,9 +283,15 @@ pub async fn upload_image(web: &Web, to: ChatTarget, bytes: Vec<u8>, file_name: 
 /// Your newest screenshot (Steam keeps them in
 /// `userdata/<account>/760/remote/<game>/screenshots`).
 pub fn newest_screenshot(steam_root: &std::path::Path, me: SteamId) -> Option<std::path::PathBuf> {
+    recent_screenshots(steam_root, me, 1).into_iter().next()
+}
+
+/// Your latest Steam screenshots, newest first, at most `n`.
+pub fn recent_screenshots(steam_root: &std::path::Path, me: SteamId, n: usize) -> Vec<std::path::PathBuf> {
     let base = steam_root.join("userdata").join((me & 0xFFFF_FFFF).to_string()).join("760").join("remote");
-    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
-    for game in std::fs::read_dir(base).ok()?.flatten() {
+    let mut all: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    let Ok(games) = std::fs::read_dir(base) else { return Vec::new() };
+    for game in games.flatten() {
         let Ok(files) = std::fs::read_dir(game.path().join("screenshots")) else { continue };
         for f in files.flatten() {
             let p = f.path();
@@ -293,12 +299,11 @@ pub fn newest_screenshot(steam_root: &std::path::Path, me: SteamId) -> Option<st
                 continue;
             }
             let Ok(t) = f.metadata().and_then(|m| m.modified()) else { continue };
-            if best.as_ref().is_none_or(|(bt, _)| t > *bt) {
-                best = Some((t, p));
-            }
+            all.push((t, p));
         }
     }
-    best.map(|(_, p)| p)
+    all.sort_by(|a, b| b.0.cmp(&a.0));
+    all.into_iter().take(n).map(|(_, p)| p).collect()
 }
 
 #[cfg(test)]

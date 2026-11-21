@@ -7,6 +7,7 @@
 //! LB/RB (Q/E, PageUp/PageDown, Tab) switch tabs, Start (M/F1) opens the
 //! menu, Guide opens the menu and, pressed again there, leaves Big Picture.
 
+mod chat;
 mod focus;
 mod input;
 mod menu;
@@ -63,8 +64,10 @@ pub enum Page {
     Settings,
     /// A friend: message, join, invite, profile.
     Friend(SteamId),
-    /// A conversation with a friend.
-    Chat(SteamId),
+    /// A conversation with a friend, or a room of a group chat.
+    Chat(client::ChatTarget),
+    /// A Workshop, community or profile page from the normal window.
+    Embedded(String, Option<String>),
     /// A store trailer, playing over the page.
     Video(AppId, usize),
     /// Before installing: size, where, shortcut.
@@ -122,10 +125,12 @@ pub struct BigPicture {
     submitted: String,
     cyrillic: bool,
     /// Chat: the message being typed, Enter pressed on a real keyboard, and
-    /// conversations whose history was asked for.
+    /// everything else about it.
     message: String,
     send_now: bool,
-    chats_loaded: HashSet<SteamId>,
+    chat: chat::ChatState,
+    /// Up/down on a page from the normal window: wheel turns to feed it.
+    wheel: f32,
     /// Background art: games and when each started fading in.
     bg: Vec<(AppId, f64)>,
     /// The game whose art the background should show this frame.
@@ -140,14 +145,6 @@ pub struct BigPicture {
     key_pop: Option<(Id, f64)>,
     /// Mouse wheel turned in the screenshot viewer, not yet a flip.
     shot_wheel: f32,
-    /// Chat: whose conversation is open, whether it sticks to the newest
-    /// message, a pending up/down scroll, whether the keyboard is up, and
-    /// whether the history is at its (top, bottom).
-    chat_for: Option<SteamId>,
-    chat_follow: bool,
-    chat_nudge: f32,
-    chat_keys: bool,
-    chat_edges: (bool, bool),
 }
 
 impl BigPicture {
@@ -178,7 +175,20 @@ impl BigPicture {
                 }
                 "chat" => {
                     bp.tab = Tab::Friends;
-                    bp.stack.extend([Page::Friend(wide), Page::Chat(wide)]);
+                    bp.stack.extend([Page::Friend(wide), Page::Chat(client::ChatTarget::Friend(wide))]);
+                }
+                // `embed:<page>` or `embed:<page>/<argument>`: a normal-window page.
+                "embed" => {
+                    let target = arg.split_once(':').map(|x| x.1).unwrap_or("");
+                    let (page, page_arg) = target.split_once('/').map_or((target, None), |(p, a)| (p, Some(a.to_string())));
+                    bp.tab = Tab::Friends;
+                    bp.stack.push(Page::Embedded(page.to_string(), page_arg));
+                }
+                // `group:<group id>/<room id>` (the demo's is 4200001/1).
+                "group" => {
+                    let (g, r) = arg.split_once(':').map(|x| x.1).unwrap_or("").split_once('/').unwrap_or(("0", "0"));
+                    bp.tab = Tab::Friends;
+                    bp.stack.push(Page::Chat(client::ChatTarget::Group { group: g.parse().unwrap_or(0), room: r.parse().unwrap_or(0) }));
                 }
                 "game" => bp.stack.push(Page::Game(id)),
                 "install" => bp.stack.push(Page::Install(id)),
@@ -202,9 +212,23 @@ impl BigPicture {
         self.focus.reset_ring();
     }
 
+    /// Up/down on a page from the normal window arrive as wheel turns over
+    /// it, the one thing all its scrolling areas understand.
+    pub fn feed_wheel(&mut self, raw: &mut egui::RawInput) {
+        if self.wheel == 0.0 {
+            return;
+        }
+        let delta = std::mem::take(&mut self.wheel);
+        if let Some(r) = raw.screen_rect {
+            raw.events.push(egui::Event::PointerMoved(r.center()));
+        }
+        raw.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, delta), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers: egui::Modifiers::NONE });
+    }
+
     pub fn leave(&mut self, ctx: &egui::Context) {
         self.active = false;
         self.menu = None;
+        self.chat.sheet = None;
         if !self.windowed {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
@@ -365,12 +389,23 @@ impl BigPicture {
         // ---- input ----
         let page = self.page();
         let chat = matches!(page, Page::Chat(_));
-        let typing = (page == Page::Search || chat) && self.menu.is_none();
+        let sheet_open = self.chat.sheet.is_some();
+        let typing = (page == Page::Search || chat) && self.menu.is_none() && !sheet_open;
         let mut submit = false;
+        // A page from the normal window with a text box in use: the keys are
+        // that box's, except Esc, which leaves it.
+        let page_typing = matches!(page, Page::Embedded(..)) && ctx.egui_wants_keyboard_input();
+        // Tab finishes a slash command while its list is up.
+        if typing && chat && self.chat.slash_open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
+            self.chat.complete = true;
+        }
         // Backspace only ever deletes (held down too, and on an empty box);
         // outside a text box it does nothing. Back is Esc / B.
         let backspaces: Vec<bool> = ctx.input_mut(|i| {
             let mut out = Vec::new();
+            if page_typing {
+                return out;
+            }
             i.events.retain(|e| match e {
                 egui::Event::Key { key: egui::Key::Backspace, pressed, modifiers, .. } => {
                     if *pressed {
@@ -389,6 +424,11 @@ impl BigPicture {
                 field.push_str(&text);
                 self.query_changed = now;
                 self.device = Device::Keyboard;
+                // Typing with a message picked: on to the message box, so
+                // Enter sends what was typed.
+                if chat && self.focus.current == Some(chat::history_id()) {
+                    self.focus.current = Some(chat::input_id());
+                }
             }
             for word in &backspaces {
                 input::backspace(field, *word);
@@ -398,7 +438,18 @@ impl BigPicture {
                 self.device = Device::Keyboard;
             }
         }
-        let keys = input::keyboard(&ctx, typing);
+        let keys = if page_typing {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+            }
+            Vec::new()
+        } else {
+            input::keyboard(&ctx, typing)
+        };
         if !keys.is_empty() {
             self.device = Device::Keyboard;
         } else if !self.queued.is_empty() {
@@ -419,17 +470,21 @@ impl BigPicture {
                 ctx.request_repaint();
                 return;
             }
+        } else if let Some(sheet) = &mut self.chat.sheet {
+            if sheet.input(&presses) {
+                self.chat.sheet = None;
+            }
         } else {
             for (p, from_keys) in presses {
                 match p {
                     Press::Move(d) => dir = Some(d),
                     // Typing on a real keyboard: Enter searches what was typed
                     // (and then selects, like everywhere else).
-                    Press::A if typing && from_keys && chat && !self.message.trim().is_empty() => self.send_now = true,
+                    Press::A if typing && from_keys && chat && !self.message.trim().is_empty() && self.chat.enter_sends(self.focus.current) => self.send_now = true,
                     Press::A if typing && from_keys && !chat && self.query.trim() != self.submitted => submit = true,
                     Press::A => press = true,
                     // Chat with the keyboard up: B puts it away first.
-                    Press::B if chat && self.chat_keys => self.focus.current = Some(screens::chat_history_id()),
+                    Press::B if chat && self.chat.keys_up => self.focus.current = Some(chat::history_id()),
                     Press::B => self.back(now),
                     Press::X => x = true,
                     Press::Y => y = true,
@@ -462,14 +517,16 @@ impl BigPicture {
             dir = None;
             press = false;
         }
-        // Chat: up/down on the history scroll it; past its ends they move on.
+        // Chat: up/down on the history pick a message.
         if let (Page::Chat(_), Some(d @ (Dir::Up | Dir::Down))) = (self.page(), dir) {
-            let (at_top, at_bottom) = self.chat_edges;
-            let leave = (d == Dir::Up && at_top) || (d == Dir::Down && at_bottom);
-            if self.focus.current == Some(screens::chat_history_id()) && !leave {
-                self.chat_nudge += if d == Dir::Up { -1.0 } else { 1.0 };
+            if self.chat.on_move(&mut self.focus.current, d) {
                 dir = None;
             }
+        }
+        // A page from the normal window: up/down scroll it.
+        if let (Page::Embedded(..), Some(d @ (Dir::Up | Dir::Down))) = (self.page(), dir) {
+            self.wheel += if d == Dir::Up { 220.0 } else { -220.0 } * s;
+            dir = None;
         }
         // The screenshot viewer pages with left/right.
         if let (Page::Shots(app_id, i), Some(d @ (Dir::Left | Dir::Right))) = (self.page(), dir) {
@@ -481,7 +538,7 @@ impl BigPicture {
             }
             dir = None;
         }
-        let menu_open = self.menu.is_some();
+        let menu_open = self.menu.is_some() || self.chat.sheet.is_some();
         let before = self.focus.current;
         self.focus.begin(ui, if menu_open { None } else { dir }, press && !menu_open);
         // Up from a page into the tab bar lands on this page's tab (the
@@ -541,6 +598,9 @@ impl BigPicture {
         // The library may need to ask something (a Steam Cloud conflict).
         screens::with_library(f.app, f.actions, |lib, cx| lib.background_dialogs(ui, cx));
 
+        if self.chat.sheet.is_some() {
+            chat::show_sheet(self, ui, &mut f, screen);
+        }
         if self.menu.is_some() {
             menu::show(self, ui, &mut f, screen);
         }

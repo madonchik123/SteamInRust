@@ -138,6 +138,19 @@ impl Focus {
     }
 
     /// Ring around a different shape than the item (a grown tile, a pill).
+    /// Register an area that takes focus from the D-pad but not the mouse
+    /// (what's inside it handles the mouse itself).
+    pub fn quiet_item(&mut self, ui: &Ui, id: Id, rect: Rect, place: Place) -> Hit {
+        self.items.push(Item { id, rect, place });
+        let focused = self.current == Some(id);
+        let activated = focused && std::mem::take(&mut self.press);
+        let glow = ui.ctx().animate_bool_with_time(id.with("bp-focus"), focused, 0.18);
+        if focused {
+            self.ring_target = Some((rect, 0.0));
+        }
+        Hit { focused, activated, glow }
+    }
+
     /// Hide the ring this frame.
     pub fn hide_ring(&mut self) {
         self.no_ring = true;

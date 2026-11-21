@@ -1043,23 +1043,13 @@ impl SteamApp {
     }
 }
 
-impl eframe::App for SteamApp {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // Transparent so the overlay window can see through; the main window
-        // paints its own background.
-        [0.0, 0.0, 0.0, 0.0]
-    }
-
-    /// Previews of an `--offscreen` copy can't be pointed at with the real
-    /// mouse: `--pointer=x,y` keeps a pretend pointer there (hover states),
-    /// and `--click=x,y` clicks there once, 4 seconds in (or
-    /// `--click-after=<seconds>`; `--type=<text>` then types into what it
-    /// focused, `--type-submit` adds Ctrl+Enter).
-    /// `--drag=x1,y1,x2,y2` drags.
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        if !offscreen() || raw_input.viewport_id != egui::ViewportId::ROOT {
+impl SteamApp {
+    /// The preview helpers of an `--offscreen` copy (see `raw_input_hook`).
+    fn preview_input(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if !offscreen() {
             return;
         }
+
         let at = |name: &str| -> Option<egui::Pos2> {
             let v = std::env::args().find_map(|a| a.strip_prefix(&format!("--{name}=")).map(String::from))?;
             let (x, y) = v.split_once(',')?;
@@ -1134,6 +1124,35 @@ impl eframe::App for SteamApp {
         }
         preview_keys(ctx, raw_input, time);
         soak_scroll(raw_input, time);
+    }
+}
+
+/// The demo's way to answer the chat (nothing leaves this computer).
+impl SteamApp {
+    pub(crate) fn demo_sender(&self) -> Option<&mpsc::Sender<Event>> {
+        self.demo_events.as_ref()
+    }
+}
+
+impl eframe::App for SteamApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Transparent so the overlay window can see through; the main window
+        // paints its own background.
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
+    /// Previews of an `--offscreen` copy can't be pointed at with the real
+    /// mouse: `--pointer=x,y` keeps a pretend pointer there (hover states),
+    /// and `--click=x,y` clicks there once, 4 seconds in (or
+    /// `--click-after=<seconds>`; `--type=<text>` then types into what it
+    /// focused, `--type-submit` adds Ctrl+Enter).
+    /// `--drag=x1,y1,x2,y2` drags.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if raw_input.viewport_id != egui::ViewportId::ROOT {
+            return;
+        }
+        self.preview_input(ctx, raw_input);
+        self.bigpicture.feed_wheel(raw_input);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
