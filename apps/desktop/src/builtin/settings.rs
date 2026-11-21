@@ -143,6 +143,7 @@ impl Extension for Settings {
             Some("ingame") => self.section = Section::Overlay,
             Some("wallet") => self.section = Section::Wallet,
             Some("notifications") => self.section = Section::Notifications,
+            Some("voice") => self.section = Section::Friends,
             Some(a @ ("history" | "licenses" | "account-details")) => {
                 self.section = if a == "account-details" { Section::Account } else { Section::Wallet };
                 self.acct.open(match a {
@@ -826,6 +827,7 @@ fn friends_chat(ui: &mut Ui, t: &Theme, ctx: &mut Ctx) {
             ctx.navigate("settings", Some("privacy".into()));
         }
     });
+    super::friends::voice_settings(ui, t, ctx);
 }
 
 fn wallet(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, pages: &mut super::settings_account::AccountPages) {

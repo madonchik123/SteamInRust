@@ -21,7 +21,10 @@ use ui::{Theme, icons, widgets as w};
 mod groups;
 #[path = "group_settings.rs"]
 mod admin;
+#[path = "friends_voice.rs"]
+mod voice;
 pub(crate) use groups::{group_name, paint_group_avatar};
+pub(crate) use voice::{dock_height, settings as voice_settings};
 
 #[derive(Default)]
 pub struct Friends {
@@ -235,6 +238,7 @@ impl Friends {
                     if w::icon_button(ui, t, icons::USER_CIRCLE, t!("View profile"), false, 0).clicked() {
                         ctx.navigate("profile", Some(id.to_string()));
                     }
+                    self.call_button(ui, t, ctx, id);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         let size = t.dense(46.0);
                         let av = w::presence_avatar(ui, t, &art::avatar(p.avatar_hash.as_deref()), size, Some(color));

@@ -30,7 +30,7 @@ const FILES: &[&str] = &[
 
 /// Web UI services (cart, wishlist, store query). Separate module because
 /// they redefine some client types.
-const WEBUI: &[&str] = &["service_accountcart.proto", "service_wishlist.proto", "service_storequery.proto", "service_steamnotification.proto", "service_cloudconfigstore.proto", "service_familygroups.proto", "service_useraccount_invites.proto", "service_userreviews.proto"];
+const WEBUI: &[&str] = &["service_accountcart.proto", "service_wishlist.proto", "service_storequery.proto", "service_steamnotification.proto", "service_cloudconfigstore.proto", "service_familygroups.proto", "service_useraccount_invites.proto", "service_userreviews.proto", "service_voicechat.proto", "service_webrtc.proto"];
 
 fn main() {
     println!("cargo:rerun-if-changed=protos");

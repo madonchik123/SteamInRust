@@ -463,6 +463,22 @@ pub fn cloud_conflict(app_id: model::AppId) -> Event {
     Event::CloudReport { report, held_launch: Some(client::LaunchArgs::default()) }
 }
 
+/// `--voice=call|room|ring` (with `--demo`): open on a made-up call, for
+/// previews. The call is acted out: no network and no audio.
+pub fn voice_preview(client: &client::Client) -> Vec<Event> {
+    use model::voice::{VoiceEvent, VoiceOp, VoiceState};
+    const BASE: u64 = 76561197960265728;
+    let (me, ferris) = (BASE + 1, BASE + 100);
+    client::voice::demo_people(me, vec![ferris, ferris + 1, ferris + 2]);
+    match std::env::args().find_map(|a| a.strip_prefix("--voice=").map(String::from)).as_deref() {
+        Some("call") => client.send(client::Command::Voice(VoiceOp::CallFriend(ferris))),
+        Some("room") => client.send(client::Command::Voice(VoiceOp::JoinRoom { group: 4_200_002, room: 24 })),
+        Some("ring") => return vec![Event::Voice(VoiceEvent::State(VoiceState { call: None, incoming: vec![ferris] }))],
+        _ => {}
+    }
+    Vec::new()
+}
+
 /// A made-up group chat you own, with channels (one voice), roles, invite
 /// links, an invited account and a ban, for the group settings dialogs.
 /// Co-op Night (Ferris's) shows what a member without rights sees.
@@ -476,7 +492,7 @@ fn owned_group_chat(me: u64, ferris: u64, now: u64) -> Vec<Event> {
         ChatRoom { id: 21, name: "Home".into(), sort: 0, ..Default::default() },
         ChatRoom { id: 22, name: "links".into(), sort: 1, ..Default::default() },
         ChatRoom { id: 23, name: "games (free or on sale)".into(), sort: 2, ..Default::default() },
-        ChatRoom { id: 24, name: "Lounge".into(), voice: true, sort: 3, ..Default::default() },
+        ChatRoom { id: 24, name: "Lounge".into(), voice: true, sort: 3, in_voice: vec![nova, pixel], ..Default::default() },
     ];
     let hello = GroupMessage { group, room: 21, sender: nova, text: "welcome everyone :)".into(), time: (now - 7200) as u32, ordinal: 0, reactions: Vec::new() };
     let everyone = RolePerms { chat: true, mention_all: true, broadcasts: true, invite: true, change_details: true, channels: true, view_history: true, ..Default::default() };

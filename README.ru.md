@@ -244,7 +244,8 @@ API. Сеть включается для каждого плагина отде
 
 ## Сборка из исходников
 
-Нужен [Rust](https://rustup.rs). На Windows ещё MinGW-w64: там проект использует
+Нужны [Rust](https://rustup.rs) и [CMake](https://cmake.org) (им собирается голосовой
+кодек Opus). На Windows ещё MinGW-w64: там проект использует
 GNU-тулчейн (см. `rust-toolchain.toml`). На macOS установите инструменты
 командной строки Xcode (`xcode-select --install`) и один раз попросите rustup
 использовать в папке проекта тулчейн самого Mac:

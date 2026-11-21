@@ -257,6 +257,8 @@ fn info_plist(version: &str) -> String {
 	<string>public.app-category.games</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SteamInRust uses your microphone for Steam voice chat.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License. Not affiliated with Valve.</string>
 	<key>CFBundleURLTypes</key>

@@ -1,6 +1,6 @@
 //! Steam group chats in the Friends & Chat window: a group's text channels,
 //! its messages (paging back), sending, members, unread marks and game
-//! invites, like Steam's Friends & Chat. (No voice.)
+//! invites and voice channels, like Steam's Friends & Chat.
 
 use super::{Friends, strong};
 use crate::friends_window::{Conversations, Pane};
@@ -84,6 +84,9 @@ impl Friends {
                         convs.close(Pane::Group(group, room));
                     }
                     self.admin.header_buttons(ui, t, ctx, &g);
+                    if g.rooms.iter().any(|r| r.id == room && r.voice) {
+                        self.room_voice_button(ui, t, ctx, group, room);
+                    }
                     let wide = ui.max_rect().width() > t.dense(700.0);
                     if !wide && w::icon_button(ui, t, icons::USERS, t!("Members"), self.members, 0).clicked() {
                         self.members = !self.members;
@@ -112,10 +115,16 @@ impl Friends {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(t.spacing.xs + 2.0, t.spacing.xs + 2.0);
                     for r in &g.rooms {
-                        let label = format!("{} {}", if r.voice { icons::MICROPHONE } else { "#" }, if r.name.is_empty() { t!("general").to_string() } else { r.name.clone() });
+                        let name = if r.name.is_empty() { t!("general").to_string() } else { r.name.clone() };
+                        let label = match (r.voice, r.in_voice.len()) {
+                            (true, 0) => format!("{} {name}", icons::MICROPHONE),
+                            (true, n) => format!("{} {name} ({n})", icons::MICROPHONE),
+                            _ => format!("# {name}"),
+                        };
                         let mut resp = w::chip(ui, t, &label, r.id == room);
                         if r.voice {
-                            resp = resp.on_hover_text(t!("Voice chat isn't supported in SteamInRust yet"));
+                            let who: Vec<String> = r.in_voice.iter().map(|id| ctx.state.persona(*id).display_name()).filter(|n| !n.is_empty()).collect();
+                            resp = resp.on_hover_text(if who.is_empty() { t!("Voice channel").to_string() } else { t!("In voice: {names}", names = who.join(", ")) });
                         }
                         if r.unread && r.id != room {
                             ui.painter().circle_filled(resp.rect.right_top() + vec2(-4.0, 4.0), 4.0, t.accent);

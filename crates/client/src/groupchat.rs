@@ -33,6 +33,7 @@ fn room(r: &CChatRoomState, read_up_to: u32) -> ChatRoom {
         unread: r.time_last_message() > read_up_to,
         voice: r.voice_allowed(),
         sort: r.sort_order(),
+        in_voice: r.members_in_voice.iter().map(|a| INDIVIDUAL + *a as u64).collect(),
     }
 }
 

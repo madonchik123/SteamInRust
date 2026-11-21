@@ -107,6 +107,11 @@ pub const QUESTION: &str = "\u{E3E8}";
 /// Drawn as two solid bars by [`crate::widgets::paint_icon`].
 pub const PAUSE: &str = "\u{E39E}";
 pub const MICROPHONE: &str = "\u{E326}";
+pub const MICROPHONE_SLASH: &str = "\u{E328}";
+pub const PHONE: &str = "\u{E3B8}";
+pub const PHONE_DISCONNECT: &str = "\u{E3BC}";
+pub const SPEAKER_HIGH: &str = "\u{E44A}";
+pub const SPEAKER_SLASH: &str = "\u{E45A}";
 
 /// Map a short icon name (used in plugin manifests) to a glyph.
 pub fn by_name(name: &str) -> &'static str {

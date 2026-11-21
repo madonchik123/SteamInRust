@@ -62,6 +62,11 @@ pub async fn run(mut cmds: Cmds, sink: Sink) {
                 store::remove(&account);
                 continue;
             }
+            // Signed out (the demo): a call is acted out.
+            Command::Voice(op) => {
+                crate::voice::offline(op, &sink);
+                continue;
+            }
             // Signed out (the demo): group chat changes just happen.
             Command::ChatAdmin { group, op } => {
                 crate::chat_admin::offline(group, op, 0, &sink);
@@ -390,6 +395,8 @@ struct Online {
     cache_saved: std::time::Instant,
     /// Games whose pending Steam Cloud upload is running.
     cloud_flushing: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<AppId>>>,
+    /// Voice chat: calls and channels.
+    voice: crate::voice::Voice,
     /// Library collections as last read from Steam.
     collections: crate::collections::Shared,
 }
@@ -499,6 +506,7 @@ async fn online(
         cache_dirty: false,
         cache_saved: std::time::Instant::now(),
         cloud_flushing: Default::default(),
+        voice: crate::voice::Voice::spawn(sink.clone()),
         collections: Default::default(),
         from_offline: false,
     };
@@ -1394,6 +1402,8 @@ async fn online(
                         tokio::spawn(crate::chat_admin::run(conn, None, me, group, op, sink.clone()));
                     }
                 }
+                Some(Command::VoiceConnectionTest) => st.voice.connection_test(st.conn.clone(), sink.clone()),
+                Some(Command::Voice(op)) => st.voice.op(op),
                 Some(other) => tracing::debug!("ignored while signed in: {other:?}"),
             },
             Some(apps) = apps_rx.recv() => {
@@ -1878,6 +1888,8 @@ impl Online {
                         2 => sink(Event::Typing { from: n.steamid_friend() }),
                         _ => {}
                     }
+                } else if self.voice.route(&name, &p, |from| self.friends.get(&from) == Some(&Relationship::Friend) && !matches!(self.persona_state, PersonaState::Invisible | PersonaState::Busy)) {
+                    // Handed to the voice call.
                 } else {
                     sink(Event::Unhandled { emsg: p.emsg, name });
                 }
@@ -3249,6 +3261,7 @@ impl Online {
             self.save_cache();
         }
         self.conn = Connection::closed();
+        self.voice.disconnected();
         self.generation += 1;
         self.probing = false;
         self.from_offline = false;
@@ -3301,6 +3314,7 @@ impl Online {
     /// What a fresh connection needs: our status, the game we're in, level
     /// and notifications. Steam sends licenses, friends and personas itself.
     fn connected(&self, sink: &Sink) {
+        self.voice.set_connection(self.conn.clone(), self.me);
         let _ = set_persona(&self.conn, self.persona_state);
         if let Some(app) = self.playing {
             let _ = games_played(&self.conn, Some(app));
