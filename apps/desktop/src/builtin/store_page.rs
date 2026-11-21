@@ -25,7 +25,7 @@ pub(super) fn block(t: &Theme) -> Frame {
 
 /// A row inside a block (features, languages, links): the design's
 /// `tag` rows, Bg / Highlight at 39%.
-fn row_fill(t: &Theme) -> Color32 {
+pub(super) fn row_fill(t: &Theme) -> Color32 {
     t.color(&"raised@0.39".into())
 }
 
@@ -93,6 +93,8 @@ impl Store {
                 ui.vertical(|ui| {
                     ui.set_width(right_w);
                     self.relevance(ui, t, ctx, id, &d);
+                    self.curators_for_app(ui, t, id);
+                    self.app_offers(ui, t, id, d.package_id);
                     self.features(ui, t, &d);
                     self.languages_block(ui, t, id, &d);
                     self.point_items(ui, t, id);
@@ -740,7 +742,7 @@ fn buy_row(ui: &mut Ui, t: &Theme, title: &str, note: Option<&str>, platforms: O
 }
 
 /// A full-width row with the design's light fill; the response is the row's.
-fn fill_row(ui: &mut Ui, t: &Theme, add: impl FnOnce(&mut Ui)) -> egui::Response {
+pub(super) fn fill_row(ui: &mut Ui, t: &Theme, add: impl FnOnce(&mut Ui)) -> egui::Response {
     let h = t.dense(34.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);

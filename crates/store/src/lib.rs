@@ -12,6 +12,8 @@ pub mod query;
 pub mod html;
 pub mod reviews;
 pub mod points;
+pub mod offers;
+pub mod curators;
 
 use model::AppId;
 use serde::Deserialize;
@@ -25,6 +27,8 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error("app {0} isn't available in the store")]
     NotFound(AppId),
+    #[error("This item isn't available")]
+    Unavailable,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

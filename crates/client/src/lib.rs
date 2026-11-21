@@ -51,6 +51,7 @@ pub mod store;
 pub mod chat_admin;
 pub mod economy;
 pub mod screenshots;
+pub mod store_user;
 
 pub use auth::Guard;
 pub use launch::{LaunchArgs, LaunchMode, mode as launch_mode, mode_cached as launch_mode_cached, mode_peek as launch_mode_peek, safe_connect_args};
@@ -306,6 +307,12 @@ pub enum Command {
     /// Add a copy to the cart: for this account, or as a gift (optionally
     /// already for a friend).
     CartAdd { package_id: u32, gift: bool, gift_to: Option<SteamId> },
+    /// Add a whole bundle to the cart.
+    CartAddBundle { bundle_id: u32, gift: bool },
+    /// Who you follow among curators, and exactly what you own.
+    LoadStoreUser,
+    /// Follow a curator, or stop following them.
+    FollowCurator { clan: u32, follow: bool },
     /// Switch a cart line between "For my account" and "This is a gift"
     /// (optionally for a friend), like the dropdown in Steam's cart.
     CartModify { line_item_id: u64, gift: bool, gift_to: Option<SteamId> },
@@ -470,6 +477,9 @@ impl std::fmt::Debug for Command {
             Command::CartAdd { package_id, gift, gift_to } => f.debug_struct("CartAdd").field("package_id", package_id).field("gift", gift).field("gift_to", gift_to).finish(),
             Command::CartModify { line_item_id, gift, gift_to } => f.debug_struct("CartModify").field("line_item_id", line_item_id).field("gift", gift).field("gift_to", gift_to).finish(),
             Command::CartRemove { line_item_id } => f.debug_struct("CartRemove").field("line_item_id", line_item_id).finish(),
+            Command::CartAddBundle { bundle_id, gift } => f.debug_struct("CartAddBundle").field("bundle_id", bundle_id).field("gift", gift).finish(),
+            Command::LoadStoreUser => f.write_str("LoadStoreUser"),
+            Command::FollowCurator { clan, follow } => f.debug_struct("FollowCurator").field("clan", clan).field("follow", follow).finish(),
             Command::Hub(hub::Request::Reply { thread_url, .. }) => f.debug_struct("HubReply").field("thread_url", thread_url).finish_non_exhaustive(),
             Command::Hub(hub::Request::NewTopic { key, .. }) => f.debug_struct("HubNewTopic").field("key", key).finish_non_exhaustive(),
             Command::Hub(hub::Request::PostStatus { app_id, .. }) => f.debug_struct("HubPostStatus").field("app_id", app_id).finish_non_exhaustive(),
@@ -684,6 +694,9 @@ pub enum Event {
     PointsRedeemed { defid: u32, result: Result<u64, points::RedeemFail> },
     /// "Not interested" was set (or undone) for a game.
     AppIgnored { app_id: AppId, ignore: bool, result: Result<(), String> },
+    /// Who you follow among curators, and exactly what you own.
+    StoreUser(Result<store_user::StoreUser, String>),
+    CuratorFollowed { clan: u32, follow: bool, result: Result<(), String> },
     Cart(Vec<model::CartLine>),
     /// A store action failed (cart, wishlist).
     StoreError(String),
