@@ -41,9 +41,18 @@ fn main() -> eframe::Result {
     links::install_url_handler();
     // `--separate` runs a second copy (for previews and testing).
     let separate = std::env::args().any(|a| a == "--separate");
-    if !separate && links::forward_to_running(link.as_deref().unwrap_or("show")) {
-        return Ok(());
-    }
+    // Only one copy runs: a later one (a desktop shortcut clicked twice, a
+    // game started while the app is still opening) hands its link over and
+    // exits instead of becoming a second app with a second tray icon. The
+    // lock is held until the app quits.
+    let _instance = if separate {
+        None
+    } else {
+        match links::claim_instance(link.as_deref().unwrap_or("show")) {
+            links::Instance::Primary(lock) => lock,
+            links::Instance::Exit => return Ok(()),
+        }
+    };
     // An update downloaded last time installs now, before the app opens.
     if !separate && updater::apply_pending_on_start() {
         return Ok(());
