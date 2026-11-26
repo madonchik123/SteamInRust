@@ -253,6 +253,68 @@ pub fn forward_to_running(arg: &str) -> bool {
     forward_with(SocketAddr::from(([127, 0, 0, 1], PORT)), &token_path(), arg)
 }
 
+/// What this launch should do: run as the app (holding the lock that says
+/// so), or exit because another copy is running and got the link.
+pub enum Instance {
+    /// No other copy runs. The lock (if it could be made) must be kept
+    /// until the app quits.
+    Primary(Option<std::fs::File>),
+    /// Another copy runs: it got the link, or keeps running without it.
+    Exit,
+}
+
+/// How long a later launch keeps trying to reach a copy that is still
+/// starting (its link listener opens a moment after its process starts).
+const CLAIM_PATIENCE: Duration = Duration::from_secs(20);
+
+/// Hand `arg` to a running copy, or become the one running copy. A copy
+/// that is still starting holds the lock before it can take links, so a
+/// later launch waits for it instead of starting a second app.
+pub fn claim_instance(arg: &str) -> Instance {
+    if forward_to_running(arg) {
+        return Instance::Exit;
+    }
+    let path = client::store::config_dir().join("instance.lock");
+    let started = std::time::Instant::now();
+    loop {
+        match lock_instance(&path) {
+            Ok(file) => return Instance::Primary(Some(file)),
+            // Can't make the lock at all: run as before rather than not at all.
+            Err(LockError::Unavailable) => return Instance::Primary(None),
+            Err(LockError::Held) => {}
+        }
+        if started.elapsed() >= CLAIM_PATIENCE {
+            return Instance::Exit;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        if forward_to_running(arg) {
+            return Instance::Exit;
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum LockError {
+    /// Another copy holds it.
+    Held,
+    /// The lock file couldn't be opened.
+    Unavailable,
+}
+
+/// Take the one-running-copy lock: an exclusive lock on a file in the app's
+/// data folder, released by the system when the process ends (even a crash).
+fn lock_instance(path: &Path) -> Result<std::fs::File, LockError> {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path).map_err(|_| LockError::Unavailable)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(LockError::Held),
+        Err(std::fs::TryLockError::Error(_)) => Err(LockError::Unavailable),
+    }
+}
+
 /// Listen for authenticated links from later launches. Each line received
 /// carries `<token> <link|show>`.
 pub fn listen(ctx: egui::Context) -> mpsc::Receiver<String> {
@@ -645,6 +707,17 @@ pub fn game_icon(app: Option<&model::OwnedApp>, install_dir: &std::path::Path) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_copy_holds_the_instance_lock() {
+        let dir = std::env::temp_dir().join(format!("sir-instance-test-{}", std::process::id()));
+        let path = dir.join("instance.lock");
+        let first = lock_instance(&path).expect("the first copy gets the lock");
+        assert_eq!(lock_instance(&path).err(), Some(LockError::Held));
+        drop(first);
+        assert!(lock_instance(&path).is_ok(), "free again once the first copy is gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parses_links() {
