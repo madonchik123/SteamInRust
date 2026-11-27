@@ -205,16 +205,29 @@ When one arrives you get `app_details_loaded` or `store_search_loaded`.
 |---|---|---|
 | `inventory(app_id, context_id)` | `inventory.read` | Your items there (753/6 is Steam's: cards, backgrounds), or `()` while loading |
 | `market_price(app_id, market_hash_name)` | `inventory.read` | Cheapest listing in cents of your wallet currency, or `()` while it's looked up |
+| `market_prices(app_id, names)` | `inventory.read` | A map of each name to its price in cents, or `()` while it's looked up. Up to 500 names, looked up together |
+| `item_info(app_id, context_id, asset_id)` | `inventory.read` | One of your items, or `()` (while the inventory loads, or if it isn't there) |
+| `tradable_items(app_id, context_id)` | `inventory.read` | Your items there that can be traded now, or `()` while loading |
+| `marketable_items(app_id, context_id)` | `inventory.read` | Your items there that can be sold on the Market, or `()` while loading |
+| `inventory_value(app_id, context_id)` | `inventory.read` | `#{total, priced, unpriced, currency}`: what the marketable items are worth, or `()` while loading. Missing prices are looked up, so call it again later |
 
-Items are maps: `app_id`, `context_id`, `asset_id`, `amount`, `name`, `type`,
-`market_hash_name`, `tradable`, `marketable`, `color`, `icon` (a picture URL),
-`tags` (`[#{category, name}]`) and `price` (cents, or `()` if not known yet).
+Items are maps: `app_id`, `context_id`, `asset_id`, `class_id`, `amount`,
+`name`, `type`, `market_hash_name`, `tradable`, `marketable`, `commodity`,
+`color`, `icon` and `icon_large` (picture URLs), `description` (its text lines),
+`tags` (`[#{category, name}]`), `trade_hold_days`, `market_hold_days` and
+`price` (cents, or `()` if not known yet).
+
+Market prices are the cheapest listing on the Community Market, in cents of
+your wallet currency (`currency()`). Prices already looked up are kept, so
+asking again is cheap. Store prices are separate: see `store_price`.
 
 ### Trades
 
 | Function | Permission | Returns |
 |---|---|---|
 | `trade_offers()` | `trades.read` | Your offers: `id`, `partner`, `partner_name`, `message`, `state`, `ours`, `created`, `expires`, `held_until`, `give`, `get` |
+| `trade_offer_info(id)` | `trades.read` | One offer, as in `trade_offers()`, or `()` |
+| `evaluate_trade(id)` | `trades.read` | What both sides are worth on the Market (below), or `()` if there's no such offer |
 | `refresh_trades()` | `trades.read` | Asks Steam for them again (also done every 2 minutes) |
 | `decline_trade(id)`, `cancel_trade(id)` | `trades.write` | |
 | `review_trade(id)` | `trades.write` | Opens the app's "Accept this trade?" review. Only you can accept |
@@ -224,6 +237,12 @@ Items are maps: `app_id`, `context_id`, `asset_id`, `amount`, `name`, `type`,
 `"cancelled"`, `"declined"`, `"invalid_items"`, `"needs_confirmation"`,
 `"on_hold"` or `"other"`. Plugins can never accept a trade or confirm it with
 Steam Guard.
+
+`evaluate_trade` returns `give` and `get` (cents), `difference` (`get - give`),
+`give_unpriced` and `get_unpriced` (marketable items with no price yet; they're
+looked up, so ask again later), `not_marketable` (items that can't have a
+Market price), `complete` (every marketable item is priced) and `currency`. It
+only informs: what to do with the offer is still up to you.
 
 ### Web requests
 

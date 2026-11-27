@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 
 mod achievements;
 mod downloads;
+mod items;
 mod library;
 mod store;
 pub use achievements::AchievementWatch;
@@ -828,6 +829,25 @@ pub fn trade_state(s: model::TradeState) -> &'static str {
     }
 }
 
+/// A trade offer as plugins see it.
+fn offer_map(s: &Snapshot, o: &model::TradeOffer, name: &str) -> Dynamic {
+    let price = |a: u32, i: &model::InventoryItem| s.prices.get(&(a, i.market_hash_name.clone())).copied();
+    let items = |l: &[model::TradeItem]| Dynamic::from_array(l.iter().map(|x| item_map(x.app_id, &x.item, price(x.app_id, &x.item))).collect());
+    Dynamic::from_map(map([
+        ("id", o.id.to_string().into()),
+        ("partner", o.partner.to_string().into()),
+        ("partner_name", name.to_string().into()),
+        ("message", o.message.clone().into()),
+        ("state", trade_state(o.state).into()),
+        ("ours", o.ours.into()),
+        ("created", (o.created as i64).into()),
+        ("expires", (o.expires as i64).into()),
+        ("held_until", (o.escrow_end as i64).into()),
+        ("give", items(&o.give)),
+        ("get", items(&o.get)),
+    ]))
+}
+
 fn item_map(app_id: u32, i: &model::InventoryItem, price: Option<u64>) -> Dynamic {
     let tags: Array = i.tags.iter().map(|(c, v, _)| Dynamic::from_map(map([("category", c.clone().into()), ("name", v.clone().into())]))).collect();
     let mut m = map([
@@ -843,6 +863,12 @@ fn item_map(app_id: u32, i: &model::InventoryItem, price: Option<u64>) -> Dynami
         ("color", i.name_color.clone().unwrap_or_default().into()),
         ("icon", if i.icon.is_empty() { String::new() } else { model::art::econ(&i.icon, 192) }.into()),
         ("tags", Dynamic::from_array(tags)),
+        ("class_id", i.class_id.to_string().into()),
+        ("icon_large", i.icon_large.as_deref().filter(|s| !s.is_empty()).map(|s| model::art::econ(s, 512)).unwrap_or_default().into()),
+        ("description", Dynamic::from_array(i.description.iter().map(|(text, _)| Dynamic::from(text.clone())).filter(|d| !d.to_string().trim().is_empty()).take(50).collect())),
+        ("trade_hold_days", (i.trade_hold_days as i64).into()),
+        ("market_hold_days", (i.market_hold_days as i64).into()),
+        ("commodity", i.commodity.into()),
     ]);
     m.insert("price".into(), price.map(|p| Dynamic::from(p as i64)).unwrap_or(Dynamic::UNIT));
     Dynamic::from_map(m)
@@ -1099,28 +1125,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     e.register_fn("trade_offers", move || -> Result<Array, Box<EvalAltResult>> {
         let h = h.lock().unwrap();
         h.need(Permission::TradesRead)?;
-        let price = |a: u32, i: &model::InventoryItem| h.snapshot.prices.get(&(a, i.market_hash_name.clone())).copied();
-        Ok(h.snapshot
-            .trades
-            .iter()
-            .map(|(o, name)| {
-                let items = |l: &[model::TradeItem]| Dynamic::from_array(l.iter().map(|x| item_map(x.app_id, &x.item, price(x.app_id, &x.item))).collect());
-                map([
-                    ("id", o.id.to_string().into()),
-                    ("partner", o.partner.to_string().into()),
-                    ("partner_name", name.clone().into()),
-                    ("message", o.message.clone().into()),
-                    ("state", trade_state(o.state).into()),
-                    ("ours", o.ours.into()),
-                    ("created", (o.created as i64).into()),
-                    ("expires", (o.expires as i64).into()),
-                    ("held_until", (o.escrow_end as i64).into()),
-                    ("give", items(&o.give)),
-                    ("get", items(&o.get)),
-                ])
-                .into()
-            })
-            .collect())
+        Ok(h.snapshot.trades.iter().map(|(o, name)| offer_map(&h.snapshot, o, name)).collect())
     });
 
     let h = host.clone();
@@ -1225,6 +1230,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     achievements::register(&mut e, &host);
     downloads::register(&mut e, &host);
     store::register(&mut e, &host);
+    items::register(&mut e, &host);
 
     let h = host;
     e.register_fn("storage_set", move |k: &str, v: Dynamic| -> Result<(), Box<EvalAltResult>> {
