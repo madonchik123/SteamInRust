@@ -74,6 +74,10 @@ fn flag(get: fn(&mut AppFlags) -> &mut bool) -> Act {
     })
 }
 
+fn with_library<R>(f: &mut Frame, g: impl FnOnce(&mut crate::builtin::library::Library, &mut extensions::Ctx) -> R) -> Option<R> {
+    super::screens::with_library(f.app, f.actions, g)
+}
+
 fn with_downloads<R>(f: &mut Frame, g: impl FnOnce(&mut Downloads, &mut extensions::Ctx) -> R) -> Option<R> {
     let app = &mut *f.app;
     let env = extensions::Env { state: &app.state, local: &app.local, theme: &app.prefs.theme, zoom: app.prefs.zoom, client: &app.client, actions: &mut *f.actions };
@@ -163,7 +167,7 @@ fn rows(bp: &mut BigPicture, f: &mut Frame) -> Vec<Row> {
         }
         2 => {
             let v = f.app.prefs.bigpicture_library;
-            vec![
+            let mut out = vec![
                 choice(t!("Library opens on"), "", library_name(v).to_string(), act(|bp, f, _| {
                     let next = (f.app.prefs.bigpicture_library + 1) % 3;
                     f.app.prefs.bigpicture_library = next;
@@ -171,7 +175,44 @@ fn rows(bp: &mut BigPicture, f: &mut Frame) -> Vec<Row> {
                     bp.installed_only = None;
                 })),
                 toggle(t!("Steam Cloud"), t!("Enable Steam Cloud for games that support it. Each game can also be turned off in its Properties."), flags.cloud, flag(|x| &mut x.cloud)),
-            ]
+            ];
+            // Steam Play on a Mac: Windows games through CrossOver or Wine.
+            if client::compat::SUPPORTED {
+                let cfg = client::compat::load();
+                let runners = client::compat::runners();
+                out.push(toggle(t!("Enable Steam Play for all other titles"), t!("Windows-only games install their Windows version and run through the default tool."), cfg.other_titles, act(|_, _, _| {
+                    let mut c = client::compat::load();
+                    c.other_titles = !c.other_titles;
+                    let _ = client::compat::save(&c);
+                })));
+                match client::compat::runner_for(0, &client::compat::Config { games: Default::default(), ..cfg.clone() }, &runners) {
+                    Some(current) => {
+                        let ids: Vec<String> = runners.iter().map(|r| r.id.clone()).collect();
+                        let next = ids[(ids.iter().position(|i| *i == current.id).unwrap_or(0) + 1) % ids.len()].clone();
+                        out.push(choice(t!("Default compatibility tool"), t!("Used by Windows games that don't have their own choice in Properties → Compatibility."), current.name, act(move |_, _, _| {
+                            let mut c = client::compat::load();
+                            c.default = next;
+                            let _ = client::compat::save(&c);
+                        })));
+                    }
+                    None => {
+                        let busy = with_library(f, |lib, _| lib.wine_progress()).flatten();
+                        out.push(Row::Button {
+                            icon: icons::DOWNLOAD,
+                            label: match busy {
+                                Some(p) => t!("Downloading Wine… {pct}%", pct = (p * 100.0) as u32).to_string(),
+                                None => t!("Install Wine").to_string(),
+                            },
+                            danger: false,
+                            checked: false,
+                            act: act(|_, f, _| {
+                                with_library(f, |lib, cx| lib.start_wine_install(cx));
+                            }),
+                        });
+                    }
+                }
+            }
+            out
         }
         3 => vec![
             toggle(t!("New chat messages"), t!("Show a pop-up when a friend messages you."), flags.toast_messages, flag(|x| &mut x.toast_messages)),

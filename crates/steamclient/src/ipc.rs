@@ -24,6 +24,14 @@ fn open(pipe: &str) -> std::io::Result<std::os::unix::net::UnixStream> {
     std::os::unix::net::UnixStream::connect(pipe)
 }
 
+/// A `tcp:<address>` target: the localhost connection SteamInRust offers
+/// games that run through Wine on a Mac, where its pipe or socket can't be
+/// reached. Only loopback addresses count.
+pub fn tcp_target(pipe: &str) -> Option<std::net::SocketAddr> {
+    let addr: std::net::SocketAddr = pipe.strip_prefix("tcp:")?.parse().ok()?;
+    addr.ip().is_loopback().then_some(addr)
+}
+
 /// Send one request and wait for the answer. `None` if SteamInRust can't be
 /// reached (closed, signed out) or answered nonsense.
 pub fn request(req: Request) -> Option<Reply> {
@@ -31,6 +39,24 @@ pub fn request(req: Request) -> Option<Reply> {
     let what = format!("{req:?}");
     let what = &what[..what.len().min(60)];
     let started = Instant::now();
+    if pipe.starts_with("tcp:") {
+        let Some(addr) = tcp_target(&pipe) else {
+            crate::log!("ipc: refusing {pipe}: not a localhost address");
+            return None;
+        };
+        let stream = loop {
+            match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3)) {
+                Ok(s) => break s,
+                Err(e) if started.elapsed() < Duration::from_secs(3) && e.kind() == std::io::ErrorKind::ConnectionRefused => std::thread::sleep(Duration::from_millis(30)),
+                Err(e) => {
+                    crate::log!("ipc: can't connect to {addr}: {e}");
+                    return None;
+                }
+            }
+        };
+        let _ = stream.set_nodelay(true);
+        return exchange(&stream, token, req, what, started);
+    }
     // The server makes a new pipe instance after each connection; a busy
     // pipe just means another request is being accepted right now.
     let file = loop {
@@ -105,6 +131,36 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn tcp_targets_must_be_loopback() {
+        assert_eq!(tcp_target("tcp:127.0.0.1:5000"), Some("127.0.0.1:5000".parse().unwrap()));
+        assert_eq!(tcp_target("tcp:[::1]:5000"), Some("[::1]:5000".parse().unwrap()));
+        assert_eq!(tcp_target("tcp:192.168.1.2:5000"), None);
+        assert_eq!(tcp_target("tcp:0.0.0.0:5000"), None);
+        assert_eq!(tcp_target("tcp:example.com:5000"), None);
+        assert_eq!(tcp_target(r"\\.\pipe\x"), None);
+    }
+
+    #[test]
+    fn talks_over_localhost_tcp() {
+        use std::io::BufRead;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (s, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&s).read_line(&mut line).unwrap();
+            let env: crate::protocol::Envelope = serde_json::from_str(line.trim()).unwrap();
+            assert_eq!(env.token, "tok");
+            let reply = serde_json::to_string(&Reply::Events { events: vec![] }).unwrap();
+            (&s).write_all(format!("{reply}\n").as_bytes()).unwrap();
+        });
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        let got = exchange(&stream, "tok".into(), Request::Poll, "Poll", Instant::now());
+        server.join().unwrap();
+        assert!(matches!(got, Some(Reply::Events { .. })), "{got:?}");
     }
 
     #[test]

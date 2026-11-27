@@ -28,8 +28,11 @@ pub struct Call {
 
 pub struct Server {
     name: String,
+    /// The localhost address games under Wine use (macOS), see [`Server::tcp_env_value`].
+    tcp: Option<std::net::SocketAddr>,
     tokens: Tokens,
     task: Option<tokio::task::AbortHandle>,
+    tcp_task: Option<tokio::task::AbortHandle>,
 }
 
 /// One running launch: its game and the events waiting for its next Poll.
@@ -44,6 +47,9 @@ type Tokens = Arc<Mutex<HashMap<String, Slot>>>;
 impl Drop for Server {
     fn drop(&mut self) {
         if let Some(t) = &self.task {
+            t.abort();
+        }
+        if let Some(t) = &self.tcp_task {
             t.abort();
         }
     }
@@ -84,6 +90,7 @@ impl Server {
         let name = create_private_socket_path();
         let tokens: Tokens = Arc::default();
         let (tx, rx) = mpsc::unbounded_channel();
+        let tx_tcp = tx.clone();
         // Also the in-game overlay's pipe, which checks the same launch tokens.
         #[cfg(windows)]
         let task = {
@@ -99,7 +106,10 @@ impl Server {
             drop(tx);
             None
         };
-        (Server { name, tokens, task }, rx)
+        // Games running through Wine (Steam Play on a Mac) can't reach the
+        // socket file: they get a localhost port, with the same token check.
+        let (tcp, tcp_task) = if crate::compat::SUPPORTED { start_tcp(tokens.clone(), tx_tcp) } else { (None, None) };
+        (Server { name, tcp, tokens, task, tcp_task }, rx)
     }
 
     /// A new token for a game about to start.
@@ -149,6 +159,12 @@ impl Server {
     /// Value for the game's `STEAMINRUST_IPC` variable.
     pub fn env_value(&self, token: &str) -> String {
         format!("{}|{}", self.name, token)
+    }
+
+    /// `STEAMINRUST_IPC` for a game running through Wine: the localhost
+    /// address (`tcp:127.0.0.1:<port>|<token>`). `None` if it isn't listening.
+    pub fn tcp_env_value(&self, token: &str) -> Option<String> {
+        self.tcp.map(|a| format!("tcp:{a}|{token}"))
     }
 }
 
@@ -222,6 +238,36 @@ async fn accept(name: String, tokens: Tokens, tx: mpsc::UnboundedSender<Call>) {
             Ok((stream, _)) => {
                 tokio::spawn(serve_one(stream, tokens.clone(), tx.clone()));
             }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+}
+
+/// Listen on a random localhost port (loopback only) for games under Wine.
+fn start_tcp(tokens: Tokens, tx: mpsc::UnboundedSender<Call>) -> (Option<std::net::SocketAddr>, Option<tokio::task::AbortHandle>) {
+    let std_listener = match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!("steamclient localhost port: {e}");
+            return (None, None);
+        }
+    };
+    let addr = std_listener.local_addr().ok();
+    let _ = std_listener.set_nonblocking(true);
+    let Ok(listener) = tokio::net::TcpListener::from_std(std_listener) else { return (None, None) };
+    let task = tokio::spawn(accept_tcp(listener, tokens, tx)).abort_handle();
+    (addr, Some(task))
+}
+
+async fn accept_tcp(listener: tokio::net::TcpListener, tokens: Tokens, tx: mpsc::UnboundedSender<Call>) {
+    loop {
+        match listener.accept().await {
+            // Bound to 127.0.0.1, but check anyway: nothing from elsewhere.
+            Ok((stream, peer)) if peer.ip().is_loopback() => {
+                let _ = stream.set_nodelay(true);
+                tokio::spawn(serve_one(stream, tokens.clone(), tx.clone()));
+            }
+            Ok(_) => {}
             Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
         }
     }
@@ -1425,6 +1471,36 @@ mod tests {
         let env = protocol::Envelope { token: "t".into(), pid: 1, req: Request::StoreStats { stats: vec![(4, 1)], crc: 9, reset: false } };
         let back: protocol::Envelope = serde_json::from_str(&serde_json::to_string(&env).unwrap()).unwrap();
         assert!(matches!(back.req, Request::StoreStats { crc: 9, .. }));
+    }
+
+    #[tokio::test]
+    async fn localhost_port_checks_the_token() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let tokens: Tokens = Arc::default();
+        tokens.lock().unwrap().insert("good".into(), Slot { app_id: 7, events: Default::default(), notify: Arc::default() });
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (addr, task) = start_tcp(tokens, tx);
+        let addr = addr.expect("listening");
+        assert!(addr.ip().is_loopback());
+        let ask = |token: &'static str| async move {
+            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let env = protocol::Envelope { token: token.into(), pid: 1, req: Request::Hello };
+            s.write_all(format!("{}
+", serde_json::to_string(&env).unwrap()).as_bytes()).await.unwrap();
+            let mut line = String::new();
+            BufReader::new(s).read_line(&mut line).await.unwrap();
+            serde_json::from_str::<Reply>(line.trim()).unwrap()
+        };
+        // A wrong token never reaches the app.
+        assert!(matches!(ask("bad").await, Reply::Err { .. }));
+        assert!(rx.try_recv().is_err());
+        // The right one does.
+        let answer = tokio::spawn(ask("good"));
+        let call = rx.recv().await.unwrap();
+        assert_eq!(call.app_id, 7);
+        let _ = call.reply.send(Reply::Err { message: "ok".into() });
+        assert!(matches!(answer.await.unwrap(), Reply::Err { message } if message == "ok"));
+        task.unwrap().abort();
     }
 
     #[test]

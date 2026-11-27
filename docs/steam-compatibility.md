@@ -326,6 +326,98 @@ While developing, the launcher also finds
   `+connect_lobby`) isn't wired to SteamInRust's friends list yet; join from
   the game's own lobby browser.
 
+## 1b. Steam Play on a Mac (Windows games through CrossOver or Wine)
+
+On a Mac, a game with only a Windows version can still be installed and
+played: its Windows version runs through a Wine-based runner, like Proton
+on Linux. It's in `crates/client/src/compat.rs`, `launch.rs` and
+`crates/steamclient/src/launcher.rs`. The idea is the same as the
+[NotProton](https://github.com/NotProtonNot/NotProton) project, but none
+of its code is used: we don't patch CrossOver, we run our own Windows
+steamclient inside Wine.
+
+- **Runners.** `compat::runners()` finds CrossOver (`CrossOver.app`,
+  `CrossOver Preview.app`: `Contents/SharedSupport/CrossOver/bin/wine`),
+  WineHQ/Gcenx app bundles (`Wine Stable.app`, `Wine Devel.app`,
+  `Wine Staging.app`: `Contents/Resources/wine/bin/wine`) in
+  `/Applications` or `~/Applications`, Homebrew's `wine`, the Game Porting
+  Toolkit, and `STEAMINRUST_WINE` (a wine program or a Wine app).
+- **Choices** (`compat.json` in the app's data folder): **Settings →
+  Compatibility** picks the default runner and "Enable Steam Play for all
+  other titles" (on by default). A game's **Properties → Compatibility**
+  has Steam's "Force the use of a specific Steam Play compatibility tool":
+  that game then installs its Windows version even if there's a Mac one.
+- **Installing.** The download gets the Windows depots (and the Windows
+  redistributables from Steamworks Shared). The app manifest records it
+  like Steam does for Proton: `UserConfig/platform_override_source`
+  "windows", `platform_override_dest` "macos". Updates keep the version
+  that's installed; switching means uninstalling and installing again.
+- **No runner yet.** A Windows-only game's page (and its Big Picture page)
+  offers to install Wine: SteamInRust downloads one pinned build (Gcenx's
+  Wine Devel 11.21, the one that ran games on macOS 27 in testing; Wine
+  Stable 11.0 crashed setting up its prefix there), checks its SHA-256,
+  and unpacks it into `compat/runners/` in the app's data folder. Rosetta 2
+  is installed first if it's missing (Apple's `softwareupdate`; macOS asks
+  for the password). "Get CrossOver" opens CodeWeavers' site; "Don't ask
+  again" hides the offer.
+- **Prefix.** Plain Wine: one prefix per game and runner in the app's data
+  folder (`compat/<app id>/<runner id>/pfx`, like Steam's `compatdata`):
+  Wine can't go back to an older version in a prefix a newer one made. CrossOver: one
+  bottle named `SteamInRust`, created with `cxbottle`, visible in
+  CrossOver. Before the first start the prefix is made and the game's
+  install scripts (Visual C++, DirectX…) run inside it, with progress on
+  the Play button. Each step runs once per prefix.
+- **Starting.** The runner starts `rundll32.exe
+  C:\SteamInRust\steamclient64.dll,SteamInRustLaunch` (our DLL is copied
+  into the prefix). That export plays the part of Proton's `steam.exe`:
+  it writes `HKCU\Software\Valve\Steam\ActiveProcess` (its own process id,
+  which `steam_api` checks is alive, our DLL as `SteamClientDll64`, the
+  account), starts the game from `STEAMINRUST_LAUNCH_EXE/_DIR/_ARGS` and
+  waits for it. The game loads our DLL through the registry, as on Windows.
+- **Talking to the app.** A pipe inside Wine can't reach the Mac app's
+  socket file, so the app also listens on a random `127.0.0.1` port and
+  games under Wine get `STEAMINRUST_IPC=tcp:127.0.0.1:<port>|<token>`.
+  The DLL only connects to loopback addresses; the app only accepts
+  loopback peers, and every request still needs the launch's 128-bit token.
+- **Steam Cloud.** Files a game saves through Steam's cloud API go to the
+  Mac's own `userdata/<account>/<app>/remote` (the game gets the Steam
+  folder as a `Z:\` path), so the usual sync before and after playing
+  covers them. Auto-Cloud rules for Windows folders (`WinMyDocuments`,
+  `WinAppDataLocal`, `WinAppDataLocalLow`, `WinSavedGames`…) point into the
+  prefix's user folder (`drive_c/users/<name>`; `crossover` in a bottle).
+- **Library.** The "Only games that run on macOS" filter, the **Runs on**
+  filter and dynamic collections count Windows games that can play through
+  a runner. Big Picture shows "Install Wine to play" or "Not available"
+  with the reason, and its Library settings have the Steam Play switch,
+  the default tool and "Install Wine".
+- **Anti-cheat.** Games with VAC (store category), or Easy Anti-Cheat,
+  BattlEye and the rest (the same file check as on Windows) never start
+  this way. The game page says "Can't run on a Mac" and why; a VAC game
+  isn't offered for install through Steam Play at all. Nothing of the
+  anti-cheat is touched.
+- **In-game overlay.** Not drawn under Wine (its Direct3D hooks aren't safe
+  there); `STEAMINRUST_OVERLAY=1` turns it on anyway, for testing.
+- **Packaging.** The Mac app carries the Windows DLL in
+  `Contents/Resources/windows/steamclient64.dll`, cross-built with MinGW
+  (`brew install mingw-w64`, `cargo xtask steamclient-win`). Without it,
+  Windows games start through the runner without Steam features.
+- **32-bit games** get the 32-bit DLL (`steamclient32.dll` next to the
+  64-bit one, copied into the prefix as `C:\SteamInRust\steamclient.dll`).
+- **Not done:** a game launcher that starts the real game and quits ends
+  the Steam session early; no DXVK/D3DMetal choice of our own (whatever
+  the runner does by default); CrossOver isn't tested yet.
+
+**Proven on the test Mac** (M4, macOS 27, Wine Devel 11.21): MineSweeper
+Rush (app 3665840, Windows-only, 32-bit) installed as the Windows version
+(manifest records `platform_override_source`), got a new prefix, started
+through `rundll32`, loaded our 32-bit DLL over the localhost connection,
+read its 20 stats, looked up and uploaded leaderboards, and unlocked an
+achievement Steam confirmed. A test program wrote and read a Steam Cloud
+file under Wine, landing in the Mac's `userdata` folder. The in-app Wine
+installer downloaded, checked and unpacked Wine Devel 11.21. Not tried
+live: CrossOver, Auto-Cloud rules under Wine (unit-tested), a 64-bit game,
+and the new screens (no screenshots: the Mac's screenshot helper is gone).
+
 ## 2. Official Steam (games with anti-cheat)
 
 Games with anti-cheat never get our DLL. Their anti-cheat expects Valve's

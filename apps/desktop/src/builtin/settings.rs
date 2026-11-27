@@ -25,6 +25,8 @@ enum Section {
     Appearance,
     Library,
     Downloads,
+    /// Steam Play on a Mac: CrossOver and Wine runners.
+    Compatibility,
     Folders,
     Cloud,
     Overlay,
@@ -34,7 +36,7 @@ enum Section {
 }
 
 /// The sections, in the design's order; `None` draws a divider.
-const SECTIONS: [Option<(Section, &str)>; 21] = [
+const SECTIONS: [Option<(Section, &str)>; 22] = [
     Some((Section::Account, "Account")),
     Some((Section::Friends, "Friends & Chat")),
     Some((Section::Family, "Family")),
@@ -49,6 +51,7 @@ const SECTIONS: [Option<(Section, &str)>; 21] = [
     Some((Section::Appearance, "Appearance")),
     Some((Section::Library, "Library")),
     Some((Section::Downloads, "Downloads")),
+    Some((Section::Compatibility, "Compatibility")),
     Some((Section::Folders, "Storage")),
     Some((Section::Cloud, "Cloud")),
     Some((Section::Overlay, "In game")),
@@ -188,6 +191,8 @@ impl Extension for Settings {
                     match entry {
                         None if q.is_empty() => nav_divider(ui, &t),
                         None => {}
+                        // Steam Play is for the Mac only.
+                        Some((Section::Compatibility, _)) if !client::compat::SUPPORTED => {}
                         Some((s, en)) => {
                             let label = i18n::tr_dyn(en);
                             if !q.is_empty() && !label.to_lowercase().contains(&q) && !en.to_lowercase().contains(&q) {
@@ -211,6 +216,7 @@ impl Extension for Settings {
                 Section::Notifications => notifications(ui, &t, &self.flags),
                 Section::Library => library(ui, &t, ctx),
                 Section::Downloads => downloads(ui, &t, ctx, &self.flags),
+                Section::Compatibility => compatibility(ui, &t),
                 Section::Cloud => cloud(ui, &t, &self.flags),
                 Section::Accessibility => accessibility(ui, &t, ctx),
                 Section::Appearance => self.appearance(ui, &t, ctx),
@@ -924,6 +930,44 @@ fn downloads(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, flags: &SharedFlags) {
         }
     });
     *flags.lock().unwrap() = f;
+}
+
+/// Steam Play, like Steam's Compatibility settings: the runners found on
+/// this Mac, the default one, and whether Windows-only games use it.
+fn compatibility(ui: &mut Ui, t: &Theme) {
+    let mut cfg = client::compat::load();
+    let runners = client::compat::runners();
+    group(ui, t, t!("Steam Play"), |ui| {
+        ui.label(w::body_m(t, t!("Windows games can run on this Mac through CrossOver or Wine. Games with anti-cheat can't."), t.text_dim));
+        if switch_row(ui, t, t!("Enable Steam Play for all other titles"), t!("Windows-only games install their Windows version and run through the default tool."), &mut cfg.other_titles) {
+            let _ = client::compat::save(&cfg);
+        }
+        if runners.is_empty() {
+            row(ui, t, t!("Compatibility tools"), "", |ui| {
+                ui.label(w::body_m(t, t!("None found. Install CrossOver (codeweavers.com) or a Wine build into Applications."), t.text_dim));
+            }, |_| {});
+        } else {
+            row(ui, t, t!("Default compatibility tool"), t!("Used by Windows games that don't have their own choice in Properties → Compatibility."), |ui| {
+                let best = client::compat::runner_for(0, &client::compat::Config { games: Default::default(), ..cfg.clone() }, &runners).map(|r| r.id).unwrap_or_default();
+                let mut pick = if runners.iter().any(|r| r.id == cfg.default) { cfg.default.clone() } else { best };
+                let options: Vec<(String, String)> = runners.iter().map(|r| (r.id.clone(), r.name.clone())).collect();
+                let width = ui.available_width().min(260.0);
+                if w::select(ui, t, &mut pick, &options, width) {
+                    cfg.default = pick;
+                    let _ = client::compat::save(&cfg);
+                }
+            }, |_| {});
+            for r in &runners {
+                ui.label(w::body_s(t, format!("{} — {}", r.name, r.wine.display()), t.text_faint));
+            }
+        }
+        if w::button(ui, t, Some(icons::REFRESH), t!("Look again"), w::Kind::Secondary, w::Size::Sm).clicked() {
+            client::compat::rescan();
+        }
+        if client::compat::windows_dll().is_none() {
+            ui.label(w::body_s(t, t!("This copy has no Windows steamclient: Windows games start without achievements or cloud saves."), t.danger));
+        }
+    });
 }
 
 fn cloud(ui: &mut Ui, t: &Theme, flags: &SharedFlags) {
