@@ -12,6 +12,7 @@ mod focus;
 mod input;
 mod menu;
 mod paint;
+mod plugins;
 mod screens;
 mod settings;
 
@@ -34,9 +35,11 @@ pub enum Tab {
     Store,
     Downloads,
     Friends,
+    /// Plugin pages made for Big Picture (shown only when there are some).
+    Plugins,
 }
 
-const TABS: [Tab; 5] = [Tab::Home, Tab::Library, Tab::Store, Tab::Downloads, Tab::Friends];
+const TABS: [Tab; 6] = [Tab::Home, Tab::Library, Tab::Store, Tab::Downloads, Tab::Friends, Tab::Plugins];
 
 impl Tab {
     fn label(self) -> &'static str {
@@ -46,6 +49,7 @@ impl Tab {
             Tab::Store => t!("Store"),
             Tab::Downloads => t!("Downloads"),
             Tab::Friends => t!("Friends"),
+            Tab::Plugins => t!("Plugins"),
         }
     }
     fn index(self) -> usize {
@@ -73,6 +77,10 @@ pub enum Page {
     Video(AppId, usize),
     /// Before installing: size, where, shortcut.
     Install(AppId),
+    /// A plugin's page (its manifest has `bigpicture = true`).
+    Plugin(String),
+    /// Typing into a plugin page's text field.
+    PluginText { plugin: String, field: String, hint: String },
 }
 
 impl Page {
@@ -149,6 +157,8 @@ pub struct BigPicture {
     key_pop: Option<(Id, f64)>,
     /// Mouse wheel turned in the screenshot viewer, not yet a flip.
     shot_wheel: f32,
+    /// Plugin pages: the list, typing, a picked slider.
+    plugins: plugins::PluginUi,
 }
 
 impl BigPicture {
@@ -171,6 +181,7 @@ impl BigPicture {
             let id = id.parse().unwrap_or(0);
             match kind {
                 "library" => bp.tab = Tab::Library,
+                "plugins" => bp.tab = Tab::Plugins,
                 // `settings:<section number>`.
                 "settings" => {
                     bp.settings.open_at(id as usize);
@@ -200,6 +211,11 @@ impl BigPicture {
                     bp.stack.push(Page::Chat(client::ChatTarget::Group { group: g.parse().unwrap_or(0), room: r.parse().unwrap_or(0) }));
                 }
                 "game" => bp.stack.push(Page::Game(id)),
+                // `plugin:<plugin id>`: a plugin's Big Picture page.
+                "plugin" => {
+                    bp.tab = Tab::Plugins;
+                    bp.stack.push(Page::Plugin(arg.split_once(':').map(|x| x.1).unwrap_or("").to_string()));
+                }
                 "install" => bp.stack.push(Page::Install(id)),
                 _ => {}
             }
@@ -256,6 +272,18 @@ impl BigPicture {
 
     fn page(&self) -> Page {
         self.stack.last().cloned().unwrap_or(Page::Tab(self.tab))
+    }
+
+    /// The tabs on the bar: Plugins only when a plugin has a page for it.
+    fn tabs(&self) -> Vec<Tab> {
+        TABS.iter().copied().filter(|t| *t != Tab::Plugins || self.plugins.has_pages()).collect()
+    }
+
+    /// The tab `step` places from the current one, around the bar.
+    fn tab_by(&self, step: isize) -> Tab {
+        let tabs = self.tabs();
+        let at = tabs.iter().position(|t| *t == self.tab).unwrap_or(0) as isize;
+        tabs[(at + step).rem_euclid(tabs.len() as isize) as usize]
     }
 
     fn remember(&mut self) {
@@ -396,11 +424,18 @@ impl BigPicture {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
 
+        plugins::refresh(self, app, actions, now);
+        if self.tab == Tab::Plugins && !self.plugins.has_pages() {
+            self.tab = Tab::Home;
+            self.stack.retain(|p| !matches!(p, Page::Plugin(_) | Page::PluginText { .. }));
+        }
+
         // ---- input ----
         let page = self.page();
         let chat = matches!(page, Page::Chat(_));
         let sheet_open = self.chat.sheet.is_some();
-        let typing = (page == Page::Search || chat) && self.menu.is_none() && !sheet_open;
+        let plugin_text = matches!(page, Page::PluginText { .. });
+        let typing = (page == Page::Search || chat || plugin_text) && self.menu.is_none() && !sheet_open;
         let mut submit = false;
         // A page from the normal window with a text box in use: the keys are
         // that box's, except Esc, which leaves it.
@@ -429,7 +464,13 @@ impl BigPicture {
         });
         if typing {
             let text: String = ctx.input(|i| i.events.iter().filter_map(|e| if let egui::Event::Text(t) = e { Some(t.clone()) } else { None }).collect());
-            let field = if chat { &mut self.message } else { &mut self.query };
+            let field = if chat {
+                &mut self.message
+            } else if plugin_text {
+                &mut self.plugins.text
+            } else {
+                &mut self.query
+            };
             if !text.is_empty() {
                 field.push_str(&text);
                 self.query_changed = now;
@@ -491,15 +532,18 @@ impl BigPicture {
                     // Typing on a real keyboard: Enter searches what was typed
                     // (and then selects, like everywhere else).
                     Press::A if typing && from_keys && chat && !self.message.trim().is_empty() && self.chat.enter_sends(self.focus.current) => self.send_now = true,
+                    Press::A if typing && from_keys && plugin_text => self.plugins.submit = true,
                     Press::A if typing && from_keys && !chat && self.query.trim() != self.submitted => submit = true,
                     Press::A => press = true,
                     // Chat with the keyboard up: B puts it away first.
                     Press::B if chat && self.chat.keys_up => self.focus.current = Some(chat::history_id()),
+                    // A picked slider: B puts it down without changing it.
+                    Press::B if self.plugins.adjusting.is_some() => self.plugins.adjusting = None,
                     Press::B => self.back(now),
                     Press::X => x = true,
                     Press::Y => y = true,
-                    Press::Lb => self.switch_tab(TABS[(self.tab.index() + TABS.len() - 1) % TABS.len()], now, true),
-                    Press::Rb => self.switch_tab(TABS[(self.tab.index() + 1) % TABS.len()], now, true),
+                    Press::Lb => self.switch_tab(self.tab_by(-1), now, true),
+                    Press::Rb => self.switch_tab(self.tab_by(1), now, true),
                     Press::Start | Press::Guide => {
                         self.menu = Some(menu::Menu::new(now));
                     }
@@ -537,6 +581,16 @@ impl BigPicture {
         if let (Page::Embedded(..), Some(d @ (Dir::Up | Dir::Down))) = (self.page(), dir) {
             self.wheel += if d == Dir::Up { 220.0 } else { -220.0 } * s;
             dir = None;
+        }
+        // A picked slider on a plugin page: left/right move it.
+        if let (Page::Plugin(_), Some(d @ (Dir::Left | Dir::Right))) = (self.page(), dir) {
+            if self.plugins.adjusting.is_some() {
+                self.plugins.nudge += if d == Dir::Left { -1 } else { 1 };
+                dir = None;
+            }
+        }
+        if !matches!(self.page(), Page::Plugin(_)) {
+            self.plugins.adjusting = None;
         }
         // The screenshot viewer pages with left/right.
         if let (Page::Shots(app_id, i), Some(d @ (Dir::Left | Dir::Right))) = (self.page(), dir) {
@@ -671,12 +725,13 @@ impl BigPicture {
         // Tabs in the middle.
         let font = w::font_bold(25.0 * s);
         let gap = 14.0 * s;
-        let widths: Vec<f32> = TABS.iter().map(|tab| paint::text_width(&p, &tab_label(f, *tab), font.clone()) + 44.0 * s).collect();
-        let total: f32 = widths.iter().sum::<f32>() + gap * (TABS.len() - 1) as f32;
+        let tabs = self.tabs();
+        let widths: Vec<f32> = tabs.iter().map(|tab| paint::text_width(&p, &tab_label(f, *tab), font.clone()) + 44.0 * s).collect();
+        let total: f32 = widths.iter().sum::<f32>() + gap * (tabs.len() - 1) as f32;
         let mut x = bar.center().x - total / 2.0;
         let tab_h = 54.0 * s;
         let mut selected_rect = None;
-        for (i, tab) in TABS.iter().enumerate() {
+        for (i, tab) in tabs.iter().enumerate() {
             let r = Rect::from_min_size(pos2(x, bar.center().y - tab_h / 2.0), vec2(widths[i], tab_h));
             x += widths[i] + gap;
             let hit = self.focus.item(ui, tab_id(*tab), r, screen, Place::Bar);
@@ -716,7 +771,7 @@ impl BigPicture {
             w::gradient(&under.with_clip_rect(line), line, t.accent, t.accent_2, true);
             // Labels again on top of the pill.
             let mut x = bar.center().x - total / 2.0;
-            for (i, tab) in TABS.iter().enumerate() {
+            for (i, tab) in tabs.iter().enumerate() {
                 let r = Rect::from_min_size(pos2(x, bar.center().y - tab_h / 2.0), vec2(widths[i], tab_h));
                 x += widths[i] + gap;
                 if *tab == self.tab {
@@ -778,7 +833,7 @@ impl BigPicture {
             p.text(pos2(x, bar.center().y), Align2::LEFT_CENTER, label, w::font_medium(19.0 * s), t.text_dim);
             let (glyph, round) = match (press, pad_mode, self.page()) {
                 // Typing: X is a letter, Backspace deletes.
-                (Press::X, false, Page::Search | Page::Chat(_)) => ("Backspace", false),
+                (Press::X, false, Page::Search | Page::Chat(_) | Page::PluginText { .. }) => ("Backspace", false),
                 _ => glyph_for(*press, pad_mode),
             };
             let fl = flash.filter(|(fp, _)| fp == press).map(|(_, at)| 1.0 - ((f.now - at) / 0.3) as f32).unwrap_or(0.0);

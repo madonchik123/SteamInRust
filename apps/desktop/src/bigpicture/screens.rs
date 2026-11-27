@@ -39,6 +39,9 @@ pub fn draw(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, pos: f32) -> f32 {
         Page::Tab(Tab::Store) => store_tab(bp, ui, f, top),
         Page::Tab(Tab::Downloads) => downloads(bp, ui, f, top),
         Page::Tab(Tab::Friends) => friends(bp, ui, f, top),
+        Page::Tab(Tab::Plugins) => super::plugins::tab(bp, ui, f, top),
+        Page::Plugin(id) => super::plugins::page(bp, ui, f, top, &id),
+        Page::PluginText { plugin, field, hint } => super::plugins::text_page(bp, ui, f, top, &plugin, &field, &hint),
         Page::Game(id) => game(bp, ui, f, top, id),
         Page::StoreApp(id) => store_app(bp, ui, f, top, id),
         Page::Search => search(bp, ui, f, top),
@@ -57,7 +60,7 @@ pub fn x_hint(bp: &BigPicture) -> Option<String> {
     match bp.page() {
         Page::Tab(Tab::Library) => Some(t!("Change filter").into()),
         Page::Install(_) => Some(t!("Desktop shortcut").into()),
-        Page::Search | Page::Chat(_) => Some(t!("Delete").into()),
+        Page::Search | Page::Chat(_) | Page::PluginText { .. } => Some(t!("Delete").into()),
         _ => None,
     }
 }
@@ -520,7 +523,12 @@ fn game(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: AppId) ->
     if matches!(action, MainAction::WineInstalling(_)) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
     }
-    y += 72.0 * s + 50.0 * s;
+    y += 72.0 * s + 20.0 * s;
+    let extra = super::plugins::game_buttons(bp, ui, f, f.view.left() + f.pad, y, id);
+    if extra > 0.0 {
+        y += extra + 30.0 * s;
+    }
+    y += 30.0 * s;
     if let Some(why) = why {
         let r = paint::wrapped(ui.painter(), pos2(f.view.left() + f.pad, y - 30.0 * s), &why, w::font_medium(22.0 * s), f.t.text_dim, 1100.0 * s, 3);
         y = r.bottom() + 40.0 * s;
@@ -1486,6 +1494,10 @@ fn friend_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: mo
         f.actions.push(Action::Navigate { page: "profile".into(), arg: Some(id.to_string()) });
     }
     y += 72.0 * s + 24.0 * s;
+    let extra = super::plugins::friend_buttons(bp, ui, f, left, y, id);
+    if extra > 0.0 {
+        y += extra + 40.0 * s;
+    }
     p.text(pos2(left, y), Align2::LEFT_TOP, t!("View profile opens it in the normal window."), w::font(19.0 * s), f.t.text_faint);
     y += 40.0 * s;
     y - top

@@ -181,11 +181,45 @@ enum StoreLookup {
     Search(String),
 }
 
-/// Something done on a plugin's page.
-enum PageEvent {
+/// Something done on a plugin's page (in the normal window or Big Picture).
+pub enum PageEvent {
     Click(String),
     Input(String, String),
     Toggle(String, bool),
+    /// A select or tabs widget picked a value.
+    Select(String, String),
+    Slider(String, f64),
+}
+
+/// A plugin page that's also in Big Picture.
+pub struct BigPicturePage {
+    /// The plugin's id.
+    pub id: String,
+    pub title: String,
+    pub icon: String,
+    /// The plugin's name and description.
+    pub name: String,
+    pub description: String,
+}
+
+/// What Big Picture shows at the top of a plugin page.
+pub struct PageHeader {
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub title: String,
+    pub permissions: Vec<&'static str>,
+    pub error: Option<String>,
+    /// Hosts its images may come from.
+    pub hosts: Vec<String>,
+}
+
+/// A button a plugin adds to a game page or a friend's menu, with whose it is.
+pub struct PluginItem {
+    pub plugin: String,
+    pub plugin_name: String,
+    pub id: String,
+    pub text: String,
 }
 
 impl Plugins {
@@ -278,6 +312,15 @@ impl Plugins {
             match r {
                 Ok(p) => self.list.push(p),
                 Err((path, e)) => self.broken.push((path, e.to_string())),
+            }
+        }
+        // `--demo --enable-plugin=<id>`: run a plugin in the demo (previews
+        // and screenshots; the demo saves nothing, so it's never kept).
+        if crate::app::demo() {
+            for id in std::env::args().filter_map(|a| a.strip_prefix("--enable-plugin=").map(String::from)) {
+                if let Some(p) = self.list.iter().find(|p| p.manifest.id == id) {
+                    self.enabled.insert(id, p.manifest.permissions.iter().copied().collect());
+                }
             }
         }
         let ids: Vec<String> = self.enabled.keys().cloned().collect();
@@ -659,6 +702,11 @@ impl Extension for Plugins {
         }
     }
 
+    /// Big Picture reaches plugin pages through this.
+    fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn pages(&self) -> Vec<PageSpec> {
         self.list
             .iter()
@@ -912,11 +960,7 @@ impl Extension for Plugins {
         });
         self.inputs = inputs;
         for e in events {
-            match e {
-                PageEvent::Click(b) => self.list[idx].click(&b),
-                PageEvent::Input(f, text) => self.list[idx].input(&f, &text),
-                PageEvent::Toggle(f, on) => self.list[idx].toggle(&f, on),
-            }
+            dispatch(&mut self.list[idx], e);
         }
         self.handle(idx, ctx);
     }
@@ -1032,6 +1076,160 @@ impl Extension for Plugins {
     }
 }
 
+fn dispatch(p: &mut Plugin, e: PageEvent) {
+    match e {
+        PageEvent::Click(b) => p.click(&b),
+        PageEvent::Input(f, text) => p.input(&f, &text),
+        PageEvent::Toggle(f, on) => p.toggle(&f, on),
+        PageEvent::Select(f, v) => p.select(&f, &v),
+        PageEvent::Slider(f, v) => p.slider(&f, v),
+    }
+}
+
+/// What Big Picture uses: plugin pages that opted in, their widgets and
+/// events, and plugin buttons for game pages and friends.
+impl Plugins {
+    /// Running plugins whose page is also for Big Picture.
+    pub fn bigpicture_pages(&mut self) -> Vec<BigPicturePage> {
+        self.ensure_loaded();
+        self.list
+            .iter()
+            .filter(|p| p.in_bigpicture())
+            .filter_map(|p| {
+                let page = p.manifest.page.as_ref()?;
+                Some(BigPicturePage { id: p.manifest.id.clone(), title: page.title.clone(), icon: page.icon.clone(), name: p.manifest.name.clone(), description: p.manifest.description.clone() })
+            })
+            .collect()
+    }
+
+    /// A Big Picture page's widgets (`None` if the plugin isn't running or
+    /// didn't opt in).
+    pub fn bigpicture_page(&mut self, id: &str, ctx: &mut Ctx) -> Option<(PageHeader, Vec<Widget>)> {
+        self.ensure_loaded();
+        let snap = self.snapshot(ctx);
+        let idx = self.list.iter().position(|p| p.manifest.id == id && p.in_bigpicture())?;
+        self.list[idx].set_snapshot(snap);
+        let widgets = self.list[idx].page_in(plugins::View::BigPicture);
+        self.handle(idx, ctx);
+        let p = &self.list[idx];
+        let m = &p.manifest;
+        let header = PageHeader {
+            name: m.name.clone(),
+            version: m.version.clone(),
+            author: m.author.clone(),
+            title: m.page.as_ref().map(|x| x.title.clone()).unwrap_or_default(),
+            permissions: m.permissions.iter().map(|x| x.key()).collect(),
+            error: p.error.clone(),
+            hosts: m.hosts.clone(),
+        };
+        Some((header, widgets))
+    }
+
+    /// Something done on a plugin page in Big Picture.
+    pub fn bigpicture_event(&mut self, id: &str, e: PageEvent, ctx: &mut Ctx) {
+        let Some(idx) = self.list.iter().position(|p| p.manifest.id == id && p.in_bigpicture()) else { return };
+        let snap = self.snapshot(ctx);
+        self.list[idx].set_snapshot(snap);
+        dispatch(&mut self.list[idx], e);
+        self.handle(idx, ctx);
+    }
+
+    /// Plugin buttons for a game's page.
+    pub fn game_items(&mut self, app_id: AppId, ctx: &mut Ctx) -> Vec<PluginItem> {
+        self.ensure_loaded();
+        let mut out = Vec::new();
+        for i in 0..self.list.len() {
+            if !self.list[i].defines("game_actions") {
+                continue;
+            }
+            let snap = self.snapshot(ctx);
+            self.list[i].set_snapshot(snap);
+            let (plugin, plugin_name) = (self.list[i].manifest.id.clone(), self.list[i].manifest.name.clone());
+            out.extend(self.list[i].game_actions(app_id).into_iter().map(|m| PluginItem { plugin: plugin.clone(), plugin_name: plugin_name.clone(), id: m.id, text: m.text }));
+            self.handle(i, ctx);
+        }
+        out
+    }
+
+    pub fn game_item_clicked(&mut self, plugin: &str, id: &str, app_id: AppId, ctx: &mut Ctx) {
+        if let Some(i) = self.list.iter().position(|p| p.manifest.id == plugin && p.is_running()) {
+            let snap = self.snapshot(ctx);
+            self.list[i].set_snapshot(snap);
+            self.list[i].game_action(id, app_id);
+            self.handle(i, ctx);
+        }
+    }
+
+    /// Plugin items for a friend (their right-click menu in the normal window).
+    pub fn friend_items(&mut self, steam_id: SteamId, ctx: &mut Ctx) -> Vec<PluginItem> {
+        self.ensure_loaded();
+        let mut out = Vec::new();
+        for i in 0..self.list.len() {
+            if !self.list[i].defines("friend_menu") {
+                continue;
+            }
+            let snap = self.snapshot(ctx);
+            self.list[i].set_snapshot(snap);
+            let (plugin, plugin_name) = (self.list[i].manifest.id.clone(), self.list[i].manifest.name.clone());
+            out.extend(self.list[i].friend_menu(steam_id).into_iter().map(|m| PluginItem { plugin: plugin.clone(), plugin_name: plugin_name.clone(), id: m.id, text: m.text }));
+            self.handle(i, ctx);
+        }
+        out
+    }
+
+    pub fn friend_item_clicked(&mut self, plugin: &str, id: &str, steam_id: SteamId, ctx: &mut Ctx) {
+        if let Some(i) = self.list.iter().position(|p| p.manifest.id == plugin && p.is_running()) {
+            let snap = self.snapshot(ctx);
+            self.list[i].set_snapshot(snap);
+            self.list[i].friend_menu_click(id, steam_id);
+            self.handle(i, ctx);
+        }
+    }
+}
+
+/// The theme color for a badge's or metric's tone.
+pub(crate) fn tone_color(t: &Theme, tone: plugins::Tone) -> egui::Color32 {
+    match tone {
+        plugins::Tone::Neutral => t.text_dim,
+        plugins::Tone::Accent => t.accent,
+        plugins::Tone::Good => t.online,
+        plugins::Tone::Warn => t.away,
+        plugins::Tone::Bad => t.danger,
+    }
+}
+
+/// Draw a chart's values in `rect` (both modes use it).
+pub(crate) fn paint_chart(p: &egui::Painter, rect: egui::Rect, kind: plugins::ChartKind, values: &[f64], color: egui::Color32, guide: egui::Color32, width: f32) {
+    if values.is_empty() {
+        return;
+    }
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min).min(0.0);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let span = if hi - lo > 0.0 { hi - lo } else { 1.0 };
+    let y = |v: f64| rect.bottom() - ((v - lo) / span) as f32 * rect.height();
+    p.hline(rect.x_range(), y(0.0), egui::Stroke::new(1.0, guide));
+    match kind {
+        plugins::ChartKind::Bar => {
+            let slot = rect.width() / values.len() as f32;
+            for (i, v) in values.iter().enumerate() {
+                let x = rect.left() + slot * i as f32;
+                let (a, b) = (y(0.0), y(*v));
+                let bar = egui::Rect::from_min_max(egui::pos2(x + slot * 0.15, a.min(b)), egui::pos2(x + slot * 0.85, a.max(b)));
+                p.rect_filled(bar, egui::CornerRadius::same((slot * 0.15).min(4.0) as u8), color);
+            }
+        }
+        plugins::ChartKind::Line => {
+            let n = values.len().max(2) - 1;
+            let pts: Vec<egui::Pos2> = values.iter().enumerate().map(|(i, v)| egui::pos2(rect.left() + rect.width() * i as f32 / n as f32, y(*v))).collect();
+            if pts.len() == 1 {
+                p.circle_filled(pts[0], width * 1.5, color);
+            } else {
+                p.add(egui::Shape::line(pts, egui::Stroke::new(width, color)));
+            }
+        }
+    }
+}
+
 impl Plugins {
     fn consent_dialog(&mut self, ui: &mut Ui, t: &Theme) {
         let Some(id) = self.consent.clone() else { return };
@@ -1097,7 +1295,7 @@ struct Render<'a> {
 }
 
 /// Images come from Steam's image servers, or the plugin's own hosts.
-fn image_allowed(url: &str, hosts: &[String]) -> bool {
+pub(crate) fn image_allowed(url: &str, hosts: &[String]) -> bool {
     let Some(rest) = url.strip_prefix("https://") else { return false };
     let host = rest.split(['/', '?', '#', ':']).next().unwrap_or_default().to_ascii_lowercase();
     if host.contains('@') {
@@ -1209,6 +1407,132 @@ fn render(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, widgets: &[Widget], r: &mut Ren
                 } else {
                     ui.painter().rect_filled(rect, t.corner_small(), t.raised);
                     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, t!("Image not allowed"), w::font(12.0), t.text_faint);
+                }
+            }
+            Widget::Badge { text, tone } => {
+                let c = tone_color(t, *tone);
+                w::pill(ui, text, c, c.gamma_multiply(0.16));
+            }
+            Widget::Metric { label, value, change, tone, hint } => {
+                w::card(t).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(w::text(label, 12.5, t.text_dim));
+                        ui.horizontal(|ui| {
+                            ui.label(w::text_bold(value, 26.0, t.text));
+                            if let Some(c) = change {
+                                ui.label(w::text_semibold(c, 14.0, tone_color(t, *tone)));
+                            }
+                        });
+                        if !hint.is_empty() {
+                            ui.label(w::text(hint, 12.0, t.text_faint));
+                        }
+                    });
+                });
+            }
+            Widget::Card { title, items } => {
+                if depth < MAX_ROW_DEPTH {
+                    w::card(t).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        if !title.is_empty() {
+                            ui.label(w::text_semibold(title, 16.0, t.text));
+                            ui.add_space(4.0);
+                        }
+                        render(ui, t, ctx, items, r, depth + 1);
+                    });
+                }
+            }
+            Widget::Section { title, items } => {
+                if depth < MAX_ROW_DEPTH {
+                    ui.add_space(8.0);
+                    if !title.is_empty() {
+                        ui.label(w::text_semibold(title, 17.0, t.text));
+                    }
+                    render(ui, t, ctx, items, r, depth + 1);
+                    ui.add_space(4.0);
+                }
+            }
+            Widget::Grid { columns, items } => {
+                if depth < MAX_ROW_DEPTH {
+                    for chunk in items.chunks((*columns).max(1)) {
+                        ui.columns(*columns, |cols| {
+                            for (c, item) in cols.iter_mut().zip(chunk) {
+                                render(c, t, ctx, std::slice::from_ref(item), r, depth + 1);
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
+                }
+            }
+            Widget::Select { id, label, options, value } => {
+                ui.horizontal(|ui| {
+                    if !label.is_empty() {
+                        ui.label(w::text(label, 14.0, t.text));
+                    }
+                    let shown = options.iter().find(|(v, _)| v == value).map(|o| o.1.clone()).unwrap_or_default();
+                    egui::ComboBox::from_id_salt((r.plugin, "select", id)).selected_text(shown).show_ui(ui, |ui| {
+                        for (v, l) in options {
+                            if ui.selectable_label(v == value, l).clicked() && v != value {
+                                r.events.push(PageEvent::Select(id.clone(), v.clone()));
+                            }
+                        }
+                    });
+                });
+            }
+            Widget::Slider { id, label, min, max, step, value } => {
+                let mut v = *value;
+                let resp = ui.add(egui::Slider::new(&mut v, *min..=*max).step_by(*step).text(label.as_str()));
+                // Tell the plugin once the handle is let go (not on every pixel).
+                if (resp.drag_stopped() || (resp.changed() && !resp.dragged())) && v != *value {
+                    r.events.push(PageEvent::Slider(id.clone(), v));
+                }
+            }
+            Widget::Tabs { id, items, value } => {
+                ui.horizontal(|ui| {
+                    for (v, l) in items {
+                        let on = v == value;
+                        let kind = if on { w::Kind::Primary } else { w::Kind::Ghost };
+                        if w::button(ui, t, None, l, kind, w::Size::Sm).clicked() && !on {
+                            r.events.push(PageEvent::Select(id.clone(), v.clone()));
+                        }
+                    }
+                });
+            }
+            Widget::Avatar { steam_id, size } => {
+                let hash = ctx.state.personas.get(steam_id).and_then(|p| p.avatar_hash.clone());
+                w::avatar(ui, t, &art::avatar_full(hash.as_deref()), *size, None);
+            }
+            Widget::Empty { icon, title, text } => {
+                let icon = if icon.is_empty() { icons::PLUGS } else { icons::by_name(icon) };
+                w::empty(ui, t, icon, title, text);
+            }
+            Widget::Loading(text) => {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().color(t.accent));
+                    if !text.is_empty() {
+                        ui.label(w::text(text, 14.0, t.text_dim));
+                    }
+                });
+            }
+            Widget::Chart { kind, values, labels, height } => {
+                w::card(t).show(ui, |ui| {
+                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(900.0), *height), Sense::hover());
+                    paint_chart(ui.painter(), rect.shrink(4.0), *kind, values, t.accent, t.border, 2.0);
+                    // Pointing at a point shows its label and value.
+                    if let Some(pos) = resp.hover_pos().filter(|_| !values.is_empty()) {
+                        let i = (((pos.x - rect.left()) / rect.width()) * values.len() as f32).floor().clamp(0.0, values.len() as f32 - 1.0) as usize;
+                        let label = labels.get(i).cloned().unwrap_or_default();
+                        resp.on_hover_text(format!("{label} {}", plugins::format_number(values[i])).trim().to_string());
+                    }
+                });
+            }
+            Widget::Sparkline(values) => {
+                let (rect, _) = ui.allocate_exact_size(vec2(120.0, 32.0), Sense::hover());
+                paint_chart(ui.painter(), rect.shrink(2.0), plugins::ChartKind::Line, values, t.accent, egui::Color32::TRANSPARENT, 1.5);
+            }
+            Widget::Tooltip { text, item } => {
+                if depth < MAX_ROW_DEPTH {
+                    let resp = ui.scope(|ui| render(ui, t, ctx, std::slice::from_ref(item.as_ref()), r, depth + 1)).response;
+                    resp.on_hover_text(text.as_str());
                 }
             }
         }

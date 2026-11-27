@@ -134,6 +134,11 @@ pub fn by_name(name: &str) -> &'static str {
         "backpack" => BACKPACK,
         "coins" => COINS,
         "tag" => TAG,
+        "palette" => PALETTE,
+        "store" => STORE,
+        "download" => DOWNLOAD,
+        "books" => BOOKS,
+        "search" => SEARCH,
         _ => PUZZLE,
     }
 }

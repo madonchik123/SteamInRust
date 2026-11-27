@@ -33,6 +33,9 @@ mod net;
 mod storage;
 mod store;
 mod timers;
+mod widgets;
+pub use widgets::{ChartKind, MAX_WIDGET_DEPTH, MAX_WIDGETS, Tone, Widget};
+use widgets::widgets_bounded;
 pub use net::blocked_ip;
 pub use achievements::AchievementWatch;
 pub use store::{STORE_LOOKUPS_PER_MINUTE, StoreApp, StoreHit, StorePrice, search_key, wishlist_changes};
@@ -41,7 +44,7 @@ pub use library::GameInfo;
 
 /// What `api_version()` answers. Bump it when functions are added, so
 /// plugins can check before calling them.
-pub const API_VERSION: i64 = 3;
+pub const API_VERSION: i64 = 4;
 
 /// Web requests a plugin can have waiting at once.
 pub const MAX_IN_FLIGHT: usize = 8;
@@ -191,6 +194,10 @@ pub struct PageDecl {
     pub title: String,
     #[serde(default)]
     pub icon: String,
+    /// Also show the page in Big Picture (its Plugins tab). Off unless the
+    /// plugin says its page works with a controller.
+    #[serde(default)]
+    pub bigpicture: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -320,23 +327,21 @@ pub enum HostEvent {
     GameUninstalled { app_id: u32, name: String },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Widget {
-    Heading(String),
-    Text(String),
-    Muted(String),
-    Button { id: String, text: String },
-    Stat { label: String, value: String },
-    Separator,
-    Row(Vec<Widget>),
-    Progress(f32),
-    Game(u32),
-    Input { id: String, value: String, hint: String },
-    Toggle { id: String, text: String, value: bool },
-    Link { text: String, page: String, arg: Option<String> },
-    Table { columns: Vec<String>, rows: Vec<Vec<String>> },
-    Pill(String),
-    Image { url: String, width: f32, height: f32 },
+/// Where a plugin's page is being shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum View {
+    #[default]
+    Window,
+    BigPicture,
+}
+
+impl View {
+    pub fn key(self) -> &'static str {
+        match self {
+            View::Window => "window",
+            View::BigPicture => "bigpicture",
+        }
+    }
 }
 
 /// An item a plugin adds to a game's page or a friend's menu.
@@ -347,7 +352,6 @@ pub struct MenuItem {
 }
 
 const MAX_OUTBOX: usize = 32;
-const MAX_WIDGET_DEPTH: usize = 8;
 
 #[derive(Default)]
 struct Host {
@@ -372,6 +376,8 @@ struct Host {
     in_flight: HashSet<u64>,
     /// About this plugin, for `plugin_info()`.
     info: Map,
+    /// Where its page was last shown (`view_mode()`).
+    view: View,
 }
 
 impl Host {
@@ -567,6 +573,7 @@ impl Plugin {
             h.granted = self.manifest.permissions.iter().copied().filter(|p| approved.contains(p)).collect();
             h.hosts = self.manifest.hosts.clone();
             let m = &self.manifest;
+            h.view = View::Window;
             h.info = map([
                 ("id", m.id.clone().into()),
                 ("name", m.name.clone().into()),
@@ -574,6 +581,7 @@ impl Plugin {
                 ("author", m.author.clone().into()),
                 ("permissions", Dynamic::from_array(m.permissions.iter().map(|p| Dynamic::from(p.key())).collect())),
                 ("hosts", Dynamic::from_array(m.hosts.iter().map(|x| Dynamic::from(x.clone())).collect())),
+                ("bigpicture", m.page.as_ref().is_some_and(|p| p.bigpicture).into()),
             ]);
             h.storage = storage;
             h.storage_dirty = false;
@@ -731,7 +739,37 @@ impl Plugin {
     }
 
     pub fn page(&mut self) -> Vec<Widget> {
-        self.call("page", ()).map(|d| widgets_bounded(d, 0, &mut 0)).unwrap_or_default()
+        self.page_in(View::Window)
+    }
+
+    /// The page's widgets for the normal window or Big Picture. In Big
+    /// Picture, `bigpicture_page()` is used if the script has one, else
+    /// `page()` (which can ask `view_mode()`).
+    pub fn page_in(&mut self, view: View) -> Vec<Widget> {
+        self.host.lock().unwrap().view = view;
+        let hook = if view == View::BigPicture && self.has_fn("bigpicture_page") { "bigpicture_page" } else { "page" };
+        self.call(hook, ()).map(|d| widgets_bounded(d, 0, &mut 0)).unwrap_or_default()
+    }
+
+    /// Whether the page should be in Big Picture: the manifest says so.
+    pub fn in_bigpicture(&self) -> bool {
+        self.running && self.manifest.page.as_ref().is_some_and(|p| p.bigpicture)
+    }
+
+    /// A select or tabs widget changed: `on_select(id, value)`, or
+    /// `on_input(id, value)` for a script without it.
+    pub fn select(&mut self, id: &str, value: &str) {
+        let hook = if self.has_fn("on_select") { "on_select" } else { "on_input" };
+        self.call(hook, (ImmutableString::from(id), ImmutableString::from(value)));
+    }
+
+    /// A slider moved: `on_slider(id, value)`, or `on_input(id, "value")`.
+    pub fn slider(&mut self, id: &str, value: f64) {
+        if self.has_fn("on_slider") {
+            self.call("on_slider", (ImmutableString::from(id), value));
+        } else {
+            self.call("on_input", (ImmutableString::from(id), ImmutableString::from(format_number(value))));
+        }
     }
 
     pub fn click(&mut self, id: &str) {
@@ -821,6 +859,11 @@ impl Plugin {
             None
         }
     }
+}
+
+/// A number as a plugin would write it: "5", not "5.0".
+pub fn format_number(v: f64) -> String {
+    if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", v as i64) } else { format!("{v}") }
 }
 
 fn menu_items(d: Dynamic) -> Vec<MenuItem> {
@@ -977,67 +1020,6 @@ fn map<const N: usize>(pairs: [(&str, Dynamic); N]) -> Map {
     pairs.into_iter().map(|(k, v)| (k.into(), v)).collect()
 }
 
-fn widgets_bounded(d: Dynamic, depth: usize, budget: &mut usize) -> Vec<Widget> {
-    if depth >= MAX_WIDGET_DEPTH || *budget >= 500 {
-        return Vec::new();
-    }
-    let Some(arr) = d.try_cast::<Array>() else { return Vec::new() };
-    let mut out = Vec::new();
-    for item in arr {
-        if *budget >= 500 {
-            break;
-        }
-        if let Some(w) = widget_bounded(item, depth, budget) {
-            out.push(w);
-        }
-    }
-    out
-}
-
-fn widget_bounded(d: Dynamic, depth: usize, budget: &mut usize) -> Option<Widget> {
-    if *budget >= 500 {
-        return None;
-    }
-    let m = d.try_cast::<Map>()?;
-    let s = |k: &str| m.get(k).map(|v| v.to_string()).unwrap_or_default();
-    let ty = s("type");
-    if ty == "row" && depth + 1 >= MAX_WIDGET_DEPTH {
-        return None;
-    }
-    *budget += 1;
-    Some(match ty.as_str() {
-        "heading" => Widget::Heading(s("text")),
-        "text" => Widget::Text(s("text")),
-        "muted" => Widget::Muted(s("text")),
-        "button" => Widget::Button { id: s("id"), text: s("text") },
-        "stat" => Widget::Stat { label: s("label"), value: s("value") },
-        "separator" => Widget::Separator,
-        "progress" => Widget::Progress(m.get("value").and_then(|v| v.as_float().ok()).unwrap_or(0.0).clamp(0.0, 1.0) as f32),
-        "game" => Widget::Game(m.get("app_id").and_then(|v| v.as_int().ok()).unwrap_or(0) as u32),
-        "row" => Widget::Row(m.get("items").cloned().map(|v| widgets_bounded(v, depth + 1, budget)).unwrap_or_default()),
-        "input" => Widget::Input { id: s("id"), value: s("value"), hint: s("hint") },
-        "toggle" => Widget::Toggle { id: s("id"), text: s("text"), value: m.get("value").and_then(|v| v.as_bool().ok()).unwrap_or(false) },
-        "link" => Widget::Link { text: s("text"), page: s("page"), arg: m.get("arg").filter(|v| !v.is_unit()).map(|v| v.to_string()) },
-        "pill" => Widget::Pill(s("text")),
-        "table" => {
-            let list = |v: Option<&Dynamic>| -> Vec<Dynamic> { v.and_then(|v| v.clone().try_cast::<Array>()).unwrap_or_default() };
-            Widget::Table {
-                columns: list(m.get("columns")).iter().map(|c| c.to_string()).take(12).collect(),
-                rows: list(m.get("rows")).into_iter().take(500).map(|r| r.try_cast::<Array>().unwrap_or_default().iter().map(|c| c.to_string()).take(12).collect()).collect(),
-            }
-        }
-        "image" => Widget::Image {
-            url: s("url"),
-            width: m.get("width").and_then(|v| v.as_int().ok()).unwrap_or(240).clamp(16, 1200) as f32,
-            height: m.get("height").and_then(|v| v.as_int().ok()).unwrap_or(135).clamp(16, 1200) as f32,
-        },
-        _ => {
-            *budget = budget.saturating_sub(1);
-            return None;
-        }
-    })
-}
-
 fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     let mut e = Engine::new();
     e.set_max_operations(MAX_OPERATIONS);
@@ -1062,6 +1044,8 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     e.register_fn("log_error", move |s: &str| h.lock().unwrap().log(format!("error: {s}")));
     let h = host.clone();
     e.register_fn("plugin_info", move || Dynamic::from_map(h.lock().unwrap().info.clone()));
+    let h = host.clone();
+    e.register_fn("view_mode", move || h.lock().unwrap().view.key());
     e.register_fn("now", || {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
     });
@@ -1406,6 +1390,7 @@ pub const EXAMPLES: &[(&str, &str, &str)] = &[
     ("backlog", include_str!("../examples/backlog/plugin.toml"), include_str!("../examples/backlog/main.rhai")),
     ("wishlist-sales", include_str!("../examples/wishlist-sales/plugin.toml"), include_str!("../examples/wishlist-sales/main.rhai")),
     ("trade-helper", include_str!("../examples/trade-helper/plugin.toml"), include_str!("../examples/trade-helper/main.rhai")),
+    ("widget-gallery", include_str!("../examples/widget-gallery/plugin.toml"), include_str!("../examples/widget-gallery/main.rhai")),
 ];
 
 /// Copy the bundled examples into `dir` if they aren't there yet.
@@ -1766,7 +1751,7 @@ name = \"T\"
             "#,
         );
         assert!(p.error.is_none(), "{:?}", p.error);
-        assert_eq!(p.take_storage().unwrap()["info"], "web 1.2.3 [\"storage\", \"network\"] 3");
+        assert_eq!(p.take_storage().unwrap()["info"], "web 1.2.3 [\"storage\", \"network\"] 4");
         assert!(p.logs().iter().any(|l| l == "warning: careful") && p.logs().iter().any(|l| l == "error: broke"));
         p.stop();
         assert_eq!(p.take_storage().unwrap()["bye"], "yes", "on_unload can still save");
@@ -1789,5 +1774,54 @@ name = \"T\"
         q.start(&BTreeSet::from([Permission::Storage]), Default::default());
         q.event(&HostEvent::GameInstalled { app_id: 440, name: "TF2".into() });
         assert!(q.take_storage().is_none());
+    }
+
+    #[test]
+    fn big_picture_pages_and_new_hooks() {
+        let mut p = plugin(
+            "id = \"bp\"\nname = \"B\"\npermissions = [\"storage\"]\n[page]\ntitle = \"B\"\nbigpicture = true\n",
+            r#"
+            fn page() { [#{type: "text", text: "page in " + view_mode()}] }
+            fn bigpicture_page() { [#{type: "text", text: "couch in " + view_mode()}] }
+            fn on_select(id, value) { storage_set(id, value); }
+            fn on_input(id, text) { storage_set("input " + id, text); }
+            "#,
+        );
+        p.start(&BTreeSet::from([Permission::Storage]), Default::default());
+        assert!(p.in_bigpicture());
+        assert_eq!(p.page_in(View::BigPicture), vec![Widget::Text("couch in bigpicture".into())]);
+        assert_eq!(p.page(), vec![Widget::Text("page in window".into())]);
+        p.select("sort", "time");
+        p.slider("vol", 5.0);
+        let s = p.take_storage().unwrap();
+        assert_eq!(s["sort"], "time");
+        assert_eq!(s["input vol"], "5", "a slider falls back to on_input");
+
+        // Without bigpicture_page, page() runs and knows where it is.
+        let mut q = plugin("id = \"bp2\"\nname = \"B\"\n[page]\ntitle = \"B\"\n", "fn page() { [#{type: \"text\", text: view_mode()}] }");
+        q.start(&BTreeSet::new(), Default::default());
+        assert!(!q.in_bigpicture(), "pages stay out of Big Picture unless they ask");
+        assert_eq!(q.page_in(View::BigPicture), vec![Widget::Text("bigpicture".into())]);
+        assert_eq!(format_number(2.5), "2.5");
+    }
+
+    #[test]
+    fn widget_gallery_renders_every_tab() {
+        let (_, manifest, script) = EXAMPLES.iter().find(|e| e.0 == "widget-gallery").unwrap();
+        let mut p = plugin(manifest, script);
+        let lib = vec![GameInfo { app_id: 440, name: "TF2".into(), installed: true, playtime_minutes: 600, ..Default::default() }];
+        p.set_snapshot(Snapshot { library: Arc::new(lib), ..Default::default() });
+        p.start(&p.manifest.permissions.iter().copied().collect(), Default::default());
+        assert!(p.in_bigpicture());
+        for tab in ["basics", "inputs", "data", "layout"] {
+            p.select("tab", tab);
+            let w = p.page_in(View::BigPicture);
+            assert!(p.error.is_none(), "{tab}: {:?}", p.error);
+            assert!(w.len() > 3, "{tab}: {w:?}");
+        }
+        p.click("count");
+        p.slider("level", 7.0);
+        let s = p.take_storage().unwrap();
+        assert_eq!((s["count"].as_str(), s["level"].as_str()), ("1", "7"));
     }
 }

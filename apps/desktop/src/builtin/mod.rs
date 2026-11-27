@@ -12,7 +12,7 @@ mod gallery;
 pub mod hub;
 pub(crate) mod inventory;
 pub mod library;
-mod plugins;
+pub(crate) mod plugins;
 mod support;
 pub(crate) mod profile;
 pub mod screenshots;

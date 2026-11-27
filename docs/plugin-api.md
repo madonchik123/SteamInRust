@@ -34,7 +34,13 @@ tick = 60                     # seconds between on_tick() calls, at least 10
 [page]                        # optional: the plugin gets its own page
 title = "Friend Alerts"
 icon = "users"
+bigpicture = true             # optional: also show the page in Big Picture
 ```
+
+`icon` is one of `bell`, `dice`, `chat`, `star`, `chart`, `trophy`, `fire`,
+`clock`, `users`, `note`, `globe`, `controller`, `lightning`, `gear`, `swap`,
+`backpack`, `coins`, `tag`, `palette`, `store`, `download`, `books` or `search`
+(anything else shows a puzzle piece).
 
 The plugin only starts after you approve every permission it lists. If a new
 version asks for more, it stops and asks again. Turning a plugin off takes all
@@ -68,13 +74,14 @@ its permissions away.
 
 ## Checking the API version
 
-`api_version()` (no permission) returns `3` in this version. It didn't exist in
+`api_version()` (no permission) returns `4` in this version. It didn't exist in
 version 1, so check like this:
 
 ```rhai
 let v = try { api_version() } catch { 1 };
 if v >= 2 { /* game_info, achievements, store data... */ }
 if v >= 3 { /* timers, storage helpers, http_fetch, on_unload... */ }
+if v >= 4 { /* Big Picture pages, the new widgets */ }
 ```
 
 | Version | Added |
@@ -82,6 +89,7 @@ if v >= 3 { /* timers, storage helpers, http_fetch, on_unload... */ }
 | 1 | Everything not listed below |
 | 2 | `api_version`, library info, achievements, download control, store data, inventory and trade helpers |
 | 3 | Timers, storage helpers, `http_fetch` and `http_cancel`, response headers, `on_unload`, `plugin_info`, `log_warn` / `log_error`, install events |
+| 4 | Pages in Big Picture (`bigpicture = true`, `bigpicture_page()`, `view_mode()`), the widgets badge, metric, card, section, grid, select, slider, tabs, avatar, empty_state, loading, chart, sparkline and tooltip, and the hooks `on_select` and `on_slider` |
 
 ## Functions
 
@@ -95,7 +103,8 @@ Call them again later (from `page()`, `on_tick()` or the matching event).
 | `log(text)` | none | Writes to the plugin's log (Settings → Plugins → Show log) |
 | `log_warn(text)`, `log_error(text)` | none | The same, shown in yellow or red |
 | `now()` | none | Unix seconds |
-| `api_version()` | none | The API version (3) |
+| `api_version()` | none | The API version (4) |
+| `view_mode()` | none | Where the page is being shown: `"window"` or `"bigpicture"` |
 | `plugin_info()` | none | `#{id, name, version, author, permissions, hosts}` from your manifest |
 | `language()` | none | The app's language code ("en", "ru"...) |
 | `platform()` | none | `"windows"`, `"macos"` or `"linux"` |
@@ -321,6 +330,9 @@ Define any of these functions:
 | `on_tick()` | Every `tick` seconds from the manifest |
 | `on_http(id, status, body)` or `on_http(id, status, body, headers)` | A web request's answer |
 | `page()` | Returns the widgets of the plugin's page (needs `[page]`) |
+| `bigpicture_page()` | Returns the page's widgets for Big Picture, if it should differ there (otherwise `page()` is used) |
+| `on_select(id, value)` | A select or tabs widget changed (without this hook, `on_input(id, value)` is called) |
+| `on_slider(id, value)` | A slider was let go at a new number (without it, `on_input(id, "value")`) |
 | `on_click(id)`, `on_input(id, text)`, `on_toggle(id, on)` | A button, text field or switch on the page |
 | `game_actions(app_id)` | Returns buttons for a game's library page: `[#{id, text}]`; a click calls `on_game_action(id, app_id)` |
 | `friend_menu(steam_id)` | Returns items for a friend's right-click menu: `[#{id, text}]`; a click calls `on_friend_menu(id, steam_id)` |
@@ -347,22 +359,90 @@ Define any of these functions:
 
 ## Widgets
 
-`page()` returns an array of maps:
+`page()` returns an array of maps. Every widget works in the normal window
+and in Big Picture.
+
+**Text and labels**
 
 - `#{type: "heading", text}`, `"text"`, `"muted"`
-- `#{type: "button", id, text}`
-- `#{type: "stat", label, value}`
-- `#{type: "separator"}`
-- `#{type: "row", items: [...]}` (rows nest up to 8 deep)
-- `#{type: "progress", value}` (0 to 1)
-- `#{type: "game", app_id}` (a game card)
-- `#{type: "input", id, value, hint}`
-- `#{type: "toggle", id, text, value}`
-- `#{type: "link", text, page, arg}`
-- `#{type: "table", columns: [...], rows: [[...]]}`
 - `#{type: "pill", text}`
+- `#{type: "badge", text, tone}`: a colored label. `tone` is `"good"`,
+  `"warn"`, `"bad"`, `"accent"` or left out
+- `#{type: "link", text, page, arg}`: opens a page of the app (see `navigate`)
+- `#{type: "tooltip", text, item: #{...}}`: `text` shows when pointing at
+  `item` (in Big Picture, when it's focused)
+- `#{type: "separator"}` (or `"divider"`)
+- `#{type: "loading", text}`
+
+**Things you press or change**
+
+- `#{type: "button", id, text}`: calls `on_click(id)`
+- `#{type: "input", id, value, hint}`: calls `on_input(id, text)` when you're
+  done typing
+- `#{type: "toggle", id, text, value}` (or `"checkbox"`): calls `on_toggle(id, on)`
+- `#{type: "select", id, label, options, value}`: `options` are strings or
+  `#{value, label}`. Calls `on_select(id, value)`
+- `#{type: "slider", id, label, min, max, step, value}`: calls
+  `on_slider(id, value)`
+- `#{type: "tabs", id, items, value}`: a row of tabs, `items` like `options`.
+  Calls `on_select(id, value)`; show what goes with the picked tab yourself
+- `#{type: "game", app_id}`: a game's picture; opening it shows the game
+
+**Numbers and data**
+
+- `#{type: "stat", label, value}`
+- `#{type: "metric", label, value, change, tone, hint}`: a big number. A
+  `change` starting with `+` is green and with `-` red, unless `tone` says
+  otherwise
+- `#{type: "progress", value}` (0 to 1)
+- `#{type: "chart", kind, values, labels, height}`: `kind` is `"line"` or
+  `"bar"`; up to 500 values
+- `#{type: "sparkline", values}`: a small line chart
+- `#{type: "table", columns: [...], rows: [[...]]}`
 - `#{type: "image", url, width, height}`. Pictures come from Steam's image
   servers or the plugin's hosts.
+- `#{type: "avatar", steam_id, size}`: a friend's (or your) picture
 
-A page shows at most 500 widgets. Plugin pages are in the normal window only
-for now; Big Picture doesn't show them yet.
+**Layout**
+
+- `#{type: "row", items: [...]}`: side by side
+- `#{type: "grid", columns, items: [...]}`: equal columns (1 to 6), wrapping
+- `#{type: "card", title, items: [...]}`: a box around other widgets
+- `#{type: "section", title, items: [...]}`: a titled group
+- `#{type: "empty_state", icon, title, text}`: for an empty list
+
+A page shows at most 500 widgets, and containers nest at most 8 deep.
+
+## Big Picture
+
+A plugin's page is in Big Picture only if the manifest says so, because a page
+made for a mouse may not work well with a controller:
+
+```toml
+[page]
+title = "Backlog"
+icon = "dice"
+bigpicture = true
+```
+
+Pages that opt in are listed in Big Picture's **Plugins** tab, which only
+appears when there is at least one. There:
+
+- buttons, switches, choices, tabs, links, games and table rows take focus,
+  and A (or Enter) uses them;
+- a select steps to its next option with A;
+- a slider is picked with A, moved with left and right, and put down with A
+  (B leaves it as it was);
+- a text field opens a page with the on-screen keyboard. A real keyboard works
+  too, and the plugin gets `on_input` when you press Done or Enter;
+- a page with nothing to focus below scrolls with up and down;
+- links and `navigate()` open Big Picture's own pages (a game, the store,
+  downloads...), or the normal window's page inside Big Picture.
+
+To lay the page out differently for the TV, check `view_mode()` in `page()`,
+or define `bigpicture_page()` and it's used there instead.
+
+Buttons from `game_actions` show on Big Picture's game pages, and items from
+`friend_menu` on its friend pages, for every plugin (no opt-in needed).
+
+The **Widget Gallery** example shows every widget in both modes.
