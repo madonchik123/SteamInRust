@@ -3,12 +3,12 @@
 </p>
 
 <p align="center">
+  <a href="#screenshots"><b>Screenshots</b></a> ·
   <a href="#download"><b>Download</b></a> ·
   <a href="#performance"><b>Benchmarks</b></a> ·
+  <a href="#is-it-safe-to-use"><b>Safety</b></a> ·
   <a href="docs/parity.md"><b>Parity</b></a> ·
-  <a href="docs/steam-compatibility.md"><b>Games and anti-cheat</b></a> ·
-  <a href="docs/themes.md"><b>Themes</b></a> ·
-  <a href="CONTRIBUTING.md"><b>Contributing</b></a> ·
+  <a href="CHANGELOG.md"><b>Changelog</b></a> ·
   <a href="https://boosty.to/32tq"><b>Support</b></a> ·
   <a href="README.ru.md"><b>Русский</b></a>
 </p>
@@ -16,9 +16,12 @@
 <p align="center">
   <a href="https://github.com/madonchik123/SteamInRust/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/madonchik123/SteamInRust?style=flat-square&color=4F8CFF"></a>
   <a href="https://github.com/madonchik123/SteamInRust/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/madonchik123/SteamInRust/ci.yml?branch=main&style=flat-square&label=CI"></a>
-  <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows%2010%20%C2%B7%2011-4F8CFF?style=flat-square">
-  <img alt="macOS 11 and later" src="https://img.shields.io/badge/macOS%2011%2B-4F8CFF?style=flat-square">
+  <img alt="Windows 10 and 11, macOS 11 and later" src="https://img.shields.io/badge/Windows%2010%20%C2%B7%2011%20%C2%B7%20macOS%2011%2B-4F8CFF?style=flat-square">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2FB36B?style=flat-square">
+</p>
+
+<p align="center">
+  <img src="docs/media/en/store.png" alt="A store page in SteamInRust with the Hades trailer playing" width="100%">
 </p>
 
 # SteamInRust
@@ -26,21 +29,59 @@
 **The Steam desktop client, rewritten in Rust.** Store, library, downloads,
 friends, chat, inventory, Market, Steam Cloud and the Shift+Tab overlay, in one
 native process with no embedded browser. It signs in to your own Steam account
-and talks to Steam's servers directly. Free, open source (MIT) and unofficial.
+and talks to Steam's servers directly.
 
-The official client is a Chromium app: a dozen `steamwebhelper.exe` processes
-drawing web pages. SteamInRust draws everything itself on the GPU with
-[egui](https://github.com/emilk/egui), so its window is up in about two and a half
-seconds and it idles at about 115 MB.
+- **Fast and light:** its window is up in about two and a half seconds, and it
+  idles at about 115 MB in one process. The official client is a Chromium app
+  with a dozen `steamwebhelper.exe` processes; SteamInRust draws everything
+  itself on the GPU with [egui](https://github.com/emilk/egui).
+- **Your games, as they are:** it uses your normal Steam account and library.
+  Games with anti-cheat still start through the official client, so nothing
+  changes for them.
+- **Windows and Mac:** Windows 10 and 11, and macOS 11 or later, where Windows
+  games run through Steam Play with CrossOver or Wine.
+- **Your look:** based on [Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign)
+  by **Juxtopposed**. The whole look is a theme, so the old one is still there
+  as **Classic**, and you can make your own.
 
-Its look is based on [Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign) by
-**Juxtopposed**, a concept for a cleaner Steam shared on Figma Community. The
-whole look is a theme, so the old one is still there as **Classic**, and you
-can make your own.
+Free, open source (MIT) and unofficial.
 
-<p align="center">
-  <img src="docs/media/en/store.png" alt="A store page in SteamInRust with the Hades trailer playing" width="100%">
-</p>
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/media/en/library.png" alt="The library: what's new, recent games and the games list">
+      <p align="center"><sub><b>Library</b> — what's new, recent games, collections</sub></p>
+    </td>
+    <td width="50%">
+      <img src="docs/media/en/community.png" alt="The Community home: friends' activity with screenshots and reviews">
+      <p align="center"><sub><b>Community</b> — your friends' screenshots, reviews and achievements</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/media/en/profile.png" alt="A profile: level, badges, game collection and links">
+      <p align="center"><sub><b>Profiles</b> — backgrounds, badges and showcases</sub></p>
+    </td>
+    <td width="50%">
+      <img src="docs/media/en/inventory.png" alt="Inventory: a Dota 2 item with its market price and price chart">
+      <p align="center"><sub><b>Inventory</b> — market prices and the price chart</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/media/en/startup-race.gif" alt="SteamInRust and Steam starting side by side">
+      <p align="center"><sub><b>Start-up</b> — SteamInRust and Steam starting side by side</sub></p>
+    </td>
+    <td width="50%">
+      <img src="docs/media/en/bigpicture.gif" alt="Big Picture: the home screen and library, driven with the keyboard">
+      <p align="center"><sub><b>Big Picture</b> — the TV mode, driven with the keyboard</sub></p>
+    </td>
+  </tr>
+</table>
+
+<sub>Screenshots from <code>--demo</code> mode, which uses sample account data, in the SteamInRust theme.</sub>
 
 ## What works today
 
@@ -105,8 +146,8 @@ Everything below is in the current release. Area-by-area status:
   client, silently, so their anti-cheat runs as intended
   ([how](docs/steam-compatibility.md)).
   On a Mac, Windows games run through Steam Play with CrossOver or Wine
-  ([how to set it up](#download)). You can also host a game
-  server from the app.
+  ([how to set it up](#windows-games-on-a-mac-steam-play)). You can also host a
+  game server from the app.
 - **Overlay.** Shift+Tab in the running game opens friends, chat,
   achievements, guides and notes. Like Steam's, it's drawn inside the game
   (D3D11 and D3D12 games), so it works in full screen, and the game gets no input while
@@ -132,23 +173,6 @@ Everything below is in the current release. Area-by-area status:
 - **Seven languages**: English, Russian, Simplified Chinese, Spanish, Brazilian
   Portuguese, German and French, picked from your system language.
 
-<table>
-  <tr>
-    <td width="50%"><img src="docs/media/en/library.png" alt="The library: what's new, recent games and the games list"></td>
-    <td width="50%"><img src="docs/media/en/community.png" alt="The Community home: friends' activity with screenshots and reviews"></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="docs/media/en/profile.png" alt="A profile: level, badges, game collection and links"></td>
-    <td width="50%"><img src="docs/media/en/inventory.png" alt="Inventory: a Dota 2 item with its market price and price chart"></td>
-  </tr>
-</table>
-
-<p align="center"><img src="docs/media/en/startup-race.gif" alt="SteamInRust and Steam starting side by side" width="720"></p>
-
-<p align="center"><img src="docs/media/en/bigpicture.gif" alt="Big Picture: the home screen and library, driven with the keyboard" width="720"></p>
-
-<sub>Screenshots from <code>--demo</code> mode, which uses sample account data, in the SteamInRust theme.</sub>
-
 ## Performance
 
 **SteamInRust shows its window about 2.5 times sooner than Steam, has your
@@ -158,18 +182,18 @@ a Ryzen 5 5600 with 16 GB of RAM, Windows 11, SteamInRust 0.10.0 with the new
 look against Steam 11.23.65.88. Both clients started on the library. Every
 figure is the middle result of 3 runs:
 
-| | Steam | SteamInRust |
-| --- | ---: | ---: |
-| Start → first window | 6.3 s | 2.5 s |
-| Start → main window | 11.4 s | 2.4 s |
-| Start → library fully drawn | 19.1 s | 9.6 s |
-| Memory when idle (private bytes) | 1,016 MB | 115 MB |
-| CPU when idle | 7.7 % of a core | 0.08 % |
-| Processes | 8 | 1 |
-| Program size | 1,084 MB | 34.8 MB |
-| Open the Store | 1.84 s | 0.81 s |
-| Open a game page in the library | 0.75 s | 0.03 s |
-| Open Friends & Chat | 1.21 s | 0.05 s |
+| Metric | Steam | SteamInRust | Difference |
+| --- | ---: | ---: | ---: |
+| Start → first window | 6.3 s | **2.5 s** | **2.5× sooner** |
+| Start → main window | 11.4 s | **2.4 s** | **4.8× sooner** |
+| Start → library fully drawn | 19.1 s | **9.6 s** | **2× sooner** |
+| Memory when idle (private bytes) | 1,016 MB | **115 MB** | **8.8× less** |
+| CPU when idle | 7.7 % of a core | **0.08 %** | **96× less** |
+| Processes | 8 | **1** | **7 fewer** |
+| Program size | 1,084 MB | **34.8 MB** | **31× smaller** |
+| Open the Store | 1.84 s | **0.81 s** | **2.3× faster** |
+| Open a game page in the library | 0.75 s | **0.03 s** | **25× faster** |
+| Open Friends & Chat | 1.21 s | **0.05 s** | **24× faster** |
 
 Start times are cold starts (nothing in the file cache). Compared with the
 previous run (0.7.1, before the redesign), SteamInRust uses less memory of its
@@ -180,51 +204,65 @@ download at start-up. Method, ranges, warm starts and what was left out:
 
 ## Download
 
-Get it from [the latest release](https://github.com/madonchik123/SteamInRust/releases/latest):
+Get it from [the latest release](https://github.com/madonchik123/SteamInRust/releases/latest).
+You need a Steam account: sign in with your password and Steam Guard, or scan
+the QR code with the Steam Mobile app.
 
-| File | What it is |
+| File | Platform & install |
 | --- | --- |
-| `SteamInRust-Setup-<version>.exe` | Installer. Installs for your user only, without administrator rights, into `%LOCALAPPDATA%\Programs\SteamInRust`, and updates itself |
-| `SteamInRust-<version>-portable.zip` | The same app with no installer. Doesn't update itself |
-| `SHA256SUMS.txt` | Checksums for both |
-| `SteamInRust-<version>-macos.dmg` | macOS (Apple Silicon and Intel games, macOS 11 or later). Drag SteamInRust to Applications; it updates itself |
+| `SteamInRust-Setup-<version>.exe` | **Windows 10 or 11 (64-bit)** — the installer. Installs for your user only, without administrator rights, into `%LOCALAPPDATA%\Programs\SteamInRust`, and updates itself. Uninstall from **Settings → Apps** |
+| `SteamInRust-<version>-portable.zip` | **Windows** — the same app with no installer. Doesn't update itself |
+| `SHA256SUMS.txt` | Checksums for both Windows files |
+| `SteamInRust-<version>-macos.dmg` | **macOS 11 or later on Apple Silicon** (Apple Silicon and Intel games) — drag SteamInRust to Applications; it updates itself. To remove it, drag it to the Bin |
 | `SHA256SUMS-macos.txt` | Checksum for the disk image |
 
-Needs Windows 10 or 11 (64-bit), or macOS 11 or later on Apple Silicon, and a
-Steam account. Sign in with your password and Steam Guard, or scan the QR code
-with the Steam Mobile app. Windows SmartScreen may warn about a new unsigned
-app: **More info → Run anyway**. Uninstall from **Settings → Apps**.
+> **Note on Windows:** SmartScreen may warn about a new unsigned app. Click
+> **More info → Run anyway**.
 
-On macOS the app isn't signed by an Apple developer account, so the first time
-macOS says it can't check it for malicious software. Open it once with
-**right-click → Open → Open**, or allow it in **System Settings → Privacy &
-Security → Open Anyway**. New installs go to Steam's usual folder
-(`~/Library/Application Support/Steam`) unless you pick another. To remove it,
-drag SteamInRust from Applications to the Bin.
+> **Note on macOS:** the app isn't signed by an Apple developer account, so the
+> first time macOS says it can't check it for malicious software. Open it once
+> with **right-click → Open → Open**, or allow it in **System Settings → Privacy
+> & Security → Open Anyway**. New installs go to Steam's usual folder
+> (`~/Library/Application Support/Steam`) unless you pick another.
 
-**Windows games on a Mac (Steam Play).** With [CrossOver](https://www.codeweavers.com/crossover)
-or a free [Wine build](https://github.com/Gcenx/macOS_Wine_builds) in Applications,
-games that only have a Windows version install and play like any other: their
+### Windows games on a Mac (Steam Play)
+
+With [CrossOver](https://www.codeweavers.com/crossover) or a free
+[Wine build](https://github.com/Gcenx/macOS_Wine_builds) in Applications, games
+that only have a Windows version install and play like any other: their
 Windows version runs through Wine, with achievements and cloud saves through
-SteamInRust. Pick the default tool in **Settings → Compatibility**, or force
-one for a single game in its **Properties → Compatibility** (that also gets the
-Windows version of a game that has a Mac one). Games with anti-cheat (VAC, Easy
-Anti-Cheat, BattlEye…) can't run on a Mac and say so. Without CrossOver or Wine,
-a Windows-only game's page offers to install Wine for you (a free 225 MB
-download, checked before it's used).
+SteamInRust.
+
+- Pick the default tool in **Settings → Compatibility**, or force one for a
+  single game in its **Properties → Compatibility** (that also gets the Windows
+  version of a game that has a Mac one).
+- Without CrossOver or Wine, a Windows-only game's page offers to install Wine
+  for you (a free 225 MB download, checked before it's used).
+- Games with anti-cheat (VAC, Easy Anti-Cheat, BattlEye…) can't run on a Mac
+  and say so.
 
 ## Is it safe to use?
 
-- **Your account.** SteamInRust signs in the way the official client and the
-  Steam Mobile app do. Your sign-in stays on your PC, in your user's app data
-  folder, and is only sent to Steam.
-- **Anti-cheat.** SteamInRust never touches anti-cheat. Games that use it
-  always run through Valve's client.
-- **Other connections.** Apart from Steam, the app only contacts GitHub (for
-  updates) and an exchange-rate service (when you check a gift's region). If
-  you add your own key, it also contacts IsThereAnyDeal (price history). There
-  is no telemetry.
-- **Not official.** SteamInRust isn't made or approved by Valve.
+### Is my account safe?
+
+SteamInRust signs in the way the official client and the Steam Mobile app do.
+Your sign-in stays on your PC, in your user's app data folder, and is only sent
+to Steam.
+
+### What about anti-cheat?
+
+SteamInRust never touches anti-cheat. Games that use it always run through
+Valve's client.
+
+### What else does it connect to?
+
+Apart from Steam, the app only contacts GitHub (for updates) and an
+exchange-rate service (when you check a gift's region). If you add your own
+key, it also contacts IsThereAnyDeal (price history). There is no telemetry.
+
+### Is it official?
+
+No. SteamInRust isn't made or approved by Valve.
 
 ## Plugins
 
@@ -254,41 +292,69 @@ fn page() {
 }
 ```
 
-Scripts can't reach files or other programs, only the API they were granted.
-The network is opt-in per plugin: `network` plus a `hosts` list in the manifest
-(https only, and never to your own computer or network), which you see before
-enabling it. Plugins can also run timers, add buttons to game pages and items
-to friends' menus, launch installed games, and read your library and
-achievements. They can watch and control downloads, read store pages and
-prices, and value your inventory and trade offers (accepting or sending a trade
-always asks you). On their page they draw inputs, switches, tables and images. The API is described in
-[`docs/plugin-api.md`](docs/plugin-api.md), with examples in
-[`crates/plugins/examples`](crates/plugins/examples) (Wishlist Sales checks
-your wishlist's prices every hour and tells you about discounts; Trade Helper
-tells you what a new trade offer is worth).
+- **Sandboxed:** scripts can't reach files or other programs, only the API they
+  were granted.
+- **Network is opt-in:** a plugin needs `network` plus a `hosts` list in its
+  manifest (https only, and never to your own computer or network), which you
+  see before enabling it.
+- **What they can do:** run timers, add buttons to game pages and items to
+  friends' menus, launch installed games, and read your library and
+  achievements. Watch and control downloads, read store pages and prices, and
+  value your inventory and trade offers (accepting or sending a trade always
+  asks you). On their page they draw inputs, switches, tables and images.
+
+The API is described in [`docs/plugin-api.md`](docs/plugin-api.md), with
+examples in [`crates/plugins/examples`](crates/plugins/examples) (Wishlist
+Sales checks your wishlist's prices every hour and tells you about discounts;
+Trade Helper tells you what a new trade offer is worth).
+
+## Project status
+
+**0** not started · **0.25** started · **0.5** usable, big parts missing ·
+**0.75** mostly there · **1** complete. What's missing in each area:
+[docs/parity.md](docs/parity.md).
+
+| Area | Score |
+| --- | ---: |
+| Sign-in and accounts | 0.75 |
+| Offline mode and reconnecting | 1 |
+| Library | 0.75 |
+| Downloads and installs | 1 |
+| Store | 1 |
+| Friends and chat | 0.75 |
+| Community | 0.75 |
+| Inventory and Market | 0.75 |
+| Steam Cloud | 1 |
+| Steam features inside games | 0.75 |
+| Shift+Tab overlay | 0.75 |
+| Notifications and tray | 1 |
+| Settings, languages, updates | 0.75 |
+| Big Picture | 0.75 |
+| Remote Play | 0 |
 
 ## Build from source
 
 Needs [Rust](https://rustup.rs) and [CMake](https://cmake.org) (it builds the
-Opus voice codec). On Windows also MinGW-w64: the project uses the
-GNU toolchain there (see `rust-toolchain.toml`). On macOS, install the Xcode
-command line tools (`xcode-select --install`), then tell rustup to use the Mac's
-own toolchain in the project folder, once:
+Opus voice codec). On Windows also MinGW-w64: the project uses the GNU
+toolchain there (see `rust-toolchain.toml`).
+
+```sh
+git clone https://github.com/madonchik123/SteamInRust.git
+cd SteamInRust
+cargo run                   # sign in with your account
+cargo run -- --demo         # sample data, no sign-in
+cargo test --workspace
+cargo xtask steamclient32   # the DLL for 32-bit games (needs a 32-bit MinGW)
+cargo xtask package         # installer and portable zip (macOS: a .dmg) in target/package/dist
+```
+
+On macOS, install the Xcode command line tools (`xcode-select --install`), then
+tell rustup to use the Mac's own toolchain in the project folder, once:
 
 ```sh
 rustup override set stable
 cargo xtask steamclient-mac  # the steamclient games load, for Apple and Intel games
 cargo xtask steamclient-win  # Steam Play: the Windows steamclient (needs brew install mingw-w64)
-```
-
-```sh
-git clone https://github.com/madonchik123/SteamInRust.git
-cd SteamInRust
-cargo run                  # sign in with your account
-cargo run -- --demo        # sample data, no sign-in
-cargo test --workspace
-cargo xtask steamclient32   # the DLL for 32-bit games (needs a 32-bit MinGW)
-cargo xtask package        # installer and portable zip (macOS: a .dmg) in target/package/dist
 ```
 
 <details>
@@ -329,39 +395,19 @@ first. Pull request titles follow Conventional Commits (`feat: …`, `fix: …`)
 since that's how releases and the changelog are made. Areas that still need
 work are in [docs/parity.md](docs/parity.md).
 
-## Project status
-
-| Area | Score |
-| --- | ---: |
-| Sign-in and accounts | 0.75 |
-| Offline mode and reconnecting | 1 |
-| Library | 0.75 |
-| Downloads and installs | 1 |
-| Store | 1 |
-| Friends and chat | 0.75 |
-| Community | 0.75 |
-| Inventory and Market | 0.75 |
-| Steam Cloud | 1 |
-| Steam features inside games | 0.75 |
-| Shift+Tab overlay | 0.75 |
-| Notifications and tray | 1 |
-| Settings, languages, updates | 0.75 |
-| Big Picture | 0.75 |
-| Remote Play | 0 |
-
-0 is not started, 1 is complete. What's missing in each area:
-[docs/parity.md](docs/parity.md).
-
 ## Credits
 
-Design: [Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign) by **Juxtopposed**, shared on Figma
-Community ([the video about it](https://youtu.be/cDY2p1CTkPo)). SteamInRust's default theme follows
-it; the code, the theme system and any mistakes in the port are ours.
-Fonts: [Inter](https://rsms.me/inter/) (OFL). Icons: [Phosphor](https://phosphoricons.com) (MIT).
-Protocol definitions: [SteamDatabase/Protobufs](https://github.com/SteamDatabase/Protobufs).
-Price history: [IsThereAnyDeal](https://isthereanydeal.com).
+- **Design:** [Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign)
+  by **Juxtopposed**, shared on Figma Community
+  ([the video about it](https://youtu.be/cDY2p1CTkPo)). SteamInRust's default
+  theme follows it; the code, the theme system and any mistakes in the port are
+  ours.
+- **Fonts:** [Inter](https://rsms.me/inter/) (OFL). **Icons:**
+  [Phosphor](https://phosphoricons.com) (MIT).
+- **Protocol definitions:** [SteamDatabase/Protobufs](https://github.com/SteamDatabase/Protobufs).
+- **Price history:** [IsThereAnyDeal](https://isthereanydeal.com).
 
 ## License
 
-[MIT](LICENSE). Steam and the Steam logo are trademarks of Valve Corporation.
-SteamInRust is not affiliated with, endorsed or sponsored by Valve.
+[MIT](LICENSE). Steam is a trademark of Valve Corporation. SteamInRust is not
+affiliated with, endorsed or sponsored by Valve.
