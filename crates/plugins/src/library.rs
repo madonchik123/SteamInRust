@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn api_version_is_there_without_permissions() {
-        let p = run("fn on_load() { if api_version() < 2 { throw \"old\"; } }", &[]);
+        let p = run("fn on_load() { if api_version() != 1 { throw \"wrong version\"; } }", &[]);
         assert!(p.error.is_none(), "{:?}", p.error);
     }
 }

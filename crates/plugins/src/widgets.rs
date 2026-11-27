@@ -60,7 +60,7 @@ pub enum Widget {
     Table { columns: Vec<String>, rows: Vec<Vec<String>> },
     Pill(String),
     Image { url: String, width: f32, height: f32 },
-    // API 4.
+    // Newer widgets.
     /// A colored label.
     Badge { text: String, tone: Tone },
     /// A big number with a label, and how it changed.

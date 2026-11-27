@@ -74,22 +74,12 @@ its permissions away.
 
 ## Checking the API version
 
-`api_version()` (no permission) returns `4` in this version. It didn't exist in
-version 1, so check like this:
+`api_version()` (no permission) returns `1`. When functions are added later,
+the number goes up, so a plugin can check before using something new:
 
 ```rhai
-let v = try { api_version() } catch { 1 };
-if v >= 2 { /* game_info, achievements, store data... */ }
-if v >= 3 { /* timers, storage helpers, http_fetch, on_unload... */ }
-if v >= 4 { /* Big Picture pages, the new widgets */ }
+if api_version() >= 2 { /* something added in version 2 */ }
 ```
-
-| Version | Added |
-|---|---|
-| 1 | Everything not listed below |
-| 2 | `api_version`, library info, achievements, download control, store data, inventory and trade helpers |
-| 3 | Timers, storage helpers, `http_fetch` and `http_cancel`, response headers, `on_unload`, `plugin_info`, `log_warn` / `log_error`, install events |
-| 4 | Pages in Big Picture (`bigpicture = true`, `bigpicture_page()`, `view_mode()`), the widgets badge, metric, card, section, grid, select, slider, tabs, avatar, empty_state, loading, chart, sparkline and tooltip, and the hooks `on_select` and `on_slider` |
 
 ## Functions
 
@@ -103,7 +93,7 @@ Call them again later (from `page()`, `on_tick()` or the matching event).
 | `log(text)` | none | Writes to the plugin's log (Settings → Plugins → Show log) |
 | `log_warn(text)`, `log_error(text)` | none | The same, shown in yellow or red |
 | `now()` | none | Unix seconds |
-| `api_version()` | none | The API version (4) |
+| `api_version()` | none | The API version (1) |
 | `view_mode()` | none | Where the page is being shown: `"window"` or `"bigpicture"` |
 | `plugin_info()` | none | `#{id, name, version, author, permissions, hosts}` from your manifest |
 | `language()` | none | The app's language code ("en", "ru"...) |
@@ -160,7 +150,7 @@ SteamIDs are strings, because they don't fit Rhai's numbers safely.
 
 | Function | Permission | Returns |
 |---|---|---|
-| `library()` | `library.read` | `[#{app_id, name, installed, playtime_minutes}]` (unchanged from version 1) |
+| `library()` | `library.read` | `[#{app_id, name, installed, playtime_minutes}]` |
 | `game_info(app_id)` | `library.read` | A game map (below), or `()` if it isn't in your library |
 | `installed_games()` | `library.read` | Game maps of installed games |
 | `recent_games(count)` | `library.read` | Up to `count` (1 to 100) game maps, last played first |

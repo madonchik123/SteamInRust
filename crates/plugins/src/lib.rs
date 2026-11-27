@@ -44,7 +44,7 @@ pub use library::GameInfo;
 
 /// What `api_version()` answers. Bump it when functions are added, so
 /// plugins can check before calling them.
-pub const API_VERSION: i64 = 4;
+pub const API_VERSION: i64 = 1;
 
 /// Web requests a plugin can have waiting at once.
 pub const MAX_IN_FLIGHT: usize = 8;
@@ -1751,7 +1751,7 @@ name = \"T\"
             "#,
         );
         assert!(p.error.is_none(), "{:?}", p.error);
-        assert_eq!(p.take_storage().unwrap()["info"], "web 1.2.3 [\"storage\", \"network\"] 4");
+        assert_eq!(p.take_storage().unwrap()["info"], "web 1.2.3 [\"storage\", \"network\"] 1");
         assert!(p.logs().iter().any(|l| l == "warning: careful") && p.logs().iter().any(|l| l == "error: broke"));
         p.stop();
         assert_eq!(p.take_storage().unwrap()["bye"], "yes", "on_unload can still save");
