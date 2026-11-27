@@ -2886,9 +2886,46 @@ impl Online {
             return Ok(());
         }
         let mode = launch::mode(app, dir);
+        // Steam Play (the Windows version on a Mac): the first time, make the
+        // Wine prefix and run Steam's redistributables in it, then start.
+        if matches!(mode, crate::LaunchMode::Compat { .. }) && self.setup_checked.insert(app_id) {
+            if let (Ok((runner, prefix)), Some(tx)) = (launch::compat_runner(app), self.launch_tx.clone()) {
+                let library = dir.parent().and_then(|c| c.parent()).and_then(|s| s.parent()).map(std::path::Path::to_path_buf);
+                let done = crate::compat::setup_done(&prefix);
+                let steps = library.as_deref().map(|l| crate::installscript::pending_windows(l, app_id, &done)).unwrap_or_default();
+                let fresh = !prefix.join("system.reg").is_file();
+                if fresh || !steps.is_empty() {
+                    tracing::info!("{}: Steam Play setup in {} ({} step(s), new prefix: {fresh})", app.name, prefix.display(), steps.len());
+                    let (sink, dir, args) = (sink.clone(), dir.to_path_buf(), args.clone());
+                    let total = steps.len() + fresh as usize;
+                    let first = if fresh { format!("Wine ({})", runner.name) } else { steps[0].label.clone() };
+                    sink(Event::FirstTimeSetup { app_id, done: 0, total, step: first });
+                    tokio::task::spawn_blocking(move || {
+                        let progress = |i: usize, label: &str| sink(Event::FirstTimeSetup { app_id, done: i, total, step: label.to_string() });
+                        let ready = crate::compat::ensure_prefix(&runner, &prefix);
+                        if let Err(e) = &ready {
+                            tracing::warn!("Steam Play prefix for {app_id}: {e}");
+                            sink(Event::Error(format!("First-time setup didn't finish: {e}")));
+                        } else {
+                            let (ran, errors) = crate::compat::run_setup(&runner, &prefix, &steps, &|i, label| progress(i + fresh as usize, label));
+                            crate::compat::mark_setup_done(&prefix, &ran);
+                            if !errors.is_empty() {
+                                tracing::warn!("Steam Play setup of {app_id}: {}", errors.join("; "));
+                            }
+                        }
+                        sink(Event::FirstTimeSetup { app_id, done: total, total: 0, step: String::new() });
+                        if ready.is_ok() {
+                            let _ = tx.send((app_id, dir, args));
+                        }
+                    });
+                    return Ok(());
+                }
+            }
+        }
         // Like Steam: install scripts (DirectX, Visual C++, registry…) run
         // before the game, the first time. The official client does its own.
-        if !matches!(mode, crate::LaunchMode::OfficialSteam { .. }) && self.setup_checked.insert(app_id) {
+        let native = matches!(mode, crate::LaunchMode::SteamInRust | crate::LaunchMode::NoSteam { .. });
+        if native && self.setup_checked.insert(app_id) {
             let library = dir.parent().and_then(|c| c.parent()).and_then(|s| s.parent()).map(std::path::Path::to_path_buf);
             let steps = library.as_deref().map(|l| crate::installscript::pending(l, app_id, self.steam_root.clone())).unwrap_or_default();
             if let (false, Some(tx)) = (steps.is_empty(), self.launch_tx.clone()) {
@@ -2953,6 +2990,31 @@ impl Online {
                 Ok(child) => self.track(app_id, dir, child, sink, exit_tx)?,
                 Err(e) => sink(Event::Error(e)),
             },
+            crate::LaunchMode::Compat { steam, .. } => {
+                // Our Windows steamclient reaches us over localhost (Wine can't use the socket file).
+                let token = steam.then(|| self.ipc.register(app_id));
+                let ipc_env = token.as_deref().and_then(|t| self.ipc.tcp_env_value(t));
+                let how = launch::CompatLaunch { ipc_env, account: &self.account, account_id: model::account_id(self.me) };
+                match launch::spawn_compat(app, dir, args, &how) {
+                    Ok(child) => {
+                        if let Some(t) = token {
+                            self.launch_tokens.insert(app_id, t);
+                        }
+                        self.track(app_id, dir, child, sink, exit_tx)?;
+                    }
+                    Err(e) => {
+                        if let Some(t) = &token {
+                            self.ipc.forget(t);
+                        }
+                        sink(Event::Error(e));
+                    }
+                }
+            }
+            // Anti-cheat never runs through Wine: say so plainly instead.
+            crate::LaunchMode::AntiCheatOnMac { anti_cheat } => {
+                sink(Event::Error(format!("{} uses {anti_cheat}. Games with anti-cheat can't run on a Mac.", app.name)));
+            }
+            crate::LaunchMode::Unsupported { reason } => sink(Event::Error(format!("{} can't start: {reason}", app.name))),
         }
         Ok(())
     }

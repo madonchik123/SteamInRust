@@ -32,6 +32,7 @@ pub mod discovery;
 pub mod wishlist;
 pub mod points;
 pub mod installscript;
+pub mod compat;
 pub mod reviews;
 pub mod regions;
 pub mod a2s;

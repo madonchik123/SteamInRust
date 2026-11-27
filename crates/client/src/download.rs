@@ -23,11 +23,27 @@ pub struct InstallRequest {
     /// DLC the user turned on after installing: added on this update.
     #[serde(default)]
     pub add_dlc: Vec<AppId>,
+    /// The system whose version to install ("windows" for Steam Play on a
+    /// Mac); empty = this system's. An installed game keeps the version it
+    /// has (see [`target_os`]).
+    #[serde(default)]
+    pub os: String,
 }
 
-/// Choose the depots an install on this system needs (see [`pick_depots_for`]).
-pub fn pick_depots<'a>(app: &'a OwnedApp, owned: &HashSet<AppId>, req: &InstallRequest, installed: &HashSet<u32>) -> Vec<&'a model::DepotInfo> {
-    pick_depots_for(model::THIS_OS, app, owned, req, installed)
+/// The system whose version an install gets: what's installed already
+/// (the app manifest's `platform_override_source` for a Windows version on
+/// a Mac), else what the request asks for, else this system's.
+pub fn target_os(req: &InstallRequest) -> String {
+    let path = req.library.join("steamapps").join(format!("appmanifest_{}.acf", req.app_id));
+    let doc = std::fs::read_to_string(path).ok().and_then(|t| vdf::parse(&t).ok());
+    if let Some(doc) = &doc {
+        let installed = doc.path(&["AppState", "InstalledDepots"]).is_some_and(|d| d.iter().next().is_some());
+        if installed {
+            let source = doc.path(&["AppState", "UserConfig"]).and_then(|u| u.str("platform_override_source")).map(|s| s.trim().to_lowercase());
+            return source.filter(|s| !s.is_empty()).unwrap_or_else(|| model::THIS_OS.to_string());
+        }
+    }
+    if req.os.trim().is_empty() { model::THIS_OS.to_string() } else { req.os.trim().to_lowercase() }
 }
 
 /// Choose the depots a 64-bit install for `os` needs. `installed` = the
@@ -195,9 +211,10 @@ pub async fn run(
     let dir = depot::install::resolve_inside(&common, &folder).map_err(|e| e.to_string())?;
     let old = installed_manifests(&req);
     let on_disk: HashSet<u32> = old.iter().map(|(d, _)| *d).collect();
-    let depots = pick_depots(&app, &owned, &req, &on_disk);
+    let os = target_os(&req);
+    let depots = pick_depots_for(&os, &app, &owned, &req, &on_disk);
     if depots.is_empty() {
-        return Err(format!("{} has no downloadable content for {}", app.name, os_name(model::THIS_OS)));
+        return Err(format!("{} has no downloadable content for {}", app.name, os_name(&os)));
     }
     let mut servers = content_servers(&conn, cell_id).await?;
     // A host the player picked goes first (the others stay as fallbacks).
@@ -287,7 +304,7 @@ pub async fn run(
     }
     // Steam's shared redistributables (DirectX, Visual C++...) the game uses,
     // into their own folder (`Steamworks Shared`), like Steam.
-    let shared = match install_shared(&conn, &cdn, &app, &req, &progress).await {
+    let shared = match install_shared(&conn, &cdn, &app, &req, &os, &progress).await {
         Ok(s) => s,
         Err(e) if e == depot::Error::Cancelled.to_string() || e == depot::Error::Stopped.to_string() => return Err(e),
         Err(e) => {
@@ -323,7 +340,7 @@ pub async fn run(
         let _ = std::fs::write(cache.join(format!("{}_{}.manifest", m.depot, m.gid)), m.to_bytes());
     }
     let scripts = install_scripts(&manifests, &req, app.app_id);
-    write_app_manifest(&req, &app, &folder, &installed, need, owner, &scripts, &shared).map_err(|e| e.to_string())?;
+    write_app_manifest(&req, &app, &folder, &installed, need, owner, &scripts, &shared, &os).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&marker);
     Ok(report)
 }
@@ -354,11 +371,11 @@ fn install_scripts(manifests: &[depot::Manifest], req: &InstallRequest, app_id: 
 /// app's folder, and keep its app manifest (depots and install scripts) up
 /// to date like Steam does. Already-current depots are skipped. Returns the
 /// game's shared depots with the app they come from.
-async fn install_shared(conn: &Connection, cdn: &Arc<depot::Cdn>, app: &OwnedApp, req: &InstallRequest, progress: &Arc<depot::Progress>) -> Result<Vec<(u32, AppId)>, String> {
+async fn install_shared(conn: &Connection, cdn: &Arc<depot::Cdn>, app: &OwnedApp, req: &InstallRequest, os: &str, progress: &Arc<depot::Progress>) -> Result<Vec<(u32, AppId)>, String> {
     let wanted: Vec<(u32, AppId)> = app
         .depots
         .iter()
-        .filter(|d| d.shared_install && model::os_matches(&d.os, model::THIS_OS))
+        .filter(|d| d.shared_install && model::os_matches(&d.os, os))
         .filter_map(|d| Some((d.id, d.from_app?)))
         .collect();
     let mut by_app: std::collections::BTreeMap<AppId, Vec<u32>> = Default::default();
@@ -641,7 +658,8 @@ fn dir_size(dir: &Path) -> u64 {
     total
 }
 
-fn write_app_manifest(req: &InstallRequest, app: &OwnedApp, install_dir: &str, depots: &[(u32, u64, u64, Option<AppId>)], size: u64, owner: u64, scripts: &[(u32, String)], shared: &[(u32, AppId)]) -> std::io::Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn write_app_manifest(req: &InstallRequest, app: &OwnedApp, install_dir: &str, depots: &[(u32, u64, u64, Option<AppId>)], size: u64, owner: u64, scripts: &[(u32, String)], shared: &[(u32, AppId)], os: &str) -> std::io::Result<()> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let build = app.branches.iter().find(|b| b.name == req.branch).map(|b| b.build_id).unwrap_or(0);
     let mut installed = vdf::Obj::default();
@@ -655,6 +673,11 @@ fn write_app_manifest(req: &InstallRequest, app: &OwnedApp, install_dir: &str, d
     let mut user = vdf::Obj::default().with("language", &req.language);
     if req.branch != "public" {
         user = user.with("BetaKey", &req.branch);
+    }
+    // Another system's version (Windows through Steam Play on a Mac):
+    // recorded like Steam does for Proton.
+    if os != model::THIS_OS {
+        user = user.with("platform_override_source", os).with("platform_override_dest", model::THIS_OS);
     }
     let mut state = vdf::Obj::default()
         .with("appid", app.app_id.to_string())
@@ -701,7 +724,7 @@ mod tests {
             depots: vec![d(11, "windows", "64", "", None), d(12, "windows", "32", "", None), d(13, "linux", "", "", None), d(14, "", "", "german", None), d(15, "windows", "", "", Some(99))],
             ..Default::default()
         };
-        let req = InstallRequest { app_id: 10, library: ".".into(), steam_root: ".".into(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![] };
+        let req = InstallRequest { app_id: 10, library: ".".into(), steam_root: ".".into(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![], os: String::new() };
         let fresh = HashSet::new();
         let ids: Vec<u32> = pick_depots_for("windows", &app, &HashSet::new(), &req, &fresh).iter().map(|d| d.id).collect();
         assert_eq!(ids, vec![11]);
@@ -737,7 +760,7 @@ mod tests {
 fn picks_mac_depots() {
     let d = |id, os: &str| model::DepotInfo { id, os: os.into(), manifests: vec![("public".into(), 1, 1)], ..Default::default() };
     let app = OwnedApp { app_id: 10, depots: vec![d(11, "windows"), d(12, "macos"), d(13, ""), d(14, "windows,macos")], ..Default::default() };
-    let req = InstallRequest { app_id: 10, library: ".".into(), steam_root: ".".into(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![] };
+    let req = InstallRequest { app_id: 10, library: ".".into(), steam_root: ".".into(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![], os: String::new() };
     let ids: Vec<u32> = pick_depots_for("macos", &app, &HashSet::new(), &req, &HashSet::new()).iter().map(|d| d.id).collect();
     assert_eq!(ids, vec![12, 13, 14]);
 }
@@ -754,7 +777,7 @@ mod cancel_tests {
         std::fs::write(game.join("game.exe"), b"done").unwrap();
         std::fs::write(game.join("data").join("big.pak.sirpart"), b"half").unwrap();
         std::fs::write(game.join(".sirresume"), b"sirresume 1\n").unwrap();
-        let req = InstallRequest { app_id: 1, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![] };
+        let req = InstallRequest { app_id: 1, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![], os: String::new() };
         // An update: the finished file stays, the unfinished one goes.
         remove_unfinished(&req, &game, false);
         assert!(game.join("game.exe").exists());
@@ -769,6 +792,46 @@ mod cancel_tests {
         remove_unfinished(&req, &other, true);
         assert!(other.exists());
         let _ = std::fs::remove_dir_all(lib);
+    }
+
+    #[test]
+    fn target_os_keeps_the_installed_version() {
+        let lib = std::env::temp_dir().join(format!("sir-target-os-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lib);
+        std::fs::create_dir_all(lib.join("steamapps")).unwrap();
+        let mut req = InstallRequest { app_id: 5, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![], os: String::new() };
+        // A new install: what the request asks for, else this system's.
+        assert_eq!(target_os(&req), model::THIS_OS);
+        req.os = "windows".into();
+        assert_eq!(target_os(&req), "windows");
+        // Installed natively: an update stays native whatever it asks.
+        let acf = lib.join("steamapps").join("appmanifest_5.acf");
+        std::fs::write(&acf, "\"AppState\" { \"InstalledDepots\" { \"6\" { \"manifest\" \"1\" } } }").unwrap();
+        assert_eq!(target_os(&req), model::THIS_OS);
+        // Installed as the Windows version: updates keep it.
+        req.os.clear();
+        std::fs::write(&acf, "\"AppState\" { \"InstalledDepots\" { \"6\" { \"manifest\" \"1\" } } \"UserConfig\" { \"platform_override_source\" \"windows\" } }").unwrap();
+        assert_eq!(target_os(&req), "windows");
+        let _ = std::fs::remove_dir_all(&lib);
+    }
+
+    #[test]
+    fn manifest_records_another_systems_version() {
+        let lib = std::env::temp_dir().join(format!("sir-override-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lib);
+        std::fs::create_dir_all(lib.join("steamapps")).unwrap();
+        let req = InstallRequest { app_id: 8, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![], os: "windows".into() };
+        let app = OwnedApp { app_id: 8, name: "G".into(), ..Default::default() };
+        let other = if model::THIS_OS == "macos" { "windows" } else { "macos" };
+        write_app_manifest(&req, &app, "G", &[(9, 1, 1, None)], 1, 0, &[], &[], other).unwrap();
+        let doc = vdf::parse(&std::fs::read_to_string(lib.join("steamapps").join("appmanifest_8.acf")).unwrap()).unwrap();
+        let user = doc.path(&["AppState", "UserConfig"]).unwrap();
+        assert_eq!(user.str("platform_override_source"), Some(other));
+        assert_eq!(user.str("platform_override_dest"), Some(model::THIS_OS));
+        write_app_manifest(&req, &app, "G", &[(9, 1, 1, None)], 1, 0, &[], &[], model::THIS_OS).unwrap();
+        let doc = vdf::parse(&std::fs::read_to_string(lib.join("steamapps").join("appmanifest_8.acf")).unwrap()).unwrap();
+        assert_eq!(doc.path(&["AppState", "UserConfig"]).unwrap().str("platform_override_source"), None);
+        let _ = std::fs::remove_dir_all(&lib);
     }
 
     #[test]
@@ -791,6 +854,7 @@ mod cancel_tests {
             language: "english".into(),
             skip_dlc: vec![],
             add_dlc: vec![],
+            os: String::new(),
         };
 
         for bad_dir in [common.join(".."), common.join("."), common.join("sub").join("..")] {
@@ -831,7 +895,7 @@ mod cancel_tests {
         let lib = std::env::temp_dir().join(format!("sir-discard-{}", std::process::id()));
         let game = lib.join("steamapps").join("common").join("Game");
         let app = OwnedApp { app_id: 7, name: "Game".into(), ..Default::default() };
-        let req = InstallRequest { app_id: 7, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![] };
+        let req = InstallRequest { app_id: 7, library: lib.clone(), steam_root: lib.clone(), branch: "public".into(), language: "english".into(), skip_dlc: vec![], add_dlc: vec![], os: String::new() };
         let leave = |game: &Path| {
             std::fs::create_dir_all(game).unwrap();
             std::fs::write(game.join("done.pak"), b"done").unwrap();
@@ -909,6 +973,7 @@ mod security_tests {
             language: "english".into(),
             skip_dlc: vec![],
             add_dlc: vec![],
+            os: String::new(),
         };
         remove_dropped(&req, &game, &[(77, 1)], &[]);
         assert!(victim.exists(), "remove_dropped deleted outside install dir!");

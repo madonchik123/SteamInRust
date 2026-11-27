@@ -60,6 +60,29 @@ fn yes() -> bool {
     true
 }
 
+/// Why a game can't be installed on this computer (in the player's
+/// words), or `None` if it can: its own version, or on a Mac the Windows
+/// one through CrossOver or Wine (Steam Play, see client::compat).
+pub(crate) fn install_blocker(o: &model::OwnedApp) -> Option<String> {
+    use client::compat::Blocker;
+    let os = client::download::os_name(model::THIS_OS);
+    let found = client::compat::runners();
+    Some(match client::compat::install_blocker(o, &client::compat::load(), &found)? {
+        Blocker::OtherSystem => t!("This game doesn't run on {os}.", os = os).to_string(),
+        Blocker::NoRunner => t!("This game is for Windows. Install CrossOver or Wine to play it on {os}.", os = os).to_string(),
+        Blocker::AntiCheat(name) => t!("Uses {name}. Games with anti-cheat can't run on a Mac.", name = name).to_string(),
+    })
+}
+
+/// On a Mac: the runner a new install of this game goes through (its
+/// Windows version), if any.
+pub(crate) fn steam_play_runner(o: &model::OwnedApp) -> Option<client::compat::Runner> {
+    match client::compat::plan(o, &client::compat::load(), &client::compat::runners()) {
+        client::compat::Plan::Windows { runner } => Some(runner),
+        _ => None,
+    }
+}
+
 enum Dialog {
     Uninstall,
 }
@@ -945,8 +968,8 @@ impl Library {
             MenuAct::PauseDownload => ctx.send(Command::PauseDownload { app_id: id }),
             MenuAct::ResumeDownload => ctx.send(Command::ResumeDownload { app_id: id }),
             MenuAct::CancelDownload => ctx.send(Command::CancelDownload { app_id: id }),
-            MenuAct::Install if ctx.state.apps.as_ref().and_then(|a| a.get(&id)).is_some_and(|o| !o.runs_on_this_os()) => {
-                ctx.toast(t!("This game doesn't run on {os}.", os = client::download::os_name(model::THIS_OS)));
+            MenuAct::Install if let Some(why) = ctx.state.apps.as_ref().and_then(|a| a.get(&id)).and_then(install_blocker) => {
+                ctx.toast(why);
             }
             MenuAct::Install => self.install_dialog = Some(InstallDialog::new(id, ctx)),
             MenuAct::Favorite => {
@@ -1437,6 +1460,9 @@ impl Library {
         let library = library.or_else(|| ctx.local.libraries.first().cloned()).unwrap_or_else(|| ctx.local.steam_root.clone());
         let steam_root = if ctx.local.steam_root.as_os_str().is_empty() { library.clone() } else { ctx.local.steam_root.clone() };
         let language = if s.language.is_empty() { i18n::language().steam_name().to_string() } else { s.language.clone() };
+        // Steam Play: the Windows version through a runner (an installed
+        // game keeps the version it has; the downloader checks).
+        let os = ctx.state.apps.as_ref().and_then(|a| a.get(&id)).and_then(steam_play_runner).map(|_| "windows".to_string()).unwrap_or_default();
         ctx.send(Command::Install(client::download::InstallRequest {
             app_id: id,
             library,
@@ -1445,6 +1471,7 @@ impl Library {
             language,
             skip_dlc: s.disabled_dlc.iter().copied().collect(),
             add_dlc: s.enabled_dlc.iter().copied().collect(),
+            os,
         }));
         ctx.toast(t!("Added to downloads"));
     }

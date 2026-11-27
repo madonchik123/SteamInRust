@@ -815,7 +815,8 @@ impl Library {
             let tip = (workshop > 0).then(|| t!("{game} game + {workshop} Workshop items", game = ui::bytes(g.size_on_disk), workshop = ui::bytes(workshop)).to_string());
             facts.push(Fact { tip, ..Fact::new(icons::DRIVES, t!("Size"), ui::bytes(g.size_on_disk + workshop)) });
         } else if let Some(o) = owned {
-            let size: u64 = o.depots.iter().filter(|d| d.dlc_app.is_none() && model::os_matches(&d.os, model::THIS_OS)).filter_map(|d| d.manifest("public").map(|m| m.1)).sum();
+            let os = if super::steam_play_runner(o).is_some() { "windows" } else { model::THIS_OS };
+            let size: u64 = o.depots.iter().filter(|d| d.dlc_app.is_none() && !d.shared_install && model::os_matches(&d.os, os)).filter_map(|d| d.manifest("public").map(|m| m.1)).sum();
             if size > 0 {
                 facts.push(Fact::new(icons::DRIVES, t!("Download size"), format!("≈ {}", ui::bytes(size))));
             }
@@ -826,7 +827,9 @@ impl Library {
             if !systems.is_empty() {
                 let here = client::download::os_name(model::THIS_OS);
                 let names: Vec<&str> = systems.iter().map(|s| client::download::os_name(s)).collect();
-                let why = if o.runs_on_this_os() {
+                let why = if let Some(r) = installed.is_none().then(|| super::steam_play_runner(o)).flatten() {
+                    t!("Installs the Windows version, which runs through {runner} (Steam Play).", runner = r.name).to_string()
+                } else if o.runs_on_this_os() {
                     t!("Has a version made for {os}: it runs here as it is.", os = here).to_string()
                 } else {
                     t!("Made for {list} only: it doesn't run on {os}.", list = names.join(", "), os = here).to_string()
@@ -847,6 +850,16 @@ impl Library {
                     client::LaunchMode::SteamInRust => (t!("SteamInRust").to_string(), t!("Achievements, cloud saves and friends work through SteamInRust.").to_string()),
                     client::LaunchMode::OfficialSteam { anti_cheat } => (t!("Runs through Steam (anti-cheat)").to_string(), t!("Uses {name}: starts through the official Steam client, which opens in the background.", name = anti_cheat)),
                     client::LaunchMode::NoSteam { reason } => (t!("Starts without Steam").to_string(), i18n::tr_dyn(&reason).to_string()),
+                    client::LaunchMode::Compat { runner, steam: true } => (
+                        t!("Steam Play ({runner})", runner = runner).to_string(),
+                        t!("The Windows version runs through {runner}. Achievements and cloud saves work through SteamInRust.", runner = runner).to_string(),
+                    ),
+                    client::LaunchMode::Compat { runner, steam: false } => (
+                        t!("Steam Play ({runner})", runner = runner).to_string(),
+                        t!("The Windows version runs through {runner}, without Steam features.", runner = runner).to_string(),
+                    ),
+                    client::LaunchMode::AntiCheatOnMac { anti_cheat } => (t!("Can't run on a Mac").to_string(), t!("Uses {name}. Games with anti-cheat can't run on a Mac.", name = anti_cheat).to_string()),
+                    client::LaunchMode::Unsupported { reason } => (t!("Can't start").to_string(), i18n::tr_dyn(&reason).to_string()),
                 };
                 facts.push(Fact { tip: Some(why), ..Fact::new(icons::LIGHTNING, t!("Steam features"), mode) });
             }
@@ -936,16 +949,25 @@ impl Library {
                 ui.add(egui::Spinner::new().color(t.accent));
             }
             Some(g) => {
-                if w::play_button(ui, t, t!("Play")).clicked() {
+                // The Windows version of an anti-cheat game on a Mac (or no runner left): say why instead.
+                let blocked = owned.and_then(|o| client::launch_mode_peek(o, &g.install_dir)).and_then(|m| match m {
+                    client::LaunchMode::AntiCheatOnMac { anti_cheat } => Some(t!("Uses {name}. Games with anti-cheat can't run on a Mac.", name = anti_cheat).to_string()),
+                    client::LaunchMode::Unsupported { reason } => Some(i18n::tr_dyn(&reason).to_string()),
+                    _ => None,
+                });
+                if let Some(why) = blocked {
+                    ui.add_enabled_ui(false, |ui| w::play_button(ui, t, t!("Play"))).response.on_disabled_hover_text(why);
+                } else if w::play_button(ui, t, t!("Play")).clicked() {
                     self.launch_game(ctx, id, g.install_dir.clone());
                 }
             }
-            // Like Steam on a Mac: Windows-only games stay listed but can't be installed.
-            None if owned.is_some_and(|o| !o.runs_on_this_os()) => {
+            // Like Steam on a Mac: Windows-only games stay listed; they install
+            // through Steam Play when there's a runner, and say why not otherwise.
+            None if let Some(why) = owned.and_then(super::install_blocker) => {
                 let os = client::download::os_name(model::THIS_OS);
                 ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::DOWNLOAD), &t!("Not available on {os}", os = os), w::Kind::Install, lg))
                     .response
-                    .on_disabled_hover_text(t!("This game doesn't run on {os}.", os = os));
+                    .on_disabled_hover_text(why);
             }
             None if owned.is_some() => {
                 if w::install_button(ui, t, t!("Install")).clicked() {

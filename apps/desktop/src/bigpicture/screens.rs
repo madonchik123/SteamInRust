@@ -365,7 +365,7 @@ fn library_tab(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32) -> f32
     let mut y = top + 16.0 * s;
     let entries = crate::builtin::entries(&f.app.state, &f.app.local);
     // Games that can run here (a Mac lists Windows-only games too).
-    let runs: std::collections::HashSet<AppId> = entries.iter().filter(|e| e.installed.is_some() || e.owned.is_none_or(|o| o.runs_on_this_os())).map(|e| e.app_id).collect();
+    let runs: std::collections::HashSet<AppId> = entries.iter().filter(|e| e.installed.is_some() || e.owned.is_none_or(|o| crate::builtin::library::install_blocker(o).is_none())).map(|e| e.app_id).collect();
     let mut games: Vec<(AppId, String, bool)> = entries.iter().map(|e| (e.app_id, e.name.to_string(), e.installed.is_some())).collect();
     let ids: Vec<AppId> = games.iter().map(|g| g.0).collect();
     let hidden: std::collections::HashSet<AppId> = with_library(f.app, f.actions, |lib, _| ids.iter().copied().filter(|id| lib.is_hidden(*id)).collect()).unwrap_or_default();

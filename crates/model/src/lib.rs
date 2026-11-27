@@ -395,6 +395,11 @@ impl LaunchOption {
     pub fn runs_on_this_os(&self) -> bool {
         os_matches(&self.os_list, THIS_OS)
     }
+
+    /// For `os` ("windows", "macos", "linux")?
+    pub fn runs_on(&self, os: &str) -> bool {
+        os_matches(&self.os_list, os)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

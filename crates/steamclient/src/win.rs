@@ -10,6 +10,7 @@ use std::ffi::c_void;
 unsafe extern "system" {
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+    fn GetModuleHandleW(name: *const u16) -> *mut c_void;
 }
 
 #[cfg(windows)]
@@ -83,6 +84,23 @@ pub fn proc_address(module: usize, name: &str) -> usize {
 #[cfg(not(windows))]
 pub fn proc_address(_module: usize, _name: &str) -> usize {
     0
+}
+
+/// Running inside Wine (Steam Play on a Mac)? Wine's ntdll has
+/// `wine_get_version`; Windows' doesn't.
+#[cfg(windows)]
+pub fn is_wine() -> bool {
+    static WINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WINE.get_or_init(|| {
+        let ntdll = wide("ntdll.dll");
+        let m = unsafe { GetModuleHandleW(ntdll.as_ptr()) };
+        !m.is_null() && proc_address(m as usize, "wine_get_version") != 0
+    })
+}
+
+#[cfg(not(windows))]
+pub fn is_wine() -> bool {
+    false
 }
 
 /// Open a web page in the default browser (stands in for the Steam overlay).

@@ -240,6 +240,20 @@ pub fn pending(library: &Path, app_id: AppId, steam_path: Option<PathBuf>) -> Ve
     out
 }
 
+/// Steps for the Windows version of a game on a Mac (Steam Play): paths as
+/// Wine sees them (`Z:\...`), 64-bit Windows, and `done` = the step ids
+/// that already ran in the game's Wine prefix.
+pub fn pending_windows(library: &Path, app_id: AppId, done: &std::collections::HashSet<String>) -> Vec<Step> {
+    let mut out = Vec::new();
+    for (script, dir) in scripts(library, app_id) {
+        let Ok(text) = std::fs::read_to_string(&script) else { continue };
+        let id = format!("{}#{:x}", script.to_string_lossy().to_lowercase(), fnv(&text));
+        let vars = Vars { install_dir: PathBuf::from(crate::compat::windows_path(&dir)), steam_path: None };
+        out.extend(parse(&text, &vars, "english", true, &id).into_iter().filter(|s| !done.contains(&s.id)));
+    }
+    out
+}
+
 fn is_done(step: &Step, done: &std::collections::HashSet<String>) -> bool {
     match &step.action {
         Action::Run { has_run: Some((key, name, min)), .. } => reg::dword(key, name).is_some_and(|v| v >= *min),

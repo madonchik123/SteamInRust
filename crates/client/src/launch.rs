@@ -10,6 +10,10 @@
 //!   silently and runs the game, so Steam and the anti-cheat work normally.
 //! - **No Steam** ([`LaunchMode::NoSteam`]): when our DLL can't serve the
 //!   game (32-bit games, DLL missing), it starts plain, as before.
+//! - **Steam Play** ([`LaunchMode::Compat`], macOS): the Windows version of
+//!   a game runs through CrossOver or Wine (see compat.rs), with our Windows
+//!   steamclient DLL inside the Wine prefix. Games with anti-cheat never do
+//!   ([`LaunchMode::AntiCheatOnMac`]).
 
 use model::{AppId, OwnedApp};
 use std::path::{Path, PathBuf};
@@ -26,11 +30,23 @@ pub enum LaunchMode {
     OfficialSteam { anti_cheat: String },
     /// Starts without Steam features; `reason` says why.
     NoSteam { reason: String },
+    /// The Windows version through a Wine-based runner (Steam Play on a
+    /// Mac). `steam`: our Windows steamclient serves it.
+    Compat { runner: String, steam: bool },
+    /// The Windows version of a game with anti-cheat: it can't run on a Mac.
+    AntiCheatOnMac { anti_cheat: String },
+    /// Can't start here; `reason` says why (no runner, no Windows program).
+    Unsupported { reason: String },
 }
 
 /// How Play will start this game. Reads the install folder (anti-cheat
 /// files, the executable's bitness), so callers should cache it.
 pub fn mode(app: &OwnedApp, install_dir: &Path) -> LaunchMode {
+    if crate::compat::SUPPORTED {
+        if let Some(os) = crate::compat::installed_platform(app.app_id, install_dir) {
+            return compat_mode(app, install_dir, &os, &crate::compat::load(), &crate::compat::runners());
+        }
+    }
     if let Some(ac) = anti_cheat(app, install_dir) {
         return LaunchMode::OfficialSteam { anti_cheat: ac };
     }
@@ -44,6 +60,29 @@ pub fn mode(app: &OwnedApp, install_dir: &Path) -> LaunchMode {
         return LaunchMode::NoSteam { reason: missing_steamclient(is64).into() };
     }
     LaunchMode::SteamInRust
+}
+
+/// How the Windows version (`os`) of a game installed on a Mac starts.
+fn compat_mode(app: &OwnedApp, install_dir: &Path, os: &str, cfg: &crate::compat::Config, runners: &[crate::compat::Runner]) -> LaunchMode {
+    if os != "windows" {
+        return LaunchMode::Unsupported { reason: "This is another system's version of the game".into() };
+    }
+    // Never through a runner: anti-cheat can't work there, and must not be touched.
+    if let Some(ac) = anti_cheat_for(app, install_dir, "windows") {
+        return LaunchMode::AntiCheatOnMac { anti_cheat: ac };
+    }
+    let Some(runner) = crate::compat::runner_for(app.app_id, cfg, runners) else {
+        return LaunchMode::Unsupported { reason: "Install CrossOver or Wine to play the Windows version".into() };
+    };
+    let Some(exe) = executable_for(app, install_dir, "windows") else {
+        return LaunchMode::Unsupported { reason: "no launch option for this system".into() };
+    };
+    let Some(is64) = pe_is_64bit(&exe) else {
+        return LaunchMode::Unsupported { reason: "game file not found".into() };
+    };
+    let dll = crate::compat::windows_dll();
+    let steam = dll.is_some_and(|d| is64 || d.with_file_name("steamclient32.dll").is_file());
+    LaunchMode::Compat { runner: runner.name, steam }
 }
 
 #[cfg(windows)]
@@ -167,10 +206,15 @@ const CATEGORY_VAC: u32 = 8;
 /// The anti-cheat this game uses, if any. Unsure (folder unreadable) counts
 /// as anti-cheat: running it through Steam is the safe side.
 pub fn anti_cheat(app: &OwnedApp, install_dir: &Path) -> Option<String> {
+    anti_cheat_for(app, install_dir, model::THIS_OS)
+}
+
+/// [`anti_cheat`] for the version made for `os` (the Windows one on a Mac).
+pub fn anti_cheat_for(app: &OwnedApp, install_dir: &Path, os: &str) -> Option<String> {
     if app.categories.contains(&CATEGORY_VAC) {
         return Some("Valve Anti-Cheat".into());
     }
-    for opt in app.launch.iter().filter(|o| o.runs_on_this_os()) {
+    for opt in app.launch.iter().filter(|o| o.runs_on(os)) {
         let text = format!("{} {}", opt.executable, opt.arguments).to_lowercase();
         if let Some((_, name)) = ANTI_CHEAT_MARKERS.iter().find(|(m, _)| text.contains(m)) {
             return Some(name.to_string());
@@ -200,7 +244,11 @@ fn scan_markers(dir: &Path, depth: u32) -> Option<&'static str> {
 // ---------------------------------------------------------- spawning
 
 fn executable(app: &OwnedApp, install_dir: &Path) -> Option<PathBuf> {
-    let opt = app.launch.iter().find(|o| o.runs_on_this_os() && !o.executable.is_empty())?;
+    executable_for(app, install_dir, model::THIS_OS)
+}
+
+fn executable_for(app: &OwnedApp, install_dir: &Path, os: &str) -> Option<PathBuf> {
+    let opt = app.launch.iter().find(|o| o.runs_on(os) && !o.executable.is_empty())?;
     Some(program(&install_dir.join(normalize(&opt.executable))))
 }
 
@@ -346,6 +394,85 @@ pub fn spawn_with_steamclient(app: &OwnedApp, install_dir: &Path, args: &LaunchA
         cmd.env(crate::ipc::protocol::ENV_LOG, log);
     }
     cmd.spawn().map_err(|e| format!("could not start {}: {e}", app.name))
+}
+
+/// What a Steam Play launch needs from the session.
+pub struct CompatLaunch<'a> {
+    /// `STEAMINRUST_IPC` for the game (the localhost address and token);
+    /// `None` starts it without Steam features.
+    pub ipc_env: Option<String>,
+    pub account: &'a str,
+    pub account_id: u32,
+}
+
+/// The runner and prefix a game's Windows version uses.
+pub fn compat_runner(app: &OwnedApp) -> Result<(crate::compat::Runner, PathBuf), String> {
+    let runner = crate::compat::runner_for(app.app_id, &crate::compat::load(), &crate::compat::runners()).ok_or_else(|| "Install CrossOver or Wine to play the Windows version".to_string())?;
+    let prefix = crate::compat::prefix_for(&runner, app.app_id).ok_or_else(|| "no place for the Wine prefix".to_string())?;
+    Ok((runner, prefix))
+}
+
+/// Start the Windows version of a game through its runner (Steam Play on
+/// a Mac). With Steam features, Wine runs `rundll32` on our DLL inside the
+/// prefix, which registers itself like Steam and starts the game (see
+/// `crates/steamclient/src/launcher.rs`); without, the game starts plain.
+pub fn spawn_compat(app: &OwnedApp, install_dir: &Path, args: &LaunchArgs, how: &CompatLaunch) -> Result<Child, String> {
+    use crate::compat::{self, windows_path};
+    let connect = safe_connect_args(&args.connect)?;
+    let opt = app
+        .launch
+        .iter()
+        .find(|o| o.runs_on("windows") && !o.executable.is_empty())
+        .ok_or_else(|| format!("{} has no Windows launch option", app.name))?;
+    let (runner, prefix) = compat_runner(app)?;
+    let exe = install_dir.join(normalize(&opt.executable));
+    let cwd = if opt.working_dir.is_empty() { exe.parent().unwrap_or(install_dir).to_path_buf() } else { install_dir.join(normalize(&opt.working_dir)) };
+    let mut game_args: Vec<String> = split_args(&opt.arguments);
+    game_args.extend(split_args(&args.user));
+    game_args.extend(connect);
+    let mut cmd = compat::wine_command(&runner, &prefix);
+    cmd.current_dir(&cwd).env("SteamAppId", app.app_id.to_string()).env("SteamGameId", app.app_id.to_string());
+    let dll = compat::windows_dll();
+    match (&how.ipc_env, dll) {
+        (Some(ipc), Some(dll)) => {
+            compat::install_dll(&prefix, &dll)?;
+            tracing::info!("launching {} through {} with SteamInRust's steamclient ({})", app.name, runner.name, exe.display());
+            cmd.arg("rundll32.exe")
+                .arg(format!("{},{}", compat::DLL_IN_PREFIX, compat::LAUNCH_ENTRY))
+                .env("STEAMINRUST_LAUNCH_EXE", windows_path(&exe))
+                .env("STEAMINRUST_LAUNCH_DIR", windows_path(&cwd))
+                .env("STEAMINRUST_LAUNCH_ARGS", quote_args(&game_args))
+                .env("STEAMINRUST_ACCOUNT_ID", how.account_id.to_string())
+                .env(crate::ipc::protocol::ENV_IPC, ipc)
+                .env("SteamOverlayGameId", app.app_id.to_string())
+                .env("SteamClientLaunch", "1")
+                .env("SteamEnv", "1")
+                .env("SteamAppUser", how.account)
+                .env("SteamUser", how.account);
+            if let Some(log) = std::env::var_os("STEAMINRUST_STEAMCLIENT_LOG") {
+                cmd.env(crate::ipc::protocol::ENV_LOG, windows_path(Path::new(&log)));
+            }
+        }
+        _ => {
+            tracing::info!("launching {} through {} ({})", app.name, runner.name, exe.display());
+            cmd.arg(windows_path(&exe)).args(&game_args);
+        }
+    }
+    // Its own process group, so closing the game closes Wine's processes too.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.spawn().map_err(|e| format!("could not start {} through {}: {e}", app.name, runner.name))
+}
+
+/// Arguments joined for a Windows command line (quoted when they have spaces).
+fn quote_args(args: &[String]) -> String {
+    args.iter()
+        .map(|a| if a.is_empty() || a.contains([' ', '\t']) { format!("\"{}\"", a.replace('"', "\\\"")) } else { a.clone() })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn command(app: &OwnedApp, install_dir: &Path, extra_args: &str, connect: &[String]) -> Result<Command, String> {
@@ -1282,6 +1409,42 @@ mod tests {
     #[test]
     fn splits_quoted_args() {
         assert_eq!(split_args(r#"-a "b c" d"#), vec!["-a", "b c", "d"]);
+    }
+
+    #[test]
+    fn quotes_args_for_windows() {
+        assert_eq!(quote_args(&["-w".into(), "a b".into(), String::new()]), r#"-w "a b" """#);
+    }
+
+    /// A tiny file that reads as a 64-bit Windows program.
+    fn fake_pe64(path: &Path) {
+        let mut b = vec![0u8; 0x80];
+        b[..2].copy_from_slice(b"MZ");
+        b[60..64].copy_from_slice(&0x40u32.to_le_bytes());
+        b[0x40..0x44].copy_from_slice(b"PE\0\0");
+        b[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes());
+        std::fs::write(path, b).unwrap();
+    }
+
+    #[test]
+    fn windows_version_on_a_mac_starts_through_a_runner_unless_anti_cheat() {
+        use crate::compat::{Config, Kind, Runner};
+        let dir = std::env::temp_dir().join(format!("sir-compat-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        fake_pe64(&dir.join("game.exe"));
+        let mut g = app(vec![2], "game.exe");
+        g.launch[0].os_list = "windows".into();
+        let wine = Runner { id: "wine-devel".into(), name: "Wine Devel".into(), kind: Kind::Wine, wine: "/x/wine".into() };
+        let cfg = Config::default();
+        assert!(matches!(compat_mode(&g, &dir, "windows", &cfg, std::slice::from_ref(&wine)), LaunchMode::Compat { runner, .. } if runner == "Wine Devel"));
+        // No runner on this Mac: it can't start, and says why.
+        assert!(matches!(compat_mode(&g, &dir, "windows", &cfg, &[]), LaunchMode::Unsupported { .. }));
+        // Anti-cheat: never through a runner.
+        assert!(matches!(compat_mode(&app(vec![8], "game.exe"), &dir, "windows", &cfg, std::slice::from_ref(&wine)), LaunchMode::AntiCheatOnMac { .. }));
+        std::fs::create_dir_all(dir.join("EasyAntiCheat")).unwrap();
+        assert!(matches!(compat_mode(&g, &dir, "windows", &cfg, std::slice::from_ref(&wine)), LaunchMode::AntiCheatOnMac { anti_cheat } if anti_cheat == "Easy Anti-Cheat"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn app(categories: Vec<u32>, exe: &str) -> OwnedApp {

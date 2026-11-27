@@ -35,6 +35,7 @@ mod input;
 mod inventory;
 mod ipc;
 mod jingle;
+pub mod launcher;
 mod lobby;
 pub mod overlay;
 mod p2p;
@@ -148,7 +149,13 @@ fn create_interface(version: usize, err: usize) -> usize {
         // Load the session now so GetAppID and friends are right from the start.
         if state::ensure_session() {
             // Draw the Shift+Tab overlay inside the game (see overlay/).
-            overlay::start();
+            // Not under Wine (Steam Play on a Mac): its Direct3D hooks
+            // aren't safe on Wine's graphics layers.
+            if !win::is_wine() || std::env::var_os("STEAMINRUST_OVERLAY").is_some_and(|v| v == "1") {
+                overlay::start();
+            } else {
+                log!("steamclient: running under Wine, no in-game overlay");
+            }
         }
     }
     p as usize

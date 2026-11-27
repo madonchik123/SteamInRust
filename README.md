@@ -184,10 +184,19 @@ app: **More info → Run anyway**. Uninstall from **Settings → Apps**.
 On macOS the app isn't signed by an Apple developer account, so the first time
 macOS says it can't check it for malicious software. Open it once with
 **right-click → Open → Open**, or allow it in **System Settings → Privacy &
-Security → Open Anyway**. On a Mac, games without a macOS version show as not
-available, like in Steam, and new installs go to Steam's usual folder
+Security → Open Anyway**. New installs go to Steam's usual folder
 (`~/Library/Application Support/Steam`) unless you pick another. To remove it,
 drag SteamInRust from Applications to the Bin.
+
+**Windows games on a Mac (Steam Play).** With [CrossOver](https://www.codeweavers.com/crossover)
+or a free [Wine build](https://github.com/Gcenx/macOS_Wine_builds) in Applications,
+games that only have a Windows version install and play like any other: their
+Windows version runs through Wine, with achievements and cloud saves through
+SteamInRust. Pick the default tool in **Settings → Compatibility**, or force
+one for a single game in its **Properties → Compatibility** (that also gets the
+Windows version of a game that has a Mac one). Games with anti-cheat (VAC, Easy
+Anti-Cheat, BattlEye…) can't run on a Mac and say so. Without CrossOver or Wine,
+Windows-only games show as not available, like in Steam.
 
 ## Is it safe to use?
 
@@ -253,6 +262,7 @@ own toolchain in the project folder, once:
 ```sh
 rustup override set stable
 cargo xtask steamclient-mac  # the steamclient games load, for Apple and Intel games
+cargo xtask steamclient-win  # Steam Play: the Windows steamclient (needs brew install mingw-w64)
 ```
 
 ```sh

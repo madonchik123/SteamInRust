@@ -16,6 +16,8 @@ use ui::{Theme, icons, widgets as w};
 pub enum PropTab {
     #[default]
     General,
+    /// Steam Play on a Mac: force a CrossOver or Wine runner (Windows version).
+    Compatibility,
     Updates,
     Files,
     Betas,
@@ -30,6 +32,20 @@ pub enum PropTab {
 
 /// A non-Steam game's tabs, like Steam's.
 const SHORTCUT_TABS: [(PropTab, &str); 3] = [(PropTab::Shortcut, "Shortcut"), (PropTab::Privacy, "Privacy"), (PropTab::Customization, "Customization")];
+
+/// On a Mac, like Steam on Linux: Compatibility comes right after General.
+const MAC_TABS: [(PropTab, &str); 10] = [
+    (PropTab::General, "General"),
+    (PropTab::Compatibility, "Compatibility"),
+    (PropTab::Updates, "Updates"),
+    (PropTab::Files, "Installed files"),
+    (PropTab::Betas, "Versions & betas"),
+    (PropTab::Dlc, "DLC"),
+    (PropTab::Controller, "Controller"),
+    (PropTab::Workshop, "Workshop"),
+    (PropTab::Privacy, "Privacy"),
+    (PropTab::Customization, "Customization"),
+];
 
 const TABS: [(PropTab, &str); 9] = [
     (PropTab::General, "General"),
@@ -71,7 +87,13 @@ impl Library {
     pub(super) fn properties_window(&mut self, ui: &Ui, t: &Theme, ctx: &mut Ctx) {
         let Some(app_id) = self.props.as_ref().map(|p| p.app) else { return };
         let name = self.shortcut(app_id).map(|g| g.name.clone()).or_else(|| ctx.state.app_name(app_id).map(String::from)).or_else(|| ctx.local.games.iter().find(|g| g.app_id == app_id).map(|g| g.name.clone())).unwrap_or_default();
-        let tabs: &[(PropTab, &str)] = if is_shortcut(app_id) { &SHORTCUT_TABS } else { &TABS };
+        let tabs: &[(PropTab, &str)] = if is_shortcut(app_id) {
+            &SHORTCUT_TABS
+        } else if client::compat::SUPPORTED {
+            &MAC_TABS
+        } else {
+            &TABS
+        };
         let installed = ctx.local.games.iter().find(|g| g.app_id == app_id).cloned();
         let owned = ctx.state.apps.as_ref().and_then(|a| a.get(&app_id)).cloned();
         let mut builder = egui::ViewportBuilder::default().with_title(&name).with_inner_size([860.0, 620.0]).with_min_inner_size([700.0, 480.0]);
@@ -124,6 +146,7 @@ impl Library {
                             self.tab_cloud(ui, t, ctx, app_id, &name, installed.as_ref(), owned.as_ref());
                             self.tab_general(ui, t, app_id, owned.as_ref());
                         }
+                        PropTab::Compatibility => self.tab_compat(ui, t, app_id, installed.as_ref(), owned.as_ref()),
                         PropTab::Updates => self.tab_updates(ui, t, ctx, app_id, installed.as_ref(), owned.as_ref()),
                         PropTab::Files => self.tab_files(ui, t, ctx, app_id, installed.as_ref()),
                         PropTab::Betas => self.tab_betas(ui, t, ctx, app_id, installed.as_ref(), owned.as_ref()),
@@ -551,6 +574,62 @@ impl Library {
             }
             _ => {}
         }
+    }
+
+    /// Steam's "Force the use of a specific Steam Play compatibility tool":
+    /// the Windows version through a chosen runner, even with a Mac version.
+    fn tab_compat(&mut self, ui: &mut Ui, t: &Theme, app: AppId, installed: Option<&InstalledGame>, owned: Option<&OwnedApp>) {
+        let mut cfg = client::compat::load();
+        let runners = client::compat::runners();
+        let has_windows = owned.is_none_or(|o| o.runs_on("windows"));
+        let anti_cheat = owned.is_some_and(|o| o.categories.contains(&8));
+        section(ui, t, t!("Steam Play"), t!("Play the Windows version of this game through CrossOver or Wine."), |ui| {
+            if !has_windows {
+                ui.label(w::body_s(t, t!("This game has no Windows version."), t.text_dim));
+                return;
+            }
+            if anti_cheat {
+                ui.label(w::body_s(t, t!("Uses {name}. Games with anti-cheat can't run on a Mac.", name = "Valve Anti-Cheat"), t.danger));
+                return;
+            }
+            if runners.is_empty() {
+                ui.label(w::body_s(t, t!("No CrossOver or Wine found. Install CrossOver (codeweavers.com) or a Wine build, then open this tab again."), t.text_dim));
+                if w::button(ui, t, Some(icons::REFRESH), t!("Look again"), w::Kind::Secondary, w::Size::Sm).clicked() {
+                    client::compat::rescan();
+                }
+                return;
+            }
+            let mut forced = cfg.games.contains_key(&app);
+            if w::toggle_row(ui, t, &mut forced, &t!("Force the use of a specific Steam Play compatibility tool")).changed() {
+                if forced {
+                    let pick = client::compat::runner_for(app, &cfg, &runners).map(|r| r.id).unwrap_or_default();
+                    cfg.games.insert(app, pick);
+                } else {
+                    cfg.games.remove(&app);
+                }
+                let _ = client::compat::save(&cfg);
+            }
+            if let Some(current) = cfg.games.get(&app).cloned() {
+                let mut pick = if runners.iter().any(|r| r.id == current) { current } else { runners[0].id.clone() };
+                let options: Vec<(String, String)> = runners.iter().map(|r| (r.id.clone(), r.name.clone())).collect();
+                ui.add_space(4.0);
+                if w::select(ui, t, &mut pick, &options, 260.0) {
+                    cfg.games.insert(app, pick);
+                    let _ = client::compat::save(&cfg);
+                }
+            }
+            // An installed game keeps its version until it's installed again.
+            if let Some(g) = installed {
+                let windows = client::compat::installed_platform(app, &g.install_dir).is_some();
+                let wants = owned.is_some_and(|o| super::steam_play_runner(o).is_some());
+                ui.add_space(6.0);
+                let now = if windows { t!("Installed: the Windows version (Steam Play).") } else { t!("Installed: the version for this Mac.") };
+                ui.label(w::body_s(t, now, t.text_dim));
+                if windows != wants {
+                    ui.label(w::body_s(t, t!("Uninstall and install it again to switch versions."), t.danger));
+                }
+            }
+        });
     }
 
     fn tab_controller(&mut self, ui: &mut Ui, t: &Theme, app: AppId) {
