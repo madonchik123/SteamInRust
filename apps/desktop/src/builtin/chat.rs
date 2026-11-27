@@ -1,16 +1,21 @@
 //! The chat itself, like Steam's: messages with emoticons, stickers,
 //! spoilers, code, quotes, `/me`, `/random` and `/flip`, links with preview
-//! cards and pictures you can open large; reactions and a menu on every
-//! message (copy, select, react, quote, report); and the message box with
-//! slash commands, an emoticon picker and attachments. The Friends & Chat
-//! window and the in-game overlay both show it.
+//! cards, pictures you can open large and videos that play in the chat
+//! (ones from other sites only after "Load preview"); text you can select
+//! with the mouse; reactions and a menu on every message (the "⋮" button or
+//! a right-click: copy, react, quote, report) and on every link
+//! (open, open in browser, copy); and the message box with slash commands,
+//! an emoticon picker and pictures to send ("+", Ctrl+V or dropping a
+//! file). The Friends & Chat window and the in-game overlay both show it.
 
 mod cards;
 mod input;
+mod media;
 mod render;
 
 pub use cards::init;
 pub(crate) use cards::{is_image, link_label};
+pub(crate) use media::{allow as allow_preview, decode_small, host, incoming as incoming_picture, is_playing, is_video, may_load, play as play_video, plays_here, stop as stop_video};
 pub(crate) use input::{EMOJI, ask_trade_link, command_help, picker_items, send, share_trade_when_ready, slash_rows, use_picked, use_slash_row};
 
 use client::{ChatTarget, Command, State};
@@ -126,8 +131,6 @@ struct Report {
 pub(crate) struct ChatUi {
     /// Spoilers shown: (message time, ordinal, which spoiler).
     revealed: HashSet<(u64, u32, usize)>,
-    /// The message shown as selectable text.
-    selecting: Option<(u64, u32)>,
     /// The picture open in the large viewer.
     viewing: Option<String>,
     report: Option<Report>,
@@ -142,6 +145,10 @@ pub(crate) struct ChatUi {
     store_typed: f64,
     /// Emoticons you used this session, newest first.
     recent: Vec<(String, bool)>,
+    /// A link or picture's own menu took this right-click.
+    link_menu: bool,
+    /// A picture waiting for "Send".
+    outgoing: Option<media::Outgoing>,
 }
 
 /// One conversation: its messages and the message box, `height` tall.
@@ -150,6 +157,7 @@ pub(crate) struct ChatUi {
 /// yet". Returns what the app should do (join a game, open a page).
 #[allow(clippy::too_many_arguments)]
 pub fn conversation(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, msgs: &[Msg], input: &mut String, height: f32, older: Option<&mut bool>, loading: bool) -> Vec<Action> {
+    let start = ui.cursor().min;
     let id = ui.scope_id().with(("chat-ui", to));
     let mut mem: ChatUi = ui.data_mut(|d| d.get_temp_mut_or_default::<ChatUi>(id).clone());
     let mut out = Vec::new();
@@ -211,6 +219,28 @@ pub fn conversation(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, msgs: &[M
         ui.data_mut(|d| d.insert_temp(composer_id, r.height()));
         ui.ctx().request_repaint();
     }
+    // A picture dropped on the chat (or pasted, see the message box) is
+    // shown before it's sent.
+    let whole = Rect::from_min_max(start, r.max);
+    if media::dragging_files(ui) && ui.is_rect_visible(whole) {
+        media::drop_hint(ui, t, whole);
+    }
+    if let Some(o) = media::incoming(ui, false, true) {
+        mem.outgoing = Some(o);
+    }
+    if let Some(mut o) = mem.outgoing.take() {
+        match media::confirm(ui, t, &mut o) {
+            Some(media::Answer::Send) => match o.into_file() {
+                Ok(path) => {
+                    env.client.send(Command::SendChatImage { to, path });
+                    out.push(Action::Toast(t!("Sending the picture…").to_string()));
+                }
+                Err(e) => out.push(Action::Toast(t!("Couldn't send the picture: {error}", error = e).to_string())),
+            },
+            Some(media::Answer::Cancel) => {}
+            None => mem.outgoing = Some(o),
+        }
+    }
     report_dialog(ui, t, env, to, &mut mem);
     cards::viewer(ui, t, &mut mem);
     ui.data_mut(|d| d.insert_temp(id, mem));
@@ -250,22 +280,34 @@ fn message(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, m: &Msg, first: bo
                         ui.label(w::body_s(t, ui::ago(m.time), t.text_faint)).on_hover_text(ui::date_time(m.time));
                     });
                 }
-                if mem.selecting == Some(m.key()) {
-                    let mut text = m.plain.clone();
-                    ui.add(egui::TextEdit::multiline(&mut text).desired_rows(1).desired_width(ui.available_width()).font(egui::FontId::new(t.typography.body_m.size, t.typography.body_m.weight.family())));
-                    if w::button(ui, t, Some(icons::CHECK), t!("Done"), w::Kind::Ghost, w::Size::Sm).clicked() {
-                        mem.selecting = None;
-                    }
-                } else {
-                    render::body(ui, t, env, to, m, &name, mem, out);
+                mem.link_menu = false;
+                // Its text can be selected with the mouse (across words and
+                // lines) and copied with Ctrl+C. The theme turns selecting
+                // off app-wide; Big Picture picks whole messages instead.
+                if buttons {
+                    ui.style_mut().interaction.selectable_labels = true;
                 }
+                render::body(ui, t, env, to, m, &name, mem, out);
                 reactions(ui, t, env, to, m);
             });
         })
         .response;
     let rect = Rect::from_min_max(top, pos2(ui.max_rect().right(), inner.rect.bottom())).expand2(vec2(t.spacing.xs, 2.0));
     let menu_id = ui.scope_id().with(("msg-menu", m.time, m.ordinal));
-    let open = egui::Popup::is_id_open(ui.ctx(), menu_id) || egui::Popup::is_id_open(ui.ctx(), menu_id.with("react"));
+    // A right-click anywhere on it (but a link or picture: those have their own).
+    let ctx_id = menu_id.with("right-click");
+    if buttons {
+        let link = std::mem::take(&mut mem.link_menu);
+        let right = !link && ui.rect_contains_pointer(rect) && ui.input(|i| i.pointer.secondary_clicked());
+        egui::Popup::new(ctx_id, ui.ctx().clone(), egui::PopupAnchor::PointerFixed, ui.layer_id())
+            .kind(egui::PopupKind::Menu)
+            .layout(Layout::top_down_justified(Align::Min))
+            .style(egui::containers::menu::menu_style)
+            .open_memory(right.then_some(egui::SetOpenCommand::Bool(true)))
+            .width(t.dense(220.0))
+            .show(|ui| message_menu(ui, t, env, to, m, &name, mem));
+    }
+    let open = egui::Popup::is_id_open(ui.ctx(), menu_id) || egui::Popup::is_id_open(ui.ctx(), menu_id.with("react")) || egui::Popup::is_id_open(ui.ctx(), ctx_id);
     if ui.rect_contains_pointer(rect) || open {
         let look = t.look(&t.components.friend_row, ui::theme::Interact { hover: 1.0, ..Default::default() });
         if let ui::theme::ResolvedFill::Color(c) = look.fill {
@@ -318,13 +360,14 @@ fn actions(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, m: &Msg, name: &st
             ui.close();
         }
     });
-    egui::Popup::menu(&more).id(menu_id).width(t.dense(220.0)).show(|ui| {
-        if w::menu_item(ui, t, icons::COPY, t!("Copy")).clicked() {
+    egui::Popup::menu(&more).id(menu_id).width(t.dense(220.0)).show(|ui| message_menu(ui, t, env, to, m, name, mem));
+}
+
+/// What a message's menu offers ("⋮" or a right-click).
+fn message_menu(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, m: &Msg, name: &str, mem: &mut ChatUi) {
+    {
+        if w::menu_item(ui, t, icons::COPY, t!("Copy message")).clicked() {
             ui.ctx().copy_text(m.plain.clone());
-            ui.close();
-        }
-        if w::menu_item(ui, t, icons::NOTE, t!("Select message")).clicked() {
-            mem.selecting = Some(m.key());
             ui.close();
         }
         if w::menu_item(ui, t, icons::CHAT, t!("Quote")).clicked() {
@@ -338,7 +381,7 @@ fn actions(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, m: &Msg, name: &st
                 ui.close();
             }
         }
-    });
+    }
 }
 
 /// The reactions under a message: each emoticon or sticker with its count,
@@ -440,6 +483,11 @@ fn invite_card(ui: &mut Ui, t: &Theme, state: &State, from: SteamId, inv: &GameI
             });
         });
     });
+}
+
+/// Does this link open a page in the app (not just the browser)?
+pub fn opens_in_app(url: &str) -> bool {
+    cards::store_app(url).is_some() || client::trade::parse_link(url).is_some() || cards::profile_id(url).is_some() || crate::builtin::hub::route(url).is_some()
 }
 
 /// Where a link in a chat opens: Store pages, Workshop items, profiles,

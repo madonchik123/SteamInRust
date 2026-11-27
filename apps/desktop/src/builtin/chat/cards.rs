@@ -37,6 +37,11 @@ pub fn init(rt: tokio::runtime::Handle, egui: egui::Context) {
     let _ = SHARED.set(Shared { rt, egui });
 }
 
+/// The app's async runtime (for the video player).
+pub(super) fn runtime() -> Option<tokio::runtime::Handle> {
+    SHARED.get().map(|s| s.rt.clone())
+}
+
 /// The game a Store link is about.
 pub fn store_app(url: &str) -> Option<AppId> {
     let rest = url.split_once("store.steampowered.com/app/")?.1;

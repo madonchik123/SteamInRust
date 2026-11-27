@@ -86,6 +86,11 @@ pub fn events(local: &local::LocalState) -> Vec<Event> {
         (me, r#"[random min="1" max="100" result="42"][/random]"#, 520),
         (ferris, r#"[flip result="heads"][/flip]"#, 500),
         (ferris, r#"[img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/620/header.jpg" width="460" height="215"][/img]"#, 400),
+        // From a site that isn't Steam: waits behind "Load preview".
+        (ferris, "look at this good boy https://picsum.photos/id/237/480/320.jpg", 380),
+        (me, "and a clip: https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4", 350),
+        // A link whose text isn't its address: the real one shows beside it.
+        (ferris, "patch notes are up: [url=https://example.com/portal/patch-notes/2026/11/co-op-fixes?from=chat]Portal 2 update[/url]", 330),
         (me, "[emoticon]steamhappy[/emoticon][emoticon]steamthumbsup[/emoticon]", 300),
     ];
     // Reactions under a few of them.

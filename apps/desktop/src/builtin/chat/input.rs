@@ -81,6 +81,12 @@ pub(super) fn composer(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, input:
                         .with_edit_menu();
                     edit_rect = te.rect;
                     edit_id = Some(te.id);
+                    // Ctrl+V with a picture on the clipboard: shown before it's sent.
+                    if te.has_focus() {
+                        if let Some(o) = super::media::incoming(ui, true, false) {
+                            mem.outgoing = Some(o);
+                        }
+                    }
                     if preview.as_deref() == Some("slash") {
                         te.request_focus();
                     }
@@ -534,13 +540,12 @@ fn use_item(env: &Env, to: ChatTarget, input: &mut String, mem: &mut ChatUi, nam
 /// "+": send a picture or your latest screenshot, share your trade link,
 /// or invite a friend in (a one-to-one chat becomes a group chat).
 fn attach_menu(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, mem: &mut ChatUi, out: &mut Vec<Action>) {
-    let plus = w::icon_button(ui, t, icons::PLUS, t!("Send a picture, a screenshot, your trade link…"), false, 0);
+    let plus = w::icon_button(ui, t, icons::PLUS, t!("Send a picture (or paste one with Ctrl+V), a screenshot, your trade link…"), false, 0);
     egui::Popup::menu(&plus).width(t.dense(280.0)).show(|ui| {
         if w::menu_item(ui, t, icons::IMAGE, t!("Send a picture…")).clicked() {
             ui.close();
             if let Some(path) = rfd::FileDialog::new().add_filter(t!("Pictures"), &["png", "jpg", "jpeg", "gif", "webp"]).pick_file() {
-                env.client.send(Command::SendChatImage { to, path });
-                out.push(Action::Toast(t!("Sending the picture…").to_string()));
+                mem.outgoing = Some(super::media::Outgoing::file(path));
             }
         }
         let shot = env.steam_root.and_then(|root| client::chat::newest_screenshot(root, env.state.steam_id));
