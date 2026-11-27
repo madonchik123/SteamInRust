@@ -19,17 +19,30 @@ fn achievement_map(a: &model::Achievement) -> Dynamic {
     ]))
 }
 
-/// The achievements of `app_id`: `Some(list)` once loaded (empty if the game
-/// has none or Steam refused), or `None` after asking for them.
-fn list(h: &mut Host, app_id: u32) -> Option<Arc<Vec<model::Achievement>>> {
-    match h.snapshot.achievements.get(&app_id) {
-        Some(Ok(l)) => Some(Arc::new(l.clone())),
-        Some(Err(_)) => Some(Arc::new(Vec::new())),
-        None => {
-            h.push_load(Request::LoadAchievements(app_id));
-            None
+type Lists = Arc<std::collections::HashMap<u32, Result<Vec<model::Achievement>, String>>>;
+
+/// A game's loaded achievements, read from the shared snapshot (empty if the
+/// game has none or Steam refused).
+struct List(Lists, u32);
+
+impl std::ops::Deref for List {
+    type Target = [model::Achievement];
+    fn deref(&self) -> &Self::Target {
+        match self.0.get(&self.1) {
+            Some(Ok(l)) => l,
+            _ => &[],
         }
     }
+}
+
+/// The achievements of `app_id` once loaded, or `None` after asking for them.
+fn list(h: &mut Host, app_id: u32) -> Option<List> {
+    let all = h.snapshot.achievements.clone();
+    if all.contains_key(&app_id) {
+        return Some(List(all, app_id));
+    }
+    h.push_load(Request::LoadAchievements(app_id));
+    None
 }
 
 pub(crate) fn register(e: &mut Engine, host: &Arc<Mutex<Host>>) {
