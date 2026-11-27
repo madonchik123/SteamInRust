@@ -9,6 +9,7 @@
   <a href="docs/steam-compatibility.md"><b>Игры и античиты</b></a> ·
   <a href="docs/themes.md"><b>Темы</b></a> ·
   <a href="CONTRIBUTING.md"><b>Участие</b></a> ·
+  <a href="https://boosty.to/32tq"><b>Поддержать</b></a> ·
   <a href="README.md"><b>English</b></a>
 </p>
 
@@ -290,6 +291,11 @@ crates/
   vdf, model     парсер KeyValues, общие типы
 ```
 </details>
+
+## Поддержать проект
+
+SteamInRust бесплатный, без рекламы и телеметрии. Если он вам полезен,
+поддержать разработку можно на [Boosty](https://boosty.to/32tq).
 
 ## Участие
 

@@ -9,6 +9,7 @@
   <a href="docs/steam-compatibility.md"><b>Games and anti-cheat</b></a> ·
   <a href="docs/themes.md"><b>Themes</b></a> ·
   <a href="CONTRIBUTING.md"><b>Contributing</b></a> ·
+  <a href="https://boosty.to/32tq"><b>Support</b></a> ·
   <a href="README.ru.md"><b>Русский</b></a>
 </p>
 
@@ -290,6 +291,11 @@ crates/
   vdf, model     KeyValues parser, shared types
 ```
 </details>
+
+## Support the project
+
+SteamInRust is free and has no ads or telemetry. If it's useful to you, you
+can support its development on [Boosty](https://boosty.to/32tq).
 
 ## Contributing
 
