@@ -53,6 +53,20 @@ pub struct Plugins {
     trades_polled: Option<std::time::Instant>,
     /// Prices plugins asked for: already asked, and games searched in bulk.
     prices: Mutex<(std::collections::HashSet<(AppId, String)>, std::collections::HashSet<AppId>)>,
+    /// Data loads asked for on plugins' behalf, and when (each at most every
+    /// few minutes: pages ask on every frame while it loads).
+    asked: Mutex<HashMap<String, std::time::Instant>>,
+    /// Achievement lists seen, to tell plugins about new unlocks.
+    achievement_watch: plugins::AchievementWatch,
+}
+
+/// Which kinds of large data running plugins may see (so the snapshot only
+/// copies what someone can read).
+#[derive(Clone, Copy, Default)]
+struct Wants {
+    trades: bool,
+    inventory: bool,
+    achievements: bool,
 }
 
 fn parse_enabled(data: &str) -> BTreeMap<String, BTreeSet<Permission>> {
@@ -105,7 +119,22 @@ impl Plugins {
             trades_seen: None,
             trades_polled: None,
             prices: Default::default(),
+            asked: Default::default(),
+            achievement_watch: Default::default(),
         }
+    }
+
+    /// Whether a running plugin has this permission.
+    fn granted(&self, perm: Permission) -> bool {
+        self.list.iter().any(|p| p.is_running() && self.enabled.get(&p.manifest.id).is_some_and(|a| a.contains(&perm)) && p.manifest.permissions.contains(&perm))
+    }
+
+    /// True the first time `key` is asked for in a few minutes.
+    fn ask_once(&self, key: String) -> bool {
+        let mut asked = self.asked.lock().unwrap();
+        let now = std::time::Instant::now();
+        asked.retain(|_, t| now.duration_since(*t) < std::time::Duration::from_secs(300));
+        asked.insert(key, now).is_none()
     }
 
     fn ensure_loaded(&mut self) {
@@ -194,7 +223,7 @@ impl Plugins {
                 }
                 Request::LoadInventory(app_id, context_id) => {
                     let steam_id = ctx.state.steam_id;
-                    if !ctx.state.inventories.contains_key(&(steam_id, app_id, context_id)) {
+                    if !ctx.state.inventories.contains_key(&(steam_id, app_id, context_id)) && self.ask_once(format!("inv:{app_id}:{context_id}")) {
                         ctx.send(Command::LoadInventory { steam_id, app_id, context_id, language: i18n::language().steam_name().to_string() });
                     }
                 }
@@ -204,6 +233,17 @@ impl Plugins {
                     let names: Vec<String> = names.into_iter().filter(|n| asked.0.insert((app_id, n.clone()))).collect();
                     if !names.is_empty() && (app_id == 753 || asked.1.insert(app_id)) {
                         ctx.send(Command::MarketPrices { app_id, names, currency: super::inventory::wallet_currency(ctx) });
+                    }
+                }
+                Request::LoadAchievements(app_id) => {
+                    if !ctx.state.achievement_list.contains_key(&app_id) && self.ask_once(format!("ach:{app_id}")) {
+                        ctx.send(Command::LoadAchievements { app_id, language: i18n::language().steam_name().to_string() });
+                    }
+                }
+                Request::LoadAchievementProgress(ids) => {
+                    let app_ids: Vec<AppId> = ids.into_iter().filter(|id| !ctx.state.achievements.contains_key(id) && self.ask_once(format!("achp:{id}"))).collect();
+                    if !app_ids.is_empty() {
+                        ctx.send(Command::LoadAchievementProgress { app_ids });
                     }
                 }
             }
@@ -251,17 +291,20 @@ impl Plugins {
                 return s.clone();
             }
         }
-        let wants = |perm| {
-            self.list.iter().any(|p| {
-                p.is_running()
-                    && self.enabled.get(&p.manifest.id).is_some_and(|a| a.contains(&perm))
-                    && p.manifest.permissions.contains(&perm)
-            })
+        let wants = Wants {
+            trades: self.granted(Permission::TradesRead),
+            inventory: self.granted(Permission::InventoryRead),
+            achievements: self.granted(Permission::AchievementsRead),
         };
-        let s = snapshot(ctx, wants(plugins::Permission::TradesRead), wants(plugins::Permission::InventoryRead));
+        let s = snapshot(ctx, wants);
         self.snapshot = Some((std::time::Instant::now(), s.clone()));
         s
     }
+}
+
+/// Whether a game has achievements (or app info doesn't say).
+fn has_achievements(ctx: &Ctx, app_id: AppId) -> bool {
+    ctx.state.apps.as_ref().and_then(|a| a.get(&app_id)).is_none_or(|a| a.categories.is_empty() || a.categories.contains(&22))
 }
 
 /// Your games for plugins: owned ones with app info, plus what's on disk.
@@ -299,7 +342,8 @@ fn library(ctx: &Ctx) -> Vec<plugins::GameInfo> {
         .collect()
 }
 
-fn snapshot(ctx: &Ctx, trades: bool, inventory: bool) -> Snapshot {
+fn snapshot(ctx: &Ctx, wants: Wants) -> Snapshot {
+    let Wants { trades, inventory, .. } = wants;
     let me = ctx.state.me().map(|p| (p.steam_id, ctx.state.persona_name.clone(), p.state.label().to_string()));
     let friends = ctx
         .state
@@ -345,6 +389,11 @@ fn snapshot(ctx: &Ctx, trades: bool, inventory: bool) -> Snapshot {
         (HashMap::new(), HashMap::new())
     };
     let currency = model::currency(super::inventory::wallet_currency(ctx)).0.to_string();
+    let (achievement_progress, achievements) = if wants.achievements {
+        (ctx.state.achievements.clone(), ctx.state.achievement_list.clone())
+    } else {
+        Default::default()
+    };
     Snapshot {
         me,
         friends,
@@ -356,6 +405,8 @@ fn snapshot(ctx: &Ctx, trades: bool, inventory: bool) -> Snapshot {
         inventory: Arc::new(inv),
         prices: Arc::new(prices),
         currency,
+        achievement_progress: Arc::new(achievement_progress),
+        achievements: Arc::new(achievements),
     }
 }
 
@@ -387,8 +438,22 @@ impl Extension for Plugins {
         let mut host_events = Vec::new();
         match event {
             Event::LoggedIn { .. } => host_events.push(HostEvent::LoggedIn),
-            Event::GameStarted { app_id } => host_events.push(HostEvent::GameStarted { app_id: *app_id }),
-            Event::GameStopped { app_id } => host_events.push(HostEvent::GameStopped { app_id: *app_id }),
+            Event::GameStarted { app_id } => {
+                host_events.push(HostEvent::GameStarted { app_id: *app_id });
+                // The list before playing, to see what's new when it closes.
+                if self.granted(Permission::AchievementsRead) && !self.achievement_watch.knows(*app_id) && has_achievements(ctx, *app_id) {
+                    ctx.send(Command::LoadAchievements { app_id: *app_id, language: i18n::language().steam_name().to_string() });
+                }
+            }
+            Event::GameStopped { app_id } => {
+                host_events.push(HostEvent::GameStopped { app_id: *app_id });
+                if self.granted(Permission::AchievementsRead) && self.achievement_watch.knows(*app_id) {
+                    ctx.send(Command::LoadAchievements { app_id: *app_id, language: i18n::language().steam_name().to_string() });
+                }
+            }
+            Event::Achievements { app_id, result: Ok(list) } if self.granted(Permission::AchievementsRead) => {
+                host_events.extend(self.achievement_watch.update(*app_id, list));
+            }
             Event::DownloadFinished { app_id, result } => host_events.push(HostEvent::DownloadFinished { app_id: *app_id, ok: result.is_ok() }),
             Event::Message(m) if m.from != ctx.state.steam_id => {
                 host_events.push(HostEvent::Message { steam_id: m.from, name: ctx.state.persona(m.from).name, text: m.text.clone() });
@@ -448,11 +513,7 @@ impl Extension for Plugins {
             return;
         }
         // Keep trade offers fresh for plugins that watch them (every 2 minutes).
-        if self.list.iter().any(|p| {
-            p.is_running()
-                && self.enabled.get(&p.manifest.id).is_some_and(|a| a.contains(&plugins::Permission::TradesRead))
-                && p.manifest.permissions.contains(&plugins::Permission::TradesRead)
-        }) && self.trades_polled.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(120))
+        if self.granted(Permission::TradesRead) && self.trades_polled.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(120))
         {
             self.trades_polled = Some(std::time::Instant::now());
             ctx.send(Command::LoadTradeOffers { language: i18n::language().steam_name().to_string() });

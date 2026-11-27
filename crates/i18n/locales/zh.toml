@@ -3387,3 +3387,6 @@
 "Windows (Steam Play)" = "Windows（Steam Play）"
 "Steam has no files of this version of the game for your account. If it has a Windows version, install that one through Steam Play." = "Steam 没有为你的账户提供该游戏此版本的文件。如果游戏有 Windows 版本，请通过 Steam Play 安装该版本。"
 "Steam has no {os} files of this game for your account, so nothing would be installed." = "Steam 没有为你的账户提供此游戏的 {os} 文件，因此不会安装任何内容。"
+
+# --- Plugin permissions ---
+"See your achievements" = "查看你的成就"

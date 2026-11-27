@@ -25,7 +25,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+mod achievements;
 mod library;
+pub use achievements::AchievementWatch;
 pub use library::GameInfo;
 
 /// What `api_version()` answers. Bump it when functions are added, so
@@ -50,10 +52,11 @@ pub enum Permission {
     InventoryRead,
     TradesRead,
     TradesWrite,
+    AchievementsRead,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 16] = [
+    pub const ALL: [Permission; 17] = [
         Self::AccountRead,
         Self::FriendsRead,
         Self::LibraryRead,
@@ -70,6 +73,7 @@ impl Permission {
         Self::InventoryRead,
         Self::TradesRead,
         Self::TradesWrite,
+        Self::AchievementsRead,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -89,6 +93,7 @@ impl Permission {
             Self::InventoryRead => "inventory.read",
             Self::TradesRead => "trades.read",
             Self::TradesWrite => "trades.write",
+            Self::AchievementsRead => "achievements.read",
         }
     }
     pub fn describe(self) -> &'static str {
@@ -109,6 +114,7 @@ impl Permission {
             Self::InventoryRead => "See your inventory and items' market prices",
             Self::TradesRead => "See your trade offers",
             Self::TradesWrite => "Decline or cancel trade offers, and suggest trades for you to review",
+            Self::AchievementsRead => "See your achievements",
         }
     }
     /// Permissions that act on your behalf or send data out get a warning in the UI.
@@ -206,6 +212,10 @@ pub struct Snapshot {
     pub prices: Arc<std::collections::HashMap<(u32, String), u64>>,
     /// Your wallet's currency, as Steam formats it ("USD", "KZT"...).
     pub currency: String,
+    /// Achievements (unlocked, total) by game, for the games loaded so far.
+    pub achievement_progress: Arc<HashMap<u32, (u32, u32)>>,
+    /// Achievement lists by game, for the games loaded so far.
+    pub achievements: Arc<HashMap<u32, Result<Vec<model::Achievement>, String>>>,
 }
 
 /// Things a plugin asked the host to do.
@@ -231,6 +241,10 @@ pub enum Request {
     LoadInventory(u32, u64),
     /// Look up market prices (app, market hash names).
     Prices(u32, Vec<String>),
+    /// Load a game's achievement list.
+    LoadAchievements(u32),
+    /// Load achievement progress (unlocked / total) for these games.
+    LoadAchievementProgress(Vec<u32>),
 }
 
 /// Events delivered to `on_event`.
@@ -248,6 +262,9 @@ pub enum HostEvent {
     TradeOffer { id: u64, partner: u64, name: String },
     /// One of your offers changed (accepted, declined...).
     TradeChanged { id: u64, state: model::TradeState },
+    /// You unlocked an achievement (seen when the game's list reloads: when
+    /// the game closes, or when you open its achievements).
+    AchievementUnlocked { app_id: u32, name: String, description: String, unlock_time: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -321,6 +338,40 @@ impl Host {
         self.hook_outbox += 1;
         self.outbox.push(r);
         Ok(())
+    }
+    /// Ask the host to load data. Never fails: a request that's already
+    /// queued isn't repeated, and past the outbox limit it's simply asked
+    /// again on a later call.
+    fn push_load(&mut self, r: Request) {
+        let merge = |q: &mut Request| -> bool {
+            match (q, &r) {
+                (Request::Prices(a, queued), Request::Prices(b, names)) if a == b => {
+                    for n in names {
+                        if queued.len() < 500 && !queued.contains(n) {
+                            queued.push(n.clone());
+                        }
+                    }
+                    true
+                }
+                (Request::LoadAchievementProgress(queued), Request::LoadAchievementProgress(ids)) => {
+                    for id in ids {
+                        if queued.len() < 500 && !queued.contains(id) {
+                            queued.push(*id);
+                        }
+                    }
+                    true
+                }
+                (Request::LoadAchievements(a), Request::LoadAchievements(b)) => *a == *b,
+                (Request::LoadInventory(a, c), Request::LoadInventory(b, d)) => *a == *b && *c == *d,
+                _ => false,
+            }
+        };
+        if self.outbox.iter_mut().any(merge) {
+            return;
+        }
+        if self.outbox.len() < MAX_OUTBOX {
+            self.outbox.push(r);
+        }
     }
     fn log(&mut self, s: String) {
         self.logs.push_back(s);
@@ -537,6 +588,15 @@ impl Plugin {
             HostEvent::TradeChanged { id, state } if granted.contains(&Permission::TradesRead) => {
                 ("trade_changed", map([("id", id.to_string().into()), ("state", trade_state(*state).into())]))
             }
+            HostEvent::AchievementUnlocked { app_id, name, description, unlock_time } if granted.contains(&Permission::AchievementsRead) => (
+                "achievement_unlocked",
+                map([
+                    ("app_id", (*app_id as i64).into()),
+                    ("name", name.clone().into()),
+                    ("description", description.clone().into()),
+                    ("unlock_time", (*unlock_time as i64).into()),
+                ]),
+            ),
             HostEvent::Message { steam_id, name, text } if granted.contains(&Permission::ChatRead) => (
                 "message",
                 map([("steam_id", steam_id.to_string().into()), ("name", name.clone().into()), ("text", text.clone().into())]),
@@ -1130,6 +1190,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
 
     e.register_fn("api_version", || API_VERSION);
     library::register(&mut e, &host);
+    achievements::register(&mut e, &host);
 
     let h = host;
     e.register_fn("storage_set", move |k: &str, v: Dynamic| -> Result<(), Box<EvalAltResult>> {

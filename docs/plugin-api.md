@@ -136,6 +136,22 @@ Values that aren't known are `()`. For example, the size of a game that isn't
 installed, or playtime from your profile before it has loaded. Developer,
 publisher and release date come from the store: see `app_details`.
 
+### Achievements
+
+| Function | Permission | Returns |
+|---|---|---|
+| `achievement_progress(app_id)` | `achievements.read` | `#{unlocked, total, percent}`, or `()` while loading |
+| `achievements(app_id)` | `achievements.read` | The game's achievements, or `()` while loading. Empty if the game has none |
+| `achievement_info(app_id, name)` | `achievements.read` | One achievement by its name, or `()` |
+
+An achievement is a map: `name`, `description`, `icon`, `icon_gray` (picture
+URLs), `hidden`, `unlocked`, `unlock_time` (Unix seconds, 0 if locked) and
+`global_percent` (share of players who have it).
+
+The `achievement_unlocked` event comes when the game's list reloads after you
+unlocked something: when the game closes, or when you open its achievements.
+It doesn't come live during play.
+
 ### Downloads
 
 | Function | Permission | Returns |
@@ -213,6 +229,7 @@ Define any of these functions:
 | `download_finished` | `app_id`, `ok` | `downloads.read` |
 | `trade_offer` | `id`, `partner`, `name` (someone sent you one) | `trades.read` |
 | `trade_changed` | `id`, `state` | `trades.read` |
+| `achievement_unlocked` | `app_id`, `name`, `description`, `unlock_time` | `achievements.read` |
 
 ## Widgets
 

@@ -3387,3 +3387,6 @@
 "Windows (Steam Play)" = "Windows (Steam Play)"
 "Steam has no files of this version of the game for your account. If it has a Windows version, install that one through Steam Play." = "Steam no tiene archivos de esta versión del juego para tu cuenta. Si tiene versión para Windows, instala esa con Steam Play."
 "Steam has no {os} files of this game for your account, so nothing would be installed." = "Steam no tiene archivos de {os} de este juego para tu cuenta, así que no se instalaría nada."
+
+# --- Plugin permissions ---
+"See your achievements" = "Ver tus logros"
