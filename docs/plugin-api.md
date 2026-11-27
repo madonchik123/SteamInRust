@@ -17,8 +17,7 @@ Scripts are written in [Rhai](https://rhai.rs). They run in a sandbox:
 - a plugin that fails only stops itself, never the app.
 
 The code is in [`crates/plugins`](../crates/plugins/src/lib.rs). The examples
-are in [`crates/plugins/examples`](../crates/plugins/examples). What's planned
-next is in [plugin-api-plan.md](plugin-api-plan.md).
+are in [`crates/plugins/examples`](../crates/plugins/examples).
 
 ## The manifest
 
