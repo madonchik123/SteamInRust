@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://github.com/madonchik123/SteamInRust/compare/v0.15.0...v0.16.0) (2026-11-27)
+
+
+### New
+
+* Steam Play on macOS - Windows games through CrossOver or Wine ([#146](https://github.com/madonchik123/SteamInRust/issues/146)) ([0d55ba1](https://github.com/madonchik123/SteamInRust/commit/0d55ba1e7ebc325f3a0ae601e9190cc1b9281552))
+
+
+### Fixes
+
+* only one copy of the app runs, so a shortcut can't add a second tray icon ([#142](https://github.com/madonchik123/SteamInRust/issues/142)) ([401bf66](https://github.com/madonchik123/SteamInRust/commit/401bf665b8d8ba406b475b3fcee74a7f29616e9e))
+
 ## [0.15.0](https://github.com/madonchik123/SteamInRust/compare/v0.14.0...v0.15.0) (2026-11-21)
 
 
