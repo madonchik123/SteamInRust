@@ -82,6 +82,12 @@ const STORE_SEARCH_TTL: u64 = 600;
 const STORE_PAGES: usize = 500;
 const STORE_SEARCHES: usize = 50;
 
+/// Whether a cached store answer is still good: `ttl` seconds, or a minute
+/// for a failure (it may have been a network blip).
+fn fresh(at: &std::time::Instant, ok: bool, ttl: u64) -> bool {
+    at.elapsed() < std::time::Duration::from_secs(if ok { ttl } else { 60 })
+}
+
 /// Store pages and searches plugins asked for (public store data, no login).
 #[derive(Default)]
 struct StoreCache {
@@ -335,10 +341,9 @@ impl Plugins {
     fn store_lookup(&self, ctx: &Ctx, key: String, what: StoreLookup) {
         {
             let mut c = self.store_cache.lock().unwrap();
-            let fresh = |at: &std::time::Instant, ttl| at.elapsed() < std::time::Duration::from_secs(ttl);
             let cached = match &what {
-                StoreLookup::Details(id) => c.details.get(id).is_some_and(|(at, _)| fresh(at, STORE_PAGE_TTL)),
-                StoreLookup::Search(t) => c.searches.get(t).is_some_and(|(at, _)| fresh(at, STORE_SEARCH_TTL)),
+                StoreLookup::Details(id) => c.details.get(id).is_some_and(|(at, r)| fresh(at, r.is_ok(), STORE_PAGE_TTL)),
+                StoreLookup::Search(t) => c.searches.get(t).is_some_and(|(at, r)| fresh(at, r.is_ok(), STORE_SEARCH_TTL)),
             };
             if cached || !c.loading.insert(key.clone()) {
                 return;
@@ -517,9 +522,8 @@ fn snapshot(ctx: &Ctx, wants: Wants, store: Option<&Mutex<StoreCache>>) -> Snaps
     let (store, searches, app_names) = match (wants.store, store) {
         (true, Some(cache)) => {
             let c = cache.lock().unwrap();
-            let fresh = |at: &std::time::Instant, ttl: u64| at.elapsed() < std::time::Duration::from_secs(ttl);
-            let store = c.details.iter().filter(|(_, (at, _))| fresh(at, STORE_PAGE_TTL)).map(|(id, (_, r))| (*id, r.clone())).collect();
-            let searches = c.searches.iter().filter(|(_, (at, _))| fresh(at, STORE_SEARCH_TTL)).map(|(k, (_, r))| (k.clone(), r.clone())).collect();
+            let store = c.details.iter().filter(|(_, (at, r))| fresh(at, r.is_ok(), STORE_PAGE_TTL)).map(|(id, (_, r))| (*id, r.clone())).collect();
+            let searches = c.searches.iter().filter(|(_, (at, r))| fresh(at, r.is_ok(), STORE_SEARCH_TTL)).map(|(k, (_, r))| (k.clone(), r.clone())).collect();
             let names = wishlist.iter().filter_map(|(id, _)| ctx.state.app_name(*id).map(|n| (*id, n.to_string()))).collect();
             (store, searches, names)
         }
@@ -1145,6 +1149,21 @@ mod tests {
         assert!(saved.contains_key("checked") && saved.contains_key("sales"), "{saved:?}");
         println!("sales: {}", saved["sales"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_cache_keeps_the_newest_and_retries_failures_soon() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut m: std::collections::HashMap<u32, (Instant, ())> = (0..10u32).map(|i| (i, (now - Duration::from_secs(100 - i as u64), ()))).collect();
+        super::StoreCache::trim(&mut m, 3);
+        let mut left: Vec<u32> = m.keys().copied().collect();
+        left.sort();
+        assert_eq!(left, vec![7, 8, 9], "the oldest go first");
+
+        let old = now - Duration::from_secs(120);
+        assert!(super::fresh(&old, true, 3600), "a page is good for an hour");
+        assert!(!super::fresh(&old, false, 3600), "a failure is asked again after a minute");
     }
 
     #[test]
