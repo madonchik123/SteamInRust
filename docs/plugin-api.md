@@ -156,7 +156,24 @@ It doesn't come live during play.
 
 | Function | Permission | Returns |
 |---|---|---|
-| `downloads()` | `downloads.read` | Running and queued downloads |
+| `downloads()` | `downloads.read` | Running downloads, then the queue in order |
+| `pause_download(app_id)` | `downloads.write` | Pauses a running download |
+| `resume_download(app_id)` | `downloads.write` | Resumes a paused one |
+| `cancel_download(app_id)` | `downloads.write` | Cancels a download, or takes it out of the queue |
+| `move_download(app_id, to)` | `downloads.write` | Moves a queued download to place `to` (0 is next) |
+| `download_now(app_id)` | `downloads.write` | Starts a queued download now; the running one waits |
+
+A download is a map: `app_id`, `name`, `progress` (0 to 1), `bytes_done`,
+`bytes_total`, `bytes_per_second`, `paused`, `queued`, `position` (place in the
+queue, or `()`), `phase` (`"queued"`, `"preparing"`, `"checking"`,
+`"downloading"`, `"finishing"` or `"verifying"` for a file check) and `error`
+(or `()`).
+
+The actions fail with an error when they don't fit: no download for that game,
+pausing a queued one, moving a running one, or cancelling a file check.
+
+There's no progress event, since progress changes many times a second. Call
+`downloads()` from `on_tick()` or `page()` instead.
 
 ### Store
 
@@ -226,7 +243,9 @@ Define any of these functions:
 | `friend_online`, `friend_offline` | `steam_id`, `name` | `friends.read` |
 | `friend_game` | `steam_id`, `name`, `game` | `friends.read` |
 | `message` | `steam_id`, `name`, `text` | `chat.read` |
-| `download_finished` | `app_id`, `ok` | `downloads.read` |
+| `download_started` | `app_id` (it left the queue) | `downloads.read` |
+| `download_paused`, `download_resumed` | `app_id` | `downloads.read` |
+| `download_finished` | `app_id`, `ok`, `error` (why it failed, or `()`) | `downloads.read` |
 | `trade_offer` | `id`, `partner`, `name` (someone sent you one) | `trades.read` |
 | `trade_changed` | `id`, `state` | `trades.read` |
 | `achievement_unlocked` | `app_id`, `name`, `description`, `unlock_time` | `achievements.read` |

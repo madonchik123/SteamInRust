@@ -58,6 +58,8 @@ pub struct Plugins {
     asked: Mutex<HashMap<String, std::time::Instant>>,
     /// Achievement lists seen, to tell plugins about new unlocks.
     achievement_watch: plugins::AchievementWatch,
+    /// Downloads seen, to tell plugins when one starts, pauses or resumes.
+    download_watch: plugins::DownloadWatch,
 }
 
 /// Which kinds of large data running plugins may see (so the snapshot only
@@ -121,6 +123,7 @@ impl Plugins {
             prices: Default::default(),
             asked: Default::default(),
             achievement_watch: Default::default(),
+            download_watch: Default::default(),
         }
     }
 
@@ -235,6 +238,11 @@ impl Plugins {
                         ctx.send(Command::MarketPrices { app_id, names, currency: super::inventory::wallet_currency(ctx) });
                     }
                 }
+                Request::PauseDownload(app_id) => ctx.send(Command::PauseDownload { app_id }),
+                Request::ResumeDownload(app_id) => ctx.send(Command::ResumeDownload { app_id }),
+                Request::CancelDownload(app_id) => ctx.send(Command::CancelDownload { app_id }),
+                Request::MoveDownload(app_id, to) => ctx.send(Command::MoveDownload { app_id, to }),
+                Request::DownloadNow(app_id) => ctx.send(Command::DownloadNow { app_id }),
                 Request::LoadAchievements(app_id) => {
                     if !ctx.state.achievement_list.contains_key(&app_id) && self.ask_once(format!("ach:{app_id}")) {
                         ctx.send(Command::LoadAchievements { app_id, language: i18n::language().steam_name().to_string() });
@@ -356,14 +364,36 @@ fn snapshot(ctx: &Ctx, wants: Wants) -> Snapshot {
         .collect();
     let library = Arc::new(library(ctx));
     let name = |id: AppId| ctx.state.app_name(id).map(String::from).unwrap_or_default();
-    let mut downloads: Vec<(u32, String, f32, u64, bool, bool)> = ctx
+    let mut downloads: Vec<plugins::DownloadInfo> = ctx
         .state
         .downloads
         .values()
-        .filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed))
-        .map(|d| (d.app_id, name(d.app_id), d.fraction(), d.speed, d.paused, false))
+        .filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed) && !ctx.state.download_queue.contains(&d.app_id))
+        .map(|d| {
+            let (done, total) = d.shown();
+            plugins::DownloadInfo {
+                app_id: d.app_id,
+                name: name(d.app_id),
+                progress: d.fraction(),
+                bytes_per_second: d.speed,
+                paused: d.paused,
+                queued: false,
+                phase: plugins::download_phase(d.phase),
+                bytes_done: done,
+                bytes_total: total,
+                error: d.error.clone(),
+            }
+        })
         .collect();
-    downloads.extend(ctx.state.download_queue.iter().map(|&id| (id, name(id), ctx.state.set_aside.get(&id).copied().unwrap_or(0.0), 0, false, true)));
+    downloads.sort_by_key(|d| d.app_id);
+    downloads.extend(ctx.state.download_queue.iter().map(|&id| plugins::DownloadInfo {
+        app_id: id,
+        name: name(id),
+        progress: ctx.state.set_aside.get(&id).copied().unwrap_or(0.0),
+        queued: true,
+        phase: "queued",
+        ..Default::default()
+    }));
     let wishlist = ctx.state.wishlist.as_ref().map(|w| w.iter().map(|(id, _)| *id).collect()).unwrap_or_default();
     // Trades, inventories and prices only when a running plugin may see them
     // (they can be large).
@@ -454,7 +484,11 @@ impl Extension for Plugins {
             Event::Achievements { app_id, result: Ok(list) } if self.granted(Permission::AchievementsRead) => {
                 host_events.extend(self.achievement_watch.update(*app_id, list));
             }
-            Event::DownloadFinished { app_id, result } => host_events.push(HostEvent::DownloadFinished { app_id: *app_id, ok: result.is_ok() }),
+            Event::DownloadFinished { app_id, result } => {
+                self.download_watch.forget(*app_id);
+                host_events.push(HostEvent::DownloadFinished { app_id: *app_id, ok: result.is_ok(), error: result.clone().err() });
+            }
+            Event::Download(d) => host_events.extend(self.download_watch.update(d)),
             Event::Message(m) if m.from != ctx.state.steam_id => {
                 host_events.push(HostEvent::Message { steam_id: m.from, name: ctx.state.persona(m.from).name, text: m.text.clone() });
             }

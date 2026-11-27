@@ -26,8 +26,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 mod achievements;
+mod downloads;
 mod library;
 pub use achievements::AchievementWatch;
+pub use downloads::{DownloadInfo, DownloadWatch, phase as download_phase};
 pub use library::GameInfo;
 
 /// What `api_version()` answers. Bump it when functions are added, so
@@ -53,10 +55,11 @@ pub enum Permission {
     TradesRead,
     TradesWrite,
     AchievementsRead,
+    DownloadsWrite,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 17] = [
+    pub const ALL: [Permission; 18] = [
         Self::AccountRead,
         Self::FriendsRead,
         Self::LibraryRead,
@@ -74,6 +77,7 @@ impl Permission {
         Self::TradesRead,
         Self::TradesWrite,
         Self::AchievementsRead,
+        Self::DownloadsWrite,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -94,6 +98,7 @@ impl Permission {
             Self::TradesRead => "trades.read",
             Self::TradesWrite => "trades.write",
             Self::AchievementsRead => "achievements.read",
+            Self::DownloadsWrite => "downloads.write",
         }
     }
     pub fn describe(self) -> &'static str {
@@ -115,11 +120,12 @@ impl Permission {
             Self::TradesRead => "See your trade offers",
             Self::TradesWrite => "Decline or cancel trade offers, and suggest trades for you to review",
             Self::AchievementsRead => "See your achievements",
+            Self::DownloadsWrite => "Pause, resume, cancel and reorder your downloads",
         }
     }
     /// Permissions that act on your behalf or send data out get a warning in the UI.
     pub fn sensitive(self) -> bool {
-        matches!(self, Self::ChatRead | Self::ChatWrite | Self::StatusWrite | Self::Network | Self::TradesWrite)
+        matches!(self, Self::ChatRead | Self::ChatWrite | Self::StatusWrite | Self::Network | Self::TradesWrite | Self::DownloadsWrite)
     }
     fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.key() == s)
@@ -199,8 +205,8 @@ pub struct Snapshot {
     pub friends: Vec<(u64, String, String, Option<String>)>,
     /// Your games: owned and installed ones.
     pub library: Arc<Vec<GameInfo>>,
-    /// (app_id, name, progress 0..1, bytes per second, paused, queued)
-    pub downloads: Vec<(u32, String, f32, u64, bool, bool)>,
+    /// Running downloads, then the queue in order.
+    pub downloads: Vec<DownloadInfo>,
     pub wishlist: Vec<u32>,
     /// The app's language code ("en", "ru"...).
     pub language: String,
@@ -245,6 +251,14 @@ pub enum Request {
     LoadAchievements(u32),
     /// Load achievement progress (unlocked / total) for these games.
     LoadAchievementProgress(Vec<u32>),
+    PauseDownload(u32),
+    ResumeDownload(u32),
+    /// Cancel a download, or take it out of the queue.
+    CancelDownload(u32),
+    /// Move a queued download to this place (0 = next).
+    MoveDownload(u32, usize),
+    /// Start a queued download now (the running one waits).
+    DownloadNow(u32),
 }
 
 /// Events delivered to `on_event`.
@@ -257,7 +271,11 @@ pub enum HostEvent {
     Message { steam_id: u64, name: String, text: String },
     GameStarted { app_id: u32 },
     GameStopped { app_id: u32 },
-    DownloadFinished { app_id: u32, ok: bool },
+    DownloadFinished { app_id: u32, ok: bool, error: Option<String> },
+    /// A download started (left the queue).
+    DownloadStarted { app_id: u32 },
+    DownloadPaused { app_id: u32 },
+    DownloadResumed { app_id: u32 },
     /// Someone sent you a trade offer.
     TradeOffer { id: u64, partner: u64, name: String },
     /// One of your offers changed (accepted, declined...).
@@ -579,9 +597,13 @@ impl Plugin {
                     ("game", game.clone().map(Dynamic::from).unwrap_or(Dynamic::UNIT)),
                 ]),
             ),
-            HostEvent::DownloadFinished { app_id, ok } if granted.contains(&Permission::DownloadsRead) => {
-                ("download_finished", map([("app_id", (*app_id as i64).into()), ("ok", (*ok).into())]))
-            }
+            HostEvent::DownloadFinished { app_id, ok, error } if granted.contains(&Permission::DownloadsRead) => (
+                "download_finished",
+                map([("app_id", (*app_id as i64).into()), ("ok", (*ok).into()), ("error", error.clone().map(Dynamic::from).unwrap_or(Dynamic::UNIT))]),
+            ),
+            HostEvent::DownloadStarted { app_id } if granted.contains(&Permission::DownloadsRead) => ("download_started", map([("app_id", (*app_id as i64).into())])),
+            HostEvent::DownloadPaused { app_id } if granted.contains(&Permission::DownloadsRead) => ("download_paused", map([("app_id", (*app_id as i64).into())])),
+            HostEvent::DownloadResumed { app_id } if granted.contains(&Permission::DownloadsRead) => ("download_resumed", map([("app_id", (*app_id as i64).into())])),
             HostEvent::TradeOffer { id, partner, name } if granted.contains(&Permission::TradesRead) => {
                 ("trade_offer", map([("id", id.to_string().into()), ("partner", partner.to_string().into()), ("name", name.clone().into())]))
             }
@@ -1035,27 +1057,6 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     });
 
     let h = host.clone();
-    e.register_fn("downloads", move || -> Result<Array, Box<EvalAltResult>> {
-        let h = h.lock().unwrap();
-        h.need(Permission::DownloadsRead)?;
-        Ok(h.snapshot
-            .downloads
-            .iter()
-            .map(|(id, name, progress, speed, paused, queued)| {
-                map([
-                    ("app_id", (*id as i64).into()),
-                    ("name", name.clone().into()),
-                    ("progress", (*progress as f64).into()),
-                    ("bytes_per_second", (*speed as i64).into()),
-                    ("paused", (*paused).into()),
-                    ("queued", (*queued).into()),
-                ])
-                .into()
-            })
-            .collect())
-    });
-
-    let h = host.clone();
     e.register_fn("wishlist", move || -> Result<Array, Box<EvalAltResult>> {
         let h = h.lock().unwrap();
         h.need(Permission::StoreRead)?;
@@ -1191,6 +1192,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     e.register_fn("api_version", || API_VERSION);
     library::register(&mut e, &host);
     achievements::register(&mut e, &host);
+    downloads::register(&mut e, &host);
 
     let h = host;
     e.register_fn("storage_set", move |k: &str, v: Dynamic| -> Result<(), Box<EvalAltResult>> {
