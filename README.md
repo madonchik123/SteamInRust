@@ -247,8 +247,8 @@ The network is opt-in per plugin: `network` plus a `hosts` list in the manifest
 timer (`tick`), add buttons to game pages and items to friends' menus, launch
 installed games, read downloads and the wishlist, watch trade offers and
 item prices (accepting or sending a trade always asks you), and draw inputs, switches,
-tables and images on their page. The API is in
-[`crates/plugins`](crates/plugins/src/lib.rs), with examples in
+tables and images on their page. The API is described in
+[`docs/plugin-api.md`](docs/plugin-api.md), with examples in
 [`crates/plugins/examples`](crates/plugins/examples) (Wishlist Sales checks
 your wishlist's prices every hour and tells you about discounts; Trade Helper
 tells you what a new trade offer is worth).

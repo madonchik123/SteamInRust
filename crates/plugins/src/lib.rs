@@ -15,67 +15,22 @@
 //! - every API call is checked against the permissions the user approved;
 //! - CPU (operation count), recursion, string, array and map sizes are capped.
 //!
-//! ## Script API
-//! | Function | Permission |
-//! |---|---|
-//! | `log(text)`, `now()` | none |
-//! | `notify(text)` | `notifications` |
-//! | `me()` | `account.read` |
-//! | `friends()` | `friends.read` |
-//! | `library()` | `library.read` |
-//! | `set_status("online" / "away" / "busy" / "invisible")` | `status.write` |
-//! | `send_message(steam_id, text)` | `chat.write` |
-//! | `storage_get(key)`, `storage_set(key, value)` | `storage` |
-//! | `http_get(url)`, `http_post(url, body)`, `http_request(method, url, body, headers)`: start a request, returns its id; the answer comes to `on_http` | `network` (only to the `hosts` in the manifest) |
-//! | `launch(app_id)` (an installed game) | `games.launch` |
-//! | `downloads()`: running and queued downloads | `downloads.read` |
-//! | `wishlist()`: app ids on your wishlist | `store.read` |
-//! | `copy(text)`: to the clipboard | `clipboard` |
-//! | `navigate(page, arg)`: open a page of the app (`"store"`, `"library"`, `"community"`, `"profile"`, `"downloads"`, `"settings"`, or this plugin's page) | none |
-//! | `trade_offers()`: your offers (active and recently changed) as maps: `id`, `partner`, `partner_name`, `message`, `state` (`"active"`, `"accepted"`, `"declined"`, `"needs_confirmation"`...), `ours`, `created`, `expires`, `held_until`, and the `give` / `get` items | `trades.read` |
-//! | `refresh_trades()`: ask Steam for them again (also done every 2 minutes) | `trades.read` |
-//! | `decline_trade(id)`, `cancel_trade(id)` | `trades.write` |
-//! | `review_trade(id)`: opens the app's "Accept this trade?" question; only you can accept | `trades.write` |
-//! | `propose_trade(partner, give, get, message)`: opens a new offer with these items (`[#{app_id, context_id, asset_id}]`) for you to check and send | `trades.write` |
-//! | `inventory(app_id, context_id)`: your items there (753/6 is Steam's: cards, backgrounds), or `()` while it loads | `inventory.read` |
-//! | `market_price(app_id, market_hash_name)`: cheapest listing in cents, or `()` while it's looked up | `inventory.read` |
-//! | `currency()`: your wallet's currency code | none |
-//! | `language()`, `platform()`, `json_parse(text)`, `json_string(value)` | none |
-//!
-//! Items are maps: `app_id`, `context_id`, `asset_id`, `amount`, `name`, `type`,
-//! `market_hash_name`, `tradable`, `marketable`, `color`, `icon` (a picture URL),
-//! `tags` (`[#{category, name}]`) and `price` (cents, or `()` if not known yet).
-//!
-//! ## Hooks (define any of these functions)
-//! - `on_load()`
-//! - `on_event(name, data)`: `"friend_online"`, `"friend_offline"`, `"friend_game"`
-//!   (need `friends.read`), `"message"` (needs `chat.read`), `"game_started"`,
-//!   `"game_stopped"`, `"logged_in"`, `"download_finished"` (needs `downloads.read`),
-//!   `"trade_offer"` (someone sent you one: `id`, `partner`, `name`) and
-//!   `"trade_changed"` (`id`, `state`) (need `trades.read`).
-//! - `on_tick()`: every `tick` seconds (manifest, at least 10).
-//! - `on_http(id, status, body)`: the answer to a request (`status` 0: it failed, `body` says why).
-//! - `page()`: returns an array of widgets for the plugin's page (needs `[page]` in the manifest).
-//! - `on_click(id)`: a button on the page was clicked.
-//! - `on_input(id, text)`, `on_toggle(id, on)`: a text field or switch on the page changed.
-//! - `game_actions(app_id)`: buttons on a game's page in the library, as
-//!   `[#{id, text}]`; a click calls `on_game_action(id, app_id)`.
-//! - `friend_menu(steam_id)`: items in a friend's right-click menu, as
-//!   `[#{id, text}]`; a click calls `on_friend_menu(id, steam_id)`.
-//!
-//! Widgets are maps: `#{type: "heading", text: "Hi"}`, `"text"`, `"muted"`,
-//! `#{type: "button", id: "go", text: "Go"}`, `#{type: "stat", label, value}`,
-//! `"separator"`, `#{type: "row", items: [...]}`, `#{type: "progress", value: 0.5}`,
-//! `#{type: "game", app_id: 440}` (a game card), `#{type: "input", id, value, hint}`,
-//! `#{type: "toggle", id, text, value}`, `#{type: "link", text, page, arg}`,
-//! `#{type: "table", columns: [...], rows: [[...]]}`, `#{type: "pill", text}`,
-//! `#{type: "image", url, width, height}` (Steam's image servers, or the plugin's hosts).
+//! The full list of functions, hooks, events, permissions and widgets is in
+//! [`docs/plugin-api.md`](../../../docs/plugin-api.md). Keep it up to date
+//! when adding to the API (and bump [`API_VERSION`]).
 
 use rhai::{AST, Array, Dynamic, Engine, EvalAltResult, ImmutableString, Map, Scope};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+mod library;
+pub use library::GameInfo;
+
+/// What `api_version()` answers. Bump it when functions are added, so
+/// plugins can check before calling them.
+pub const API_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Permission {
@@ -236,8 +191,8 @@ pub struct Snapshot {
     pub me: Option<(u64, String, String)>,
     /// (steam_id, name, status, game)
     pub friends: Vec<(u64, String, String, Option<String>)>,
-    /// (app_id, name, installed, playtime minutes)
-    pub library: Vec<(u32, String, bool, u64)>,
+    /// Your games: owned and installed ones.
+    pub library: Arc<Vec<GameInfo>>,
     /// (app_id, name, progress 0..1, bytes per second, paused, queued)
     pub downloads: Vec<(u32, String, f32, u64, bool, bool)>,
     pub wishlist: Vec<u32>,
@@ -933,12 +888,12 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         Ok(h.snapshot
             .library
             .iter()
-            .map(|(id, name, installed, minutes)| {
+            .map(|g| {
                 map([
-                    ("app_id", (*id as i64).into()),
-                    ("name", name.clone().into()),
-                    ("installed", (*installed).into()),
-                    ("playtime_minutes", (*minutes as i64).into()),
+                    ("app_id", (g.app_id as i64).into()),
+                    ("name", g.name.clone().into()),
+                    ("installed", g.installed.into()),
+                    ("playtime_minutes", (g.playtime_minutes as i64).into()),
                 ])
                 .into()
             })
@@ -1013,7 +968,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         let mut h = h.lock().unwrap();
         h.need(Permission::GamesLaunch)?;
         let id = app_id as u32;
-        if !h.snapshot.library.iter().any(|g| g.0 == id && g.2) {
+        if !h.snapshot.library.iter().any(|g| g.app_id == id && g.installed) {
             return Err("that game isn't installed".into());
         }
         h.push(Request::Launch(id))
@@ -1173,6 +1128,9 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     });
     e.register_fn("json_string", |v: Dynamic| to_json(&v).to_string());
 
+    e.register_fn("api_version", || API_VERSION);
+    library::register(&mut e, &host);
+
     let h = host;
     e.register_fn("storage_set", move |k: &str, v: Dynamic| -> Result<(), Box<EvalAltResult>> {
         let mut h = h.lock().unwrap();
@@ -1250,7 +1208,7 @@ pub fn install_examples(dir: &Path) {
 mod tests {
     use super::*;
 
-    fn plugin(toml: &str, script: &str) -> Plugin {
+    pub(crate) fn plugin(toml: &str, script: &str) -> Plugin {
         let dir = std::env::temp_dir().join(format!("sir-plugin-test-{}", rand_id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("plugin.toml"), toml).unwrap();

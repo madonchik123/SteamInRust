@@ -264,6 +264,41 @@ impl Plugins {
     }
 }
 
+/// Your games for plugins: owned ones with app info, plus what's on disk.
+fn library(ctx: &Ctx) -> Vec<plugins::GameInfo> {
+    // Playtime of games that aren't installed comes from your profile's game
+    // list, when it has been loaded.
+    let profile: HashMap<AppId, &model::PlayerGame> = match ctx.state.player_games.get(&ctx.state.steam_id) {
+        Some(Ok(list)) => list.iter().map(|g| (g.app_id, g)).collect(),
+        _ => HashMap::new(),
+    };
+    super::entries(ctx.state, ctx.local)
+        .into_iter()
+        .map(|e| {
+            let on_disk = e.installed;
+            let p = profile.get(&e.app_id);
+            plugins::GameInfo {
+                app_id: e.app_id,
+                name: e.name.to_string(),
+                installed: on_disk.is_some(),
+                owned: e.owned.is_some(),
+                playtime_minutes: on_disk.and_then(|g| g.playtime_minutes).or(p.map(|g| g.playtime_minutes)).unwrap_or(0),
+                playtime_2weeks: p.map(|g| g.playtime_2weeks),
+                last_played: on_disk.and_then(|g| g.last_played).or(p.and_then(|g| g.last_played)),
+                size_on_disk: on_disk.map(|g| g.size_on_disk),
+                last_updated: on_disk.and_then(|g| g.last_updated),
+                update_required: on_disk.is_some_and(|g| g.state == model::InstallState::UpdateRequired),
+                kind: e.owned.map(|a| a.kind.clone()).unwrap_or_default(),
+                genres: e.owned.map(|a| a.genres.clone()).unwrap_or_default(),
+                categories: e.owned.map(|a| a.categories.clone()).unwrap_or_default(),
+                deck: e.owned.map(|a| a.deck).unwrap_or(0),
+                os_list: e.owned.map(|a| a.os_list.clone()).unwrap_or_default(),
+                icon: e.owned.and_then(|a| a.icon.clone()),
+            }
+        })
+        .collect()
+}
+
 fn snapshot(ctx: &Ctx, trades: bool, inventory: bool) -> Snapshot {
     let me = ctx.state.me().map(|p| (p.steam_id, ctx.state.persona_name.clone(), p.state.label().to_string()));
     let friends = ctx
@@ -275,11 +310,7 @@ fn snapshot(ctx: &Ctx, trades: bool, inventory: bool) -> Snapshot {
             (p.steam_id, p.name.clone(), p.state.label().to_string(), game)
         })
         .collect();
-    let installed: HashMap<AppId, u64> = ctx.local.games.iter().map(|g| (g.app_id, g.playtime_minutes.unwrap_or(0))).collect();
-    let library = super::entries(ctx.state, ctx.local)
-        .into_iter()
-        .map(|e| (e.app_id, e.name.to_string(), e.installed.is_some(), installed.get(&e.app_id).copied().unwrap_or(0)))
-        .collect();
+    let library = Arc::new(library(ctx));
     let name = |id: AppId| ctx.state.app_name(id).map(String::from).unwrap_or_default();
     let mut downloads: Vec<(u32, String, f32, u64, bool, bool)> = ctx
         .state
