@@ -180,6 +180,24 @@ There's no progress event, since progress changes many times a second. Call
 | Function | Permission | Returns |
 |---|---|---|
 | `wishlist()` | `store.read` | App ids on your wishlist |
+| `wishlist_items()` | `store.read` | `[#{app_id, name, added, rank}]`: your wishlist in your order. `added` is Unix seconds, `rank` starts at 1 |
+| `app_details(app_id)` | `store.read` | The game's store page (below), `#{error}` if Steam has none, or `()` while loading |
+| `store_price(app_id)` | `store.read` | `#{initial, final, discount, currency, text, free}`, `#{error}`, or `()` while loading |
+| `store_search(term)` | `store.read` | `[#{app_id, name, header, price}]`, or `()` while loading |
+
+A store page is a map: `app_id`, `name`, `type`, `short_description`,
+`developers`, `publishers`, `genres`, `categories` (as names), `release_date`
+(as the store writes it), `coming_soon`, `free`, `price` (as `store_price`, or
+`()`), `metacritic`, `recommendations`, `platforms`, `website`, `header`,
+`background`, `dlc` (app ids), `demo` (an app id or `()`) and `store_url`.
+
+Store prices are in cents of the store's currency for your country (`initial`
+before the discount, `final` now). They are **not** Market prices: those come
+from `market_price` and are in your wallet currency.
+
+Store pages stay cached for an hour and searches for 10 minutes. A plugin can
+start 30 new lookups a minute; past that, the rest return `()` and load later.
+When one arrives you get `app_details_loaded` or `store_search_loaded`.
 
 ### Inventory and Market
 
@@ -249,6 +267,9 @@ Define any of these functions:
 | `trade_offer` | `id`, `partner`, `name` (someone sent you one) | `trades.read` |
 | `trade_changed` | `id`, `state` | `trades.read` |
 | `achievement_unlocked` | `app_id`, `name`, `description`, `unlock_time` | `achievements.read` |
+| `wishlist_changed` | `added`, `removed` (app ids) | `store.read` |
+| `app_details_loaded` | `app_id` | `store.read` |
+| `store_search_loaded` | `term` | `store.read` |
 
 ## Widgets
 

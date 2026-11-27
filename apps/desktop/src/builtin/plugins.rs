@@ -60,6 +60,9 @@ pub struct Plugins {
     achievement_watch: plugins::AchievementWatch,
     /// Downloads seen, to tell plugins when one starts, pauses or resumes.
     download_watch: plugins::DownloadWatch,
+    store_cache: Arc<Mutex<StoreCache>>,
+    /// The wishlist last seen, to tell plugins what changed.
+    wishlist_seen: Option<Vec<AppId>>,
 }
 
 /// Which kinds of large data running plugins may see (so the snapshot only
@@ -69,6 +72,64 @@ struct Wants {
     trades: bool,
     inventory: bool,
     achievements: bool,
+    store: bool,
+}
+
+/// How long store pages and searches stay cached for plugins (seconds).
+const STORE_PAGE_TTL: u64 = 3600;
+const STORE_SEARCH_TTL: u64 = 600;
+/// Most store pages and searches kept.
+const STORE_PAGES: usize = 500;
+const STORE_SEARCHES: usize = 50;
+
+/// Store pages and searches plugins asked for (public store data, no login).
+#[derive(Default)]
+struct StoreCache {
+    details: HashMap<AppId, (std::time::Instant, Result<plugins::StoreApp, String>)>,
+    searches: HashMap<String, (std::time::Instant, Result<Vec<plugins::StoreHit>, String>)>,
+    /// Lookups on their way ("app:440", "search:portal").
+    loading: std::collections::HashSet<String>,
+    /// Arrived since the last frame, to tell plugins.
+    arrived: Vec<HostEvent>,
+}
+
+impl StoreCache {
+    /// Keep at most `max` entries, dropping the oldest.
+    fn trim<K: Clone + Eq + std::hash::Hash, V>(map: &mut HashMap<K, (std::time::Instant, V)>, max: usize) {
+        while map.len() > max {
+            let Some(oldest) = map.iter().min_by_key(|(_, (at, _))| *at).map(|(k, _)| k.clone()) else { break };
+            map.remove(&oldest);
+        }
+    }
+}
+
+fn store_price(p: &store::Price, text: Option<String>) -> plugins::StorePrice {
+    plugins::StorePrice { initial: p.initial, final_: p.final_, discount: p.discount, currency: p.currency.clone(), text }
+}
+
+fn store_app(d: store::Details) -> plugins::StoreApp {
+    plugins::StoreApp {
+        app_id: d.app_id,
+        price: d.price.as_ref().map(|p| store_price(p, d.price_text.clone())),
+        name: d.name,
+        kind: d.kind,
+        short_description: d.short_description,
+        developers: d.developers,
+        publishers: d.publishers,
+        genres: d.genres,
+        categories: d.categories,
+        release_date: d.release_date,
+        coming_soon: d.coming_soon,
+        is_free: d.is_free,
+        metacritic: d.metacritic,
+        recommendations: d.recommendations,
+        platforms: d.platforms,
+        website: d.website,
+        header: d.header,
+        background: d.background,
+        dlc: d.dlc,
+        demo: d.demo,
+    }
 }
 
 fn parse_enabled(data: &str) -> BTreeMap<String, BTreeSet<Permission>> {
@@ -83,6 +144,12 @@ fn parse_enabled(data: &str) -> BTreeMap<String, BTreeSet<Permission>> {
 
 fn permissions_approved(manifest: &[Permission], approved: &BTreeSet<Permission>) -> bool {
     manifest.iter().all(|p| approved.contains(p))
+}
+
+/// A store lookup for a plugin.
+enum StoreLookup {
+    Details(AppId),
+    Search(String),
 }
 
 /// Something done on a plugin's page.
@@ -124,6 +191,8 @@ impl Plugins {
             asked: Default::default(),
             achievement_watch: Default::default(),
             download_watch: Default::default(),
+            store_cache: Default::default(),
+            wishlist_seen: None,
         }
     }
 
@@ -238,6 +307,8 @@ impl Plugins {
                         ctx.send(Command::MarketPrices { app_id, names, currency: super::inventory::wallet_currency(ctx) });
                     }
                 }
+                Request::StoreDetails(app_id) => self.store_lookup(ctx, format!("app:{app_id}"), StoreLookup::Details(app_id)),
+                Request::StoreSearch(term) => self.store_lookup(ctx, format!("search:{term}"), StoreLookup::Search(term)),
                 Request::PauseDownload(app_id) => ctx.send(Command::PauseDownload { app_id }),
                 Request::ResumeDownload(app_id) => ctx.send(Command::ResumeDownload { app_id }),
                 Request::CancelDownload(app_id) => ctx.send(Command::CancelDownload { app_id }),
@@ -257,6 +328,53 @@ impl Plugins {
             }
         }
         self.persist(p);
+    }
+
+    /// Load a store page or search in the background (once, while it's
+    /// not cached); plugins get an event when it arrives.
+    fn store_lookup(&self, ctx: &Ctx, key: String, what: StoreLookup) {
+        {
+            let mut c = self.store_cache.lock().unwrap();
+            let fresh = |at: &std::time::Instant, ttl| at.elapsed() < std::time::Duration::from_secs(ttl);
+            let cached = match &what {
+                StoreLookup::Details(id) => c.details.get(id).is_some_and(|(at, _)| fresh(at, STORE_PAGE_TTL)),
+                StoreLookup::Search(t) => c.searches.get(t).is_some_and(|(at, _)| fresh(at, STORE_SEARCH_TTL)),
+            };
+            if cached || !c.loading.insert(key.clone()) {
+                return;
+            }
+        }
+        let country = ctx.state.country.to_lowercase();
+        let country = if country.is_empty() { "us".to_string() } else { country };
+        let language = i18n::language().steam_name().to_string();
+        let (cache, egui) = (self.store_cache.clone(), self.egui.clone());
+        self.rt.spawn(async move {
+            let api = store::StoreClient::new(&country, &language);
+            let now = std::time::Instant::now();
+            match what {
+                StoreLookup::Details(id) => {
+                    let r = api.details(id).await.map(store_app).map_err(|e| e.to_string());
+                    let mut c = cache.lock().unwrap();
+                    c.details.insert(id, (now, r));
+                    StoreCache::trim(&mut c.details, STORE_PAGES);
+                    c.arrived.push(HostEvent::AppDetailsLoaded { app_id: id });
+                    c.loading.remove(&key);
+                }
+                StoreLookup::Search(term) => {
+                    let r = api
+                        .search(&term)
+                        .await
+                        .map(|items| items.into_iter().take(50).map(|i| plugins::StoreHit { app_id: i.app_id, name: i.name, header: i.header, price: store_price(&i.price, None) }).collect())
+                        .map_err(|e| e.to_string());
+                    let mut c = cache.lock().unwrap();
+                    c.searches.insert(term.clone(), (now, r));
+                    StoreCache::trim(&mut c.searches, STORE_SEARCHES);
+                    c.arrived.push(HostEvent::StoreSearchLoaded { term });
+                    c.loading.remove(&key);
+                }
+            }
+            egui.request_repaint();
+        });
     }
 
     /// Run a plugin's web request in the background; the answer is handed
@@ -303,8 +421,9 @@ impl Plugins {
             trades: self.granted(Permission::TradesRead),
             inventory: self.granted(Permission::InventoryRead),
             achievements: self.granted(Permission::AchievementsRead),
+            store: self.granted(Permission::StoreRead),
         };
-        let s = snapshot(ctx, wants);
+        let s = snapshot(ctx, wants, Some(&self.store_cache));
         self.snapshot = Some((std::time::Instant::now(), s.clone()));
         s
     }
@@ -350,7 +469,7 @@ fn library(ctx: &Ctx) -> Vec<plugins::GameInfo> {
         .collect()
 }
 
-fn snapshot(ctx: &Ctx, wants: Wants) -> Snapshot {
+fn snapshot(ctx: &Ctx, wants: Wants, store: Option<&Mutex<StoreCache>>) -> Snapshot {
     let Wants { trades, inventory, .. } = wants;
     let me = ctx.state.me().map(|p| (p.steam_id, ctx.state.persona_name.clone(), p.state.label().to_string()));
     let friends = ctx
@@ -394,7 +513,18 @@ fn snapshot(ctx: &Ctx, wants: Wants) -> Snapshot {
         phase: "queued",
         ..Default::default()
     }));
-    let wishlist = ctx.state.wishlist.as_ref().map(|w| w.iter().map(|(id, _)| *id).collect()).unwrap_or_default();
+    let wishlist: Vec<(u32, u64)> = ctx.state.wishlist.clone().unwrap_or_default();
+    let (store, searches, app_names) = match (wants.store, store) {
+        (true, Some(cache)) => {
+            let c = cache.lock().unwrap();
+            let fresh = |at: &std::time::Instant, ttl: u64| at.elapsed() < std::time::Duration::from_secs(ttl);
+            let store = c.details.iter().filter(|(_, (at, _))| fresh(at, STORE_PAGE_TTL)).map(|(id, (_, r))| (*id, r.clone())).collect();
+            let searches = c.searches.iter().filter(|(_, (at, _))| fresh(at, STORE_SEARCH_TTL)).map(|(k, (_, r))| (k.clone(), r.clone())).collect();
+            let names = wishlist.iter().filter_map(|(id, _)| ctx.state.app_name(*id).map(|n| (*id, n.to_string()))).collect();
+            (store, searches, names)
+        }
+        _ => Default::default(),
+    };
     // Trades, inventories and prices only when a running plugin may see them
     // (they can be large).
     let trades = match (&ctx.state.trade_offers, trades) {
@@ -437,6 +567,9 @@ fn snapshot(ctx: &Ctx, wants: Wants) -> Snapshot {
         currency,
         achievement_progress: Arc::new(achievement_progress),
         achievements: Arc::new(achievements),
+        store: Arc::new(store),
+        searches: Arc::new(searches),
+        app_names: Arc::new(app_names),
     }
 }
 
@@ -489,6 +622,12 @@ impl Extension for Plugins {
                 host_events.push(HostEvent::DownloadFinished { app_id: *app_id, ok: result.is_ok(), error: result.clone().err() });
             }
             Event::Download(d) => host_events.extend(self.download_watch.update(d)),
+            Event::Wishlist(list) => {
+                let now: Vec<AppId> = list.iter().map(|(id, _)| *id).collect();
+                if let Some(before) = self.wishlist_seen.replace(now.clone()) {
+                    host_events.extend(plugins::wishlist_changes(&before, &now));
+                }
+            }
             Event::Message(m) if m.from != ctx.state.steam_id => {
                 host_events.push(HostEvent::Message { steam_id: m.from, name: ctx.state.persona(m.from).name, text: m.text.clone() });
             }
@@ -561,6 +700,21 @@ impl Extension for Plugins {
                 p.is_running() && p.manifest.tick.is_some() && self.next_tick.get(&p.manifest.id).is_none_or(|t| now >= *t)
             })
             .collect();
+        let arrived = std::mem::take(&mut self.store_cache.lock().unwrap().arrived);
+        if !arrived.is_empty() {
+            // The new data has to be in the snapshot the events see.
+            self.snapshot = None;
+            let snap = self.snapshot(ctx);
+            for i in 0..self.list.len() {
+                if self.list[i].is_running() {
+                    self.list[i].set_snapshot(snap.clone());
+                    for e in &arrived {
+                        self.list[i].event(e);
+                    }
+                    self.handle(i, ctx);
+                }
+            }
+        }
         if replies.is_empty() && due.is_empty() {
             return;
         }
@@ -972,7 +1126,7 @@ mod tests {
         std::fs::write(dir.join("main.rhai"), script).unwrap();
         let mut p = plugins::Plugin::load(&dir).unwrap();
         // A wishlist of three well-known games.
-        p.set_snapshot(plugins::Snapshot { wishlist: vec![440, 620, 1145360], ..Default::default() });
+        p.set_snapshot(plugins::Snapshot { wishlist: vec![(440, 0), (620, 0), (1145360, 0)], ..Default::default() });
         p.start(&std::collections::BTreeSet::from([plugins::Permission::Network]), Default::default());
         assert!(p.error.is_none(), "{:?}", p.error);
         let reqs = p.drain();

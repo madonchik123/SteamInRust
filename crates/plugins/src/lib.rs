@@ -28,7 +28,9 @@ use std::sync::{Arc, Mutex};
 mod achievements;
 mod downloads;
 mod library;
+mod store;
 pub use achievements::AchievementWatch;
+pub use store::{STORE_LOOKUPS_PER_MINUTE, StoreApp, StoreHit, StorePrice, search_key, wishlist_changes};
 pub use downloads::{DownloadInfo, DownloadWatch, phase as download_phase};
 pub use library::GameInfo;
 
@@ -114,7 +116,7 @@ impl Permission {
             Self::Network => "Connect to the websites it lists",
             Self::GamesLaunch => "Start your installed games",
             Self::DownloadsRead => "See your downloads",
-            Self::StoreRead => "See your wishlist",
+            Self::StoreRead => "See your wishlist, and Steam store pages and prices",
             Self::Clipboard => "Copy text to your clipboard",
             Self::InventoryRead => "See your inventory and items' market prices",
             Self::TradesRead => "See your trade offers",
@@ -207,7 +209,14 @@ pub struct Snapshot {
     pub library: Arc<Vec<GameInfo>>,
     /// Running downloads, then the queue in order.
     pub downloads: Vec<DownloadInfo>,
-    pub wishlist: Vec<u32>,
+    /// Your wishlist in your order: (app_id, added in Unix seconds).
+    pub wishlist: Vec<(u32, u64)>,
+    /// Store pages loaded for plugins.
+    pub store: Arc<HashMap<u32, Result<StoreApp, String>>>,
+    /// Store searches loaded for plugins, by [`search_key`].
+    pub searches: Arc<HashMap<String, Result<Vec<StoreHit>, String>>>,
+    /// Names of games the app knows (for wishlist items).
+    pub app_names: Arc<HashMap<u32, String>>,
     /// The app's language code ("en", "ru"...).
     pub language: String,
     /// Your trade offers, with the partner's name.
@@ -259,6 +268,10 @@ pub enum Request {
     MoveDownload(u32, usize),
     /// Start a queued download now (the running one waits).
     DownloadNow(u32),
+    /// Load a game's store page.
+    StoreDetails(u32),
+    /// Search the store (a [`search_key`]).
+    StoreSearch(String),
 }
 
 /// Events delivered to `on_event`.
@@ -283,6 +296,12 @@ pub enum HostEvent {
     /// You unlocked an achievement (seen when the game's list reloads: when
     /// the game closes, or when you open its achievements).
     AchievementUnlocked { app_id: u32, name: String, description: String, unlock_time: u64 },
+    /// Games were added to or removed from your wishlist.
+    WishlistChanged { added: Vec<u32>, removed: Vec<u32> },
+    /// A store page asked for with `app_details` / `store_price` arrived.
+    AppDetailsLoaded { app_id: u32 },
+    /// A store search asked for with `store_search` arrived.
+    StoreSearchLoaded { term: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -327,6 +346,10 @@ struct Host {
     next_request: u64,
     /// When recent requests were made (at most 30 a minute).
     request_times: VecDeque<std::time::Instant>,
+    /// Store lookups asked for in the last minute.
+    store_asked: HashMap<String, std::time::Instant>,
+    /// The store limit was hit and logged (once until it's under again).
+    store_limit_logged: bool,
 }
 
 impl Host {
@@ -381,6 +404,8 @@ impl Host {
                 }
                 (Request::LoadAchievements(a), Request::LoadAchievements(b)) => *a == *b,
                 (Request::LoadInventory(a, c), Request::LoadInventory(b, d)) => *a == *b && *c == *d,
+                (Request::StoreDetails(a), Request::StoreDetails(b)) => *a == *b,
+                (Request::StoreSearch(a), Request::StoreSearch(b)) => *a == *b,
                 _ => false,
             }
         };
@@ -619,6 +644,12 @@ impl Plugin {
                     ("unlock_time", (*unlock_time as i64).into()),
                 ]),
             ),
+            HostEvent::WishlistChanged { added, removed } if granted.contains(&Permission::StoreRead) => {
+                let ids = |v: &[u32]| Dynamic::from_array(v.iter().map(|x| Dynamic::from(*x as i64)).collect());
+                ("wishlist_changed", map([("added", ids(added)), ("removed", ids(removed))]))
+            }
+            HostEvent::AppDetailsLoaded { app_id } if granted.contains(&Permission::StoreRead) => ("app_details_loaded", map([("app_id", (*app_id as i64).into())])),
+            HostEvent::StoreSearchLoaded { term } if granted.contains(&Permission::StoreRead) => ("store_search_loaded", map([("term", term.clone().into())])),
             HostEvent::Message { steam_id, name, text } if granted.contains(&Permission::ChatRead) => (
                 "message",
                 map([("steam_id", steam_id.to_string().into()), ("name", name.clone().into()), ("text", text.clone().into())]),
@@ -1060,7 +1091,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     e.register_fn("wishlist", move || -> Result<Array, Box<EvalAltResult>> {
         let h = h.lock().unwrap();
         h.need(Permission::StoreRead)?;
-        Ok(h.snapshot.wishlist.iter().map(|id| Dynamic::from(*id as i64)).collect())
+        Ok(h.snapshot.wishlist.iter().map(|(id, _)| Dynamic::from(*id as i64)).collect())
     });
 
     // Trades and inventory.
@@ -1193,6 +1224,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     library::register(&mut e, &host);
     achievements::register(&mut e, &host);
     downloads::register(&mut e, &host);
+    store::register(&mut e, &host);
 
     let h = host;
     e.register_fn("storage_set", move |k: &str, v: Dynamic| -> Result<(), Box<EvalAltResult>> {
