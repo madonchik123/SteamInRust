@@ -69,13 +69,20 @@ its permissions away.
 
 ## Checking the API version
 
-`api_version()` (no permission) returns `2` in this version. It didn't exist in
+`api_version()` (no permission) returns `3` in this version. It didn't exist in
 version 1, so check like this:
 
 ```rhai
 let v = try { api_version() } catch { 1 };
 if v >= 2 { /* game_info, achievements, store data... */ }
+if v >= 3 { /* timers, storage helpers, http_fetch, on_unload... */ }
 ```
+
+| Version | Added |
+|---|---|
+| 1 | Everything not listed below |
+| 2 | `api_version`, library info, achievements, download control, store data, inventory and trade helpers |
+| 3 | Timers, storage helpers, `http_fetch` and `http_cancel`, response headers, `on_unload`, `plugin_info`, `log_warn` / `log_error`, install events |
 
 ## Functions
 
@@ -87,8 +94,10 @@ Call them again later (from `page()`, `on_tick()` or the matching event).
 | Function | Permission | Returns |
 |---|---|---|
 | `log(text)` | none | Writes to the plugin's log (Settings → Plugins → Show log) |
+| `log_warn(text)`, `log_error(text)` | none | The same, shown in yellow or red |
 | `now()` | none | Unix seconds |
-| `api_version()` | none | The API version (2) |
+| `api_version()` | none | The API version (3) |
+| `plugin_info()` | none | `#{id, name, version, author, permissions, hosts}` from your manifest |
 | `language()` | none | The app's language code ("en", "ru"...) |
 | `platform()` | none | `"windows"`, `"macos"` or `"linux"` |
 | `currency()` | none | Your wallet's currency code ("USD"...) |
@@ -96,7 +105,37 @@ Call them again later (from `page()`, `on_tick()` or the matching event).
 | `notify(text)` | `notifications` | Shows a notification |
 | `copy(text)` | `clipboard` | Copies text |
 | `navigate(page, arg)` | none | Opens `"store"`, `"library"`, `"community"`, `"profile"`, `"downloads"`, `"settings"` or `"plugin:<id>"` |
-| `storage_get(key)`, `storage_set(key, value)` | `storage` | Up to 200 keys; values are saved as text |
+
+### Storage
+
+Each plugin has its own saved data: up to 200 keys and 1 MB in all.
+
+| Function | Permission | Returns |
+|---|---|---|
+| `storage_get(key)`, `storage_set(key, value)` | `storage` | Values are saved as text (at most 16 384 characters; longer ones are cut) |
+| `storage_set_json(key, value)`, `storage_get_json(key)` | `storage` | Saves maps, arrays, numbers and so on as they are, and gives them back the same. Too big a value is refused, not cut. `()` for a missing key, or one saved as plain text |
+| `storage_has(key)` | `storage` | `true` if the key is saved |
+| `storage_delete(key)` | `storage` | `true` if there was something to delete |
+| `storage_keys()` | `storage` | All keys, sorted |
+| `storage_clear()` | `storage` | Deletes everything this plugin saved |
+| `storage_size()` | `storage` | Bytes used (out of 1 MB) |
+
+### Timers
+
+No permission needed. A plugin can have 20 timers at once. Each is at least 5
+seconds and at most 30 days away, and all of them stop when the plugin does. A
+due timer calls `on_timer(id)`.
+
+| Function | Returns |
+|---|---|
+| `schedule_in(seconds)` | A timer id. It runs once, `seconds` from now |
+| `schedule_every(seconds)` | A timer id. It runs every `seconds` (runs missed while the PC slept are skipped, not piled up) |
+| `schedule_at(unix_seconds)` | A timer id. It runs once at that time |
+| `cancel_timer(id)` | `true` if the timer was still there |
+| `timers()` | `[#{id, due, every}]` |
+
+`tick` in the manifest still works. Timers are for when you need several, or
+need to start and stop them.
 
 ### You and your friends
 
@@ -250,11 +289,25 @@ only informs: what to do with the offer is still up to you.
 |---|---|---|
 | `http_get(url)`, `http_post(url, body)` | `network` | A request id |
 | `http_request(method, url, body, headers)` | `network` | A request id. `GET`, `POST`, `PUT`, `PATCH` or `DELETE` |
+| `http_fetch(#{url, method, body, json, headers, timeout})` | `network` | A request id. Only `url` is needed. `json` sends a value as JSON (with its `Content-Type`). `method` is `GET`, or `POST` when there's a body. `timeout` is 1 to 20 seconds (20 if not given) |
+| `http_cancel(id)` | `network` | `true` if it was still waiting; its answer never comes |
 
-Only `https://` addresses on the manifest's `hosts` work (`"*.example.com"`
-covers subdomains). At most 30 a minute. Redirects aren't followed. Answers
-over 1 MB are cut off. The answer goes to `on_http(id, status, body)`, where
-`status` is 0 if the request failed and `body` says why.
+Rules for every request:
+
+- Only `https://` addresses on the manifest's `hosts` work (`"*.example.com"`
+  covers subdomains).
+- Nothing on your own computer or local network: `localhost`, `.local` names,
+  and private, link-local and similar addresses are refused, even if the
+  manifest lists them. This is checked again after the name is looked up, so a
+  public name that points to a local address is refused too.
+- At most 30 a minute, and 8 waiting for an answer at once.
+- Redirects aren't followed. Answers over 1 MB are cut off. Requests time out
+  after 20 seconds at most.
+
+The answer goes to `on_http(id, status, body)`, where `status` is 0 if the
+request failed and `body` says why. Write it as `on_http(id, status, body,
+headers)` to also get the response headers as a map (names in lower case, at
+most 32, cookies left out).
 
 ## Hooks
 
@@ -263,9 +316,11 @@ Define any of these functions:
 | Hook | When |
 |---|---|
 | `on_load()` | The plugin starts |
+| `on_unload()` | The plugin is turned off, reloaded or the app closes it. It can still save with `storage_set`; other actions are dropped |
+| `on_timer(id)` | A timer is due |
 | `on_event(name, data)` | Something happened (see below) |
 | `on_tick()` | Every `tick` seconds from the manifest |
-| `on_http(id, status, body)` | A web request's answer |
+| `on_http(id, status, body)` or `on_http(id, status, body, headers)` | A web request's answer |
 | `page()` | Returns the widgets of the plugin's page (needs `[page]`) |
 | `on_click(id)`, `on_input(id, text)`, `on_toggle(id, on)` | A button, text field or switch on the page |
 | `game_actions(app_id)` | Returns buttons for a game's library page: `[#{id, text}]`; a click calls `on_game_action(id, app_id)` |
@@ -277,6 +332,7 @@ Define any of these functions:
 |---|---|---|
 | `logged_in` | | none |
 | `game_started`, `game_stopped` | `app_id` | none |
+| `game_installed`, `game_uninstalled` | `app_id`, `name` | `library.read` |
 | `friend_online`, `friend_offline` | `steam_id`, `name` | `friends.read` |
 | `friend_game` | `steam_id`, `name`, `game` | `friends.read` |
 | `message` | `steam_id`, `name`, `text` | `chat.read` |

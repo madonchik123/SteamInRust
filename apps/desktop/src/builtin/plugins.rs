@@ -16,7 +16,25 @@ use ui::{Theme, icons, widgets as w};
 
 /// A web request's answer, waiting to go back to its plugin:
 /// (plugin id, request id, HTTP status or 0, body or error).
-type HttpResult = (String, u64, u16, String);
+/// (plugin id, request id, HTTP status or 0, body or error, headers).
+type HttpResult = (String, u64, u16, String, Vec<(String, String)>);
+
+/// Looks names up like the system does, but refuses answers on your own
+/// computer or local network, so a plugin's host can't point there.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0)).await?.filter(|a| !plugins::blocked_ip(a.ip())).collect();
+            if addrs.is_empty() {
+                return Err(format!("'{host}' is on your own computer or network").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
 
 /// Largest answer a plugin gets (the rest is cut off).
 const MAX_BODY: usize = 1024 * 1024;
@@ -63,6 +81,11 @@ pub struct Plugins {
     store_cache: Arc<Mutex<StoreCache>>,
     /// The wishlist last seen, to tell plugins what changed.
     wishlist_seen: Option<Vec<AppId>>,
+    /// Web requests on their way, to stop one a plugin cancels.
+    requests: Arc<Mutex<HashMap<(String, u64), tokio::task::AbortHandle>>>,
+    /// Installed games last seen (id, name), to tell plugins about installs.
+    installed_seen: Option<HashMap<AppId, String>>,
+    installed_checked: Option<std::time::Instant>,
 }
 
 /// Which kinds of large data running plugins may see (so the snapshot only
@@ -170,8 +193,11 @@ impl Plugins {
         let base = client::store::config_dir();
         let http = reqwest::Client::builder()
             .user_agent(concat!("SteamInRust/", env!("CARGO_PKG_VERSION"), " (plugin)"))
-            .timeout(std::time::Duration::from_secs(20))
+            .timeout(std::time::Duration::from_secs(plugins::MAX_TIMEOUT))
             .redirect(reqwest::redirect::Policy::none())
+            // Through a proxy the names would be looked up there, unchecked.
+            .no_proxy()
+            .dns_resolver(PublicOnly)
             .build()
             .unwrap_or_default();
         Self {
@@ -199,6 +225,27 @@ impl Plugins {
             download_watch: Default::default(),
             store_cache: Default::default(),
             wishlist_seen: None,
+            requests: Default::default(),
+            installed_seen: None,
+            installed_checked: None,
+        }
+    }
+
+    /// Wake up for the next `on_tick` or timer (the app doesn't redraw when idle).
+    fn wake_for_timers(&self, now: u64) {
+        let next = self.next_tick.values().copied().chain(self.list.iter().filter_map(|p| p.next_timer())).min();
+        if let Some(next) = next {
+            self.egui.request_repaint_after(std::time::Duration::from_secs(next.saturating_sub(now).max(1)));
+        }
+    }
+
+    /// Stop a plugin: `on_unload` runs and what it saved is kept.
+    fn stop_plugin(&mut self, idx: usize) {
+        let p = &mut self.list[idx];
+        if p.is_running() {
+            p.stop();
+            let _ = p.drain();
+            self.persist(&self.list[idx]);
         }
     }
 
@@ -222,6 +269,9 @@ impl Plugins {
         self.loaded = true;
         let _ = std::fs::create_dir_all(&self.dir);
         plugins::install_examples(&self.dir);
+        for i in 0..self.list.len() {
+            self.stop_plugin(i);
+        }
         self.list.clear();
         self.broken.clear();
         for r in plugins::discover(&self.dir) {
@@ -245,6 +295,9 @@ impl Plugins {
 
     fn start(&mut self, id: &str) {
         let Some(approved) = self.enabled.get(id).cloned() else { return };
+        if let Some(i) = self.list.iter().position(|p| p.manifest.id == id) {
+            self.stop_plugin(i);
+        }
         let storage = self.storage(id);
         if let Some(p) = self.list.iter_mut().find(|p| p.manifest.id == id) {
             if permissions_approved(&p.manifest.permissions, &approved) {
@@ -284,7 +337,12 @@ impl Plugins {
                 }
                 Request::Navigate(page, arg) => ctx.navigate(&page, arg),
                 Request::Copy(text) => self.egui.copy_text(text),
-                Request::Http { id, method, url, body, headers } => self.fetch(p.manifest.id.clone(), id, method, url, body, headers),
+                Request::Http { id, method, url, body, headers, timeout } => self.fetch(p.manifest.id.clone(), id, method, url, body, headers, timeout),
+                Request::HttpCancel(id) => {
+                    if let Some(task) = self.requests.lock().unwrap().remove(&(p.manifest.id.clone(), id)) {
+                        task.abort();
+                    }
+                }
                 Request::LoadTrades => ctx.send(Command::LoadTradeOffers { language: i18n::language().steam_name().to_string() }),
                 Request::RespondTrade(id, action) => {
                     let partner = match &ctx.state.trade_offers {
@@ -384,20 +442,30 @@ impl Plugins {
 
     /// Run a plugin's web request in the background; the answer is handed
     /// back on a later frame (`tick`).
-    fn fetch(&self, plugin: String, id: u64, method: String, url: String, body: String, headers: Vec<(String, String)>) {
-        let (http, replies, egui) = (self.http.clone(), self.replies.clone(), self.egui.clone());
-        self.rt.spawn(async move {
+    #[allow(clippy::too_many_arguments)]
+    fn fetch(&self, plugin: String, id: u64, method: String, url: String, body: String, headers: Vec<(String, String)>, timeout: u64) {
+        let (http, replies, egui, requests) = (self.http.clone(), self.replies.clone(), self.egui.clone(), self.requests.clone());
+        let key = (plugin.clone(), id);
+        let mut tasks = self.requests.lock().unwrap();
+        let task = self.rt.spawn(async move {
             let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
-            let mut req = http.request(method, &url);
+            let mut req = http.request(method, &url).timeout(std::time::Duration::from_secs(timeout.clamp(1, plugins::MAX_TIMEOUT)));
             for (k, v) in headers {
                 req = req.header(k, v);
             }
             if !body.is_empty() {
                 req = req.body(body);
             }
-            let (status, text) = match req.send().await {
+            let (status, text, headers) = match req.send().await {
                 Ok(mut resp) => {
                     let status = resp.status().as_u16();
+                    let headers: Vec<(String, String)> = resp
+                        .headers()
+                        .iter()
+                        .filter(|(k, _)| !matches!(k.as_str(), "set-cookie" | "set-cookie2"))
+                        .take(32)
+                        .map(|(k, v)| (k.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).chars().take(1024).collect()))
+                        .collect();
                     let mut buf = Vec::new();
                     while let Ok(Some(chunk)) = resp.chunk().await {
                         buf.extend_from_slice(&chunk);
@@ -406,13 +474,15 @@ impl Plugins {
                             break;
                         }
                     }
-                    (status, String::from_utf8_lossy(&buf).into_owned())
+                    (status, String::from_utf8_lossy(&buf).into_owned(), headers)
                 }
-                Err(e) => (0, e.to_string()),
+                Err(e) => (0, e.to_string(), Vec::new()),
             };
-            replies.lock().unwrap().push((plugin, id, status, text));
+            requests.lock().unwrap().remove(&(plugin.clone(), id));
+            replies.lock().unwrap().push((plugin, id, status, text, headers));
             egui.request_repaint();
         });
+        tasks.insert(key, task.abort_handle());
     }
 
     /// The data plugins see (rebuilt at most once a second: the library can be big).
@@ -704,6 +774,38 @@ impl Extension for Plugins {
                 p.is_running() && p.manifest.tick.is_some() && self.next_tick.get(&p.manifest.id).is_none_or(|t| now >= *t)
             })
             .collect();
+        // Installs and uninstalls (the disk scan changes the local list).
+        if self.granted(Permission::LibraryRead) && self.installed_checked.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(2)) {
+            self.installed_checked = Some(std::time::Instant::now());
+            let now_installed: HashMap<AppId, String> = ctx.local.games.iter().map(|g| (g.app_id, g.name.clone())).collect();
+            if let Some(before) = self.installed_seen.replace(now_installed.clone()) {
+                let mut events: Vec<HostEvent> = now_installed.iter().filter(|(id, _)| !before.contains_key(id)).map(|(id, name)| HostEvent::GameInstalled { app_id: *id, name: name.clone() }).collect();
+                events.extend(before.iter().filter(|(id, _)| !now_installed.contains_key(id)).map(|(id, name)| HostEvent::GameUninstalled { app_id: *id, name: name.clone() }));
+                if !events.is_empty() {
+                    self.snapshot = None;
+                    let snap = self.snapshot(ctx);
+                    for i in 0..self.list.len() {
+                        if self.list[i].is_running() {
+                            self.list[i].set_snapshot(snap.clone());
+                            for e in &events {
+                                self.list[i].event(e);
+                            }
+                            self.handle(i, ctx);
+                        }
+                    }
+                }
+            }
+        }
+        // Plugin timers that are due.
+        let timers: Vec<usize> = (0..self.list.len()).filter(|&i| self.list[i].next_timer().is_some_and(|t| t <= now)).collect();
+        if !timers.is_empty() {
+            let snap = self.snapshot(ctx);
+            for i in timers {
+                self.list[i].set_snapshot(snap.clone());
+                self.list[i].timers(now);
+                self.handle(i, ctx);
+            }
+        }
         let arrived = std::mem::take(&mut self.store_cache.lock().unwrap().arrived);
         if !arrived.is_empty() {
             // The new data has to be in the snapshot the events see.
@@ -720,13 +822,14 @@ impl Extension for Plugins {
             }
         }
         if replies.is_empty() && due.is_empty() {
+            self.wake_for_timers(now);
             return;
         }
         let snap = self.snapshot(ctx);
-        for (plugin, id, status, body) in replies {
+        for (plugin, id, status, body, headers) in replies {
             if let Some(i) = self.list.iter().position(|p| p.manifest.id == plugin && p.is_running()) {
                 self.list[i].set_snapshot(snap.clone());
-                self.list[i].http_done(id, status, body);
+                self.list[i].http_done(id, status, body, headers);
                 self.handle(i, ctx);
             }
         }
@@ -737,10 +840,7 @@ impl Extension for Plugins {
             }
             self.handle(i, ctx);
         }
-        // Wake up for the next tick (the app doesn't redraw when idle).
-        if let Some(next) = self.next_tick.values().min() {
-            self.egui.request_repaint_after(std::time::Duration::from_secs(next.saturating_sub(now).max(1)));
-        }
+        self.wake_for_timers(now);
     }
 
     fn game_actions(&mut self, app_id: AppId, ui: &mut Ui, ctx: &mut Ctx) {
@@ -888,7 +988,8 @@ impl Extension for Plugins {
                         w::panel(&t).show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             for l in logs.iter().rev().take(30) {
-                                ui.label(w::text(l, 12.0, t.text_dim).monospace());
+                                let color = if l.starts_with("error:") { t.danger } else if l.starts_with("warning:") { t.away } else { t.text_dim };
+                                ui.label(w::text(l, 12.0, color).monospace());
                             }
                         });
                     }
@@ -912,8 +1013,8 @@ impl Extension for Plugins {
             Some((id, true)) => self.consent = Some(id),
             Some((id, false)) => {
                 self.enabled.remove(&id);
-                if let Some(p) = self.list.iter_mut().find(|p| p.manifest.id == id) {
-                    p.stop();
+                if let Some(i) = self.list.iter().position(|p| p.manifest.id == id) {
+                    self.stop_plugin(i);
                 }
             }
             None => {}
@@ -1131,11 +1232,12 @@ mod tests {
         let mut p = plugins::Plugin::load(&dir).unwrap();
         // A wishlist of three well-known games.
         p.set_snapshot(plugins::Snapshot { wishlist: vec![(440, 0), (620, 0), (1145360, 0)], ..Default::default() });
-        p.start(&std::collections::BTreeSet::from([plugins::Permission::Network]), Default::default());
+        let approved = p.manifest.permissions.iter().copied().collect();
+        p.start(&approved, Default::default());
         assert!(p.error.is_none(), "{:?}", p.error);
         let reqs = p.drain();
-        let Some(plugins::Request::Http { id, method, url, body, headers }) = reqs.into_iter().find(|r| matches!(r, plugins::Request::Http { .. })) else { panic!("no request") };
-        host.fetch("wishlist-sales".into(), id, method, url, body, headers);
+        let Some(plugins::Request::Http { id, method, url, body, headers, timeout }) = reqs.into_iter().find(|r| matches!(r, plugins::Request::Http { .. })) else { panic!("no request") };
+        host.fetch("wishlist-sales".into(), id, method, url, body, headers, timeout);
         let reply = (0..100)
             .find_map(|_| {
                 std::thread::sleep(std::time::Duration::from_millis(200));
@@ -1143,7 +1245,7 @@ mod tests {
             })
             .expect("an answer");
         assert_eq!(reply.2, 200, "{}", reply.3);
-        p.http_done(reply.1, reply.2, reply.3);
+        p.http_done(reply.1, reply.2, reply.3, reply.4);
         assert!(p.error.is_none(), "{:?}", p.error);
         let saved = p.take_storage().unwrap();
         assert!(saved.contains_key("checked") && saved.contains_key("sales"), "{saved:?}");
@@ -1164,6 +1266,14 @@ mod tests {
         let old = now - Duration::from_secs(120);
         assert!(super::fresh(&old, true, 3600), "a page is good for an hour");
         assert!(!super::fresh(&old, false, 3600), "a failure is asked again after a minute");
+    }
+
+    #[test]
+    fn plugin_requests_cant_reach_local_addresses() {
+        use reqwest::dns::Resolve;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let r = rt.block_on(super::PublicOnly.resolve("localhost".parse().unwrap()));
+        assert!(r.is_err_and(|e| e.to_string().contains("own computer")));
     }
 
     #[test]

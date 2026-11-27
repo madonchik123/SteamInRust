@@ -29,7 +29,11 @@ mod achievements;
 mod downloads;
 mod items;
 mod library;
+mod net;
+mod storage;
 mod store;
+mod timers;
+pub use net::blocked_ip;
 pub use achievements::AchievementWatch;
 pub use store::{STORE_LOOKUPS_PER_MINUTE, StoreApp, StoreHit, StorePrice, search_key, wishlist_changes};
 pub use downloads::{DownloadInfo, DownloadWatch, phase as download_phase};
@@ -37,7 +41,12 @@ pub use library::GameInfo;
 
 /// What `api_version()` answers. Bump it when functions are added, so
 /// plugins can check before calling them.
-pub const API_VERSION: i64 = 2;
+pub const API_VERSION: i64 = 3;
+
+/// Web requests a plugin can have waiting at once.
+pub const MAX_IN_FLIGHT: usize = 8;
+/// Longest a web request may take, in seconds.
+pub const MAX_TIMEOUT: u64 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Permission {
@@ -241,7 +250,9 @@ pub enum Request {
     SetStatus(model::PersonaState),
     SendMessage(u64, String),
     /// A web request; the answer goes to `Plugin::http_done`.
-    Http { id: u64, method: String, url: String, body: String, headers: Vec<(String, String)> },
+    Http { id: u64, method: String, url: String, body: String, headers: Vec<(String, String)>, timeout: u64 },
+    /// Stop a web request (its answer is dropped).
+    HttpCancel(u64),
     Launch(u32),
     Navigate(String, Option<String>),
     Copy(String),
@@ -303,6 +314,10 @@ pub enum HostEvent {
     AppDetailsLoaded { app_id: u32 },
     /// A store search asked for with `store_search` arrived.
     StoreSearchLoaded { term: String },
+    /// A game finished installing (or was found on disk).
+    GameInstalled { app_id: u32, name: String },
+    /// A game was uninstalled.
+    GameUninstalled { app_id: u32, name: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -351,6 +366,12 @@ struct Host {
     store_asked: HashMap<String, std::time::Instant>,
     /// The store limit was hit and logged (once until it's under again).
     store_limit_logged: bool,
+    timers: Vec<timers::Timer>,
+    next_timer: u64,
+    /// Web requests waiting for an answer.
+    in_flight: HashSet<u64>,
+    /// About this plugin, for `plugin_info()`.
+    info: Map,
 }
 
 impl Host {
@@ -545,6 +566,15 @@ impl Plugin {
             let mut h = self.host.lock().unwrap();
             h.granted = self.manifest.permissions.iter().copied().filter(|p| approved.contains(p)).collect();
             h.hosts = self.manifest.hosts.clone();
+            let m = &self.manifest;
+            h.info = map([
+                ("id", m.id.clone().into()),
+                ("name", m.name.clone().into()),
+                ("version", m.version.clone().into()),
+                ("author", m.author.clone().into()),
+                ("permissions", Dynamic::from_array(m.permissions.iter().map(|p| Dynamic::from(p.key())).collect())),
+                ("hosts", Dynamic::from_array(m.hosts.iter().map(|x| Dynamic::from(x.clone())).collect())),
+            ]);
             h.storage = storage;
             h.storage_dirty = false;
             h.outbox.clear();
@@ -571,10 +601,40 @@ impl Plugin {
         }
     }
 
+    /// Stop the script: `on_unload()` runs first (it can still save), then
+    /// its timers and waiting requests are dropped and permissions revoked.
     pub fn stop(&mut self) {
+        if self.running {
+            self.call("on_unload", ());
+        }
         self.running = false;
         self.ast = None;
-        self.host.lock().unwrap().granted.clear();
+        let mut h = self.host.lock().unwrap();
+        h.granted.clear();
+        h.timers.clear();
+        h.in_flight.clear();
+    }
+
+    /// When the next timer is due (Unix seconds).
+    pub fn next_timer(&self) -> Option<u64> {
+        if self.running { self.host.lock().unwrap().next_timer_due() } else { None }
+    }
+
+    /// Run the timers due at `now` (Unix seconds). Returns when the next is due.
+    pub fn timers(&mut self, now: u64) -> Option<u64> {
+        if !self.running {
+            return None;
+        }
+        let due = self.host.lock().unwrap().due_timers(now);
+        for id in due {
+            self.call("on_timer", (id.to_string(),));
+        }
+        self.host.lock().unwrap().next_timer_due()
+    }
+
+    /// How many parameters a hook takes, if the script defines it.
+    fn params(&self, name: &str) -> Option<usize> {
+        self.ast.as_ref()?.iter_functions().find(|f| f.name == name).map(|f| f.params.len())
     }
 
     fn has_fn(&self, name: &str) -> bool {
@@ -651,6 +711,12 @@ impl Plugin {
             }
             HostEvent::AppDetailsLoaded { app_id } if granted.contains(&Permission::StoreRead) => ("app_details_loaded", map([("app_id", (*app_id as i64).into())])),
             HostEvent::StoreSearchLoaded { term } if granted.contains(&Permission::StoreRead) => ("store_search_loaded", map([("term", term.clone().into())])),
+            HostEvent::GameInstalled { app_id, name } if granted.contains(&Permission::LibraryRead) => {
+                ("game_installed", map([("app_id", (*app_id as i64).into()), ("name", name.clone().into())]))
+            }
+            HostEvent::GameUninstalled { app_id, name } if granted.contains(&Permission::LibraryRead) => {
+                ("game_uninstalled", map([("app_id", (*app_id as i64).into()), ("name", name.clone().into())]))
+            }
             HostEvent::Message { steam_id, name, text } if granted.contains(&Permission::ChatRead) => (
                 "message",
                 map([("steam_id", steam_id.to_string().into()), ("name", name.clone().into()), ("text", text.clone().into())]),
@@ -681,8 +747,19 @@ impl Plugin {
     }
 
     /// The answer to a request made with `http_get` and friends.
-    pub fn http_done(&mut self, id: u64, status: u16, body: String) {
-        self.call("on_http", (id.to_string(), status as i64, body));
+    /// `on_http(id, status, body)`, or `on_http(id, status, body, headers)`
+    /// if the script takes the headers (a map, names in lower case). The
+    /// answer to a cancelled request is dropped.
+    pub fn http_done(&mut self, id: u64, status: u16, body: String, headers: Vec<(String, String)>) {
+        if !self.host.lock().unwrap().in_flight.remove(&id) {
+            return;
+        }
+        if self.params("on_http") == Some(4) {
+            let headers: Map = headers.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+            self.call("on_http", (id.to_string(), status as i64, body, headers));
+        } else {
+            self.call("on_http", (id.to_string(), status as i64, body));
+        }
     }
 
     /// Call `on_tick` if it's due (`now` in seconds since the epoch).
@@ -769,7 +846,8 @@ fn host_allowed(url: &str, hosts: &[String]) -> Result<(), String> {
     if authority.contains('@') {
         return Err("userinfo not allowed in plugin URLs".into());
     }
-    let host = authority.split(':').next().unwrap_or_default().to_ascii_lowercase();
+    let host = net::host_of(authority);
+    net::public_host(&host)?;
     let ok = hosts.iter().any(|h| match h.strip_prefix("*.") {
         Some(base) => host == base || host.ends_with(&format!(".{base}")),
         None => host == *h,
@@ -978,6 +1056,12 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
 
     let h = host.clone();
     e.register_fn("log", move |s: &str| h.lock().unwrap().log(s.to_string()));
+    let h = host.clone();
+    e.register_fn("log_warn", move |s: &str| h.lock().unwrap().log(format!("warning: {s}")));
+    let h = host.clone();
+    e.register_fn("log_error", move |s: &str| h.lock().unwrap().log(format!("error: {s}")));
+    let h = host.clone();
+    e.register_fn("plugin_info", move || Dynamic::from_map(h.lock().unwrap().info.clone()));
     e.register_fn("now", || {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
     });
@@ -1072,10 +1156,13 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     });
 
     let h = host.clone();
-    let request = move |method: &str, url: &str, body: &str, headers: Map| -> Result<String, Box<EvalAltResult>> {
+    let request = move |method: &str, url: &str, body: &str, headers: Map, timeout: u64| -> Result<String, Box<EvalAltResult>> {
         let mut h = h.lock().unwrap();
         h.need(Permission::Network)?;
         host_allowed(url, &h.hosts)?;
+        if h.in_flight.len() >= MAX_IN_FLIGHT {
+            return Err(format!("too many requests at once: at most {MAX_IN_FLIGHT} waiting for an answer").into());
+        }
         let now = std::time::Instant::now();
         while h.request_times.front().is_some_and(|t| now.duration_since(*t).as_secs() >= 60) {
             h.request_times.pop_front();
@@ -1085,21 +1172,54 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         }
         let id = h.next_request + 1;
         let headers = headers.into_iter().take(16).map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        h.push(Request::Http { id, method: method.to_ascii_uppercase(), url: url.to_string(), body: body.chars().take(256 * 1024).collect(), headers })?;
+        h.push(Request::Http { id, method: method.to_ascii_uppercase(), url: url.to_string(), body: body.chars().take(256 * 1024).collect(), headers, timeout })?;
+        h.in_flight.insert(id);
         h.next_request = id;
         h.request_times.push_back(now);
         Ok(id.to_string())
     };
     let r = request.clone();
-    e.register_fn("http_get", move |url: &str| r("GET", url, "", Map::new()));
+    e.register_fn("http_get", move |url: &str| r("GET", url, "", Map::new(), MAX_TIMEOUT));
     let r = request.clone();
-    e.register_fn("http_post", move |url: &str, body: &str| r("POST", url, body, Map::new()));
-    let r = request;
+    e.register_fn("http_post", move |url: &str, body: &str| r("POST", url, body, Map::new(), MAX_TIMEOUT));
+    let check_method = |method: &str| -> Result<(), Box<EvalAltResult>> {
+        if ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.to_ascii_uppercase().as_str()) { Ok(()) } else { Err(format!("unknown method '{method}'").into()) }
+    };
+    let r = request.clone();
     e.register_fn("http_request", move |method: &str, url: &str, body: &str, headers: Map| -> Result<String, Box<EvalAltResult>> {
-        if !["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.to_ascii_uppercase().as_str()) {
-            return Err(format!("unknown method '{method}'").into());
+        check_method(method)?;
+        r(method, url, body, headers, MAX_TIMEOUT)
+    });
+    let r = request;
+    e.register_fn("http_fetch", move |opts: Map| -> Result<String, Box<EvalAltResult>> {
+        let get = |k: &str| opts.get(k).filter(|v| !v.is_unit());
+        let url = get("url").map(|v| v.to_string()).ok_or("http_fetch needs a url")?;
+        let mut headers: Map = get("headers").and_then(|v| v.clone().try_cast::<Map>()).unwrap_or_default();
+        let body = match get("json") {
+            Some(v) => {
+                if !headers.keys().any(|k| k.eq_ignore_ascii_case("content-type")) {
+                    headers.insert("Content-Type".into(), "application/json".into());
+                }
+                to_json(v).to_string()
+            }
+            None => get("body").map(|v| v.to_string()).unwrap_or_default(),
+        };
+        let method = get("method").map(|v| v.to_string()).unwrap_or_else(|| if body.is_empty() { "GET".into() } else { "POST".into() });
+        check_method(&method)?;
+        let timeout = get("timeout").and_then(|v| v.as_int().ok()).unwrap_or(MAX_TIMEOUT as i64).clamp(1, MAX_TIMEOUT as i64) as u64;
+        r(&method, &url, &body, headers, timeout)
+    });
+
+    let h = host.clone();
+    e.register_fn("http_cancel", move |id: &str| -> Result<bool, Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::Network)?;
+        let Ok(id) = id.parse::<u64>() else { return Ok(false) };
+        if !h.in_flight.remove(&id) {
+            return Ok(false);
         }
-        r(method, url, body, headers)
+        h.push_load(Request::HttpCancel(id));
+        Ok(true)
     });
 
     let h = host.clone();
@@ -1231,17 +1351,14 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     downloads::register(&mut e, &host);
     store::register(&mut e, &host);
     items::register(&mut e, &host);
+    timers::register(&mut e, &host);
+    storage::register(&mut e, &host);
 
     let h = host;
     e.register_fn("storage_set", move |k: &str, v: Dynamic| -> Result<(), Box<EvalAltResult>> {
         let mut h = h.lock().unwrap();
         h.need(Permission::Storage)?;
-        if h.storage.len() >= 200 && !h.storage.contains_key(k) {
-            return Err("storage is limited to 200 keys".into());
-        }
-        h.storage.insert(k.chars().take(100).collect(), v.to_string().chars().take(16 * 1024).collect());
-        h.storage_dirty = true;
-        Ok(())
+        h.store(k, v.to_string().chars().take(storage::MAX_VALUE).collect())
     });
 
     e
@@ -1361,7 +1478,7 @@ mod tests {
         assert!(p.error.is_none(), "{:?}", p.error);
         let reqs = p.drain();
         assert_eq!(reqs.len(), 2);
-        assert!(matches!(&reqs[0], Request::Http { id: 1, method, url, .. } if method == "GET" && url == "https://api.example.com/x?y=1"));
+        assert!(matches!(&reqs[0], Request::Http { id: 1, method, url, timeout: 20, .. } if method == "GET" && url == "https://api.example.com/x?y=1"));
 
         for bad in ["http://api.example.com/", "https://evil.com/", "https://api.example.com.evil.com/", "https://evil.com@api.example.com.x/", "https://evil.com@api.example.com/"] {
             let mut p = plugin(
@@ -1390,7 +1507,8 @@ mod tests {
         );
         p.start(&BTreeSet::from([Permission::Storage]), Default::default());
         assert!(p.error.is_none(), "{:?}", p.error);
-        p.http_done(7, 200, r#"{"name":"Ferris"}"#.into());
+        p.host.lock().unwrap().in_flight.insert(7);
+        p.http_done(7, 200, r#"{"name":"Ferris"}"#.into(), Vec::new());
         assert_eq!(p.tick(1000), Some(1030));
         assert_eq!(p.tick(1031), Some(1061));
         assert_eq!(p.game_actions(440), vec![MenuItem { id: "a".into(), text: "Look up 440".into() }]);
@@ -1590,5 +1708,86 @@ name = \"T\"
         let reqs = q.drain();
         assert_eq!(reqs.len(), 2);
         assert!(reqs.iter().any(|r| matches!(r, Request::Prices(753, names) if names.len() == 100)));
+    }
+
+    fn net_plugin(script: &str) -> Plugin {
+        let mut p = plugin("id = \"web\"\nname = \"W\"\nversion = \"1.2.3\"\npermissions = [\"network\", \"storage\"]\nhosts = [\"api.example.com\"]\n", script);
+        p.start(&BTreeSet::from([Permission::Network, Permission::Storage]), Default::default());
+        p
+    }
+
+    #[test]
+    fn http_fetch_sends_json_with_a_timeout() {
+        let p = net_plugin(r#"fn on_load() { http_fetch(#{url: "https://api.example.com/v1", json: #{a: 1}, timeout: 5}); http_fetch(#{url: "https://api.example.com/v2", method: "delete", timeout: 999}); }"#);
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let reqs = p.drain();
+        assert!(matches!(&reqs[0], Request::Http { method, body, headers, timeout: 5, .. } if method == "POST" && body == r#"{"a":1}"# && headers.iter().any(|(k, v)| k == "Content-Type" && v == "application/json")), "{reqs:?}");
+        assert!(matches!(&reqs[1], Request::Http { method, timeout: 20, .. } if method == "DELETE"), "{reqs:?}");
+        let bad = net_plugin(r#"fn on_load() { http_fetch(#{url: "https://api.example.com/", method: "TRACE"}); }"#);
+        assert!(bad.error.as_deref().is_some_and(|e| e.contains("unknown method")), "{:?}", bad.error);
+    }
+
+    #[test]
+    fn http_answers_carry_headers_and_cancelled_ones_are_dropped() {
+        let mut p = net_plugin(
+            r#"
+            fn on_load() { storage_set("a", http_get("https://api.example.com/a")); storage_set("b", http_get("https://api.example.com/b")); }
+            fn on_http(id, status, body, headers) { storage_set("got", id + " " + status + " " + headers["x-rate"]); }
+            fn cancel(id) { http_cancel(id) }
+            "#,
+        );
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let s = p.take_storage().unwrap();
+        let (a, b) = (s["a"].clone(), s["b"].clone());
+        p.drain();
+        assert_eq!(p.call("cancel", (b.clone(),)).unwrap().as_bool().unwrap(), true);
+        assert!(matches!(p.drain().as_slice(), [Request::HttpCancel(id)] if id.to_string() == b));
+        p.http_done(b.parse().unwrap(), 200, "late".into(), Vec::new());
+        assert!(p.take_storage().is_none(), "a cancelled answer is dropped");
+        p.http_done(a.parse().unwrap(), 200, "ok".into(), vec![("x-rate".into(), "5".into())]);
+        assert_eq!(p.take_storage().unwrap()["got"], format!("{a} 200 5"));
+        p.http_done(a.parse().unwrap(), 200, "twice".into(), Vec::new());
+        assert!(p.take_storage().is_none(), "one answer per request");
+    }
+
+    #[test]
+    fn requests_waiting_at_once_are_capped() {
+        let p = net_plugin("fn on_load() { for i in 0..9 { http_get(\"https://api.example.com/\" + i); } }");
+        assert!(p.error.as_deref().is_some_and(|e| e.contains("at most 8")), "{:?}", p.error);
+        assert_eq!(p.drain().len(), MAX_IN_FLIGHT);
+    }
+
+    #[test]
+    fn unload_info_and_log_levels() {
+        let mut p = net_plugin(
+            r#"
+            fn on_load() { let i = plugin_info(); log_warn("careful"); log_error("broke"); storage_set("info", i.id + " " + i.version + " " + i.permissions + " " + api_version()); }
+            fn on_unload() { storage_set("bye", "yes"); }
+            "#,
+        );
+        assert!(p.error.is_none(), "{:?}", p.error);
+        assert_eq!(p.take_storage().unwrap()["info"], "web 1.2.3 [\"storage\", \"network\"] 3");
+        assert!(p.logs().iter().any(|l| l == "warning: careful") && p.logs().iter().any(|l| l == "error: broke"));
+        p.stop();
+        assert_eq!(p.take_storage().unwrap()["bye"], "yes", "on_unload can still save");
+        assert!(!p.is_running());
+        p.stop();
+        assert!(p.take_storage().is_none(), "on_unload runs once");
+    }
+
+    #[test]
+    fn install_events_need_library_read() {
+        let script = "fn on_event(name, data) { storage_set(name, data.name + \" \" + data.app_id); }";
+        let mut p = plugin("id = \"ins\"\nname = \"I\"\npermissions = [\"library.read\", \"storage\"]\n", script);
+        p.start(&BTreeSet::from([Permission::LibraryRead, Permission::Storage]), Default::default());
+        p.event(&HostEvent::GameInstalled { app_id: 440, name: "TF2".into() });
+        p.event(&HostEvent::GameUninstalled { app_id: 70, name: "HL".into() });
+        let s = p.take_storage().unwrap();
+        assert_eq!(s["game_installed"], "TF2 440");
+        assert_eq!(s["game_uninstalled"], "HL 70");
+        let mut q = plugin("id = \"ins2\"\nname = \"I\"\npermissions = [\"storage\"]\n", script);
+        q.start(&BTreeSet::from([Permission::Storage]), Default::default());
+        q.event(&HostEvent::GameInstalled { app_id: 440, name: "TF2".into() });
+        assert!(q.take_storage().is_none());
     }
 }

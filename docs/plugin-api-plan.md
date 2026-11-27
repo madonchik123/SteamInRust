@@ -154,13 +154,21 @@ calls:
 
 ### P1
 
+Done in API version 3: timers, storage helpers, the HTTP changes,
+`on_unload`, install events, `plugin_info` and log levels (marked **done**
+below). Still to do: Big Picture plugin pages and widgets, notification
+actions, `favorite_games` and `trade_history`.
+
 - **Plugin pages in Big Picture**, then the widgets above. This one comes
   first.
 - **Notification actions** (`notify_action`, `on_notification_action`): keep.
   The buttons must work in the Big Picture toast too.
-- **Timers** (`schedule_in`, `schedule_at`, `cancel_timer`, `on_timer`): keep.
-  At most 20 per plugin, at least 5 seconds apart, all cleared on stop.
-- **HTTP:**
+- **Timers** (`schedule_in`, `schedule_at`, `cancel_timer`, `on_timer`): **done**,
+  plus `schedule_every` and `timers()`. At most 20 per plugin, at least 5
+  seconds away, all cleared on stop.
+- **HTTP** (**done**: `http_fetch` with JSON and a timeout, `http_cancel`,
+  response headers, 8 requests waiting at most, and local addresses blocked in
+  the URL and after DNS, with no proxy so the check can't be skipped):
   - Features: response headers in `on_http`, a per-request timeout (at most
     20 s), cancel by id, a cap on requests in flight (4).
   - Security: block localhost and private, link-local and CGNAT addresses after
@@ -168,11 +176,13 @@ calls:
     which is safer than re-checking them. Allow them only if each hop is
     checked against the hosts and the blocked ranges.
   - JSON helpers already exist.
-- **Storage:** `storage_delete`, `storage_has`, `storage_keys`, `storage_clear`.
-  Keep the 200 keys, and add a total size limit (1 MB).
-- **Lifecycle:** `on_unload` (called on stop) and `on_settings_changed`: keep.
-  `on_enable` / `on_disable`: drop. They are the same as `on_load` /
-  `on_unload` here, because a disabled plugin doesn't run.
+- **Storage** (**done**): `storage_delete`, `storage_has`, `storage_keys`,
+  `storage_clear`, `storage_size`, plus `storage_set_json` / `storage_get_json`.
+  The 200 keys stay, and there's now a 1 MB total.
+- **Lifecycle:** `on_unload` is **done**. It runs on turning off, reload and
+  restart, and can still save. `on_settings_changed`: dropped for now, since
+  plugins have no settings screen yet; it comes with one. `on_enable` /
+  `on_disable`: dropped, since they'd be the same as `on_load` / `on_unload`.
 - **`favorite_games`** through a small read-only hook in the library page.
 - **`trade_history`** with the new Steam call.
 
@@ -210,10 +220,10 @@ calls:
 - **Per-permission revoke:** today you can only turn the whole plugin off.
   "Revocable" is met that way, but switching off one permission (for example
   `network`) and having its calls fail would help.
-- **Install and uninstall events** (`game_installed`, `game_uninstalled`): the
-  local scan already knows.
-- **Storage holds strings only:** `storage_set` stores `to_string()`.
-  `storage_set_json` / `storage_get_json` would save plugins a lot of parsing.
+- **Install and uninstall events** (`game_installed`, `game_uninstalled`):
+  **done** in version 3.
+- **Storage holds strings only:** **done**, with `storage_set_json` /
+  `storage_get_json`.
 - **The one-second snapshot** is cloned for every plugin. Big lists are now
   shared (`Arc`), but a plugin doing lots of calls still copies data each time.
   A lazy, per-permission snapshot would scale better.
