@@ -41,6 +41,9 @@ pub struct Target {
     pub steam_root: Option<PathBuf>,
     pub config: Option<CloudConfig>,
     pub cell_id: u32,
+    /// Steam Play on a Mac: the Windows version runs in this Wine prefix,
+    /// so Windows save folders (Documents, AppData…) are the ones in it.
+    pub wine_prefix: Option<PathBuf>,
 }
 
 impl Target {
@@ -60,6 +63,24 @@ impl Target {
         let user = directories::UserDirs::new();
         let base = directories::BaseDirs::new();
         let home = base.as_ref().map(|b| b.home_dir().to_path_buf());
+        // A Windows game under Wine saves into the prefix's user folders.
+        if let Some(prefix) = &self.wine_prefix {
+            let u = crate::compat::wine_user_dir(prefix);
+            let found = match key.as_str() {
+                "winmydocuments" => Some(u.join("Documents")),
+                "winappdatalocal" => Some(u.join("AppData").join("Local")),
+                "winappdataroaming" => Some(u.join("AppData").join("Roaming")),
+                "winappdatalocallow" => Some(u.join("AppData").join("LocalLow")),
+                "winsavedgames" => Some(u.join("Saved Games")),
+                "winpictures" => Some(u.join("Pictures")),
+                "winvideos" => Some(u.join("Videos")),
+                "winmusic" => Some(u.join("Music")),
+                _ => None,
+            };
+            if found.is_some() {
+                return found;
+            }
+        }
         Some(match key.as_str() {
             "gameinstall" => self.install_dir.clone(),
             "steamclouddocuments" => self.remote_dir(),
@@ -1118,10 +1139,27 @@ mod tests {
             max_files: 10,
             save_files: vec![model::SaveRule { root: "GameInstall".into(), path: "saves".into(), pattern: "*.sav".into(), recursive: false }],
         };
-        let t = Target { app_id: 10, steam_id: 76561197960265729, install_dir: PathBuf::from("C:/Games/X"), steam_root: Some(PathBuf::from("C:/Steam")), config: Some(cfg), cell_id: 0 };
+        let t = Target { app_id: 10, steam_id: 76561197960265729, install_dir: PathBuf::from("C:/Games/X"), steam_root: Some(PathBuf::from("C:/Steam")), config: Some(cfg), cell_id: 0, wine_prefix: None };
         assert_eq!(t.local_path("%GameInstall%saves/a.sav").unwrap(), PathBuf::from("C:/Games/X").join("saves").join("a.sav"));
         assert_eq!(t.local_path("profile.dat").unwrap(), PathBuf::from("C:/Steam/userdata/1/10/remote/profile.dat"));
         assert_eq!(t.expand("{Steam3AccountID}/x"), "1/x");
+    }
+
+    #[test]
+    fn windows_save_folders_come_from_the_wine_prefix() {
+        let pfx = std::env::temp_dir().join(format!("sir-cloud-pfx-{}", std::process::id()));
+        std::fs::create_dir_all(pfx.join("drive_c").join("users").join("crossover")).unwrap();
+        let cfg = CloudConfig {
+            quota: 1000,
+            max_files: 10,
+            save_files: vec![model::SaveRule { root: "WinAppDataLocalLow".into(), path: "Studio/Game".into(), pattern: "*.sav".into(), recursive: false }],
+        };
+        let t = Target { app_id: 10, steam_id: 76561197960265729, install_dir: PathBuf::from("/g"), steam_root: Some(PathBuf::from("/s")), config: Some(cfg), cell_id: 0, wine_prefix: Some(pfx.clone()) };
+        let user = crate::compat::wine_user_dir(&pfx);
+        assert_eq!(t.local_path("%WinAppDataLocalLow%Studio/Game/a.sav").unwrap(), user.join("AppData").join("LocalLow").join("Studio").join("Game").join("a.sav"));
+        // API files stay in Steam's userdata folder (the game reaches it through Z:).
+        assert_eq!(t.local_path("profile.dat").unwrap(), PathBuf::from("/s/userdata/1/10/remote/profile.dat"));
+        let _ = std::fs::remove_dir_all(&pfx);
     }
 
     #[test]
@@ -1133,6 +1171,7 @@ mod tests {
             steam_root: Some(PathBuf::from("/tmp/sir-cloud-steam")),
             config,
             cell_id: 0,
+            wine_prefix: None,
         };
 
         let t_none = base_target(None);
@@ -1207,6 +1246,7 @@ mod tests {
                 save_files: vec![model::SaveRule { root: "GameInstall".into(), path: "saves".into(), pattern: "*.sav".into(), recursive: false }],
             }),
             cell_id: 0,
+            wine_prefix: None,
         };
         assert!(t.local_path("%GameInstall%saves/slot1.sav").is_none());
         assert!(prepare_parent_under_root(&t.install_dir, &["saves".into(), "slot1.sav".into()]).is_err());

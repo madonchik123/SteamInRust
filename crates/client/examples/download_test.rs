@@ -39,7 +39,7 @@ fn main() {
                             .filter(|d| d.dlc_app.is_none() && !d.shared_install && (d.os.is_empty() || d.os.contains("windows")))
                             .filter_map(|d| d.manifest("public").map(|m| m.1))
                             .sum();
-                        (size > 1_000_000).then_some((size, a))
+                        (size > 0 && (wanted.is_some() || size > 1_000_000)).then_some((size, a))
                     })
                     .min_by_key(|(s, _)| *s);
                 let Some((size, app)) = best else { panic!("no small game found") };

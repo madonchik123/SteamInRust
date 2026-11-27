@@ -63,7 +63,7 @@ Steam's website" still works; it just isn't native yet.
 | --- | --- |
 | Every owned game (all licenses through PICS) and installed games | Done |
 | Which systems a game runs on: a **Runs on** filter, a game-page line, and "Not available on macOS" for Windows-only games on a Mac without CrossOver or Wine | Done |
-| Steam Play on a Mac: Windows games through CrossOver or Wine, **Settings → Compatibility** (tools found, default, "all other titles") and **Properties → Compatibility** ("Force the use of a specific Steam Play compatibility tool") | STEAMPLAY_STATUS |
+| Steam Play on a Mac: Windows games through CrossOver or Wine, **Settings → Compatibility** (tools found, default, "all other titles") and **Properties → Compatibility** ("Force the use of a specific Steam Play compatibility tool") | Built. Big Picture too (button states, reason, Library settings). Windows-only games without a runner offer to install Wine (pinned, checksummed download) and Rosetta 2. **Screens not seen on a Mac yet** |
 | Search, filters (genre, features, Steam Deck status, installed, played), sort by name, recent, hours, size | Done |
 | Home with recent games and shelves, game page with art, play bar, news and achievements | Done |
 | Collections, including your Steam Favorites and Hidden | Done, in step with Steam both ways. Edits made before Steam answers (or offline) are kept and sent once it does |
@@ -194,7 +194,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Games without anti-cheat use SteamInRust's own `steamclient` DLL, 64-bit and 32-bit | Done |
 | The same on a Mac: one `steamclient.dylib` for Apple and Intel games (Intel games run under Rosetta) | Done. Tested with Human: Fall Flat: Workshop, stats, and joining a stranger's lobby on the official client |
 | Games with VAC, Easy Anti-Cheat or BattlEye start through the official client, silently | Done. Our DLL is never used for them |
-| Steam Play on a Mac: the Windows version of a game downloads (Windows depots, recorded as `platform_override_source` like Steam), gets a Wine prefix with Steam's redistributables, and starts through the runner with our Windows `steamclient64.dll` (localhost connection to the app, same token check). Anti-cheat games never start this way | STEAMPLAY_PROOF |
+| Steam Play on a Mac: the Windows version of a game downloads (Windows depots, recorded as `platform_override_source` like Steam), gets a Wine prefix with Steam's redistributables, and starts through the runner with our Windows `steamclient64.dll` (localhost connection to the app, same token check). Anti-cheat games never start this way | Done with Wine Devel 11.21 on an M4 Mac (macOS 27): MineSweeper Rush (32-bit) installed, started, read stats, used leaderboards and unlocked an achievement through our DLL; a Steam Cloud file written under Wine landed in the Mac's userdata folder. Not tried: CrossOver, a 64-bit game, Auto-Cloud rules under Wine (unit-tested). See [steam-compatibility.md](steam-compatibility.md#1b-steam-play-on-a-mac-windows-games-through-crossover-or-wine) |
 | User, apps, achievements, stats, cloud, friends, auth tickets, encrypted app tickets | Done |
 | Lobbies (`ISteamMatchmaking`) through Steam's matchmaking service | Done |
 | P2P (`ISteamNetworking`) between SteamInRust players | Done, with UDP hole punching |

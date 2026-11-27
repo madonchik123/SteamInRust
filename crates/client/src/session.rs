@@ -2862,7 +2862,8 @@ impl Online {
 
     fn cloud_target_any(&self, app_id: AppId, install_dir: &std::path::Path) -> Option<crate::cloud::Target> {
         let config = self.apps.get(&app_id)?.cloud.clone()?;
-        Some(crate::cloud::Target { app_id, steam_id: self.me, install_dir: install_dir.to_path_buf(), steam_root: self.steam_root.clone(), config: Some(config), cell_id: self.cell_id })
+        let wine_prefix = self.apps.get(&app_id).and_then(|a| crate::compat::installed_prefix(a, install_dir));
+        Some(crate::cloud::Target { app_id, steam_id: self.me, install_dir: install_dir.to_path_buf(), steam_root: self.steam_root.clone(), config: Some(config), cell_id: self.cell_id, wine_prefix })
     }
 
     fn launch(
@@ -3384,6 +3385,10 @@ impl Online {
         let (language, beta, build_id) = crate::ipc::manifest_info(app_id, &install_dir);
         let ui_language = crate::ipc::steam_ui_language().unwrap_or_else(|| "english".into());
         let me = self.personas.get(&self.me);
+        // A Windows game under Wine (Steam Play) reads Mac folders as Wine's `Z:` drive.
+        let wine = crate::compat::SUPPORTED && crate::compat::installed_platform(app_id, &install_dir).is_some();
+        let path = |p: &std::path::Path| if wine { crate::compat::windows_path(p) } else { p.to_string_lossy().into_owned() };
+        let steam_root = self.steam_root.clone().unwrap_or_else(|| store::config_dir().join("steam"));
         Session {
             app_id,
             steam_id: self.me,
@@ -3413,8 +3418,8 @@ impl Online {
                     }
                 })
                 .collect(),
-            install_dir: install_dir.to_string_lossy().into_owned(),
-            steam_root: self.steam_root.clone().unwrap_or_else(|| store::config_dir().join("steam")).to_string_lossy().into_owned(),
+            install_dir: path(&install_dir),
+            steam_root: path(&steam_root),
             build_id,
             beta,
             stats: None,

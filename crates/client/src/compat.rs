@@ -60,11 +60,14 @@ pub struct Config {
     /// Games forced to a runner (Properties → Compatibility): the Windows
     /// version is used even when there's a Mac version.
     pub games: BTreeMap<AppId, String>,
+    /// "Don't ask again" on the offer to install Wine (game pages of
+    /// Windows-only games when there's no runner).
+    pub no_wine_offer: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { default: String::new(), other_titles: true, games: BTreeMap::new() }
+        Self { default: String::new(), other_titles: true, games: BTreeMap::new(), no_wine_offer: false }
     }
 }
 
@@ -131,19 +134,198 @@ pub fn runners() -> Vec<Runner> {
     list
 }
 
+/// Can `app` be played on this computer: its own version, or (on a Mac)
+/// the Windows one through a runner? For list filters: no copying.
+pub fn playable_here(app: &OwnedApp) -> bool {
+    if app.runs_on_this_os() && !cfg!(target_os = "macos") {
+        return true;
+    }
+    if !SUPPORTED {
+        return app.runs_on_this_os();
+    }
+    let found = runners();
+    let cfg = CONFIG.lock().unwrap();
+    match cfg.as_ref() {
+        Some(cfg) => install_blocker(app, cfg, &found).is_none(),
+        None => {
+            drop(cfg);
+            install_blocker(app, &load(), &found).is_none()
+        }
+    }
+}
+
 /// Look again now (after installing CrossOver or Wine).
 pub fn rescan() -> Vec<Runner> {
     *FOUND.lock().unwrap() = None;
     runners()
 }
 
-/// Folders apps are installed in: `/Applications` and `~/Applications`.
+/// Folders apps are installed in: `/Applications`, `~/Applications`, and
+/// ours (the Wine build SteamInRust installs, see [`install_wine`]).
 fn search_roots() -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/Applications")];
     if let Some(home) = std::env::var_os("HOME") {
         roots.push(PathBuf::from(home).join("Applications"));
     }
+    roots.push(runners_dir());
     roots
+}
+
+/// Where SteamInRust puts the Wine build it installs itself.
+pub fn runners_dir() -> PathBuf {
+    crate::store::config_dir().join("compat").join("runners")
+}
+
+// ------------------------------------------- installing Wine for the player
+
+/// The free Wine build SteamInRust offers to install when there's no
+/// runner: Gcenx's macOS build of Wine (WineHQ's own Mac packages come from
+/// it). The development series, because it's the one that ran games on
+/// macOS 27 in testing (Wine Stable 11.0 crashed while setting up its
+/// prefix there). Pinned with its SHA-256, so a changed file is refused.
+pub const WINE_URL: &str = "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.21/wine-devel-11.21-osx64.tar.xz";
+pub const WINE_SHA256: &str = "9909b486657e10ab66c7279371ae1f990345b596b3b1b3a0cf21f28af24fa0ce";
+/// Its size in bytes (for the progress bar before the server says).
+pub const WINE_SIZE: u64 = 225_612_636;
+/// The app bundle inside the archive.
+const WINE_BUNDLE: &str = "Wine Devel.app";
+
+/// How an install of Wine is going (shared with the screen showing it).
+#[derive(Debug, Default)]
+pub struct WineInstall {
+    pub downloaded: std::sync::atomic::AtomicU64,
+    pub total: std::sync::atomic::AtomicU64,
+    /// Unpacking (after the download).
+    pub unpacking: std::sync::atomic::AtomicBool,
+    /// Installing Rosetta 2 first (macOS is asking for the password).
+    pub rosetta: std::sync::atomic::AtomicBool,
+    pub cancel: std::sync::atomic::AtomicBool,
+    /// `Some` when it's over: `Ok` or what went wrong.
+    pub result: Mutex<Option<Result<(), String>>>,
+}
+
+impl WineInstall {
+    pub fn fraction(&self) -> f32 {
+        use std::sync::atomic::Ordering::Relaxed;
+        let total = self.total.load(Relaxed).max(1);
+        (self.downloaded.load(Relaxed) as f32 / total as f32).min(1.0)
+    }
+
+    pub fn finished(&self) -> Option<Result<(), String>> {
+        self.result.lock().unwrap().clone()
+    }
+}
+
+/// Download, check and unpack [`WINE_URL`] into [`runners_dir`]. The result
+/// also lands in `progress.result`.
+pub async fn install_wine(progress: std::sync::Arc<WineInstall>) -> Result<(), String> {
+    let r = install_wine_inner(&progress).await;
+    if r.is_err() {
+        let _ = std::fs::remove_file(runners_dir().join(".wine-download.tar.xz"));
+    }
+    *progress.result.lock().unwrap() = Some(r.clone());
+    if r.is_ok() {
+        rescan();
+    }
+    r
+}
+
+async fn install_wine_inner(progress: &WineInstall) -> Result<(), String> {
+    use sha2::Digest;
+    use std::io::Write;
+    use std::sync::atomic::Ordering::Relaxed;
+    if !SUPPORTED {
+        return Err("Steam Play is for macOS".into());
+    }
+    let dir = runners_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
+    let archive = dir.join(".wine-download.tar.xz");
+    let client = reqwest::Client::builder().user_agent("SteamInRust").build().map_err(|e| e.to_string())?;
+    let mut resp = client.get(WINE_URL).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("couldn't download Wine: {e}"))?;
+    progress.total.store(resp.content_length().unwrap_or(WINE_SIZE), Relaxed);
+    let mut file = std::fs::File::create(&archive).map_err(|e| e.to_string())?;
+    let mut hash = sha2::Sha256::new();
+    loop {
+        if progress.cancel.load(Relaxed) {
+            return Err("cancelled".into());
+        }
+        let chunk = tokio::time::timeout(Duration::from_secs(60), resp.chunk()).await.map_err(|_| "the download stalled".to_string())?.map_err(|e| format!("couldn't download Wine: {e}"))?;
+        let Some(chunk) = chunk else { break };
+        hash.update(&chunk);
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+        progress.downloaded.fetch_add(chunk.len() as u64, Relaxed);
+        if progress.downloaded.load(Relaxed) > WINE_SIZE * 2 {
+            return Err("the download is far bigger than expected".into());
+        }
+    }
+    drop(file);
+    let got: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if got != WINE_SHA256 {
+        return Err("the downloaded Wine didn't match its checksum, so it wasn't installed".into());
+    }
+    progress.unpacking.store(true, Relaxed);
+    let unpack = dir.join(".wine-unpack");
+    let (a, u, d) = (archive.clone(), unpack.clone(), dir.clone());
+    tokio::task::spawn_blocking(move || unpack_wine(&a, &u, &d)).await.map_err(|e| e.to_string())??;
+    let _ = std::fs::remove_file(&archive);
+    Ok(())
+}
+
+/// `tar -xf` (macOS's tar reads .tar.xz) into a scratch folder, then move
+/// the app bundle into place, replacing an older one.
+fn unpack_wine(archive: &Path, scratch: &Path, dir: &Path) -> Result<(), String> {
+    let _ = std::fs::remove_dir_all(scratch);
+    std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
+    let status = std::process::Command::new("/usr/bin/tar").arg("-xf").arg(archive).arg("-C").arg(scratch).status().map_err(|e| format!("couldn't unpack Wine: {e}"))?;
+    if !status.success() {
+        let _ = std::fs::remove_dir_all(scratch);
+        return Err(format!("couldn't unpack Wine ({status})"));
+    }
+    let bundle = scratch.join(WINE_BUNDLE);
+    if !bundle.join("Contents/Resources/wine/bin/wine").is_file() {
+        let _ = std::fs::remove_dir_all(scratch);
+        return Err("the Wine download didn't have the expected app inside".into());
+    }
+    let dest = dir.join(WINE_BUNDLE);
+    let _ = std::fs::remove_dir_all(&dest);
+    std::fs::rename(&bundle, &dest).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(scratch);
+    Ok(())
+}
+
+/// Is the Wine that SteamInRust installed there?
+pub fn wine_installed_by_us() -> Option<PathBuf> {
+    let app = runners_dir().join(WINE_BUNDLE);
+    app.join("Contents/Resources/wine/bin/wine").is_file().then_some(app)
+}
+
+/// Remove the Wine SteamInRust installed (game prefixes stay).
+pub fn remove_our_wine() -> Result<(), String> {
+    let app = runners_dir().join(WINE_BUNDLE);
+    std::fs::remove_dir_all(&app).map_err(|e| e.to_string())?;
+    rescan();
+    Ok(())
+}
+
+/// Wine builds for the Mac are Intel programs: on Apple Silicon they need
+/// Rosetta 2. True on Intel Macs.
+pub fn rosetta_ready() -> bool {
+    if !cfg!(target_arch = "aarch64") {
+        return true;
+    }
+    Path::new("/Library/Apple/usr/libexec/oah/libRosettaRuntime").exists()
+}
+
+/// Install Rosetta 2 with Apple's own tool; macOS asks for the password.
+pub fn install_rosetta() -> Result<(), String> {
+    let script = "do shell script \"/usr/sbin/softwareupdate --install-rosetta --agree-to-license\" with administrator privileges";
+    let out = std::process::Command::new("/usr/bin/osascript").args(["-e", script]).output().map_err(|e| e.to_string())?;
+    if out.status.success() || rosetta_ready() {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if err.contains("-128") { "cancelled".into() } else { format!("Rosetta wasn't installed: {err}") })
+    }
 }
 
 /// The app bundles we know, with the `wine` program inside them.
@@ -278,11 +460,14 @@ pub fn installed_platform(app_id: AppId, install_dir: &Path) -> Option<String> {
 
 // ---------------------------------------------------------- prefixes
 
-/// Where a game's Wine prefix lives: `<data>/compat/<app id>/pfx`, like
-/// Steam's `compatdata/<app id>/pfx`. CrossOver uses one bottle instead
-/// (see [`crossover_bottle`]).
-pub fn prefix(app_id: AppId) -> PathBuf {
-    crate::store::config_dir().join("compat").join(app_id.to_string()).join("pfx")
+/// Where a game's Wine prefix lives for one runner:
+/// `<data>/compat/<app id>/<runner id>/pfx`, like Steam's
+/// `compatdata/<app id>/pfx`. One per runner, because Wine can't go back to
+/// an older version in a prefix a newer one made (its services crash).
+/// CrossOver uses one bottle instead (see [`crossover_bottle`]).
+pub fn prefix(app_id: AppId, runner_id: &str) -> PathBuf {
+    let safe: String = runner_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    crate::store::config_dir().join("compat").join(app_id.to_string()).join(if safe.is_empty() { "wine".into() } else { safe }).join("pfx")
 }
 
 /// The CrossOver bottle our games share (shown in CrossOver's own window).
@@ -298,8 +483,35 @@ pub fn crossover_bottle() -> Option<PathBuf> {
 pub fn prefix_for(runner: &Runner, app_id: AppId) -> Option<PathBuf> {
     match runner.kind {
         Kind::CrossOver => crossover_bottle(),
-        Kind::Wine => Some(prefix(app_id)),
+        Kind::Wine => Some(prefix(app_id, &runner.id)),
     }
+}
+
+/// The Windows user's folder inside a prefix (`drive_c/users/<name>`):
+/// plain Wine names it after the Mac user, CrossOver bottles use
+/// `crossover`.
+pub fn wine_user_dir(prefix: &Path) -> PathBuf {
+    let users = prefix.join("drive_c").join("users");
+    let me = std::env::var("USER").ok().filter(|u| !u.is_empty());
+    if let Some(me) = me.as_ref().filter(|u| users.join(u).is_dir()) {
+        return users.join(me);
+    }
+    if users.join("crossover").is_dir() {
+        return users.join("crossover");
+    }
+    let other = std::fs::read_dir(&users).ok().and_then(|rd| {
+        rd.flatten().map(|e| e.path()).find(|p| p.is_dir() && p.file_name().is_some_and(|n| !n.eq_ignore_ascii_case("public")))
+    });
+    other.unwrap_or_else(|| users.join(me.unwrap_or_else(|| "crossover".into())))
+}
+
+/// The Wine prefix of an installed Windows version (Steam Play), if this is one.
+pub fn installed_prefix(app: &OwnedApp, install_dir: &Path) -> Option<PathBuf> {
+    if !SUPPORTED || installed_platform(app.app_id, install_dir).is_none() {
+        return None;
+    }
+    let runner = runner_for(app.app_id, &load(), &runners())?;
+    prefix_for(&runner, app.app_id)
 }
 
 /// `C:\...` inside a prefix -> the Mac path (`drive_c/...`).
@@ -348,9 +560,20 @@ pub fn install_dll(prefix: &Path, dll64: &Path) -> Result<bool, String> {
     let dest = in_drive_c(prefix, DLL_IN_PREFIX);
     std::fs::create_dir_all(dest.parent().unwrap_or(prefix)).map_err(|e| format!("couldn't prepare the Wine prefix: {e}"))?;
     copy_if_changed(dll64, &dest)?;
-    let dll32 = dll64.with_file_name("steamclient32.dll");
+    let dll32 = dll32_beside(dll64);
     let has32 = dll32.is_file() && copy_if_changed(&dll32, &in_drive_c(prefix, DLL32_IN_PREFIX)).is_ok();
     Ok(has32)
+}
+
+/// The 32-bit DLL shipped with `dll64`: `steamclient32.dll` next to it,
+/// or (a development build) the i686 build in the same profile folder.
+pub fn dll32_beside(dll64: &Path) -> PathBuf {
+    let next = dll64.with_file_name("steamclient32.dll");
+    let dev = dll64.parent().and_then(|p| Some((p.file_name()?.to_owned(), p.parent()?.parent()?.to_path_buf()))).map(|(profile, target)| target.join("i686-pc-windows-gnu").join(profile).join("steamclient.dll"));
+    match dev {
+        Some(d) if !next.is_file() && d.is_file() => d,
+        _ => next,
+    }
 }
 
 fn copy_if_changed(from: &Path, to: &Path) -> Result<(), String> {
@@ -379,6 +602,10 @@ pub fn wine_command(runner: &Runner, prefix: &Path) -> std::process::Command {
     }
     // Wine on macOS: faster syncing primitives where the build has them.
     cmd.env("WINEMSYNC", "1").env("WINEESYNC", "1");
+    // MoltenVK (Vulkan on Metal) otherwise lists every feature on each start.
+    if std::env::var_os("MVK_CONFIG_LOG_LEVEL").is_none() {
+        cmd.env("MVK_CONFIG_LOG_LEVEL", "1");
+    }
     cmd
 }
 
@@ -576,6 +803,14 @@ mod tests {
         std::fs::write(&acf, "\"AppState\" { \"appid\" \"9\" \"UserConfig\" { \"language\" \"english\" } }").unwrap();
         assert_eq!(installed_platform(9, &dir), None);
         let _ = std::fs::remove_dir_all(&lib);
+    }
+
+    #[test]
+    fn one_prefix_per_game_and_runner() {
+        let a = prefix(5, "wine-stable");
+        assert_ne!(a, prefix(5, "wine-devel"));
+        assert!(a.ends_with(Path::new("compat").join("5").join("wine-stable").join("pfx")));
+        assert!(prefix(5, "../x").ends_with(Path::new("5").join("___x").join("pfx")));
     }
 
     #[test]

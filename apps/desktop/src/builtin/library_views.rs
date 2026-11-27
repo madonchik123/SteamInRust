@@ -125,7 +125,12 @@ impl Library {
             let os = model::THIS_OS;
             let on = self.adv.systems.len() == 1 && self.adv.systems.contains(os);
             let icon = if os == "macos" { icons::APPLE } else { icons::LINUX };
-            if w::icon_box(ui, t, icon, &t!("Only games that run on {os}", os = client::download::os_name(os)), on).clicked() {
+            let tip = if client::compat::SUPPORTED && !client::compat::runners().is_empty() {
+                t!("Only games that run on {os}, including Windows games through Steam Play", os = client::download::os_name(os)).to_string()
+            } else {
+                t!("Only games that run on {os}", os = client::download::os_name(os)).to_string()
+            };
+            if w::icon_box(ui, t, icon, &tip, on).clicked() {
                 self.adv.systems.clear();
                 if !on {
                     self.adv.systems.insert(os);
@@ -618,6 +623,18 @@ impl Library {
             }
             MainAction::Queued => b(ui, icons::CLOCK, t!("Queued"), w::Kind::Pause).then_some(MenuAct::Downloads),
             MainAction::StorePage => b(ui, icons::STORE, t!("Store page"), w::Kind::Primary).then_some(MenuAct::Store),
+            MainAction::GetWine => b(ui, icons::DOWNLOAD, t!("Install Wine to play"), w::Kind::Install).then_some(MenuAct::InstallWine),
+            MainAction::WineInstalling(_) => {
+                ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::DOWNLOAD), t!("Installing Wine…"), w::Kind::Install, size));
+                None
+            }
+            MainAction::Unavailable => {
+                let why = self.unavailable_reason(ctx, id).unwrap_or_default();
+                ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::DOWNLOAD), &t!("Not available on {os}", os = client::download::os_name(model::THIS_OS)), w::Kind::Install, size))
+                    .response
+                    .on_disabled_hover_text(why);
+                None
+            }
             MainAction::Syncing => {
                 ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::CLOUD_CHECK), t!("Syncing Steam Cloud…"), w::Kind::Play, size));
                 None
@@ -733,6 +750,9 @@ impl Library {
 
             egui::Frame::new().inner_margin(Margin::symmetric(side as i8 - 9, 0)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                // Steam Play: offer to install Wine for a Windows-only game.
+                self.wine_install_tick(ui, ctx);
+                self.wine_offer(ui, t, ctx, id, &name, owned.as_ref());
                 self.links(ui, t, ctx, id);
                 ui.add_space(t.spacing.xl + 3.0);
                 // Two columns when there's room, stacked in a narrow window
@@ -950,17 +970,27 @@ impl Library {
             }
             Some(g) => {
                 // The Windows version of an anti-cheat game on a Mac (or no runner left): say why instead.
-                let blocked = owned.and_then(|o| client::launch_mode_peek(o, &g.install_dir)).and_then(|m| match m {
-                    client::LaunchMode::AntiCheatOnMac { anti_cheat } => Some(t!("Uses {name}. Games with anti-cheat can't run on a Mac.", name = anti_cheat).to_string()),
-                    client::LaunchMode::Unsupported { reason } => Some(i18n::tr_dyn(&reason).to_string()),
-                    _ => None,
-                });
-                if let Some(why) = blocked {
+                if let Some(why) = owned.and_then(|o| super::blocked_launch(o, &g.install_dir)) {
                     ui.add_enabled_ui(false, |ui| w::play_button(ui, t, t!("Play"))).response.on_disabled_hover_text(why);
                 } else if w::play_button(ui, t, t!("Play")).clicked() {
                     self.launch_game(ctx, id, g.install_dir.clone());
                 }
             }
+            // Steam Play: no CrossOver or Wine yet, and Wine would let it play.
+            None if owned.is_some_and(super::wine_would_help) => match self.wine_progress() {
+                Some(f) => {
+                    ui.add_enabled_ui(false, |ui| w::button(ui, t, Some(icons::DOWNLOAD), t!("Installing Wine…"), w::Kind::Install, lg));
+                    w::progress(ui, t, f, 200.0);
+                }
+                None => {
+                    if w::button(ui, t, Some(icons::DOWNLOAD), t!("Install Wine to play"), w::Kind::Install, lg)
+                        .on_hover_text(t!("This game is for Windows. Install CrossOver or Wine to play it on {os}.", os = client::download::os_name(model::THIS_OS)))
+                        .clicked()
+                    {
+                        self.start_wine_install(ctx);
+                    }
+                }
+            },
             // Like Steam on a Mac: Windows-only games stay listed; they install
             // through Steam Play when there's a runner, and say why not otherwise.
             None if let Some(why) = owned.and_then(super::install_blocker) => {

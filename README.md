@@ -196,7 +196,8 @@ SteamInRust. Pick the default tool in **Settings → Compatibility**, or force
 one for a single game in its **Properties → Compatibility** (that also gets the
 Windows version of a game that has a Mac one). Games with anti-cheat (VAC, Easy
 Anti-Cheat, BattlEye…) can't run on a Mac and say so. Without CrossOver or Wine,
-Windows-only games show as not available, like in Steam.
+a Windows-only game's page offers to install Wine for you (a free 225 MB
+download, checked before it's used).
 
 ## Is it safe to use?
 

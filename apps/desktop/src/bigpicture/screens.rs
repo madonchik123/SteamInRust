@@ -213,6 +213,10 @@ fn main_button(a: MainAction) -> (String, &'static str, Kind, Option<f32>) {
             (label, if paused { icons::PLAY } else { icons::DOWNLOAD }, Kind::Secondary, Some(fraction))
         }
         MainAction::StorePage => (t!("Store page").into(), icons::STORE, Kind::Primary, None),
+        // Steam Play on a Mac: a Windows-only game with no CrossOver or Wine yet.
+        MainAction::GetWine => (t!("Install Wine to play").into(), icons::DOWNLOAD, Kind::Primary, None),
+        MainAction::WineInstalling(f) => (t!("Installing Wine…").into(), icons::DOWNLOAD, Kind::Muted, Some(f)),
+        MainAction::Unavailable => (t!("Not available").into(), icons::X, Kind::Muted, None),
     }
 }
 
@@ -507,7 +511,20 @@ fn game(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: AppId) ->
             f.app.client.send(if verifying { Command::CancelVerify { app_id: id } } else { Command::CancelDownload { app_id: id } });
         }
     }
+    // Steam Play on a Mac: why it can't play, or what installing Wine does.
+    let why = match action {
+        MainAction::Unavailable => with_library(f.app, f.actions, |lib, cx| lib.unavailable_reason(cx, id)).flatten(),
+        MainAction::GetWine | MainAction::WineInstalling(_) => Some(t!("This game is for Windows. SteamInRust can run it through Wine, free software that runs Windows games on a Mac (a 225 MB download). Games with anti-cheat can't run this way.").to_string()),
+        _ => None,
+    };
+    if matches!(action, MainAction::WineInstalling(_)) {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
     y += 72.0 * s + 50.0 * s;
+    if let Some(why) = why {
+        let r = paint::wrapped(ui.painter(), pos2(f.view.left() + f.pad, y - 30.0 * s), &why, w::font_medium(22.0 * s), f.t.text_dim, 1100.0 * s, 3);
+        y = r.bottom() + 40.0 * s;
+    }
 
     // Facts.
     let played = installed.as_ref().and_then(|g| g.playtime_minutes).or_else(|| match f.app.state.player_games.get(&f.app.state.steam_id) {

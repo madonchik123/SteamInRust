@@ -12,6 +12,8 @@ mod props;
 pub(crate) mod game_move;
 #[path = "library_views.rs"]
 mod views;
+#[path = "library_steamplay.rs"]
+mod steamplay;
 #[path = "library_dynamic.rs"]
 mod dynamic;
 #[path = "library_shortcuts.rs"]
@@ -73,6 +75,18 @@ pub(crate) fn install_blocker(o: &model::OwnedApp) -> Option<String> {
         Blocker::AntiCheat(name) => t!("Uses {name}. Games with anti-cheat can't run on a Mac.", name = name).to_string(),
     })
 }
+
+/// Why an installed game can't start here (the Windows version of an
+/// anti-cheat game on a Mac, or no runner left), or `None`.
+pub(crate) fn blocked_launch(o: &model::OwnedApp, dir: &std::path::Path) -> Option<String> {
+    match client::launch_mode_peek(o, dir)? {
+        client::LaunchMode::AntiCheatOnMac { anti_cheat } => Some(t!("Uses {name}. Games with anti-cheat can't run on a Mac.", name = anti_cheat).to_string()),
+        client::LaunchMode::Unsupported { reason } => Some(i18n::tr_dyn(&reason).to_string()),
+        _ => None,
+    }
+}
+
+pub(crate) use steamplay::wine_would_help;
 
 /// On a Mac: the runner a new install of this game goes through (its
 /// Windows version), if any.
@@ -194,6 +208,8 @@ enum MenuAct {
     Play,
     Stop,
     Install,
+    /// Steam Play: install Wine so this Windows-only game can play.
+    InstallWine,
     PauseDownload,
     ResumeDownload,
     CancelDownload,
@@ -266,6 +282,12 @@ pub(crate) enum MainAction {
     Busy { fraction: f32, verifying: bool, paused: bool },
     /// Not owned: only the store page.
     StorePage,
+    /// Steam Play: a Windows-only game, and installing Wine would let it play.
+    GetWine,
+    /// Wine is being installed (how far).
+    WineInstalling(f32),
+    /// Can't be installed or started here (see [`Library::unavailable_reason`]).
+    Unavailable,
 }
 
 pub(crate) fn setup_state(ctx: &Ctx, id: AppId, installed: bool) -> Setup {
@@ -353,6 +375,10 @@ pub struct Library {
     more_facts: Vec<(String, String)>,
     /// Launch waiting on a Steam Cloud conflict choice.
     cloud_hold: Option<CloudHold>,
+    /// Steam Play: Wine being installed from a game page (or how that ended).
+    wine_install: Option<Arc<client::compat::WineInstall>>,
+    /// Games whose offer to install Wine was put off ("Not now").
+    wine_offer_hidden: BTreeSet<AppId>,
     flags: Option<super::settings::SharedFlags>,
     /// Updates already queued automatically this session.
     auto_queued: BTreeSet<AppId>,
@@ -972,6 +998,7 @@ impl Library {
                 ctx.toast(why);
             }
             MenuAct::Install => self.install_dialog = Some(InstallDialog::new(id, ctx)),
+            MenuAct::InstallWine => self.start_wine_install(ctx),
             MenuAct::Favorite => {
                 if !self.favorites.remove(&id) {
                     self.favorites.insert(id);
@@ -1124,7 +1151,9 @@ impl Library {
         let feature_ok = f.features.is_empty() || o.is_some_and(|o| f.features.iter().all(|c| o.categories.contains(c)));
         let deck_ok = f.deck.is_empty() || f.deck.contains(&o.map(|o| o.deck).unwrap_or(0));
         // Installed games with no app info yet count as runnable here.
-        let system_ok = f.systems.is_empty() || f.systems.iter().any(|os| o.map_or(*os == model::THIS_OS && e.installed.is_some(), |o| o.runs_on(os)));
+        // "This system" also counts Windows games that run through Steam Play (CrossOver or Wine on a Mac).
+        let system_ok = f.systems.is_empty()
+            || f.systems.iter().any(|os| o.map_or(*os == model::THIS_OS && e.installed.is_some(), |o| o.runs_on(os) || (*os == model::THIS_OS && client::compat::playable_here(o))));
         play_ok && kind_ok && genre_ok && feature_ok && deck_ok && system_ok
     }
 
@@ -1628,15 +1657,31 @@ impl Library {
             return MainAction::Queued;
         }
         let installed = ctx.local.games.iter().find(|g| g.app_id == id).cloned();
+        let owned = ctx.state.apps.as_ref().and_then(|a| a.get(&id));
         match installed {
             Some(_) if self.uninstalling.contains_key(&id) => MainAction::Uninstalling,
             Some(_) if ctx.state.playing == Some(id) => MainAction::Running,
             Some(g) if self.needs_update(ctx, &g) => MainAction::Update,
             Some(_) if ctx.state.cloud_syncing.contains(&id) => MainAction::Syncing,
             Some(_) if ctx.state.first_time_setup.contains_key(&id) => MainAction::FirstTimeSetup,
+            Some(g) if owned.and_then(|o| blocked_launch(o, &g.install_dir)).is_some() => MainAction::Unavailable,
             Some(_) => MainAction::Play,
-            None if ctx.state.apps.as_ref().is_some_and(|a| a.contains_key(&id)) => MainAction::Install,
+            None if owned.is_some_and(steamplay::wine_would_help) => match self.wine_progress() {
+                Some(f) => MainAction::WineInstalling(f),
+                None => MainAction::GetWine,
+            },
+            None if owned.and_then(install_blocker).is_some() => MainAction::Unavailable,
+            None if owned.is_some() => MainAction::Install,
             None => MainAction::StorePage,
+        }
+    }
+
+    /// Why a game's main button says it isn't available here.
+    pub(crate) fn unavailable_reason(&self, ctx: &Ctx, id: AppId) -> Option<String> {
+        let owned = ctx.state.apps.as_ref().and_then(|a| a.get(&id))?;
+        match ctx.local.games.iter().find(|g| g.app_id == id) {
+            Some(g) => blocked_launch(owned, &g.install_dir),
+            None => install_blocker(owned),
         }
     }
 
@@ -1654,6 +1699,7 @@ impl Library {
             }
             (MainAction::Busy { paused: true, .. }, _) => ctx.send(Command::ResumeDownload { app_id: id }),
             (MainAction::Busy { verifying: false, .. }, _) => ctx.send(Command::PauseDownload { app_id: id }),
+            (MainAction::GetWine, _) => self.start_wine_install(ctx),
             _ => {}
         }
     }

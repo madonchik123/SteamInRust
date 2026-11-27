@@ -69,6 +69,7 @@ mod sys {
         pub fn GetLastError() -> u32;
         pub fn GetModuleHandleExW(flags: u32, name: *const u16, module: *mut *mut c_void) -> i32;
         pub fn GetModuleFileNameW(module: *mut c_void, buf: *mut u16, size: u32) -> u32;
+        pub fn ExitProcess(code: u32) -> !;
     }
 
     #[link(name = "advapi32")]
@@ -193,14 +194,22 @@ fn run() -> i32 {
 #[cfg(windows)]
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn SteamInRustLaunchW(_hwnd: *mut c_void, _inst: *mut c_void, _cmd: *const u16, _show: i32) {
-    std::process::exit(run());
+    finish(run());
 }
 
 /// The ANSI form, for a rundll32 that doesn't look for the `W` one.
 #[cfg(windows)]
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn SteamInRustLaunch(_hwnd: *mut c_void, _inst: *mut c_void, _cmd: *const u8, _show: i32) {
-    std::process::exit(run());
+    finish(run());
+}
+
+/// End rundll32 with the game's exit code. `ExitProcess` rather than Rust's
+/// `process::exit`: the C runtime's exit handlers in a rundll32 that has no
+/// console crashed under Wine Stable (0xc0000417) once the game had closed.
+#[cfg(windows)]
+fn finish(code: i32) -> ! {
+    unsafe { sys::ExitProcess(code as u32) }
 }
 
 #[cfg(test)]

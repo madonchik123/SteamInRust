@@ -239,7 +239,7 @@ impl Library {
             name: e.name,
             installed: e.installed.is_some(),
             played: e.installed.and_then(|g| g.last_played).is_some_and(|t| t > 0) || self.played_ids.contains(&e.app_id),
-            runs_here: o.is_none_or(|o| o.runs_on_this_os()),
+            runs_here: o.is_none_or(client::compat::playable_here),
             categories: o.map(|o| o.categories.as_slice()).unwrap_or_default(),
             tags: o.map(|o| o.tags.as_slice()).unwrap_or_default(),
             deck: o.map(|o| o.deck).unwrap_or(0),

@@ -189,6 +189,11 @@ fn package_macos() -> Result {
             let windows = resources.join("windows");
             fs::create_dir_all(&windows).map_err(|e| e.to_string())?;
             copy(&dll, &windows.join("steamclient64.dll"))?;
+            // 32-bit Windows games load the 32-bit one (next to it, see compat::install_dll).
+            match steamclient_win32(true) {
+                Ok(dll32) => copy(&dll32, &windows.join("steamclient32.dll"))?,
+                Err(e) => eprintln!("warning: {e}: 32-bit Windows games through Steam Play will start without Steam features."),
+            }
         }
         Err(e) => eprintln!("warning: {e}: Windows games through Steam Play will start without Steam features."),
     }
@@ -236,11 +241,10 @@ fn steamclient_mac(release: bool) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// MinGW's 64-bit gcc for cross-building Windows code on a Mac: SIR_MINGW64
-/// (its bin folder), x86_64-w64-mingw32-gcc on PATH, or Homebrew's.
+/// MinGW's gcc for cross-building Windows code on a Mac (`x86_64-` or
+/// `i686-w64-mingw32-gcc`): in SIR_MINGW64 (its bin folder), on PATH, or Homebrew's.
 #[cfg(target_os = "macos")]
-fn gcc64() -> Option<PathBuf> {
-    let exe = "x86_64-w64-mingw32-gcc";
+fn mingw_gcc(exe: &str) -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("SIR_MINGW64") {
         return Some(Path::new(&dir).join(exe)).filter(|p| p.exists());
     }
@@ -254,7 +258,7 @@ fn gcc64() -> Option<PathBuf> {
 #[cfg(target_os = "macos")]
 fn steamclient_win(release: bool) -> Result<PathBuf> {
     let root = root();
-    let gcc = gcc64().ok_or("no MinGW found for the Windows steamclient (brew install mingw-w64, or set SIR_MINGW64)")?;
+    let gcc = mingw_gcc("x86_64-w64-mingw32-gcc").ok_or("no MinGW found for the Windows steamclient (brew install mingw-w64, or set SIR_MINGW64)")?;
     run(Command::new("rustup").args(["target", "add", "x86_64-pc-windows-gnu"]))?;
     let mut args = vec!["build", "-p", "steamclient", "--lib", "--target", "x86_64-pc-windows-gnu"];
     if release {
@@ -263,6 +267,20 @@ fn steamclient_win(release: bool) -> Result<PathBuf> {
     // MinGW's dlltool must be on PATH too (for Windows import libraries).
     cargo(&root, &args, &[("CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER", gcc.as_os_str())], gcc.parent())?;
     Ok(root.join("target").join("x86_64-pc-windows-gnu").join(if release { "release" } else { "debug" }).join("steamclient.dll"))
+}
+
+/// The same for 32-bit Windows games: target/i686-pc-windows-gnu/<profile>/steamclient.dll.
+#[cfg(target_os = "macos")]
+fn steamclient_win32(release: bool) -> Result<PathBuf> {
+    let root = root();
+    let gcc = mingw_gcc("i686-w64-mingw32-gcc").ok_or("no 32-bit MinGW found (brew install mingw-w64, or set SIR_MINGW64)")?;
+    run(Command::new("rustup").args(["target", "add", "i686-pc-windows-gnu"]))?;
+    let mut args = vec!["build", "-p", "steamclient", "--lib", "--target", "i686-pc-windows-gnu"];
+    if release {
+        args.push("--release");
+    }
+    cargo(&root, &args, &[("CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER", gcc.as_os_str())], gcc.parent())?;
+    Ok(root.join("target").join("i686-pc-windows-gnu").join(if release { "release" } else { "debug" }).join("steamclient.dll"))
 }
 
 #[cfg(target_os = "macos")]

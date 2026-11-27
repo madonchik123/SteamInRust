@@ -81,7 +81,7 @@ fn compat_mode(app: &OwnedApp, install_dir: &Path, os: &str, cfg: &crate::compat
         return LaunchMode::Unsupported { reason: "game file not found".into() };
     };
     let dll = crate::compat::windows_dll();
-    let steam = dll.is_some_and(|d| is64 || d.with_file_name("steamclient32.dll").is_file());
+    let steam = dll.is_some_and(|d| is64 || crate::compat::dll32_beside(&d).is_file());
     LaunchMode::Compat { runner: runner.name, steam }
 }
 
