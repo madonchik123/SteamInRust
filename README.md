@@ -52,28 +52,34 @@ Everything below is in the current release. Area-by-area status:
   you own are marked. You can gift a game, even one you own, and SteamInRust
   checks first whether Steam will deliver it to that friend's region. Payment
   happens on Steam's website, as Steam requires. Search suggests games as you
-  type, and you can reorder your wishlist by dragging. Also the discovery feed
-  and the Points Shop.
+  type, and you can reorder your wishlist by dragging. Bundle and package
+  pages, curators you can follow, and writing your own reviews. Also the
+  discovery feed and the Points Shop.
 - **Library.** Every game you own, collections (your Steam Favorites and Hidden
-  included), filters, achievements and full Properties: launch options,
-  language, betas, DLC, Steam Cloud, verify files. Non-Steam games get the same
+  included, and dynamic ones that fill themselves from filters), achievements
+  and full Properties: launch options, language, betas, DLC, Steam Cloud, verify
+  files, and moving a game to another library folder. Non-Steam games get the same
   menu and page as Steam games, and any game can have your own artwork (icon,
   cover, background, logo), like in Steam.
 - **Downloads.** SteamInRust's own depot downloader. It has a queue, pause and
   resume, and downloads that survive a restart. It shows network and disk
-  speed separately, and picks the fastest of Steam's download regions.
+  speed separately, and picks the fastest of Steam's download regions. On a
+  Mac you pick the macOS or the Windows (Steam Play) version, each with its
+  size.
 - **Friends and chat.** Live status with the game and rich presence, chat with
   history and group chats, all in one Friends & Chat window like Steam's: the
   open chat sits beside your friends list. Steam emoticons and emoji with a
   picker, slash commands (`/me`, `/code`, `/spoiler`, `/random`, `/store`…),
-  reactions, link cards and pictures. Manage your group chats like in Steam:
-  notifications, invite links, channels, roles, bans. Right-click a friend to
-  join their game or look up their server.
+  reactions, link cards and pictures. Voice chat: calls with friends and
+  group voice channels, with push-to-talk. Manage your group chats like in
+  Steam: notifications, invite links, channels, roles, bans. Right-click a
+  friend to join their game or look up their server.
 - **Community.** A Community home built around players: your friends'
   activity (screenshots, artwork, reviews, achievements), Explore, and news
   from the developers of your games, and you can post a status for your
-  friends. Plus game hubs, Workshop pages, guides and discussions, all inside
-  the app.
+  friends. Plus game hubs, Workshop pages, guides and discussions (you can
+  start one), broadcasts to watch, a manager for your screenshots, and groups
+  you can join, leave and answer invites to, all inside the app.
 - **Profiles.** Profiles with their backgrounds (animated ones play), Steam's
   profile themes, badges, showcases and comments. Add friends from a profile.
   Edit your own profile like on Steam: avatar and frame, background, mini
@@ -82,9 +88,10 @@ Everything below is in the current release. Area-by-area status:
   downloads the item right away, and missing or updated items download before
   the game starts, like in Steam.
 - **Account.** Account details, purchase history, licenses and your Steam
-  Family, as native pages.
+  Family (invite, accept, remove, leave), as native pages.
 - **Inventory, Market and trading.** Every game's inventory, market prices, order book and
   price chart. Selling uses Steam's real fees; you confirm in the Steam Mobile app.
+  Buying, buy orders, gems, booster packs and pending gifts are in the app too.
   Trade offers in the app: see what each side is worth, accept, decline, counter,
   or build a new offer from both inventories with filters, sorting and prices.
 - **Steam Cloud.** Sync before you play and after you quit, conflicts with
@@ -97,6 +104,9 @@ Everything below is in the current release. Area-by-area status:
   Games with VAC, Easy Anti-Cheat or BattlEye always start through the official
   client, silently, so their anti-cheat runs as intended
   ([how](docs/steam-compatibility.md)).
+  On a Mac, Windows games run through Steam Play with CrossOver or Wine
+  ([how to set it up](#download)). You can also host a game
+  server from the app.
 - **Overlay.** Shift+Tab in the running game opens friends, chat,
   achievements, guides and notes. Like Steam's, it's drawn inside the game
   (D3D11 and D3D12 games), so it works in full screen, and the game gets no input while
@@ -105,17 +115,20 @@ Everything below is in the current release. Area-by-area status:
 - **Offline mode.** It works like Steam's. If the connection drops, SteamInRust
   reconnects without signing you out, and your running games keep going.
 - **Big Picture.** A full-screen mode for the TV, driven by a controller or the
-  keyboard: home, library, game pages, store with an on-screen keyboard,
-  downloads and friends. Open it from the menu, with the controller's Guide
-  button, or start with `--bigpicture`.
+  keyboard: home, library, game pages with trailers, installing, store with an
+  on-screen keyboard, downloads, friends with a full-screen chat, and the
+  settings you'd change from the couch. Open it from the menu, with the
+  controller's Guide button, or start with `--bigpicture`.
 - **Themes.** A theme sets the whole look: colors, fonts, pictures, icons,
   how each control looks and the layout (navigation on top or on the left,
   where the friends list docks, compact or roomy). **SteamInRust** (the new
   look) and **Classic** are built in, and a theme is just a folder you can
   make yourself: [docs/themes.md](docs/themes.md).
 - **Plugins.** Small [Rhai](https://rhai.rs) scripts can add pages,
-  buttons on game pages, items in friends' menus, timers, notifications and
-  web requests to the sites they list, with only the permissions you approve.
+  buttons on game pages and items in friends' menus. They can read your
+  library, achievements, downloads, wishlist, store prices, inventory and
+  trades, run timers, and make web requests to the sites they list. They get
+  only the permissions you approve ([docs/plugin-api.md](docs/plugin-api.md)).
 - **Seven languages**: English, Russian, Simplified Chinese, Spanish, Brazilian
   Portuguese, German and French, picked from your system language.
 
@@ -243,11 +256,12 @@ fn page() {
 
 Scripts can't reach files or other programs, only the API they were granted.
 The network is opt-in per plugin: `network` plus a `hosts` list in the manifest
-(https only), which you see before enabling it. Plugins can also run on a
-timer (`tick`), add buttons to game pages and items to friends' menus, launch
-installed games, read downloads and the wishlist, watch trade offers and
-item prices (accepting or sending a trade always asks you), and draw inputs, switches,
-tables and images on their page. The API is described in
+(https only, and never to your own computer or network), which you see before
+enabling it. Plugins can also run timers, add buttons to game pages and items
+to friends' menus, launch installed games, and read your library and
+achievements. They can watch and control downloads, read store pages and
+prices, and value your inventory and trade offers (accepting or sending a trade
+always asks you). On their page they draw inputs, switches, tables and images. The API is described in
 [`docs/plugin-api.md`](docs/plugin-api.md), with examples in
 [`crates/plugins/examples`](crates/plugins/examples) (Wishlist Sales checks
 your wishlist's prices every hour and tells you about discounts; Trade Helper
@@ -326,7 +340,7 @@ work are in [docs/parity.md](docs/parity.md).
 | Store | 1 |
 | Friends and chat | 0.75 |
 | Community | 0.75 |
-| Inventory and Market | 1 |
+| Inventory and Market | 0.75 |
 | Steam Cloud | 1 |
 | Steam features inside games | 0.75 |
 | Shift+Tab overlay | 0.75 |
