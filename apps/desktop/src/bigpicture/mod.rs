@@ -117,7 +117,9 @@ pub struct BigPicture {
     /// Library filter: only games that run on this computer.
     this_os_only: bool,
     /// The install screen's choices: (game, library folder, desktop shortcut).
-    install: Option<(AppId, std::path::PathBuf, bool)>,
+    /// The install page's choices: game, library, desktop shortcut, version
+    /// ("" = the usual one).
+    install: Option<(AppId, std::path::PathBuf, bool, String)>,
     /// A trailer was playing (stopped when its page closes).
     video_on: bool,
     // Search (on-screen keyboard).

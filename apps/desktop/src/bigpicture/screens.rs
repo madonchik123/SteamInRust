@@ -884,15 +884,18 @@ fn install_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: A
     let s = f.s;
     bp.bg_want = Some(id);
     let Some(plan) = with_library(f.app, f.actions, |lib, cx| lib.install_plan(cx, id)) else { return 0.0 };
-    if bp.install.as_ref().is_none_or(|(g, _, _)| *g != id) {
-        bp.install = Some((id, plan.default.clone(), true));
+    if bp.install.as_ref().is_none_or(|(g, _, _, _)| *g != id) {
+        bp.install = Some((id, plan.default.clone(), true, plan.os.clone()));
     }
     if f.x {
         if let Some(choice) = bp.install.as_mut() {
             choice.2 = !choice.2;
         }
     }
-    let (_, chosen, shortcut) = bp.install.clone().expect("just set");
+    let (_, chosen, shortcut, version) = bp.install.clone().expect("just set");
+    // The picked version's size (each version can differ; 0 = empty).
+    let size = plan.versions.iter().find(|v| v.0 == version).map_or(plan.size, |v| v.1);
+    let empty = if plan.versions.is_empty() { plan.empty } else { size == 0 };
     let name = f.app.state.app_name(id).unwrap_or_default().to_string();
     let left = f.view.left() + f.pad;
     let mut y = top + 20.0 * s;
@@ -906,9 +909,9 @@ fn install_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: A
     let tw = f.view.right() - f.pad - tx;
     paint::wrapped(&p, pos2(tx, y), &t!("Install {game}", game = name), w::font_bold(40.0 * s), f.t.text, tw, 2);
     let free = plan.libraries.iter().find(|(l, _)| *l == chosen).map(|(_, f)| *f).unwrap_or(0);
-    let enough = plan.size == 0 || free == 0 || free >= plan.size;
+    let enough = size == 0 || free == 0 || free >= size;
     let facts = [
-        (t!("SIZE ON DISK"), if plan.size > 0 { ui::bytes(plan.size) } else { t!("Unknown").to_string() }),
+        (t!("SIZE ON DISK"), if size > 0 || empty { ui::bytes(size) } else { t!("Unknown").to_string() }),
         (t!("FREE SPACE THERE"), if free > 0 { ui::bytes(free) } else { "—".to_string() }),
     ];
     let mut fx = tx;
@@ -919,8 +922,30 @@ fn install_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: A
     }
     if !enough {
         p.text(pos2(tx, y + 200.0 * s), Align2::LEFT_TOP, t!("There isn't enough free space on this drive."), w::font_semibold(19.0 * s), f.t.danger);
+    } else if empty {
+        let os = client::download::os_name(if version.is_empty() { model::THIS_OS } else { &version });
+        paint::wrapped(&p, pos2(tx, y + 200.0 * s), &t!("Steam has no {os} files of this game for your account, so nothing would be installed.", os = os), w::font_semibold(19.0 * s), f.t.danger, tw, 2);
     }
     y = header.bottom() + 50.0 * s;
+
+    if !plan.versions.is_empty() {
+        // Like the desktop dialog: each version with its size, so an empty
+        // one (0 B) is plain to see.
+        heading(ui, f, &mut y, t!("Version"));
+        for (os, vsize) in &plan.versions {
+            let name = if os == "windows" { t!("Windows (Steam Play)").to_string() } else { client::download::os_name(os).to_string() };
+            let label = format!("{name}   ·   {}", ui::bytes(*vsize));
+            let on = *os == version;
+            let (_, hit) = button(bp, ui, f, Id::unique(("bp-install-os", os.as_str())), pos2(left, y), 900.0 * s, Some(if on { icons::CHECK } else { icons::DOWNLOAD }), &label, if on { Kind::Primary } else { Kind::Secondary }, None);
+            if hit.activated {
+                if let Some(choice) = bp.install.as_mut() {
+                    choice.3 = os.clone();
+                }
+            }
+            y += 72.0 * s + 14.0 * s;
+        }
+        y += 20.0 * s;
+    }
 
     heading(ui, f, &mut y, t!("Install location"));
     for (k, (lib, free)) in plan.libraries.iter().enumerate() {
@@ -945,9 +970,10 @@ fn install_page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, top: f32, id: A
     y += 72.0 * s + 40.0 * s;
     let go_id = Id::unique(("bp-install-go", id));
     bp.preferred = Some(go_id);
-    let (r, go) = button(bp, ui, f, go_id, pos2(left, y), 280.0 * s, Some(icons::DOWNLOAD), t!("Install"), if enough { Kind::Play } else { Kind::Muted }, None);
-    if go.activated && enough {
-        with_library(f.app, f.actions, |lib, cx| lib.install_to(cx, id, chosen.clone(), shortcut));
+    let ok = enough && !empty;
+    let (r, go) = button(bp, ui, f, go_id, pos2(left, y), 280.0 * s, Some(icons::DOWNLOAD), t!("Install"), if ok { Kind::Play } else { Kind::Muted }, None);
+    if go.activated && ok {
+        with_library(f.app, f.actions, |lib, cx| lib.install_to(cx, id, chosen.clone(), shortcut, &version));
         bp.install = None;
         bp.back(f.now);
     }

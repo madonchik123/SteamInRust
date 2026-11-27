@@ -446,6 +446,14 @@ pub fn plan_for(os: &str, app: &OwnedApp, cfg: &Config, found: &[Runner]) -> Pla
     }
 }
 
+/// Can the player pick which version to install: on a Mac, a game with
+/// both a Mac and a Windows version, a runner here for the Windows one,
+/// and no anti-cheat. (Some Mac versions are empty for most players: PLA_TOON's
+/// Mac files only come with its Supporter Edition.)
+pub fn version_choice(app: &OwnedApp, cfg: &Config, found: &[Runner]) -> bool {
+    SUPPORTED && app.runs_on(model::THIS_OS) && app.runs_on("windows") && !app.categories.contains(&CATEGORY_VAC) && runner_for(app.app_id, cfg, found).is_some()
+}
+
 /// The system whose version is installed in `install_dir`, when it isn't
 /// this system's (a Windows version on a Mac): from the app manifest's
 /// `platform_override_source`, like Steam records Proton installs.

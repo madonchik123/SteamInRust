@@ -3383,3 +3383,7 @@
 "Wine is installed. Windows games can be installed now." = "O Wine está instalado. Já dá para instalar jogos de Windows."
 "Wine wasn't installed: {why}" = "O Wine não foi instalado: {why}"
 "{game} is made for Windows. SteamInRust can run it through Wine, free software that runs Windows games on a Mac (a 225 MB download). Many games work, some don't, and games with anti-cheat can't." = "{game} é feito para Windows. O SteamInRust pode rodá-lo pelo Wine, um programa gratuito que roda jogos de Windows no Mac (download de 225 MB). Muitos jogos funcionam, alguns não, e os com antitrapaça não."
+"Version" = "Versão"
+"Windows (Steam Play)" = "Windows (Steam Play)"
+"Steam has no files of this version of the game for your account. If it has a Windows version, install that one through Steam Play." = "A Steam não tem arquivos desta versão do jogo para sua conta. Se ele tiver uma versão para Windows, instale essa pelo Steam Play."
+"Steam has no {os} files of this game for your account, so nothing would be installed." = "A Steam não tem arquivos de {os} deste jogo para sua conta, então nada seria instalado."

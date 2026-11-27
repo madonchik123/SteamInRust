@@ -3383,3 +3383,7 @@
 "Wine is installed. Windows games can be installed now." = "Wine 已安装。现在可以安装 Windows 游戏了。"
 "Wine wasn't installed: {why}" = "Wine 未安装：{why}"
 "{game} is made for Windows. SteamInRust can run it through Wine, free software that runs Windows games on a Mac (a 225 MB download). Many games work, some don't, and games with anti-cheat can't." = "{game} 是为 Windows 制作的。SteamInRust 可以通过 Wine 运行它，Wine 是一款在 Mac 上运行 Windows 游戏的免费软件（需下载 225 MB）。很多游戏可以运行，有些不行，带反作弊的游戏无法运行。"
+"Version" = "版本"
+"Windows (Steam Play)" = "Windows（Steam Play）"
+"Steam has no files of this version of the game for your account. If it has a Windows version, install that one through Steam Play." = "Steam 没有为你的账户提供该游戏此版本的文件。如果游戏有 Windows 版本，请通过 Steam Play 安装该版本。"
+"Steam has no {os} files of this game for your account, so nothing would be installed." = "Steam 没有为你的账户提供此游戏的 {os} 文件，因此不会安装任何内容。"
