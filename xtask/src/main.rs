@@ -198,7 +198,8 @@ fn package_macos() -> Result {
         Err(e) => eprintln!("warning: {e}: Windows games through Steam Play will start without Steam features."),
     }
     fs::write(app.join("Contents").join("Info.plist"), info_plist(&version)).map_err(|e| e.to_string())?;
-    let png = fs::read(root.join("assets").join("icon-256.png")).map_err(|e| e.to_string())?;
+    // The logo on a Mac-style tile (see `ui::brand::mac_tile`).
+    let png = fs::read(root.join("assets").join("icon-macos.png")).map_err(|e| e.to_string())?;
     fs::write(resources.join("AppIcon.icns"), icns(&png)).map_err(|e| e.to_string())?;
     copy(&root.join("LICENSE"), &resources.join("LICENSE"))?;
     // Apple Silicon runs only signed programs: an ad-hoc signature (no
@@ -339,13 +340,14 @@ fn info_plist(version: &str) -> String {
     )
 }
 
-/// An .icns file holding one 256×256 PNG (type `ic08`), which macOS scales.
+/// An .icns file holding one 1024×1024 PNG (type `ic10`, 512 points at
+/// 2×), which macOS scales down for smaller sizes.
 #[cfg(target_os = "macos")]
 fn icns(png: &[u8]) -> Vec<u8> {
     let entry_len = 8 + png.len() as u32;
     let mut v = b"icns".to_vec();
     v.extend_from_slice(&(8 + entry_len).to_be_bytes());
-    v.extend_from_slice(b"ic08");
+    v.extend_from_slice(b"ic10");
     v.extend_from_slice(&entry_len.to_be_bytes());
     v.extend_from_slice(png);
     v

@@ -8,22 +8,69 @@
 use egui::{Align2, Color32, CursorIcon, Id, Rect, ResizeDirection, Sense, Ui, Vec2, ViewportBuilder, ViewportCommand, vec2};
 use ui::{Theme, icons, widgets as w};
 
-/// The system draws the window buttons and resize edges (macOS).
-pub const SYSTEM_FRAME: bool = cfg!(target_os = "macos");
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// A window with our own title bar: no system frame on Windows; on macOS
-/// the system frame with a see-through title bar over our content.
+/// macOS: the system draws the window buttons and resize edges.
+const MAC_FRAME: bool = cfg!(target_os = "macos");
+
+/// Windows: the player chose the Windows title bar (Settings → Appearance),
+/// read once at start (see [`load_windows_frame`]).
+static WINDOWS_FRAME: AtomicBool = AtomicBool::new(false);
+
+/// Does the system draw the window buttons and resize edges: always on a
+/// Mac; on Windows when the player chose the Windows title bar. Some old
+/// Intel graphics drivers draw a frameless window's picture shifted by the
+/// size of the frame Windows would have had, leaving a black stripe at the
+/// top and left and clicks landing off (#154); with the normal Windows
+/// frame they draw it in place.
+pub fn system_frame() -> bool {
+    MAC_FRAME || WINDOWS_FRAME.load(Ordering::Relaxed)
+}
+
+/// The file whose presence means "use the Windows title bar". A file of
+/// its own, because the choice is needed before the window (and the app's
+/// saved settings) exist.
+fn windows_frame_file() -> std::path::PathBuf {
+    client::store::config_dir().join("windows-title-bar")
+}
+
+/// Read the choice, before the first window is made.
+pub fn load_windows_frame() {
+    if cfg!(windows) {
+        WINDOWS_FRAME.store(windows_frame_file().is_file(), Ordering::Relaxed);
+    }
+}
+
+/// The choice as saved (it takes effect at the next start).
+pub fn windows_frame_saved() -> bool {
+    windows_frame_file().is_file()
+}
+
+/// Save the choice for the next start.
+pub fn save_windows_frame(on: bool) {
+    let path = windows_frame_file();
+    if on {
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+        let _ = std::fs::write(&path, b"");
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// A window with our own title bar: no system frame on Windows (unless the
+/// player chose the Windows one); on macOS the system frame with a
+/// see-through title bar over our content.
 pub fn frame(builder: ViewportBuilder) -> ViewportBuilder {
-    if SYSTEM_FRAME {
+    if MAC_FRAME {
         builder.with_decorations(true).with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false)
     } else {
-        builder.with_decorations(false)
+        builder.with_decorations(system_frame())
     }
 }
 
 /// Room at the left of a title bar for the macOS traffic-light buttons.
 pub fn traffic_light_space(ui: &mut Ui) {
-    if SYSTEM_FRAME {
+    if MAC_FRAME {
         ui.add_space(72.0);
     }
 }
@@ -49,7 +96,7 @@ pub fn toggle_maximized(ctx: &egui::Context) {
 /// Minimize, maximize/restore and close, right to left (call inside a
 /// right-to-left layout). `height` is the bar height.
 pub fn window_buttons(ui: &mut Ui, t: &Theme, height: f32, can_maximize: bool) {
-    if SYSTEM_FRAME {
+    if system_frame() {
         return;
     }
     // In their own scope: buttons touch, like Windows', with no dead gaps,
@@ -92,7 +139,7 @@ fn button(ui: &mut Ui, t: &Theme, icon: &str, height: f32, close: bool) -> egui:
 
 /// Invisible handles on the window edges for resizing (not when maximized).
 pub fn resize_handles(ctx: &egui::Context) {
-    if SYSTEM_FRAME || ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
+    if system_frame() || ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
         return;
     }
     let screen = ctx.content_rect();
@@ -127,7 +174,7 @@ pub fn resize_handles(ctx: &egui::Context) {
 
 /// A thin border, since a frameless window has none of its own.
 pub fn border(ctx: &egui::Context, t: &Theme) {
-    if SYSTEM_FRAME || ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+    if system_frame() || ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
         return;
     }
     let rect = ctx.content_rect();
@@ -140,7 +187,7 @@ pub fn border(ctx: &egui::Context, t: &Theme) {
 /// thin edge strips sit on top of the window's content.
 pub fn resize_edges(ui: &mut Ui) {
     let ctx = ui.ctx().clone();
-    if SYSTEM_FRAME || ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
+    if system_frame() || ctx.input(|i| i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)) {
         return;
     }
     let screen = ctx.content_rect();

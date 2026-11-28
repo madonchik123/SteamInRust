@@ -288,6 +288,32 @@ mod mac {
         const ENCODING: Encoding = Encoding::Struct("CGRect", &[Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]), Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING])]);
     }
 
+    /// A process's command line (`KERN_PROCARGS2`). For a Windows game under
+    /// Wine, macOS names Wine's own program as the app in front, but Wine
+    /// sets the process's command line to the game's Windows path
+    /// (`Z:\Users\…\pla_toon.exe`).
+    pub fn command_line(pid: i32) -> Option<String> {
+        unsafe extern "C" {
+            fn sysctl(name: *mut i32, namelen: u32, oldp: *mut std::ffi::c_void, oldlenp: *mut usize, newp: *mut std::ffi::c_void, newlen: usize) -> i32;
+        }
+        // CTL_KERN, KERN_PROCARGS2.
+        let mut mib = [1, 49, pid];
+        let mut size = 0usize;
+        unsafe {
+            if sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) != 0 || size == 0 {
+                return None;
+            }
+            let mut buf = vec![0u8; size];
+            if sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) != 0 {
+                return None;
+            }
+            buf.truncate(size);
+            // argc, then the program's path and the arguments, NUL-separated.
+            let rest = buf.get(4..)?;
+            Some(rest.split(|b| *b == 0).filter(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect::<Vec<_>>().join(" "))
+        }
+    }
+
     /// The frontmost app: (process id, its program's path).
     pub fn frontmost() -> Option<(i32, String)> {
         unsafe {
@@ -353,7 +379,9 @@ mod mac {
     }
 
     /// Accessory (no Dock icon, may join full-screen spaces) or a normal app.
+    /// With "Show in the Dock" off it always stays an accessory.
     pub fn set_accessory(on: bool) {
+        let on = on || crate::dock::hidden();
         unsafe {
             let Some(cls) = AnyClass::get(c"NSApplication") else { return };
             let app: *mut AnyObject = msg_send![cls, sharedApplication];
@@ -411,10 +439,35 @@ fn foreground_is_in(_: &std::path::Path) -> bool {
     false
 }
 
-/// macOS: the app in front runs from inside `dir` (the game's folder).
+/// macOS: the app in front runs from inside `dir` (the game's folder):
+/// its program, or for a Windows game under Wine (Steam Play), the Windows
+/// path on its command line.
 #[cfg(target_os = "macos")]
 fn foreground_is_in(dir: &std::path::Path) -> bool {
-    mac::frontmost().is_some_and(|(pid, exe)| pid as u32 != std::process::id() && !exe.is_empty() && std::path::Path::new(&exe).starts_with(dir))
+    mac::frontmost().is_some_and(|(pid, exe)| {
+        pid as u32 != std::process::id() && ((!exe.is_empty() && std::path::Path::new(&exe).starts_with(dir)) || mac::command_line(pid).is_some_and(|c| wine_path_in(&c, dir)))
+    })
+}
+
+/// Does a Wine process's command line name a program inside `dir`? Wine
+/// shows Mac folders as drive Z: (`Z:\Users\me\…`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn wine_path_in(command_line: &str, dir: &std::path::Path) -> bool {
+    let unix = |s: &str| s.replace('\\', "/").to_lowercase();
+    let dir = unix(&dir.display().to_string());
+    let dir = dir.trim_end_matches('/');
+    !dir.is_empty() && unix(command_line).contains(&format!("z:{dir}/"))
+}
+
+#[cfg(test)]
+mod wine_front_tests {
+    #[test]
+    fn wine_games_are_found_by_their_windows_path() {
+        let dir = std::path::Path::new("/Users/me/Library/Application Support/Steam/steamapps/common/pla_toon");
+        assert!(super::wine_path_in(r"Z:\Users\me\Library\Application Support\Steam\steamapps\common\pla_toon\pla_toon/Binaries/Win64/pla_toon-Win64-Shipping.exe", dir));
+        assert!(!super::wine_path_in(r"Z:\Users\me\Library\Application Support\Steam\steamapps\common\pla_toon2\x.exe", dir));
+        assert!(!super::wine_path_in("/Applications/Wine Devel.app/Contents/Resources/wine/bin/wine-preloader", dir));
+    }
 }
 
 #[cfg(windows)]

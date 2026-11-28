@@ -240,7 +240,7 @@ fn top_bar(app: &mut SteamApp, ui: &mut Ui, t: &Theme, actions: &mut Vec<Action>
         let ui = &mut right;
         ui.spacing_mut().item_spacing.x = 10.0;
         crate::chrome::window_buttons(ui, t, t.layout.top_bar_height, true);
-        if !crate::chrome::SYSTEM_FRAME {
+        if !crate::chrome::system_frame() {
             ui.add_space(4.0);
         }
         view_menu(app, ui, t, actions);

@@ -63,11 +63,14 @@ pub struct Config {
     /// "Don't ask again" on the offer to install Wine (game pages of
     /// Windows-only games when there's no runner).
     pub no_wine_offer: bool,
+    /// DirectX 10 and 11 games draw through DXVK on plain Wine (see
+    /// [`DXVK_URL`]). On by default; CrossOver has its own and ignores it.
+    pub dxvk: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { default: String::new(), other_titles: true, games: BTreeMap::new(), no_wine_offer: false }
+        Self { default: String::new(), other_titles: true, games: BTreeMap::new(), no_wine_offer: false, dxvk: true }
     }
 }
 
@@ -189,6 +192,119 @@ pub const WINE_SHA256: &str = "9909b486657e10ab66c7279371ae1f990345b596b3b1b3a0c
 pub const WINE_SIZE: u64 = 225_612_636;
 /// The app bundle inside the archive.
 const WINE_BUNDLE: &str = "Wine Devel.app";
+
+// ------------------------------------------------- DirectX 11 through DXVK
+
+/// DXVK for macOS: Gcenx's build of DXVK 1.10 for MoltenVK, the one Mac
+/// Wine setups use. It draws Direct3D 10 and 11 through Vulkan (MoltenVK,
+/// which Wine ships, turns that into Metal). Without it, plain Wine draws
+/// D3D11 through OpenGL, which macOS stopped at 4.1, so most DirectX 11
+/// games don't start. CrossOver has its own (D3DMetal, DXMT) and doesn't
+/// get it. Pinned with its SHA-256, so a changed file is refused.
+pub const DXVK_URL: &str = "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz";
+pub const DXVK_SHA256: &str = "acd1520ad105d8ef124a09c8e11a259a5dc8bdc565ad18e0e52693f9807b2477";
+const DXVK_SIZE: u64 = 2_793_443;
+/// The folder inside the archive (and in [`runners_dir`]).
+const DXVK_DIR: &str = "dxvk-macOS-async-v1.10.3-20230507-repack";
+/// Its DLLs (this build leaves out `dxgi` and `d3d9`: Wine's own are the
+/// ones to use on a Mac).
+const DXVK_DLLS: [&str; 2] = ["d3d11", "d3d10core"];
+/// The setup step that put it in a prefix (see [`setup_done`]).
+pub const DXVK_STEP: &str = "dxvk-macOS-1.10.3-20230507";
+/// What Wine is told at launch, with DXVK on and off.
+pub const DXVK_ON: &str = "d3d11,d3d10core=n,b";
+pub const DXVK_OFF: &str = "d3d11,d3d10core=b";
+
+/// Does a game in `runner` get DXVK: plain Wine (not CrossOver), with the
+/// setting on.
+pub fn wants_dxvk(runner: &Runner, cfg: &Config) -> bool {
+    runner.kind == Kind::Wine && cfg.dxvk
+}
+
+/// The unpacked DXVK, when it has every DLL.
+fn dxvk_files() -> Option<PathBuf> {
+    let dir = runners_dir().join(DXVK_DIR);
+    DXVK_DLLS.iter().all(|d| dir.join("x64").join(format!("{d}.dll")).is_file()).then_some(dir)
+}
+
+/// Download and unpack DXVK if it isn't here yet (once for every game).
+/// Blocking: it runs in the first-time setup's thread, inside the runtime.
+pub fn ensure_dxvk() -> Result<PathBuf, String> {
+    if let Some(dir) = dxvk_files() {
+        return Ok(dir);
+    }
+    if !SUPPORTED {
+        return Err("DXVK is for Steam Play on macOS".into());
+    }
+    let dir = runners_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
+    let bytes = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?.block_on(async {
+        let client = reqwest::Client::builder().user_agent("SteamInRust").timeout(Duration::from_secs(120)).build().map_err(|e| e.to_string())?;
+        let mut resp = client.get(DXVK_URL).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("couldn't download DXVK: {e}"))?;
+        let mut bytes = Vec::with_capacity(DXVK_SIZE as usize);
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("couldn't download DXVK: {e}"))? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() as u64 > DXVK_SIZE * 2 {
+                return Err("the DXVK download is far bigger than expected".to_string());
+            }
+        }
+        Ok::<_, String>(bytes)
+    })?;
+    use sha2::Digest;
+    let got: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if got != DXVK_SHA256 {
+        return Err("the downloaded DXVK didn't match its checksum, so it wasn't installed".into());
+    }
+    let archive = dir.join(".dxvk-download.tar.gz");
+    let scratch = dir.join(".dxvk-unpack");
+    std::fs::write(&archive, &bytes).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+    let status = std::process::Command::new("/usr/bin/tar").arg("-xzf").arg(&archive).arg("-C").arg(&scratch).status();
+    let _ = std::fs::remove_file(&archive);
+    match status {
+        Ok(s) if s.success() => {}
+        other => {
+            let _ = std::fs::remove_dir_all(&scratch);
+            return Err(format!("couldn't unpack DXVK ({other:?})"));
+        }
+    }
+    let unpacked = scratch.join(DXVK_DIR);
+    let dest = dir.join(DXVK_DIR);
+    let _ = std::fs::remove_dir_all(&dest);
+    let moved = std::fs::rename(&unpacked, &dest).map_err(|e| e.to_string());
+    let _ = std::fs::remove_dir_all(&scratch);
+    moved?;
+    dxvk_files().ok_or_else(|| "the DXVK download didn't have the expected files inside".into())
+}
+
+/// Put DXVK's DLLs in a prefix: 64-bit ones in `system32`, 32-bit ones in
+/// `syswow64` (when the prefix has it), as DXVK's own guide says.
+pub fn install_dxvk(prefix: &Path, dxvk: &Path) -> Result<(), String> {
+    let windows = prefix.join("drive_c").join("windows");
+    for (arch, folder) in [("x64", "system32"), ("x32", "syswow64")] {
+        let dest = windows.join(folder);
+        if !dest.is_dir() {
+            continue;
+        }
+        for dll in DXVK_DLLS {
+            let from = dxvk.join(arch).join(format!("{dll}.dll"));
+            if from.is_file() {
+                copy_if_changed(&from, &dest.join(format!("{dll}.dll")))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `WINEDLLOVERRIDES` with ours added to what the player set (theirs win:
+/// Wine reads the list in order and the first entry for a DLL counts).
+pub fn dll_overrides(ours: &str) -> String {
+    match std::env::var("WINEDLLOVERRIDES") {
+        Ok(theirs) if !theirs.trim().is_empty() => format!("{theirs};{ours}"),
+        _ => ours.to_string(),
+    }
+}
 
 /// How an install of Wine is going (shared with the screen showing it).
 #[derive(Debug, Default)]
@@ -722,6 +838,45 @@ pub fn mark_setup_done(prefix: &Path, ids: &[String]) {
     }
     if let Ok(json) = serde_json::to_string_pretty(&all) {
         let _ = std::fs::write(path, json);
+    }
+}
+
+#[cfg(test)]
+mod dxvk_tests {
+    use super::*;
+
+    #[test]
+    fn dxvk_is_for_plain_wine_with_the_setting_on() {
+        let wine = Runner { id: "wine-devel".into(), name: "Wine Devel 11.21".into(), kind: Kind::Wine, wine: "/w".into() };
+        let cx = Runner { kind: Kind::CrossOver, ..wine.clone() };
+        let on = Config::default();
+        assert!(on.dxvk, "on unless turned off");
+        assert!(wants_dxvk(&wine, &on));
+        assert!(!wants_dxvk(&cx, &on), "CrossOver has its own D3D11");
+        assert!(!wants_dxvk(&wine, &Config { dxvk: false, ..on.clone() }));
+        // Saved before the setting existed: on.
+        let old: Config = serde_json::from_str(r#"{"default":"","other_titles":true,"games":{}}"#).unwrap();
+        assert!(old.dxvk);
+    }
+
+    #[test]
+    fn dxvk_dlls_go_to_both_system_folders() {
+        let root = std::env::temp_dir().join(format!("sir-dxvk-{}", std::process::id()));
+        let (dxvk, pfx) = (root.join("dxvk"), root.join("pfx"));
+        for (arch, body) in [("x64", "64"), ("x32", "32")] {
+            std::fs::create_dir_all(dxvk.join(arch)).unwrap();
+            for d in DXVK_DLLS {
+                std::fs::write(dxvk.join(arch).join(format!("{d}.dll")), body).unwrap();
+            }
+        }
+        for f in ["system32", "syswow64"] {
+            std::fs::create_dir_all(pfx.join("drive_c").join("windows").join(f)).unwrap();
+        }
+        install_dxvk(&pfx, &dxvk).unwrap();
+        let w = pfx.join("drive_c").join("windows");
+        assert_eq!(std::fs::read_to_string(w.join("system32").join("d3d11.dll")).unwrap(), "64");
+        assert_eq!(std::fs::read_to_string(w.join("syswow64").join("d3d10core.dll")).unwrap(), "32");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 
