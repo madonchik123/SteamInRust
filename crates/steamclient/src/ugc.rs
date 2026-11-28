@@ -569,14 +569,17 @@ extern "C" fn items(_t: This, out: *mut u64, max: u32) -> u32 {
     n as u32
 }
 
-/// EItemState: 1 subscribed, 4 installed, 16 downloading, 32 download pending.
+/// EItemState: 1 subscribed, 2 legacy, 4 installed, 16 downloading, 32
+/// download pending.
 extern "C" fn state(_t: This, id: u64) -> u32 {
     let sub = subscribed().contains(&id);
     let (downloading, pending) = {
         let u = u();
         (u.downloading.contains_key(&id), u.queued.contains(&id))
     };
-    (sub as u32) | if installed(id) { 4 } else { 0 } | if downloading { 16 } else { 0 } | if pending && !downloading { 32 } else { 0 }
+    let installed = installed(id);
+    let legacy = installed && legacy_file(id).is_some();
+    (sub as u32) | if legacy { 2 } else { 0 } | if installed { 4 } else { 0 } | if downloading { 16 } else { 0 } | if pending && !downloading { 32 } else { 0 }
 }
 
 // ---------------------------------------------------------------- content
@@ -610,6 +613,27 @@ fn installed(id: u64) -> bool {
     item_dir(id).and_then(|d| std::fs::read_dir(d).ok()).is_some_and(|mut rd| rd.next().is_some())
 }
 
+/// A legacy item's file: the record (`appworkshop_<app>.acf`, written by
+/// SteamInRust) marks it `legacy`, and its folder holds that one file.
+fn legacy_file(id: u64) -> Option<PathBuf> {
+    let content = workshop_dir()?;
+    let app = content.file_name()?.to_str()?.to_string();
+    let record = content.parent()?.parent()?.join(format!("appworkshop_{app}.acf"));
+    let doc = vdf::parse(&std::fs::read_to_string(record).ok()?).ok()?;
+    let detail = doc.path(&["AppWorkshop", "WorkshopItemDetails"])?.obj(&id.to_string())?;
+    if detail.str("legacy") != Some("1") {
+        return None;
+    }
+    legacy_file_in(&item_dir(id)?)
+}
+
+/// The only file in a legacy item's folder.
+fn legacy_file_in(dir: &std::path::Path) -> Option<PathBuf> {
+    let mut files = std::fs::read_dir(dir).ok()?.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_file()));
+    let one = files.next()?.path();
+    files.next().is_none().then_some(one)
+}
+
 fn dir_size(p: &std::path::Path) -> u64 {
     std::fs::read_dir(p).map(|rd| rd.flatten().map(|e| if e.path().is_dir() { dir_size(&e.path()) } else { e.metadata().map(|m| m.len()).unwrap_or(0) }).sum()).unwrap_or(0)
 }
@@ -619,8 +643,14 @@ extern "C" fn install_info(_t: This, id: u64, size: *mut u64, folder: *mut c_cha
         return false;
     }
     let Some(dir) = item_dir(id) else { return false };
-    put(size, dir_size(&dir));
-    copy_out(&dir.to_string_lossy(), folder, folder_size as usize);
+    // Like Steam: a legacy item's "folder" is the path of its one file.
+    if let Some(file) = legacy_file(id) {
+        put(size, std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0));
+        copy_out(&file.to_string_lossy(), folder, folder_size as usize);
+    } else {
+        put(size, dir_size(&dir));
+        copy_out(&dir.to_string_lossy(), folder, folder_size as usize);
+    }
     let t = std::fs::metadata(&dir).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as u32).unwrap_or(0);
     put(stamp, t);
     true
@@ -698,6 +728,19 @@ extern "C" fn stop_playtime(_t: This) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_item_is_its_one_file() {
+        let dir = std::env::temp_dir().join(format!("sir-ugc-legacy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(legacy_file_in(&dir), None);
+        std::fs::write(dir.join("mod_publish_data_file.zip"), b"zip").unwrap();
+        assert_eq!(legacy_file_in(&dir), Some(dir.join("mod_publish_data_file.zip")));
+        // Two files: not a legacy item's folder.
+        std::fs::write(dir.join("other.txt"), b"x").unwrap();
+        assert_eq!(legacy_file_in(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn details_layout() {
