@@ -986,7 +986,7 @@ impl SteamApp {
     }
 }
 
-/// `--keys=Down;Down;Enter;text:hello;wheel:960:540:-300;click:640:300;wait` (with
+/// `--keys=Down;Down;Enter;text:hello;wheel:960:540:-300;click:640:300;rclick:640:300;paste-image;wait` (with
 /// `--offscreen`): replays keys, typing, wheel turns and clicks into a preview
 /// copy, one every 0.4 s from 4 s in (`--keys-after=<seconds>`), so screens
 /// that need the keyboard or a controller can be checked off-screen. Keys
@@ -1021,6 +1021,20 @@ fn preview_keys(ctx: &egui::Context, raw_input: &mut egui::RawInput, time: f64) 
                 raw_input.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers });
             }
         }
+    } else if let Some(c) = step.strip_prefix("rclick:") {
+        let n: Vec<f32> = c.split(':').filter_map(|v| v.parse().ok()).collect();
+        if let [x, y] = n[..] {
+            let pos = egui::pos2(x, y);
+            raw_input.events.push(egui::Event::PointerMoved(pos));
+            for pressed in [true, false] {
+                raw_input.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers });
+            }
+        }
+    } else if step == "paste-image" {
+        // A made-up picture, as if Ctrl+V found one on the clipboard.
+        let (w, h) = (480usize, 270usize);
+        let px: Vec<u8> = (0..w * h).flat_map(|i| [(i % w * 255 / w) as u8, (i / w * 255 / h) as u8, 200, 255]).collect();
+        raw_input.events.push(egui::Event::PasteImage(std::sync::Arc::new(egui::ColorImage::from_rgba_unmultiplied([w, h], &px))));
     } else if let Some(key) = egui::Key::from_name(step) {
         for pressed in [true, false] {
             raw_input.events.push(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });

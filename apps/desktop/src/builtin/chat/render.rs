@@ -2,7 +2,7 @@
 //! spoilers, code, quotes, `/me`, `/random`, `/flip`, stickers, pictures and
 //! chat effects, then preview cards for its links.
 
-use super::{ChatUi, Env, Msg, cards};
+use super::{ChatUi, Env, Msg, cards, media};
 use client::ChatTarget;
 use egui::{Margin, RichText, Sense, Stroke, Ui, vec2};
 use extensions::Action;
@@ -35,9 +35,9 @@ pub(super) fn body(ui: &mut Ui, t: &Theme, env: &Env, to: ChatTarget, m: &Msg, n
     if let Some(inv) = &m.invite {
         super::invite_card(ui, t, env.state, m.from, inv, out);
     }
-    // Previews for its links (not pictures: they show in the message).
+    // Previews for its links (not pictures and videos: they show in the message).
     let links = model::chat::links(&parts);
-    for url in links.iter().filter(|u| !cards::is_image(u)).take(2) {
+    for url in links.iter().filter(|u| !cards::is_image(u) && !media::is_video(u)).take(2) {
         cards::card(ui, t, env, url, out);
     }
     let _ = to;
@@ -56,7 +56,51 @@ struct Ctx<'a> {
 
 fn is_block(p: &Part) -> bool {
     matches!(p, Part::Pre(_) | Part::Quote { .. } | Part::Image { .. } | Part::Sticker(_) | Part::Random { .. } | Part::Flip(_) | Part::Effect(_))
-        || matches!(p, Part::Link { url, .. } if cards::is_image(url))
+        || matches!(p, Part::Link { url, text } if cards::is_image(url) || media::is_video(url) || long_link(text))
+}
+
+/// A link too long to sit inside a line of text: it gets lines of its own,
+/// where it wraps instead of being cut.
+fn long_link(text: &str) -> bool {
+    text.chars().count() > 48
+}
+
+/// A link: clicked opens it (in the app when it can), right-clicked offers
+/// open, open in browser and copy. Never cut, so the whole address can be
+/// checked before it's opened. `wrap` (its own line) lets a long one wrap.
+fn link(ui: &mut Ui, r: &mut Ctx, url: &str, text: &str, wrap: bool) {
+    let t = r.t;
+    let mode = if wrap { egui::TextWrapMode::Wrap } else { egui::TextWrapMode::Extend };
+    let resp = ui.add(egui::Label::new(media::address(text, text_font(t), t.accent)).wrap_mode(mode).sense(Sense::click()));
+    if resp.hovered() {
+        ui.painter().hline(resp.rect.x_range(), resp.rect.bottom(), Stroke::new(1.0, t.accent));
+    }
+    if resp.secondary_clicked() || resp.context_menu_opened() {
+        // Its own menu, not the message's.
+        r.mem.link_menu = true;
+    }
+    let mut opened = None;
+    let in_app = super::opens_in_app(url);
+    let mut open = || opened = super::open_link(url);
+    media::link_menu(&resp, ui, t, url, if in_app { Some(&mut open) } else { None });
+    if resp.on_hover_text(url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        opened = super::open_link(url);
+    }
+    if let Some(a) = opened {
+        r.out.push(a);
+    }
+    if wrap {
+        real_address(ui, t, text, url);
+    }
+}
+
+/// `[url=…]text[/url]`: the text can say anything, so the real address
+/// shows under it, whole.
+fn real_address(ui: &mut Ui, t: &Theme, text: &str, url: &str) {
+    if !same_address(text, url) {
+        let font = egui::FontId::new(t.typography.body_s.size, t.typography.body_s.weight.family());
+        ui.add(egui::Label::new(media::address(&format!("{} {url}", icons::LINK), font, t.text_dim)).wrap());
+    }
 }
 
 /// Inline runs wrap like text; pictures, quotes and the like get their own line.
@@ -90,7 +134,12 @@ fn inline(ui: &mut Ui, r: &mut Ctx, parts: &[&Part]) {
             piece(ui, r, p);
         }
     });
-    let _ = t;
+    // The real address of each link in it whose text says something else.
+    for p in parts {
+        if let Part::Link { url, text } = p {
+            real_address(ui, t, text, url);
+        }
+    }
 }
 
 /// Plain text, word by word (so it wraps around emoticons), keeping its
@@ -115,18 +164,7 @@ fn piece(ui: &mut Ui, r: &mut Ctx, p: &Part) {
             let s = t.typography.body_m.size * 1.45;
             ui.add(egui::Image::new(model::chat::emoticon_url(n, false)).fit_to_exact_size(vec2(s, s))).on_hover_text(format!(":{n}:"));
         }
-        Part::Link { url, text } => {
-            let shown = if text.chars().count() > 70 { format!("{}…", text.chars().take(68).collect::<String>()) } else { text.clone() };
-            let resp = ui.add(egui::Label::new(RichText::new(shown).font(text_font(t)).color(t.accent)).sense(Sense::click()));
-            if resp.hovered() {
-                ui.painter().hline(resp.rect.x_range(), resp.rect.bottom(), Stroke::new(1.0, t.accent));
-            }
-            if resp.on_hover_text(url).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                if let Some(a) = super::open_link(url) {
-                    r.out.push(a);
-                }
-            }
-        }
+        Part::Link { url, text } => link(ui, r, url, text, false),
         Part::Mention { text, .. } => {
             ui.label(RichText::new(text).font(text_font(t)).color(t.accent).strong());
         }
@@ -172,6 +210,13 @@ fn piece(ui: &mut Ui, r: &mut Ctx, p: &Part) {
             ui.end_row();
         }
     }
+}
+
+/// Does a link's text show its real address (maybe without `https://` or
+/// a last `/`)?
+fn same_address(text: &str, url: &str) -> bool {
+    let bare = |s: &str| s.trim().trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_ascii_lowercase();
+    bare(text) == bare(url)
 }
 
 fn plain_of(p: &Part) -> String {
@@ -234,6 +279,8 @@ fn block(ui: &mut Ui, r: &mut Ctx, p: &Part) {
             ui.add(egui::Image::new(model::chat::sticker_url(name)).max_size(vec2(s, s)).show_loading_spinner(true)).on_hover_text(name);
         }
         Part::Image { src, width, height } => image(ui, r, src, *width, *height),
+        Part::Link { url, .. } if media::is_video(url) => media::video(ui, t, url),
+        Part::Link { url, text } if !cards::is_image(url) => link(ui, r, url, text, true),
         Part::Link { url, .. } => image(ui, r, url, 0, 0),
         other => {
             ui.horizontal_wrapped(|ui| piece(ui, r, other));
@@ -251,9 +298,18 @@ fn effect_name(s: &str) -> String {
 /// A picture in a message: fits the chat; a click opens it large.
 fn image(ui: &mut Ui, r: &mut Ctx, src: &str, width: u32, height: u32) {
     let t = r.t;
+    if !media::may_load(src) {
+        // From another site: nothing is fetched until the player says so.
+        media::placeholder(ui, t, src, false);
+        return;
+    }
     let max = vec2(ui.available_width().min(t.dense(360.0)), t.dense(260.0));
     // Big pictures load downscaled, like the rest of the app's.
     let sized = crate::sized_images::inline_url(src, max.x, max.y, ui.ctx().pixels_per_point());
+    if egui::Image::new(sized.clone()).load_for_size(ui.ctx(), max).is_err() {
+        media::failed(ui, t, src);
+        return;
+    }
     let img = egui::Image::new(sized).max_width(max.x).max_height(max.y).fit_to_original_size(1.0).corner_radius(t.corner_small()).sense(Sense::click());
     let mut resp = ui.add(img);
     if resp.rect.height() < 4.0 {
@@ -271,7 +327,22 @@ fn image(ui: &mut Ui, r: &mut Ctx, src: &str, width: u32, height: u32) {
     if resp.hovered() {
         ui.painter().rect_stroke(resp.rect, t.corner_small(), Stroke::new(1.5, t.accent), egui::StrokeKind::Outside);
     }
-    if resp.on_hover_text(t!("Click to open it large")).on_hover_cursor(egui::CursorIcon::ZoomIn).clicked() {
+    if resp.secondary_clicked() || resp.context_menu_opened() {
+        r.mem.link_menu = true;
+    }
+    let mut view = false;
+    let mut open = || view = true;
+    media::link_menu(&resp, ui, t, src, Some(&mut open));
+    if resp.on_hover_text(t!("Click to open it large")).on_hover_cursor(egui::CursorIcon::ZoomIn).clicked() || view {
         r.mem.viewing = Some(src.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hidden_addresses_are_noticed() {
+        assert!(super::same_address("store.steampowered.com/app/620/", "https://store.steampowered.com/app/620"));
+        assert!(!super::same_address("store.steampowered.com", "https://steamcommunity.ru.evil.example/login"));
     }
 }

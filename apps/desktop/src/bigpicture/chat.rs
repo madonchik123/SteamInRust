@@ -3,9 +3,11 @@
 //! chats, driven by a controller, the keyboard or the mouse.
 //!
 //! Up and down pick a message and A opens what you can do with it: reply,
-//! react, copy, show a spoiler, open a picture or a link, join a game,
+//! react, copy, show a spoiler, load a picture or video from another site,
+//! open a picture large, play a video, open or copy a link, join a game,
 //! report. Beside the message box: "+" (a picture, your latest screenshot,
-//! your trade link), the emoticon picker and the slash commands.
+//! your trade link), the emoticon picker and the slash commands. A picture
+//! pasted with Ctrl+V or dropped on the window is shown before it's sent.
 
 use super::focus::{Dir, Focus, Place, Scroller, ease};
 use super::input::{Device, Press};
@@ -288,6 +290,17 @@ pub fn page(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, to: ChatTarget) -> 
     let head_bottom = header(bp, ui, f, to);
     let p = ui.painter().clone();
     let mut out: Vec<Action> = Vec::new();
+
+    // Ctrl+V with a picture on the clipboard, or a picture file dropped on
+    // the window: "Send this picture?".
+    if bp.chat.sheet.is_none() {
+        if let Some(o) = chat::incoming_picture(ui, true, true) {
+            match o.into_file() {
+                Ok(path) => bp.chat.sheet = Some(Sheet::new(SheetKind::Confirm(Outgoing::Picture(path)), f.now)),
+                Err(e) => out.push(Action::Toast(t!("Couldn't send the picture: {error}", error = e).to_string())),
+            }
+        }
+    }
 
     // The keyboard slides up while the message box or one of its keys is focused.
     let want_keys = bp.focus.current == Some(input_id()) || screens::is_key(bp.focus.current);
@@ -658,6 +671,8 @@ pub enum SheetKind {
     Confirm(Outgoing),
     Report(MsgKey),
     Viewer(String),
+    /// What to do with a link: open it, open it in the browser, copy it.
+    Link(String),
 }
 
 /// A panel over the chat, with its own focus.
@@ -712,6 +727,10 @@ enum Do {
     Reveal(MsgKey),
     View(String),
     Link(String),
+    Browser(String),
+    Allow(String),
+    Play(String),
+    StopVideo,
     Join(AppId, String),
     Reason(i32),
     Report(MsgKey),
@@ -858,7 +877,7 @@ impl Thumbs {
             self.running.fetch_add(1, SeqCst);
             let (path, done, running, ctx) = (path.to_path_buf(), self.done.clone(), self.running.clone(), ctx.clone());
             let spawned = std::thread::Builder::new().name("chat-picture".into()).spawn(move || {
-                let image = decode_small(&path);
+                let image = chat::decode_small(&path);
                 if let Ok(mut d) = done.lock() {
                     d.push((path, image));
                 }
@@ -872,19 +891,6 @@ impl Thumbs {
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
         None
     }
-}
-
-/// A picture file, at most 960 pixels wide or tall.
-fn decode_small(path: &std::path::Path) -> Option<egui::ColorImage> {
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(16384);
-    limits.max_image_height = Some(16384);
-    limits.max_alloc = Some(256 << 20);
-    let mut reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
-    reader.limits(limits);
-    let img = reader.decode().ok()?.thumbnail(960, 960).to_rgba8();
-    let size = [img.width() as usize, img.height() as usize];
-    Some(egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()))
 }
 
 /// Draw a texture filling `rect` (cropped) or fitting inside it.
@@ -984,7 +990,7 @@ pub fn show_sheet(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, screen: Rect)
                 b.note(&m.plain.replace('\n', " "), 3);
                 b.row("quote", icons::CHAT, t!("Reply with a quote"), None, true, Do::Quote(*key));
                 b.row("react", icons::SMILEY, t!("React"), None, true, Do::Open(SheetKind::React(*key)));
-                b.row("copy", icons::COPY, t!("Copy"), None, true, Do::Copy(m.plain.clone()));
+                b.row("copy", icons::COPY, t!("Copy message"), None, true, Do::Copy(m.plain.clone()));
                 if bp.chat.mem.has_hidden_spoiler(m) {
                     b.row("spoiler", icons::EYE, t!("Show spoiler"), None, true, Do::Reveal(*key));
                 }
@@ -992,12 +998,22 @@ pub fn show_sheet(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, screen: Rect)
                 let mut pics = Vec::new();
                 pictures(&parts, &mut pics);
                 for (i, src) in pics.into_iter().take(4).enumerate() {
+                    if !chat::may_load(&src) {
+                        b.row(&format!("load{i}"), icons::EYE, &t!("Load preview ({site})", site = chat::host(&src)), None, true, Do::Allow(src.clone()));
+                    }
                     b.row(&format!("pic{i}"), icons::IMAGE, t!("View picture"), None, true, Do::View(src));
                 }
-                let links: Vec<String> = model::chat::links(&parts).into_iter().filter(|u| !chat::is_image(u)).take(4).collect();
-                for (i, url) in links.into_iter().enumerate() {
+                let all: Vec<String> = model::chat::links(&parts).into_iter().filter(|u| !chat::is_image(u)).collect();
+                for (i, url) in all.iter().filter(|u| chat::is_video(u) && chat::plays_here(u)).take(2).enumerate() {
+                    if chat::is_playing(url) {
+                        b.row(&format!("stop{i}"), icons::STOP, t!("Stop video"), None, true, Do::StopVideo);
+                    } else {
+                        b.row(&format!("play{i}"), icons::PLAY, t!("Play video"), None, true, Do::Play(url.clone()));
+                    }
+                }
+                for (i, url) in all.into_iter().take(4).enumerate() {
                     let (icon, label) = with_env(f, |env| chat::link_label(env, &url));
-                    b.row(&format!("link{i}"), icon, &t!("Open: {name}", name = label), None, true, Do::Link(url));
+                    b.row(&format!("link{i}"), icon, &t!("Link: {name}", name = label), None, true, Do::Open(SheetKind::Link(url)));
                 }
                 if let Some(inv) = m.invite.as_ref().filter(|_| m.from != f.app.state.steam_id) {
                     let label = if inv.connect.is_empty() { t!("Play") } else { t!("Join game") };
@@ -1155,6 +1171,18 @@ pub fn show_sheet(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, screen: Rect)
             b.row("send", icons::WARNING, t!("Report"), Some(t.danger), true, Do::Report(*key));
             b.row("cancel", icons::X, t!("Cancel"), None, true, Do::Close);
         }
+        SheetKind::Link(url) => {
+            // Other sites by name; the whole address is right under it.
+            let label = if chat::opens_in_app(url) { with_env(f, |env| chat::link_label(env, url)).1 } else { chat::host(url) };
+            b.title(&label);
+            // The whole address, so it can be checked before it's opened.
+            b.note(url, 6);
+            if chat::opens_in_app(url) {
+                b.row("open", icons::LINK, t!("Open"), Some(t.accent), true, Do::Link(url.clone()));
+            }
+            b.row("browser", icons::EXTERNAL, t!("Open in browser"), None, true, Do::Browser(url.clone()));
+            b.row("copy", icons::COPY, t!("Copy link"), None, true, Do::Copy(url.clone()));
+        }
         SheetKind::Viewer(_) => {}
     }
     let height = b.y - top;
@@ -1216,6 +1244,7 @@ pub fn show_sheet(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, screen: Rect)
                 close = true;
             }
             Do::View(src) => {
+                chat::allow_preview(&src);
                 let cur = sh.kind.clone();
                 sh.back.push(cur);
                 sh.show(SheetKind::Viewer(src));
@@ -1225,6 +1254,23 @@ pub fn show_sheet(bp: &mut BigPicture, ui: &mut Ui, f: &mut Frame, screen: Rect)
                 if let Some(a) = crate::builtin::chat::open_link(&url) {
                     route(bp, f, ui.ctx(), a);
                 }
+            }
+            Do::Browser(url) => {
+                crate::links::open_http(&url);
+                f.actions.push(Action::Toast(t!("Opened in your browser").to_string()));
+                close = true;
+            }
+            Do::Allow(src) => {
+                chat::allow_preview(&src);
+                close = true;
+            }
+            Do::Play(url) => {
+                chat::play_video(ui.ctx(), &url);
+                close = true;
+            }
+            Do::StopVideo => {
+                chat::stop_video();
+                close = true;
             }
             Do::Join(app_id, connect) => {
                 f.actions.push(Action::JoinGame { app_id, connect });
