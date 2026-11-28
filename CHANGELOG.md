@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/madonchik123/SteamInRust/compare/v0.17.0...v0.17.1) (2026-11-28)
+
+
+### Fixes
+
+* Mac Steam Play and Steam Cloud fixes, Workshop legacy items, Dock icon, Windows title bar option ([#156](https://github.com/madonchik123/SteamInRust/issues/156)) ([7fba0ca](https://github.com/madonchik123/SteamInRust/commit/7fba0ca8357b1c0563c6c5ae0009bb948a834b5c))
+
 ## [0.17.0](https://github.com/madonchik123/SteamInRust/compare/v0.16.0...v0.17.0) (2026-11-28)
 
 
