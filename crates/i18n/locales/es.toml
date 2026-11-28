@@ -3387,3 +3387,11 @@
 "Windows (Steam Play)" = "Windows (Steam Play)"
 "Steam has no files of this version of the game for your account. If it has a Windows version, install that one through Steam Play." = "Steam no tiene archivos de esta versión del juego para tu cuenta. Si tiene versión para Windows, instala esa con Steam Play."
 "Steam has no {os} files of this game for your account, so nothing would be installed." = "Steam no tiene archivos de {os} de este juego para tu cuenta, así que no se instalaría nada."
+
+# --- Plugin permissions ---
+"See your achievements" = "Ver tus logros"
+"Pause, resume, cancel and reorder your downloads" = "Pausar, reanudar, cancelar y reordenar tus descargas"
+"See your wishlist, and Steam store pages and prices" = "Ver tu lista de deseados, y páginas y precios de la tienda de Steam"
+"Plugins whose page works with a controller. Add and turn on plugins in the normal window's settings." = "Plugins cuya página funciona con un mando. Añade y activa plugins en la configuración de la ventana normal."
+"This plugin isn't running" = "Este plugin no se está ejecutando"
+"Type here" = "Escribe aquí"

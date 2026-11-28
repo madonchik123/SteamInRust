@@ -16,7 +16,25 @@ use ui::{Theme, icons, widgets as w};
 
 /// A web request's answer, waiting to go back to its plugin:
 /// (plugin id, request id, HTTP status or 0, body or error).
-type HttpResult = (String, u64, u16, String);
+/// (plugin id, request id, HTTP status or 0, body or error, headers).
+type HttpResult = (String, u64, u16, String, Vec<(String, String)>);
+
+/// Looks names up like the system does, but refuses answers on your own
+/// computer or local network, so a plugin's host can't point there.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0)).await?.filter(|a| !plugins::blocked_ip(a.ip())).collect();
+            if addrs.is_empty() {
+                return Err(format!("'{host}' is on your own computer or network").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
 
 /// Largest answer a plugin gets (the rest is cut off).
 const MAX_BODY: usize = 1024 * 1024;
@@ -53,6 +71,94 @@ pub struct Plugins {
     trades_polled: Option<std::time::Instant>,
     /// Prices plugins asked for: already asked, and games searched in bulk.
     prices: Mutex<(std::collections::HashSet<(AppId, String)>, std::collections::HashSet<AppId>)>,
+    /// Data loads asked for on plugins' behalf, and when (each at most every
+    /// few minutes: pages ask on every frame while it loads).
+    asked: Mutex<HashMap<String, std::time::Instant>>,
+    /// Achievement lists seen, to tell plugins about new unlocks.
+    achievement_watch: plugins::AchievementWatch,
+    /// Downloads seen, to tell plugins when one starts, pauses or resumes.
+    download_watch: plugins::DownloadWatch,
+    store_cache: Arc<Mutex<StoreCache>>,
+    /// The wishlist last seen, to tell plugins what changed.
+    wishlist_seen: Option<Vec<AppId>>,
+    /// Web requests on their way, to stop one a plugin cancels.
+    requests: Arc<Mutex<HashMap<(String, u64), tokio::task::AbortHandle>>>,
+    /// Installed games last seen (id, name), to tell plugins about installs.
+    installed_seen: Option<HashMap<AppId, String>>,
+    installed_checked: Option<std::time::Instant>,
+}
+
+/// Which kinds of large data running plugins may see (so the snapshot only
+/// copies what someone can read).
+#[derive(Clone, Copy, Default)]
+struct Wants {
+    trades: bool,
+    inventory: bool,
+    achievements: bool,
+    store: bool,
+}
+
+/// How long store pages and searches stay cached for plugins (seconds).
+const STORE_PAGE_TTL: u64 = 3600;
+const STORE_SEARCH_TTL: u64 = 600;
+/// Most store pages and searches kept.
+const STORE_PAGES: usize = 500;
+const STORE_SEARCHES: usize = 50;
+
+/// Whether a cached store answer is still good: `ttl` seconds, or a minute
+/// for a failure (it may have been a network blip).
+fn fresh(at: &std::time::Instant, ok: bool, ttl: u64) -> bool {
+    at.elapsed() < std::time::Duration::from_secs(if ok { ttl } else { 60 })
+}
+
+/// Store pages and searches plugins asked for (public store data, no login).
+#[derive(Default)]
+struct StoreCache {
+    details: HashMap<AppId, (std::time::Instant, Result<plugins::StoreApp, String>)>,
+    searches: HashMap<String, (std::time::Instant, Result<Vec<plugins::StoreHit>, String>)>,
+    /// Lookups on their way ("app:440", "search:portal").
+    loading: std::collections::HashSet<String>,
+    /// Arrived since the last frame, to tell plugins.
+    arrived: Vec<HostEvent>,
+}
+
+impl StoreCache {
+    /// Keep at most `max` entries, dropping the oldest.
+    fn trim<K: Clone + Eq + std::hash::Hash, V>(map: &mut HashMap<K, (std::time::Instant, V)>, max: usize) {
+        while map.len() > max {
+            let Some(oldest) = map.iter().min_by_key(|(_, (at, _))| *at).map(|(k, _)| k.clone()) else { break };
+            map.remove(&oldest);
+        }
+    }
+}
+
+fn store_price(p: &store::Price, text: Option<String>) -> plugins::StorePrice {
+    plugins::StorePrice { initial: p.initial, final_: p.final_, discount: p.discount, currency: p.currency.clone(), text }
+}
+
+fn store_app(d: store::Details) -> plugins::StoreApp {
+    plugins::StoreApp {
+        app_id: d.app_id,
+        price: d.price.as_ref().map(|p| store_price(p, d.price_text.clone())),
+        name: d.name,
+        kind: d.kind,
+        short_description: d.short_description,
+        developers: d.developers,
+        publishers: d.publishers,
+        genres: d.genres,
+        categories: d.categories,
+        release_date: d.release_date,
+        coming_soon: d.coming_soon,
+        is_free: d.is_free,
+        metacritic: d.metacritic,
+        recommendations: d.recommendations,
+        platforms: d.platforms,
+        website: d.website,
+        header: d.header,
+        background: d.background,
+        dlc: d.dlc,
+        demo: d.demo,
+    }
 }
 
 fn parse_enabled(data: &str) -> BTreeMap<String, BTreeSet<Permission>> {
@@ -69,11 +175,51 @@ fn permissions_approved(manifest: &[Permission], approved: &BTreeSet<Permission>
     manifest.iter().all(|p| approved.contains(p))
 }
 
-/// Something done on a plugin's page.
-enum PageEvent {
+/// A store lookup for a plugin.
+enum StoreLookup {
+    Details(AppId),
+    Search(String),
+}
+
+/// Something done on a plugin's page (in the normal window or Big Picture).
+pub enum PageEvent {
     Click(String),
     Input(String, String),
     Toggle(String, bool),
+    /// A select or tabs widget picked a value.
+    Select(String, String),
+    Slider(String, f64),
+}
+
+/// A plugin page that's also in Big Picture.
+pub struct BigPicturePage {
+    /// The plugin's id.
+    pub id: String,
+    pub title: String,
+    pub icon: String,
+    /// The plugin's name and description.
+    pub name: String,
+    pub description: String,
+}
+
+/// What Big Picture shows at the top of a plugin page.
+pub struct PageHeader {
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub title: String,
+    pub permissions: Vec<&'static str>,
+    pub error: Option<String>,
+    /// Hosts its images may come from.
+    pub hosts: Vec<String>,
+}
+
+/// A button a plugin adds to a game page or a friend's menu, with whose it is.
+pub struct PluginItem {
+    pub plugin: String,
+    pub plugin_name: String,
+    pub id: String,
+    pub text: String,
 }
 
 impl Plugins {
@@ -81,8 +227,11 @@ impl Plugins {
         let base = client::store::config_dir();
         let http = reqwest::Client::builder()
             .user_agent(concat!("SteamInRust/", env!("CARGO_PKG_VERSION"), " (plugin)"))
-            .timeout(std::time::Duration::from_secs(20))
+            .timeout(std::time::Duration::from_secs(plugins::MAX_TIMEOUT))
             .redirect(reqwest::redirect::Policy::none())
+            // Through a proxy the names would be looked up there, unchecked.
+            .no_proxy()
+            .dns_resolver(PublicOnly)
             .build()
             .unwrap_or_default();
         Self {
@@ -105,7 +254,46 @@ impl Plugins {
             trades_seen: None,
             trades_polled: None,
             prices: Default::default(),
+            asked: Default::default(),
+            achievement_watch: Default::default(),
+            download_watch: Default::default(),
+            store_cache: Default::default(),
+            wishlist_seen: None,
+            requests: Default::default(),
+            installed_seen: None,
+            installed_checked: None,
         }
+    }
+
+    /// Wake up for the next `on_tick` or timer (the app doesn't redraw when idle).
+    fn wake_for_timers(&self, now: u64) {
+        let next = self.next_tick.values().copied().chain(self.list.iter().filter_map(|p| p.next_timer())).min();
+        if let Some(next) = next {
+            self.egui.request_repaint_after(std::time::Duration::from_secs(next.saturating_sub(now).max(1)));
+        }
+    }
+
+    /// Stop a plugin: `on_unload` runs and what it saved is kept.
+    fn stop_plugin(&mut self, idx: usize) {
+        let p = &mut self.list[idx];
+        if p.is_running() {
+            p.stop();
+            let _ = p.drain();
+            self.persist(&self.list[idx]);
+        }
+    }
+
+    /// Whether a running plugin has this permission.
+    fn granted(&self, perm: Permission) -> bool {
+        self.list.iter().any(|p| p.is_running() && self.enabled.get(&p.manifest.id).is_some_and(|a| a.contains(&perm)) && p.manifest.permissions.contains(&perm))
+    }
+
+    /// True the first time `key` is asked for in a few minutes.
+    fn ask_once(&self, key: String) -> bool {
+        let mut asked = self.asked.lock().unwrap();
+        let now = std::time::Instant::now();
+        asked.retain(|_, t| now.duration_since(*t) < std::time::Duration::from_secs(300));
+        asked.insert(key, now).is_none()
     }
 
     fn ensure_loaded(&mut self) {
@@ -115,12 +303,24 @@ impl Plugins {
         self.loaded = true;
         let _ = std::fs::create_dir_all(&self.dir);
         plugins::install_examples(&self.dir);
+        for i in 0..self.list.len() {
+            self.stop_plugin(i);
+        }
         self.list.clear();
         self.broken.clear();
         for r in plugins::discover(&self.dir) {
             match r {
                 Ok(p) => self.list.push(p),
                 Err((path, e)) => self.broken.push((path, e.to_string())),
+            }
+        }
+        // `--demo --enable-plugin=<id>`: run a plugin in the demo (previews
+        // and screenshots; the demo saves nothing, so it's never kept).
+        if crate::app::demo() {
+            for id in std::env::args().filter_map(|a| a.strip_prefix("--enable-plugin=").map(String::from)) {
+                if let Some(p) = self.list.iter().find(|p| p.manifest.id == id) {
+                    self.enabled.insert(id, p.manifest.permissions.iter().copied().collect());
+                }
             }
         }
         let ids: Vec<String> = self.enabled.keys().cloned().collect();
@@ -138,6 +338,9 @@ impl Plugins {
 
     fn start(&mut self, id: &str) {
         let Some(approved) = self.enabled.get(id).cloned() else { return };
+        if let Some(i) = self.list.iter().position(|p| p.manifest.id == id) {
+            self.stop_plugin(i);
+        }
         let storage = self.storage(id);
         if let Some(p) = self.list.iter_mut().find(|p| p.manifest.id == id) {
             if permissions_approved(&p.manifest.permissions, &approved) {
@@ -177,7 +380,12 @@ impl Plugins {
                 }
                 Request::Navigate(page, arg) => ctx.navigate(&page, arg),
                 Request::Copy(text) => self.egui.copy_text(text),
-                Request::Http { id, method, url, body, headers } => self.fetch(p.manifest.id.clone(), id, method, url, body, headers),
+                Request::Http { id, method, url, body, headers, timeout } => self.fetch(p.manifest.id.clone(), id, method, url, body, headers, timeout),
+                Request::HttpCancel(id) => {
+                    if let Some(task) = self.requests.lock().unwrap().remove(&(p.manifest.id.clone(), id)) {
+                        task.abort();
+                    }
+                }
                 Request::LoadTrades => ctx.send(Command::LoadTradeOffers { language: i18n::language().steam_name().to_string() }),
                 Request::RespondTrade(id, action) => {
                     let partner = match &ctx.state.trade_offers {
@@ -194,7 +402,7 @@ impl Plugins {
                 }
                 Request::LoadInventory(app_id, context_id) => {
                     let steam_id = ctx.state.steam_id;
-                    if !ctx.state.inventories.contains_key(&(steam_id, app_id, context_id)) {
+                    if !ctx.state.inventories.contains_key(&(steam_id, app_id, context_id)) && self.ask_once(format!("inv:{app_id}:{context_id}")) {
                         ctx.send(Command::LoadInventory { steam_id, app_id, context_id, language: i18n::language().steam_name().to_string() });
                     }
                 }
@@ -206,27 +414,101 @@ impl Plugins {
                         ctx.send(Command::MarketPrices { app_id, names, currency: super::inventory::wallet_currency(ctx) });
                     }
                 }
+                Request::StoreDetails(app_id) => self.store_lookup(ctx, format!("app:{app_id}"), StoreLookup::Details(app_id)),
+                Request::StoreSearch(term) => self.store_lookup(ctx, format!("search:{term}"), StoreLookup::Search(term)),
+                Request::PauseDownload(app_id) => ctx.send(Command::PauseDownload { app_id }),
+                Request::ResumeDownload(app_id) => ctx.send(Command::ResumeDownload { app_id }),
+                Request::CancelDownload(app_id) => ctx.send(Command::CancelDownload { app_id }),
+                Request::MoveDownload(app_id, to) => ctx.send(Command::MoveDownload { app_id, to }),
+                Request::DownloadNow(app_id) => ctx.send(Command::DownloadNow { app_id }),
+                Request::LoadAchievements(app_id) => {
+                    if !ctx.state.achievement_list.contains_key(&app_id) && self.ask_once(format!("ach:{app_id}")) {
+                        ctx.send(Command::LoadAchievements { app_id, language: i18n::language().steam_name().to_string() });
+                    }
+                }
+                Request::LoadAchievementProgress(ids) => {
+                    let app_ids: Vec<AppId> = ids.into_iter().filter(|id| !ctx.state.achievements.contains_key(id) && self.ask_once(format!("achp:{id}"))).collect();
+                    if !app_ids.is_empty() {
+                        ctx.send(Command::LoadAchievementProgress { app_ids });
+                    }
+                }
             }
         }
         self.persist(p);
     }
 
+    /// Load a store page or search in the background (once, while it's
+    /// not cached); plugins get an event when it arrives.
+    fn store_lookup(&self, ctx: &Ctx, key: String, what: StoreLookup) {
+        {
+            let mut c = self.store_cache.lock().unwrap();
+            let cached = match &what {
+                StoreLookup::Details(id) => c.details.get(id).is_some_and(|(at, r)| fresh(at, r.is_ok(), STORE_PAGE_TTL)),
+                StoreLookup::Search(t) => c.searches.get(t).is_some_and(|(at, r)| fresh(at, r.is_ok(), STORE_SEARCH_TTL)),
+            };
+            if cached || !c.loading.insert(key.clone()) {
+                return;
+            }
+        }
+        let country = ctx.state.country.to_lowercase();
+        let country = if country.is_empty() { "us".to_string() } else { country };
+        let language = i18n::language().steam_name().to_string();
+        let (cache, egui) = (self.store_cache.clone(), self.egui.clone());
+        self.rt.spawn(async move {
+            let api = store::StoreClient::new(&country, &language);
+            let now = std::time::Instant::now();
+            match what {
+                StoreLookup::Details(id) => {
+                    let r = api.details(id).await.map(store_app).map_err(|e| e.to_string());
+                    let mut c = cache.lock().unwrap();
+                    c.details.insert(id, (now, r));
+                    StoreCache::trim(&mut c.details, STORE_PAGES);
+                    c.arrived.push(HostEvent::AppDetailsLoaded { app_id: id });
+                    c.loading.remove(&key);
+                }
+                StoreLookup::Search(term) => {
+                    let r = api
+                        .search(&term)
+                        .await
+                        .map(|items| items.into_iter().take(50).map(|i| plugins::StoreHit { app_id: i.app_id, name: i.name, header: i.header, price: store_price(&i.price, None) }).collect())
+                        .map_err(|e| e.to_string());
+                    let mut c = cache.lock().unwrap();
+                    c.searches.insert(term.clone(), (now, r));
+                    StoreCache::trim(&mut c.searches, STORE_SEARCHES);
+                    c.arrived.push(HostEvent::StoreSearchLoaded { term });
+                    c.loading.remove(&key);
+                }
+            }
+            egui.request_repaint();
+        });
+    }
+
     /// Run a plugin's web request in the background; the answer is handed
     /// back on a later frame (`tick`).
-    fn fetch(&self, plugin: String, id: u64, method: String, url: String, body: String, headers: Vec<(String, String)>) {
-        let (http, replies, egui) = (self.http.clone(), self.replies.clone(), self.egui.clone());
-        self.rt.spawn(async move {
+    #[allow(clippy::too_many_arguments)]
+    fn fetch(&self, plugin: String, id: u64, method: String, url: String, body: String, headers: Vec<(String, String)>, timeout: u64) {
+        let (http, replies, egui, requests) = (self.http.clone(), self.replies.clone(), self.egui.clone(), self.requests.clone());
+        let key = (plugin.clone(), id);
+        let mut tasks = self.requests.lock().unwrap();
+        let task = self.rt.spawn(async move {
             let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
-            let mut req = http.request(method, &url);
+            let mut req = http.request(method, &url).timeout(std::time::Duration::from_secs(timeout.clamp(1, plugins::MAX_TIMEOUT)));
             for (k, v) in headers {
                 req = req.header(k, v);
             }
             if !body.is_empty() {
                 req = req.body(body);
             }
-            let (status, text) = match req.send().await {
+            let (status, text, headers) = match req.send().await {
                 Ok(mut resp) => {
                     let status = resp.status().as_u16();
+                    let headers: Vec<(String, String)> = resp
+                        .headers()
+                        .iter()
+                        .filter(|(k, _)| !matches!(k.as_str(), "set-cookie" | "set-cookie2"))
+                        .take(32)
+                        .map(|(k, v)| (k.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).chars().take(1024).collect()))
+                        .collect();
                     let mut buf = Vec::new();
                     while let Ok(Some(chunk)) = resp.chunk().await {
                         buf.extend_from_slice(&chunk);
@@ -235,13 +517,15 @@ impl Plugins {
                             break;
                         }
                     }
-                    (status, String::from_utf8_lossy(&buf).into_owned())
+                    (status, String::from_utf8_lossy(&buf).into_owned(), headers)
                 }
-                Err(e) => (0, e.to_string()),
+                Err(e) => (0, e.to_string(), Vec::new()),
             };
-            replies.lock().unwrap().push((plugin, id, status, text));
+            requests.lock().unwrap().remove(&(plugin.clone(), id));
+            replies.lock().unwrap().push((plugin, id, status, text, headers));
             egui.request_repaint();
         });
+        tasks.insert(key, task.abort_handle());
     }
 
     /// The data plugins see (rebuilt at most once a second: the library can be big).
@@ -251,20 +535,60 @@ impl Plugins {
                 return s.clone();
             }
         }
-        let wants = |perm| {
-            self.list.iter().any(|p| {
-                p.is_running()
-                    && self.enabled.get(&p.manifest.id).is_some_and(|a| a.contains(&perm))
-                    && p.manifest.permissions.contains(&perm)
-            })
+        let wants = Wants {
+            trades: self.granted(Permission::TradesRead),
+            inventory: self.granted(Permission::InventoryRead),
+            achievements: self.granted(Permission::AchievementsRead),
+            store: self.granted(Permission::StoreRead),
         };
-        let s = snapshot(ctx, wants(plugins::Permission::TradesRead), wants(plugins::Permission::InventoryRead));
+        let s = snapshot(ctx, wants, Some(&self.store_cache));
         self.snapshot = Some((std::time::Instant::now(), s.clone()));
         s
     }
 }
 
-fn snapshot(ctx: &Ctx, trades: bool, inventory: bool) -> Snapshot {
+/// Whether a game has achievements (or app info doesn't say).
+fn has_achievements(ctx: &Ctx, app_id: AppId) -> bool {
+    ctx.state.apps.as_ref().and_then(|a| a.get(&app_id)).is_none_or(|a| a.categories.is_empty() || a.categories.contains(&22))
+}
+
+/// Your games for plugins: owned ones with app info, plus what's on disk.
+fn library(ctx: &Ctx) -> Vec<plugins::GameInfo> {
+    // Playtime of games that aren't installed comes from your profile's game
+    // list, when it has been loaded.
+    let profile: HashMap<AppId, &model::PlayerGame> = match ctx.state.player_games.get(&ctx.state.steam_id) {
+        Some(Ok(list)) => list.iter().map(|g| (g.app_id, g)).collect(),
+        _ => HashMap::new(),
+    };
+    super::entries(ctx.state, ctx.local)
+        .into_iter()
+        .map(|e| {
+            let on_disk = e.installed;
+            let p = profile.get(&e.app_id);
+            plugins::GameInfo {
+                app_id: e.app_id,
+                name: e.name.to_string(),
+                installed: on_disk.is_some(),
+                owned: e.owned.is_some(),
+                playtime_minutes: on_disk.and_then(|g| g.playtime_minutes).or(p.map(|g| g.playtime_minutes)).unwrap_or(0),
+                playtime_2weeks: p.map(|g| g.playtime_2weeks),
+                last_played: on_disk.and_then(|g| g.last_played).or(p.and_then(|g| g.last_played)),
+                size_on_disk: on_disk.map(|g| g.size_on_disk),
+                last_updated: on_disk.and_then(|g| g.last_updated),
+                update_required: on_disk.is_some_and(|g| g.state == model::InstallState::UpdateRequired),
+                kind: e.owned.map(|a| a.kind.clone()).unwrap_or_default(),
+                genres: e.owned.map(|a| a.genres.clone()).unwrap_or_default(),
+                categories: e.owned.map(|a| a.categories.clone()).unwrap_or_default(),
+                deck: e.owned.map(|a| a.deck).unwrap_or(0),
+                os_list: e.owned.map(|a| a.os_list.clone()).unwrap_or_default(),
+                icon: e.owned.and_then(|a| a.icon.clone()),
+            }
+        })
+        .collect()
+}
+
+fn snapshot(ctx: &Ctx, wants: Wants, store: Option<&Mutex<StoreCache>>) -> Snapshot {
+    let Wants { trades, inventory, .. } = wants;
     let me = ctx.state.me().map(|p| (p.steam_id, ctx.state.persona_name.clone(), p.state.label().to_string()));
     let friends = ctx
         .state
@@ -275,21 +599,49 @@ fn snapshot(ctx: &Ctx, trades: bool, inventory: bool) -> Snapshot {
             (p.steam_id, p.name.clone(), p.state.label().to_string(), game)
         })
         .collect();
-    let installed: HashMap<AppId, u64> = ctx.local.games.iter().map(|g| (g.app_id, g.playtime_minutes.unwrap_or(0))).collect();
-    let library = super::entries(ctx.state, ctx.local)
-        .into_iter()
-        .map(|e| (e.app_id, e.name.to_string(), e.installed.is_some(), installed.get(&e.app_id).copied().unwrap_or(0)))
-        .collect();
+    let library = Arc::new(library(ctx));
     let name = |id: AppId| ctx.state.app_name(id).map(String::from).unwrap_or_default();
-    let mut downloads: Vec<(u32, String, f32, u64, bool, bool)> = ctx
+    let mut downloads: Vec<plugins::DownloadInfo> = ctx
         .state
         .downloads
         .values()
-        .filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed))
-        .map(|d| (d.app_id, name(d.app_id), d.fraction(), d.speed, d.paused, false))
+        .filter(|d| !matches!(d.phase, model::DownloadPhase::Done | model::DownloadPhase::Failed) && !ctx.state.download_queue.contains(&d.app_id))
+        .map(|d| {
+            let (done, total) = d.shown();
+            plugins::DownloadInfo {
+                app_id: d.app_id,
+                name: name(d.app_id),
+                progress: d.fraction(),
+                bytes_per_second: d.speed,
+                paused: d.paused,
+                queued: false,
+                phase: plugins::download_phase(d.phase),
+                bytes_done: done,
+                bytes_total: total,
+                error: d.error.clone(),
+            }
+        })
         .collect();
-    downloads.extend(ctx.state.download_queue.iter().map(|&id| (id, name(id), ctx.state.set_aside.get(&id).copied().unwrap_or(0.0), 0, false, true)));
-    let wishlist = ctx.state.wishlist.as_ref().map(|w| w.iter().map(|(id, _)| *id).collect()).unwrap_or_default();
+    downloads.sort_by_key(|d| d.app_id);
+    downloads.extend(ctx.state.download_queue.iter().map(|&id| plugins::DownloadInfo {
+        app_id: id,
+        name: name(id),
+        progress: ctx.state.set_aside.get(&id).copied().unwrap_or(0.0),
+        queued: true,
+        phase: "queued",
+        ..Default::default()
+    }));
+    let wishlist: Vec<(u32, u64)> = ctx.state.wishlist.clone().unwrap_or_default();
+    let (store, searches, app_names) = match (wants.store, store) {
+        (true, Some(cache)) => {
+            let c = cache.lock().unwrap();
+            let store = c.details.iter().filter(|(_, (at, r))| fresh(at, r.is_ok(), STORE_PAGE_TTL)).map(|(id, (_, r))| (*id, r.clone())).collect();
+            let searches = c.searches.iter().filter(|(_, (at, r))| fresh(at, r.is_ok(), STORE_SEARCH_TTL)).map(|(k, (_, r))| (k.clone(), r.clone())).collect();
+            let names = wishlist.iter().filter_map(|(id, _)| ctx.state.app_name(*id).map(|n| (*id, n.to_string()))).collect();
+            (store, searches, names)
+        }
+        _ => Default::default(),
+    };
     // Trades, inventories and prices only when a running plugin may see them
     // (they can be large).
     let trades = match (&ctx.state.trade_offers, trades) {
@@ -314,6 +666,11 @@ fn snapshot(ctx: &Ctx, trades: bool, inventory: bool) -> Snapshot {
         (HashMap::new(), HashMap::new())
     };
     let currency = model::currency(super::inventory::wallet_currency(ctx)).0.to_string();
+    let (achievement_progress, achievements) = if wants.achievements {
+        (ctx.state.achievements.clone(), ctx.state.achievement_list.clone())
+    } else {
+        Default::default()
+    };
     Snapshot {
         me,
         friends,
@@ -325,6 +682,11 @@ fn snapshot(ctx: &Ctx, trades: bool, inventory: bool) -> Snapshot {
         inventory: Arc::new(inv),
         prices: Arc::new(prices),
         currency,
+        achievement_progress: Arc::new(achievement_progress),
+        achievements: Arc::new(achievements),
+        store: Arc::new(store),
+        searches: Arc::new(searches),
+        app_names: Arc::new(app_names),
     }
 }
 
@@ -338,6 +700,11 @@ impl Extension for Plugins {
             core: true,
             ..Manifest::DEFAULT
         }
+    }
+
+    /// Big Picture reaches plugin pages through this.
+    fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn pages(&self) -> Vec<PageSpec> {
@@ -356,9 +723,33 @@ impl Extension for Plugins {
         let mut host_events = Vec::new();
         match event {
             Event::LoggedIn { .. } => host_events.push(HostEvent::LoggedIn),
-            Event::GameStarted { app_id } => host_events.push(HostEvent::GameStarted { app_id: *app_id }),
-            Event::GameStopped { app_id } => host_events.push(HostEvent::GameStopped { app_id: *app_id }),
-            Event::DownloadFinished { app_id, result } => host_events.push(HostEvent::DownloadFinished { app_id: *app_id, ok: result.is_ok() }),
+            Event::GameStarted { app_id } => {
+                host_events.push(HostEvent::GameStarted { app_id: *app_id });
+                // The list before playing, to see what's new when it closes.
+                if self.granted(Permission::AchievementsRead) && !self.achievement_watch.knows(*app_id) && has_achievements(ctx, *app_id) {
+                    ctx.send(Command::LoadAchievements { app_id: *app_id, language: i18n::language().steam_name().to_string() });
+                }
+            }
+            Event::GameStopped { app_id } => {
+                host_events.push(HostEvent::GameStopped { app_id: *app_id });
+                if self.granted(Permission::AchievementsRead) && self.achievement_watch.knows(*app_id) {
+                    ctx.send(Command::LoadAchievements { app_id: *app_id, language: i18n::language().steam_name().to_string() });
+                }
+            }
+            Event::Achievements { app_id, result: Ok(list) } if self.granted(Permission::AchievementsRead) => {
+                host_events.extend(self.achievement_watch.update(*app_id, list));
+            }
+            Event::DownloadFinished { app_id, result } => {
+                self.download_watch.forget(*app_id);
+                host_events.push(HostEvent::DownloadFinished { app_id: *app_id, ok: result.is_ok(), error: result.clone().err() });
+            }
+            Event::Download(d) => host_events.extend(self.download_watch.update(d)),
+            Event::Wishlist(list) => {
+                let now: Vec<AppId> = list.iter().map(|(id, _)| *id).collect();
+                if let Some(before) = self.wishlist_seen.replace(now.clone()) {
+                    host_events.extend(plugins::wishlist_changes(&before, &now));
+                }
+            }
             Event::Message(m) if m.from != ctx.state.steam_id => {
                 host_events.push(HostEvent::Message { steam_id: m.from, name: ctx.state.persona(m.from).name, text: m.text.clone() });
             }
@@ -417,11 +808,7 @@ impl Extension for Plugins {
             return;
         }
         // Keep trade offers fresh for plugins that watch them (every 2 minutes).
-        if self.list.iter().any(|p| {
-            p.is_running()
-                && self.enabled.get(&p.manifest.id).is_some_and(|a| a.contains(&plugins::Permission::TradesRead))
-                && p.manifest.permissions.contains(&plugins::Permission::TradesRead)
-        }) && self.trades_polled.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(120))
+        if self.granted(Permission::TradesRead) && self.trades_polled.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(120))
         {
             self.trades_polled = Some(std::time::Instant::now());
             ctx.send(Command::LoadTradeOffers { language: i18n::language().steam_name().to_string() });
@@ -435,14 +822,62 @@ impl Extension for Plugins {
                 p.is_running() && p.manifest.tick.is_some() && self.next_tick.get(&p.manifest.id).is_none_or(|t| now >= *t)
             })
             .collect();
+        // Installs and uninstalls (the disk scan changes the local list).
+        if self.granted(Permission::LibraryRead) && self.installed_checked.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(2)) {
+            self.installed_checked = Some(std::time::Instant::now());
+            let now_installed: HashMap<AppId, String> = ctx.local.games.iter().map(|g| (g.app_id, g.name.clone())).collect();
+            if let Some(before) = self.installed_seen.replace(now_installed.clone()) {
+                let mut events: Vec<HostEvent> = now_installed.iter().filter(|(id, _)| !before.contains_key(id)).map(|(id, name)| HostEvent::GameInstalled { app_id: *id, name: name.clone() }).collect();
+                events.extend(before.iter().filter(|(id, _)| !now_installed.contains_key(id)).map(|(id, name)| HostEvent::GameUninstalled { app_id: *id, name: name.clone() }));
+                if !events.is_empty() {
+                    self.snapshot = None;
+                    let snap = self.snapshot(ctx);
+                    for i in 0..self.list.len() {
+                        if self.list[i].is_running() {
+                            self.list[i].set_snapshot(snap.clone());
+                            for e in &events {
+                                self.list[i].event(e);
+                            }
+                            self.handle(i, ctx);
+                        }
+                    }
+                }
+            }
+        }
+        // Plugin timers that are due.
+        let timers: Vec<usize> = (0..self.list.len()).filter(|&i| self.list[i].next_timer().is_some_and(|t| t <= now)).collect();
+        if !timers.is_empty() {
+            let snap = self.snapshot(ctx);
+            for i in timers {
+                self.list[i].set_snapshot(snap.clone());
+                self.list[i].timers(now);
+                self.handle(i, ctx);
+            }
+        }
+        let arrived = std::mem::take(&mut self.store_cache.lock().unwrap().arrived);
+        if !arrived.is_empty() {
+            // The new data has to be in the snapshot the events see.
+            self.snapshot = None;
+            let snap = self.snapshot(ctx);
+            for i in 0..self.list.len() {
+                if self.list[i].is_running() {
+                    self.list[i].set_snapshot(snap.clone());
+                    for e in &arrived {
+                        self.list[i].event(e);
+                    }
+                    self.handle(i, ctx);
+                }
+            }
+        }
         if replies.is_empty() && due.is_empty() {
+            self.wake_for_timers(now);
             return;
         }
         let snap = self.snapshot(ctx);
-        for (plugin, id, status, body) in replies {
+        for (plugin, id, status, body, headers) in replies {
             if let Some(i) = self.list.iter().position(|p| p.manifest.id == plugin && p.is_running()) {
                 self.list[i].set_snapshot(snap.clone());
-                self.list[i].http_done(id, status, body);
+                self.list[i].http_done(id, status, body, headers);
                 self.handle(i, ctx);
             }
         }
@@ -453,10 +888,7 @@ impl Extension for Plugins {
             }
             self.handle(i, ctx);
         }
-        // Wake up for the next tick (the app doesn't redraw when idle).
-        if let Some(next) = self.next_tick.values().min() {
-            self.egui.request_repaint_after(std::time::Duration::from_secs(next.saturating_sub(now).max(1)));
-        }
+        self.wake_for_timers(now);
     }
 
     fn game_actions(&mut self, app_id: AppId, ui: &mut Ui, ctx: &mut Ctx) {
@@ -528,11 +960,7 @@ impl Extension for Plugins {
         });
         self.inputs = inputs;
         for e in events {
-            match e {
-                PageEvent::Click(b) => self.list[idx].click(&b),
-                PageEvent::Input(f, text) => self.list[idx].input(&f, &text),
-                PageEvent::Toggle(f, on) => self.list[idx].toggle(&f, on),
-            }
+            dispatch(&mut self.list[idx], e);
         }
         self.handle(idx, ctx);
     }
@@ -604,7 +1032,8 @@ impl Extension for Plugins {
                         w::panel(&t).show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             for l in logs.iter().rev().take(30) {
-                                ui.label(w::text(l, 12.0, t.text_dim).monospace());
+                                let color = if l.starts_with("error:") { t.danger } else if l.starts_with("warning:") { t.away } else { t.text_dim };
+                                ui.label(w::text(l, 12.0, color).monospace());
                             }
                         });
                     }
@@ -628,8 +1057,8 @@ impl Extension for Plugins {
             Some((id, true)) => self.consent = Some(id),
             Some((id, false)) => {
                 self.enabled.remove(&id);
-                if let Some(p) = self.list.iter_mut().find(|p| p.manifest.id == id) {
-                    p.stop();
+                if let Some(i) = self.list.iter().position(|p| p.manifest.id == id) {
+                    self.stop_plugin(i);
                 }
             }
             None => {}
@@ -644,6 +1073,160 @@ impl Extension for Plugins {
 
     fn load(&mut self, data: &str) {
         self.enabled = parse_enabled(data);
+    }
+}
+
+fn dispatch(p: &mut Plugin, e: PageEvent) {
+    match e {
+        PageEvent::Click(b) => p.click(&b),
+        PageEvent::Input(f, text) => p.input(&f, &text),
+        PageEvent::Toggle(f, on) => p.toggle(&f, on),
+        PageEvent::Select(f, v) => p.select(&f, &v),
+        PageEvent::Slider(f, v) => p.slider(&f, v),
+    }
+}
+
+/// What Big Picture uses: plugin pages that opted in, their widgets and
+/// events, and plugin buttons for game pages and friends.
+impl Plugins {
+    /// Running plugins whose page is also for Big Picture.
+    pub fn bigpicture_pages(&mut self) -> Vec<BigPicturePage> {
+        self.ensure_loaded();
+        self.list
+            .iter()
+            .filter(|p| p.in_bigpicture())
+            .filter_map(|p| {
+                let page = p.manifest.page.as_ref()?;
+                Some(BigPicturePage { id: p.manifest.id.clone(), title: page.title.clone(), icon: page.icon.clone(), name: p.manifest.name.clone(), description: p.manifest.description.clone() })
+            })
+            .collect()
+    }
+
+    /// A Big Picture page's widgets (`None` if the plugin isn't running or
+    /// didn't opt in).
+    pub fn bigpicture_page(&mut self, id: &str, ctx: &mut Ctx) -> Option<(PageHeader, Vec<Widget>)> {
+        self.ensure_loaded();
+        let snap = self.snapshot(ctx);
+        let idx = self.list.iter().position(|p| p.manifest.id == id && p.in_bigpicture())?;
+        self.list[idx].set_snapshot(snap);
+        let widgets = self.list[idx].page_in(plugins::View::BigPicture);
+        self.handle(idx, ctx);
+        let p = &self.list[idx];
+        let m = &p.manifest;
+        let header = PageHeader {
+            name: m.name.clone(),
+            version: m.version.clone(),
+            author: m.author.clone(),
+            title: m.page.as_ref().map(|x| x.title.clone()).unwrap_or_default(),
+            permissions: m.permissions.iter().map(|x| x.key()).collect(),
+            error: p.error.clone(),
+            hosts: m.hosts.clone(),
+        };
+        Some((header, widgets))
+    }
+
+    /// Something done on a plugin page in Big Picture.
+    pub fn bigpicture_event(&mut self, id: &str, e: PageEvent, ctx: &mut Ctx) {
+        let Some(idx) = self.list.iter().position(|p| p.manifest.id == id && p.in_bigpicture()) else { return };
+        let snap = self.snapshot(ctx);
+        self.list[idx].set_snapshot(snap);
+        dispatch(&mut self.list[idx], e);
+        self.handle(idx, ctx);
+    }
+
+    /// Plugin buttons for a game's page.
+    pub fn game_items(&mut self, app_id: AppId, ctx: &mut Ctx) -> Vec<PluginItem> {
+        self.ensure_loaded();
+        let mut out = Vec::new();
+        for i in 0..self.list.len() {
+            if !self.list[i].defines("game_actions") {
+                continue;
+            }
+            let snap = self.snapshot(ctx);
+            self.list[i].set_snapshot(snap);
+            let (plugin, plugin_name) = (self.list[i].manifest.id.clone(), self.list[i].manifest.name.clone());
+            out.extend(self.list[i].game_actions(app_id).into_iter().map(|m| PluginItem { plugin: plugin.clone(), plugin_name: plugin_name.clone(), id: m.id, text: m.text }));
+            self.handle(i, ctx);
+        }
+        out
+    }
+
+    pub fn game_item_clicked(&mut self, plugin: &str, id: &str, app_id: AppId, ctx: &mut Ctx) {
+        if let Some(i) = self.list.iter().position(|p| p.manifest.id == plugin && p.is_running()) {
+            let snap = self.snapshot(ctx);
+            self.list[i].set_snapshot(snap);
+            self.list[i].game_action(id, app_id);
+            self.handle(i, ctx);
+        }
+    }
+
+    /// Plugin items for a friend (their right-click menu in the normal window).
+    pub fn friend_items(&mut self, steam_id: SteamId, ctx: &mut Ctx) -> Vec<PluginItem> {
+        self.ensure_loaded();
+        let mut out = Vec::new();
+        for i in 0..self.list.len() {
+            if !self.list[i].defines("friend_menu") {
+                continue;
+            }
+            let snap = self.snapshot(ctx);
+            self.list[i].set_snapshot(snap);
+            let (plugin, plugin_name) = (self.list[i].manifest.id.clone(), self.list[i].manifest.name.clone());
+            out.extend(self.list[i].friend_menu(steam_id).into_iter().map(|m| PluginItem { plugin: plugin.clone(), plugin_name: plugin_name.clone(), id: m.id, text: m.text }));
+            self.handle(i, ctx);
+        }
+        out
+    }
+
+    pub fn friend_item_clicked(&mut self, plugin: &str, id: &str, steam_id: SteamId, ctx: &mut Ctx) {
+        if let Some(i) = self.list.iter().position(|p| p.manifest.id == plugin && p.is_running()) {
+            let snap = self.snapshot(ctx);
+            self.list[i].set_snapshot(snap);
+            self.list[i].friend_menu_click(id, steam_id);
+            self.handle(i, ctx);
+        }
+    }
+}
+
+/// The theme color for a badge's or metric's tone.
+pub(crate) fn tone_color(t: &Theme, tone: plugins::Tone) -> egui::Color32 {
+    match tone {
+        plugins::Tone::Neutral => t.text_dim,
+        plugins::Tone::Accent => t.accent,
+        plugins::Tone::Good => t.online,
+        plugins::Tone::Warn => t.away,
+        plugins::Tone::Bad => t.danger,
+    }
+}
+
+/// Draw a chart's values in `rect` (both modes use it).
+pub(crate) fn paint_chart(p: &egui::Painter, rect: egui::Rect, kind: plugins::ChartKind, values: &[f64], color: egui::Color32, guide: egui::Color32, width: f32) {
+    if values.is_empty() {
+        return;
+    }
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min).min(0.0);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let span = if hi - lo > 0.0 { hi - lo } else { 1.0 };
+    let y = |v: f64| rect.bottom() - ((v - lo) / span) as f32 * rect.height();
+    p.hline(rect.x_range(), y(0.0), egui::Stroke::new(1.0, guide));
+    match kind {
+        plugins::ChartKind::Bar => {
+            let slot = rect.width() / values.len() as f32;
+            for (i, v) in values.iter().enumerate() {
+                let x = rect.left() + slot * i as f32;
+                let (a, b) = (y(0.0), y(*v));
+                let bar = egui::Rect::from_min_max(egui::pos2(x + slot * 0.15, a.min(b)), egui::pos2(x + slot * 0.85, a.max(b)));
+                p.rect_filled(bar, egui::CornerRadius::same((slot * 0.15).min(4.0) as u8), color);
+            }
+        }
+        plugins::ChartKind::Line => {
+            let n = values.len().max(2) - 1;
+            let pts: Vec<egui::Pos2> = values.iter().enumerate().map(|(i, v)| egui::pos2(rect.left() + rect.width() * i as f32 / n as f32, y(*v))).collect();
+            if pts.len() == 1 {
+                p.circle_filled(pts[0], width * 1.5, color);
+            } else {
+                p.add(egui::Shape::line(pts, egui::Stroke::new(width, color)));
+            }
+        }
     }
 }
 
@@ -712,7 +1295,7 @@ struct Render<'a> {
 }
 
 /// Images come from Steam's image servers, or the plugin's own hosts.
-fn image_allowed(url: &str, hosts: &[String]) -> bool {
+pub(crate) fn image_allowed(url: &str, hosts: &[String]) -> bool {
     let Some(rest) = url.strip_prefix("https://") else { return false };
     let host = rest.split(['/', '?', '#', ':']).next().unwrap_or_default().to_ascii_lowercase();
     if host.contains('@') {
@@ -826,6 +1409,132 @@ fn render(ui: &mut Ui, t: &Theme, ctx: &mut Ctx, widgets: &[Widget], r: &mut Ren
                     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, t!("Image not allowed"), w::font(12.0), t.text_faint);
                 }
             }
+            Widget::Badge { text, tone } => {
+                let c = tone_color(t, *tone);
+                w::pill(ui, text, c, c.gamma_multiply(0.16));
+            }
+            Widget::Metric { label, value, change, tone, hint } => {
+                w::card(t).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(w::text(label, 12.5, t.text_dim));
+                        ui.horizontal(|ui| {
+                            ui.label(w::text_bold(value, 26.0, t.text));
+                            if let Some(c) = change {
+                                ui.label(w::text_semibold(c, 14.0, tone_color(t, *tone)));
+                            }
+                        });
+                        if !hint.is_empty() {
+                            ui.label(w::text(hint, 12.0, t.text_faint));
+                        }
+                    });
+                });
+            }
+            Widget::Card { title, items } => {
+                if depth < MAX_ROW_DEPTH {
+                    w::card(t).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        if !title.is_empty() {
+                            ui.label(w::text_semibold(title, 16.0, t.text));
+                            ui.add_space(4.0);
+                        }
+                        render(ui, t, ctx, items, r, depth + 1);
+                    });
+                }
+            }
+            Widget::Section { title, items } => {
+                if depth < MAX_ROW_DEPTH {
+                    ui.add_space(8.0);
+                    if !title.is_empty() {
+                        ui.label(w::text_semibold(title, 17.0, t.text));
+                    }
+                    render(ui, t, ctx, items, r, depth + 1);
+                    ui.add_space(4.0);
+                }
+            }
+            Widget::Grid { columns, items } => {
+                if depth < MAX_ROW_DEPTH {
+                    for chunk in items.chunks((*columns).max(1)) {
+                        ui.columns(*columns, |cols| {
+                            for (c, item) in cols.iter_mut().zip(chunk) {
+                                render(c, t, ctx, std::slice::from_ref(item), r, depth + 1);
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
+                }
+            }
+            Widget::Select { id, label, options, value } => {
+                ui.horizontal(|ui| {
+                    if !label.is_empty() {
+                        ui.label(w::text(label, 14.0, t.text));
+                    }
+                    let shown = options.iter().find(|(v, _)| v == value).map(|o| o.1.clone()).unwrap_or_default();
+                    egui::ComboBox::from_id_salt((r.plugin, "select", id)).selected_text(shown).show_ui(ui, |ui| {
+                        for (v, l) in options {
+                            if ui.selectable_label(v == value, l).clicked() && v != value {
+                                r.events.push(PageEvent::Select(id.clone(), v.clone()));
+                            }
+                        }
+                    });
+                });
+            }
+            Widget::Slider { id, label, min, max, step, value } => {
+                let mut v = *value;
+                let resp = ui.add(egui::Slider::new(&mut v, *min..=*max).step_by(*step).text(label.as_str()));
+                // Tell the plugin once the handle is let go (not on every pixel).
+                if (resp.drag_stopped() || (resp.changed() && !resp.dragged())) && v != *value {
+                    r.events.push(PageEvent::Slider(id.clone(), v));
+                }
+            }
+            Widget::Tabs { id, items, value } => {
+                ui.horizontal(|ui| {
+                    for (v, l) in items {
+                        let on = v == value;
+                        let kind = if on { w::Kind::Primary } else { w::Kind::Ghost };
+                        if w::button(ui, t, None, l, kind, w::Size::Sm).clicked() && !on {
+                            r.events.push(PageEvent::Select(id.clone(), v.clone()));
+                        }
+                    }
+                });
+            }
+            Widget::Avatar { steam_id, size } => {
+                let hash = ctx.state.personas.get(steam_id).and_then(|p| p.avatar_hash.clone());
+                w::avatar(ui, t, &art::avatar_full(hash.as_deref()), *size, None);
+            }
+            Widget::Empty { icon, title, text } => {
+                let icon = if icon.is_empty() { icons::PLUGS } else { icons::by_name(icon) };
+                w::empty(ui, t, icon, title, text);
+            }
+            Widget::Loading(text) => {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().color(t.accent));
+                    if !text.is_empty() {
+                        ui.label(w::text(text, 14.0, t.text_dim));
+                    }
+                });
+            }
+            Widget::Chart { kind, values, labels, height } => {
+                w::card(t).show(ui, |ui| {
+                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(900.0), *height), Sense::hover());
+                    paint_chart(ui.painter(), rect.shrink(4.0), *kind, values, t.accent, t.border, 2.0);
+                    // Pointing at a point shows its label and value.
+                    if let Some(pos) = resp.hover_pos().filter(|_| !values.is_empty()) {
+                        let i = (((pos.x - rect.left()) / rect.width()) * values.len() as f32).floor().clamp(0.0, values.len() as f32 - 1.0) as usize;
+                        let label = labels.get(i).cloned().unwrap_or_default();
+                        resp.on_hover_text(format!("{label} {}", plugins::format_number(values[i])).trim().to_string());
+                    }
+                });
+            }
+            Widget::Sparkline(values) => {
+                let (rect, _) = ui.allocate_exact_size(vec2(120.0, 32.0), Sense::hover());
+                paint_chart(ui.painter(), rect.shrink(2.0), plugins::ChartKind::Line, values, t.accent, egui::Color32::TRANSPARENT, 1.5);
+            }
+            Widget::Tooltip { text, item } => {
+                if depth < MAX_ROW_DEPTH {
+                    let resp = ui.scope(|ui| render(ui, t, ctx, std::slice::from_ref(item.as_ref()), r, depth + 1)).response;
+                    resp.on_hover_text(text.as_str());
+                }
+            }
         }
     }
 }
@@ -846,12 +1555,13 @@ mod tests {
         std::fs::write(dir.join("main.rhai"), script).unwrap();
         let mut p = plugins::Plugin::load(&dir).unwrap();
         // A wishlist of three well-known games.
-        p.set_snapshot(plugins::Snapshot { wishlist: vec![440, 620, 1145360], ..Default::default() });
-        p.start(&std::collections::BTreeSet::from([plugins::Permission::Network]), Default::default());
+        p.set_snapshot(plugins::Snapshot { wishlist: vec![(440, 0), (620, 0), (1145360, 0)], ..Default::default() });
+        let approved = p.manifest.permissions.iter().copied().collect();
+        p.start(&approved, Default::default());
         assert!(p.error.is_none(), "{:?}", p.error);
         let reqs = p.drain();
-        let Some(plugins::Request::Http { id, method, url, body, headers }) = reqs.into_iter().find(|r| matches!(r, plugins::Request::Http { .. })) else { panic!("no request") };
-        host.fetch("wishlist-sales".into(), id, method, url, body, headers);
+        let Some(plugins::Request::Http { id, method, url, body, headers, timeout }) = reqs.into_iter().find(|r| matches!(r, plugins::Request::Http { .. })) else { panic!("no request") };
+        host.fetch("wishlist-sales".into(), id, method, url, body, headers, timeout);
         let reply = (0..100)
             .find_map(|_| {
                 std::thread::sleep(std::time::Duration::from_millis(200));
@@ -859,12 +1569,35 @@ mod tests {
             })
             .expect("an answer");
         assert_eq!(reply.2, 200, "{}", reply.3);
-        p.http_done(reply.1, reply.2, reply.3);
+        p.http_done(reply.1, reply.2, reply.3, reply.4);
         assert!(p.error.is_none(), "{:?}", p.error);
         let saved = p.take_storage().unwrap();
         assert!(saved.contains_key("checked") && saved.contains_key("sales"), "{saved:?}");
         println!("sales: {}", saved["sales"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_cache_keeps_the_newest_and_retries_failures_soon() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut m: std::collections::HashMap<u32, (Instant, ())> = (0..10u32).map(|i| (i, (now - Duration::from_secs(100 - i as u64), ()))).collect();
+        super::StoreCache::trim(&mut m, 3);
+        let mut left: Vec<u32> = m.keys().copied().collect();
+        left.sort();
+        assert_eq!(left, vec![7, 8, 9], "the oldest go first");
+
+        let old = now - Duration::from_secs(120);
+        assert!(super::fresh(&old, true, 3600), "a page is good for an hour");
+        assert!(!super::fresh(&old, false, 3600), "a failure is asked again after a minute");
+    }
+
+    #[test]
+    fn plugin_requests_cant_reach_local_addresses() {
+        use reqwest::dns::Resolve;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let r = rt.block_on(super::PublicOnly.resolve("localhost".parse().unwrap()));
+        assert!(r.is_err_and(|e| e.to_string().contains("own computer")));
     }
 
     #[test]

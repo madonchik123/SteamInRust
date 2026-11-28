@@ -1,6 +1,6 @@
 id = "backlog"
 name = "Backlog Picker"
-version = "1.0.0"
+version = "1.1.0"
 author = "SteamInRust"
 description = "Shows installed games you've never played and picks one for you."
 permissions = ["library.read", "storage"]
@@ -8,3 +8,5 @@ permissions = ["library.read", "storage"]
 [page]
 title = "Backlog"
 icon = "dice"
+# The page works with a controller, so it's in Big Picture's Plugins tab too.
+bigpicture = true
