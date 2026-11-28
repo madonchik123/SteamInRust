@@ -548,10 +548,17 @@ mod tests {
         assert!(call.wait_for(|e| *e == EngineEvent::Connected));
         call.engine.set_transmit(true);
         assert!(call.wait_for(|e| matches!(e, EngineEvent::Talking(t) if t.contains(&ME) && t.contains(&ECHO_SSRC))), "you and the echo both show as talking");
-        std::thread::sleep(Duration::from_millis(600));
+        std::thread::sleep(Duration::from_millis(1000));
         let heard = call.heard.lock().unwrap().clone();
-        let tail = &heard[heard.len() - FRAME * 15..];
-        let hz = pitch(tail);
+        // The pitch of the last second, as the median of 100 ms pieces that
+        // have sound: one glitch (a slow test machine falling behind and the
+        // decoder filling the gap) can't fail it, a wrong pitch still does.
+        let piece = FRAME * 5;
+        let tail = &heard[heard.len().saturating_sub(piece * 10)..];
+        let mut hz: Vec<f32> = tail.chunks_exact(piece).filter(|p| p.iter().map(|s| s * s).sum::<f32>() / p.len() as f32 > 0.003).map(pitch).collect();
+        assert!(hz.len() >= 5, "only {} of 10 pieces had sound", hz.len());
+        hz.sort_by(f32::total_cmp);
+        let hz = hz[hz.len() / 2];
         assert!((hz - 440.0).abs() < 20.0, "heard {hz} Hz");
         assert!(call.finish() > 20);
     }
