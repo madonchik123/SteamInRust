@@ -1,0 +1,11 @@
+id = "widget-gallery"
+name = "Widget Gallery"
+version = "1.0.0"
+author = "SteamInRust"
+description = "Every widget a plugin page can use, to copy from when you make your own."
+permissions = ["library.read", "storage"]
+
+[page]
+title = "Widget Gallery"
+icon = "palette"
+bigpicture = true

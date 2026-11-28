@@ -1,8 +1,8 @@
 # Steam parity
 
 How much of the official Steam desktop client SteamInRust covers, area by
-area. Last checked against the code on 21 November 2026 (v0.14.0 and the community actions after it).
-area. Last checked against the code on 21 November 2026 (v0.14.0 and the dynamic collection changes after it).
+area. Last checked against the code on 28 November 2026 (v0.16.0, with the plugin API from
+[#151](https://github.com/madonchik123/SteamInRust/pull/151)).
 
 Scores: **0** not started · **0.25** started · **0.5** usable, big parts
 missing · **0.75** mostly there · **1** complete. Anything marked "opens
@@ -20,10 +20,10 @@ Steam's website" still works; it just isn't native yet.
 | Inventory and Market | 0.75 | Buying, buy orders, gems, booster packs and pending gifts are in the app but haven't been tried on a real account |
 | Steam Cloud | 1 | |
 | Steam features inside games | 0.75 | Networking sockets / messages through Valve's relays (strangers on the official client); parts of hosting game servers aren't proven yet (login tokens, players connecting over networking sockets) |
-| Shift+Tab overlay | 0.75 | Drawn inside D3D11 and D3D12 games on Windows (Vulkan, OpenGL and D3D9 games, and every game on a Mac, get a window overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
+| Shift+Tab overlay | 0.75 | Drawn inside D3D11 and D3D12 games on Windows (Vulkan, OpenGL and D3D9 games, and every game on a Mac, get a window overlay; Windows games through Steam Play on a Mac have no drawn-in overlay); no in-game web browser. F12 screenshots and the FPS counter only in games it's drawn inside |
 | Notifications and tray | 1 | |
 | Settings, languages, updates | 0.75 | No Linux version; Mac builds aren't signed with an Apple developer ID |
-| Big Picture | 0.75 | Buying, trade offers and some settings move to the normal window |
+| Big Picture | 0.75 | Has Home, Library, Store, Downloads and Friends. Community, profiles, inventory and the Market, the Points Shop, screenshots and broadcasts are only in the normal window (Workshop, community and profile links open as read-only pages). Buying, trade offers, voice and some settings move to the normal window too |
 | Remote Play | 0 | Not planned for now. Steam Input for games is under "Steam features inside games" |
 
 ---
@@ -85,6 +85,7 @@ Steam's website" still works; it just isn't native yet.
 | SteamInRust's own depot downloader (manifests, chunks, decryption, decompression) | Done |
 | Queue, pause, resume, cancel; the download survives a restart and resumes | Done. Cancelling frees the disk space it used |
 | The right version for your system: the macOS package on a Mac, with app bundles and run permissions restored | Done |
+| On a Mac, pick the macOS or the Windows (Steam Play) version when installing, each with its download size, in both modes. An install that would download nothing (no files of that version for your account) is refused with an explanation | Done. Not yet tried on a Mac |
 | Separate network and disk speeds, and what it's doing (downloading, writing to disk, verifying) | Done |
 | Every Steam download region and partner CDNs, sorted by measured speed | Done |
 | Bandwidth limit, update schedule, downloads while playing, automatic updates | Done |
@@ -233,18 +234,19 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | All Steam notification types with game art or avatars, toasts | Done |
 | Tray icon with Steam's menu (drawn in the current theme), close to tray | Done |
 | Pick the app icon (taskbar, window and tray) from the SteamInRust logos | Done |
+| Only one copy runs: opening it again (a shortcut, a game, a `steam://` link) hands over to the running copy, so there's never a second tray icon | Done |
 
 ## Settings, languages, updates
 
 | | |
 | --- | --- |
-| Settings: account, friends, security, notifications, interface, appearance, store, library, downloads, storage, cloud, in game, accessibility, plugins | Done |
+| Settings: account, friends (with voice: microphone, speakers, push-to-talk), security, notifications, interface, appearance, store, library, downloads, storage, cloud, compatibility (Steam Play, on a Mac), in game, accessibility, plugins | Done |
 | Themes: full skins with their own colors, fonts, images, icons, control styles and layout. Built in: **SteamInRust** (the default, after [Juxtopposed's Steam Redesign](https://www.figma.com/community/file/1302616100790619521/steam-redesign)) and **Classic** (the look before it). Your own themes load from a folder ([docs/themes.md](themes.md)) | Done. People upgrading are asked once whether to try the new look. There's no theme store yet |
 | Accent color, UI scale | Done |
 | English, Russian, Simplified Chinese, Spanish, Brazilian Portuguese, German and French, picked from the system language | Done |
 | Installer, uninstaller, background updates checked with SHA-256 | Done. One download at a time; it continues after a restart or a dropped connection, and old installers are deleted. On a Mac: a disk image, and the app replaces itself on update |
 | Copy, cut and paste in every text field, with a right-click menu | Done |
-| Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions | Done: pages with inputs, switches, tables and images; buttons on game pages; items in friends' menus; timers; web requests to the hosts a plugin lists (https, with your approval); launching games; downloads and wishlist; clipboard; trade offers, inventories and market prices (plugins can decline or cancel offers, and open a trade or an offer's review, but only you can accept or send) |
+| Plugins in sandboxed [Rhai](https://rhai.rs) scripts with permissions ([docs/plugin-api.md](plugin-api.md)) | Done: pages with inputs, switches, tables and images; buttons on game pages; items in friends' menus; notifications; your profile, friends, chat messages (read and send) and status; launching games; library details (playtime, size, Deck rating, art) and install events; achievements; downloads, which plugins can pause, resume, cancel and reorder; wishlist, store pages, prices and search; inventories, Market prices and what an inventory or a trade is worth; trade offers (plugins can decline or cancel them and open a trade or an offer's review, but only you can accept or send); timers; saved data; web requests to the hosts a plugin lists (https only, never to your own network); clipboard; charts, tabs, choices, sliders, cards and grids on their page. Pages that say they work with a controller are in Big Picture too |
 | macOS | Done (macOS 11 or later). Builds aren't signed with an Apple developer ID, so macOS asks for the Keychain password and Input Monitoring again after each update |
 | Linux | Not yet |
 
@@ -259,4 +261,5 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Store: front page, sections, search with an on-screen keyboard (English and Russian), store pages with screenshots you can flip with the mouse wheel, wishlist | Done. Buying moves to the normal window, because Steam only takes payment on its website |
 | Downloads: progress, pause, resume, cancel, queue | Done |
 | Friends and chat | Done: a page per friend (join their game, invite to yours, profile), group chats with their rooms, and a full-screen chat for a controller, keyboard or mouse. Pick a message to reply with a quote, react, copy it, show a spoiler, load a picture or video from another site, open a picture large (Back closes it), play a video, open a link (its whole address shown first), open it in the browser or copy it, join a game or report it. Emoticons, stickers, chat effects, link cards and slash commands work, and you can send a screenshot or your trade link, or paste a picture with Ctrl+V or drop one on the window (shown before it's sent). Store, Workshop, community and profile links open inside Big Picture (their pages are read with up and down; their buttons need a mouse). Trade offers, voice rooms, inviting people and managing a group stay in the normal window |
-| Settings | Done for what you'd change from the couch: interface size, start in Big Picture, language; downloads (auto-updates, region, speed limit, schedule, connections); library (what it opens on, Steam Cloud); notifications; controller (swap A and B, repeat speed, stick sensitivity); in-game overlay and FPS counter; theme; status, account picker, close to tray and sign out. The rest stays in the normal window because it needs typing, a file dialog or a browser: profile and privacy, security, family, wallet and purchases, Store content filters, library folders, custom colors, plugins. SteamInRust has no sounds, so there's no audio setting |
+| Plugins | Done: a Plugins tab with the plugin pages made for Big Picture, every widget drawn for a controller (a slider moves with left and right, a text field opens the on-screen keyboard), and plugin buttons on game and friend pages |
+| Settings | Done for what you'd change from the couch: interface size, start in Big Picture, language; downloads (auto-updates, region, speed limit, schedule, connections); library (what it opens on, Steam Cloud); notifications; controller (swap A and B, repeat speed, stick sensitivity); in-game overlay and FPS counter; theme; status, account picker, close to tray and sign out; on a Mac, Steam Play (on for all Windows games, the default tool). The rest stays in the normal window because it needs typing, a file dialog or a browser: profile and privacy, security, family, wallet and purchases, Store content filters, library folders, custom colors, voice (microphone and speakers), plugins |

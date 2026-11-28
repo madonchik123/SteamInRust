@@ -82,6 +82,18 @@ pub fn pick_depots_for<'a>(os: &str, app: &'a OwnedApp, owned: &HashSet<AppId>, 
     out
 }
 
+/// Bytes a new install of `os`'s version downloads for this account (the
+/// depots [`pick_depots_for`] takes, by Steam's manifest sizes). 0 = Steam
+/// has no files of that version for this account.
+pub fn version_size(os: &str, app: &OwnedApp, owned: &HashSet<AppId>, branch: &str, language: &str) -> u64 {
+    let req = InstallRequest { app_id: app.app_id, library: PathBuf::new(), steam_root: PathBuf::new(), branch: branch.into(), language: language.into(), skip_dlc: vec![], add_dlc: vec![], os: os.into() };
+    pick_depots_for(os, app, owned, &req, &HashSet::new()).iter().filter_map(|d| d.manifest(branch)).map(|m| m.1).sum()
+}
+
+/// A new install whose files add up to nothing: the version picked is empty
+/// for this account, and the game would show as installed but not start.
+pub const EMPTY_VERSION: &str = "Steam has no files of this version of the game for your account. If it has a Windows version, install that one through Steam Play.";
+
 /// How the player knows a system.
 pub fn os_name(os: &str) -> &'static str {
     match os {
@@ -269,6 +281,9 @@ pub async fn run(
 
     // Make sure it fits (a rough upper bound: the full new size).
     let need: u64 = jobs.iter().map(|j| j.manifest.original_size).sum();
+    if need == 0 && old.is_empty() {
+        return Err(EMPTY_VERSION.into());
+    }
     if let Ok(free) = fs4::available_space(&req.library) {
         let have: u64 = dir_size(&dir);
         if need > free + have {
@@ -707,6 +722,30 @@ fn write_app_manifest(req: &InstallRequest, app: &OwnedApp, install_dir: &str, d
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PLA_TOON (891220), as Steam lists it: the Mac version's own depot is
+    /// empty and its files come only with the Supporter Edition DLC.
+    #[test]
+    fn version_sizes_show_an_empty_mac_version() {
+        let d = |id, os: &str, arch: &str, dlc: Option<u32>, size| model::DepotInfo { id, os: os.into(), arch: arch.into(), dlc_app: dlc, manifests: vec![("public".into(), 1, size)], ..Default::default() };
+        let app = OwnedApp {
+            app_id: 891220,
+            depots: vec![
+                d(891221, "windows", "64", None, 1_260_875_900),
+                d(891223, "macos", "", None, 0),
+                d(891224, "macos", "", Some(908130), 804_135_830),
+                d(891225, "windows", "32", None, 382_680_689),
+                d(908130, "", "", Some(908130), 0),
+            ],
+            ..Default::default()
+        };
+        let base: HashSet<AppId> = [891220].into();
+        assert_eq!(version_size("macos", &app, &base, "public", "english"), 0);
+        assert_eq!(version_size("windows", &app, &base, "public", "english"), 1_260_875_900);
+        // With the Supporter Edition the Mac version has its files.
+        let supporter: HashSet<AppId> = [891220, 908130].into();
+        assert_eq!(version_size("macos", &app, &supporter, "public", "english"), 804_135_830);
+    }
 
     #[test]
     fn picks_windows_64bit_language_depots() {

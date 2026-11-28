@@ -1481,6 +1481,12 @@ impl Library {
     }
 
     fn queue_install(&mut self, ctx: &mut Ctx, id: AppId, library: Option<std::path::PathBuf>) {
+        self.queue_install_as(ctx, id, library, None);
+    }
+
+    /// [`Self::queue_install`] with the version picked in the install
+    /// dialog (`Some("windows")` for Steam Play on a Mac).
+    fn queue_install_as(&mut self, ctx: &mut Ctx, id: AppId, library: Option<std::path::PathBuf>, version: Option<String>) {
         if local::relocate::is_moving(id) {
             ctx.toast(t!("This game is being moved. Try again when that finishes."));
             return;
@@ -1491,7 +1497,7 @@ impl Library {
         let language = if s.language.is_empty() { i18n::language().steam_name().to_string() } else { s.language.clone() };
         // Steam Play: the Windows version through a runner (an installed
         // game keeps the version it has; the downloader checks).
-        let os = ctx.state.apps.as_ref().and_then(|a| a.get(&id)).and_then(steam_play_runner).map(|_| "windows".to_string()).unwrap_or_default();
+        let os = version.filter(|v| v != model::THIS_OS).unwrap_or_else(|| ctx.state.apps.as_ref().and_then(|a| a.get(&id)).and_then(steam_play_runner).map(|_| "windows".to_string()).unwrap_or_default());
         ctx.send(Command::Install(client::download::InstallRequest {
             app_id: id,
             library,
@@ -1554,18 +1560,35 @@ impl Library {
                     }
                 }
             }
+            if !dlg.versions.is_empty() {
+                // Each with its size, so an empty version (0 B) is plain to see.
+                ui.add_space(8.0);
+                ui.label(w::body_s(t, t!("Version"), t.text_dim));
+                for (os, size) in dlg.versions.clone() {
+                    let name = if os == "windows" { t!("Windows (Steam Play)").to_string() } else { client::download::os_name(&os).to_string() };
+                    w::radio_value(ui, t, &mut dlg.os, os, w::body_m(t, format!("{name}   ·   {}", ui::bytes(size)), t.text));
+                }
+            }
             ui.add_space(8.0);
-            if dlg.size > 0 {
-                ui.label(w::body_m(t, t!("Space required: {size}", size = ui::bytes(dlg.size)), t.text));
-                if fs4_free(&dlg.library).is_some_and(|f| f < dlg.size) {
+            let size = dlg.size();
+            if size > 0 {
+                ui.label(w::body_m(t, t!("Space required: {size}", size = ui::bytes(size)), t.text));
+                if fs4_free(&dlg.library).is_some_and(|f| f < size) {
                     ui.label(w::body_m(t, format!("{}  {}", icons::WARNING, t!("Not enough free space on this drive.")), t.danger));
                 }
+            } else if dlg.empty() {
+                let os = client::download::os_name(if dlg.os.is_empty() { model::THIS_OS } else { &dlg.os });
+                ui.label(w::body_m(t, format!("{}  {}", icons::WARNING, t!("Steam has no {os} files of this game for your account, so nothing would be installed.", os = os)), t.danger));
             }
             ui.add_space(6.0);
             w::check(ui, t, &mut dlg.desktop, t!("Create a desktop shortcut"));
             ui.add_space(14.0);
+            let empty = dlg.empty();
             ui.horizontal(|ui| {
-                if w::button(ui, t, Some(icons::DOWNLOAD), t!("Install"), w::Kind::Primary, w::Size::Md).clicked() {
+                // Nothing would be downloaded: the game would show as
+                // installed but not start.
+                let install = ui.add_enabled_ui(!empty, |ui| w::button(ui, t, Some(icons::DOWNLOAD), t!("Install"), w::Kind::Primary, w::Size::Md)).inner;
+                if install.clicked() {
                     go = true;
                 }
                 if w::button(ui, t, None, t!("Cancel"), w::Kind::Secondary, w::Size::Md).clicked() {
@@ -1584,7 +1607,8 @@ impl Library {
             if d.desktop {
                 self.shortcut_after_install.insert(id, d.library.clone());
             }
-            self.queue_install(ctx, id, Some(d.library));
+            let version = d.version();
+            self.queue_install_as(ctx, id, Some(d.library), version);
         } else if close {
             self.install_dialog = None;
         }
@@ -1695,7 +1719,8 @@ impl Library {
             (MainAction::Update, Some(g)) => self.queue_install(ctx, id, Some(g.library.clone())),
             (MainAction::Install, _) => {
                 let dialog = InstallDialog::new(id, ctx);
-                self.queue_install(ctx, id, Some(dialog.library));
+                let version = dialog.version();
+                self.queue_install_as(ctx, id, Some(dialog.library), version);
             }
             (MainAction::Busy { paused: true, .. }, _) => ctx.send(Command::ResumeDownload { app_id: id }),
             (MainAction::Busy { verifying: false, .. }, _) => ctx.send(Command::PauseDownload { app_id: id }),
@@ -1907,6 +1932,14 @@ pub(crate) struct InstallDialog {
     library: std::path::PathBuf,
     size: u64,
     desktop: bool,
+    /// On a Mac, the versions to pick from with their download sizes (the
+    /// game has both, and Steam Play can run the Windows one). Empty = no
+    /// choice.
+    versions: Vec<(String, u64)>,
+    /// The picked version's system ("" = no choice: the usual one).
+    os: String,
+    /// No choice, and the usual version has no files for this account.
+    empty: bool,
 }
 
 impl InstallDialog {
@@ -1935,7 +1968,42 @@ impl InstallDialog {
         let folder = ctx.state.apps.as_ref().and_then(|a| a.get(&app)).map(|o| if o.install_dir.is_empty() { o.name.clone() } else { o.install_dir.clone() });
         let has_files = |l: &std::path::PathBuf| folder.as_deref().filter(|f| local::is_valid_folder_name(f)).is_some_and(|f| l.join("steamapps").join("common").join(f).is_dir());
         let library = libraries.iter().find(|l| has_files(l)).or_else(|| libraries.iter().max_by_key(|l| fs4_free(l).unwrap_or(0))).cloned().unwrap_or_default();
-        Self { app, libraries, library, size, desktop: true }
+        let (versions, os, empty) = ctx.state.apps.as_ref().and_then(|a| Some((a, a.get(&app)?))).map(|(all, o)| Self::versions(o, all)).unwrap_or_default();
+        Self { app, libraries, library, size, desktop: true, versions, os, empty }
+    }
+
+    /// The version choice for `o`: (versions with sizes, the default, is the
+    /// only version empty). The default is Steam Play's plan (the Windows
+    /// version for a game set to it), but never an empty version when the
+    /// other has files.
+    fn versions(o: &model::OwnedApp, all: &BTreeMap<AppId, model::OwnedApp>) -> (Vec<(String, u64)>, String, bool) {
+        let owned: std::collections::HashSet<AppId> = all.keys().copied().collect();
+        let lang = i18n::language().steam_name();
+        let size = |os: &str| client::download::version_size(os, o, &owned, "public", lang);
+        let planned = if steam_play_runner(o).is_some() { "windows" } else { model::THIS_OS };
+        if !client::compat::version_choice(o, &client::compat::load(), &client::compat::runners()) {
+            // Sizes are only known with depot info.
+            return (Vec::new(), String::new(), !o.depots.is_empty() && size(planned) == 0);
+        }
+        let versions: Vec<(String, u64)> = [model::THIS_OS, "windows"].iter().map(|v| (v.to_string(), size(v))).collect();
+        let planned_empty = versions.iter().any(|v| v.0 == planned && v.1 == 0);
+        let os = versions.iter().find(|v| planned_empty && v.1 > 0).map_or(planned, |v| v.0.as_str()).to_string();
+        (versions, os, false)
+    }
+
+    /// The download size of what will be installed.
+    fn size(&self) -> u64 {
+        self.versions.iter().find(|v| v.0 == self.os).map_or(self.size, |v| v.1)
+    }
+
+    /// Nothing to download for the version that would be installed.
+    fn empty(&self) -> bool {
+        if self.versions.is_empty() { self.empty } else { self.size() == 0 }
+    }
+
+    /// The version to ask the downloader for (`None` = the usual one).
+    fn version(&self) -> Option<String> {
+        (!self.os.is_empty()).then(|| self.os.clone())
     }
 }
 
@@ -2013,20 +2081,28 @@ pub(crate) struct InstallPlan {
     pub default: std::path::PathBuf,
     /// Size on disk.
     pub size: u64,
+    /// The versions to pick from with their sizes (see [`InstallDialog`]);
+    /// empty = no choice.
+    pub versions: Vec<(String, u64)>,
+    /// The version picked by default ("" = no choice).
+    pub os: String,
+    /// No choice, and the usual version has no files for this account.
+    pub empty: bool,
 }
 
 impl Library {
     pub(crate) fn install_plan(&self, ctx: &Ctx, id: AppId) -> InstallPlan {
         let d = InstallDialog::new(id, ctx);
         let libraries = d.libraries.iter().map(|l| (l.clone(), fs4_free(l).unwrap_or(0))).collect();
-        InstallPlan { libraries, default: d.library, size: d.size }
+        InstallPlan { libraries, default: d.library, size: d.size, versions: d.versions, os: d.os, empty: d.empty }
     }
 
     /// Install to a chosen folder, with a desktop shortcut afterwards if asked.
-    pub(crate) fn install_to(&mut self, ctx: &mut Ctx, id: AppId, library: std::path::PathBuf, shortcut: bool) {
+    /// `version`: the picked system ("" = the usual one).
+    pub(crate) fn install_to(&mut self, ctx: &mut Ctx, id: AppId, library: std::path::PathBuf, shortcut: bool, version: &str) {
         if shortcut {
             self.shortcut_after_install.insert(id, library.clone());
         }
-        self.queue_install(ctx, id, Some(library));
+        self.queue_install_as(ctx, id, Some(library), (!version.is_empty()).then(|| version.to_string()));
     }
 }

@@ -15,67 +15,41 @@
 //! - every API call is checked against the permissions the user approved;
 //! - CPU (operation count), recursion, string, array and map sizes are capped.
 //!
-//! ## Script API
-//! | Function | Permission |
-//! |---|---|
-//! | `log(text)`, `now()` | none |
-//! | `notify(text)` | `notifications` |
-//! | `me()` | `account.read` |
-//! | `friends()` | `friends.read` |
-//! | `library()` | `library.read` |
-//! | `set_status("online" / "away" / "busy" / "invisible")` | `status.write` |
-//! | `send_message(steam_id, text)` | `chat.write` |
-//! | `storage_get(key)`, `storage_set(key, value)` | `storage` |
-//! | `http_get(url)`, `http_post(url, body)`, `http_request(method, url, body, headers)`: start a request, returns its id; the answer comes to `on_http` | `network` (only to the `hosts` in the manifest) |
-//! | `launch(app_id)` (an installed game) | `games.launch` |
-//! | `downloads()`: running and queued downloads | `downloads.read` |
-//! | `wishlist()`: app ids on your wishlist | `store.read` |
-//! | `copy(text)`: to the clipboard | `clipboard` |
-//! | `navigate(page, arg)`: open a page of the app (`"store"`, `"library"`, `"community"`, `"profile"`, `"downloads"`, `"settings"`, or this plugin's page) | none |
-//! | `trade_offers()`: your offers (active and recently changed) as maps: `id`, `partner`, `partner_name`, `message`, `state` (`"active"`, `"accepted"`, `"declined"`, `"needs_confirmation"`...), `ours`, `created`, `expires`, `held_until`, and the `give` / `get` items | `trades.read` |
-//! | `refresh_trades()`: ask Steam for them again (also done every 2 minutes) | `trades.read` |
-//! | `decline_trade(id)`, `cancel_trade(id)` | `trades.write` |
-//! | `review_trade(id)`: opens the app's "Accept this trade?" question; only you can accept | `trades.write` |
-//! | `propose_trade(partner, give, get, message)`: opens a new offer with these items (`[#{app_id, context_id, asset_id}]`) for you to check and send | `trades.write` |
-//! | `inventory(app_id, context_id)`: your items there (753/6 is Steam's: cards, backgrounds), or `()` while it loads | `inventory.read` |
-//! | `market_price(app_id, market_hash_name)`: cheapest listing in cents, or `()` while it's looked up | `inventory.read` |
-//! | `currency()`: your wallet's currency code | none |
-//! | `language()`, `platform()`, `json_parse(text)`, `json_string(value)` | none |
-//!
-//! Items are maps: `app_id`, `context_id`, `asset_id`, `amount`, `name`, `type`,
-//! `market_hash_name`, `tradable`, `marketable`, `color`, `icon` (a picture URL),
-//! `tags` (`[#{category, name}]`) and `price` (cents, or `()` if not known yet).
-//!
-//! ## Hooks (define any of these functions)
-//! - `on_load()`
-//! - `on_event(name, data)`: `"friend_online"`, `"friend_offline"`, `"friend_game"`
-//!   (need `friends.read`), `"message"` (needs `chat.read`), `"game_started"`,
-//!   `"game_stopped"`, `"logged_in"`, `"download_finished"` (needs `downloads.read`),
-//!   `"trade_offer"` (someone sent you one: `id`, `partner`, `name`) and
-//!   `"trade_changed"` (`id`, `state`) (need `trades.read`).
-//! - `on_tick()`: every `tick` seconds (manifest, at least 10).
-//! - `on_http(id, status, body)`: the answer to a request (`status` 0: it failed, `body` says why).
-//! - `page()`: returns an array of widgets for the plugin's page (needs `[page]` in the manifest).
-//! - `on_click(id)`: a button on the page was clicked.
-//! - `on_input(id, text)`, `on_toggle(id, on)`: a text field or switch on the page changed.
-//! - `game_actions(app_id)`: buttons on a game's page in the library, as
-//!   `[#{id, text}]`; a click calls `on_game_action(id, app_id)`.
-//! - `friend_menu(steam_id)`: items in a friend's right-click menu, as
-//!   `[#{id, text}]`; a click calls `on_friend_menu(id, steam_id)`.
-//!
-//! Widgets are maps: `#{type: "heading", text: "Hi"}`, `"text"`, `"muted"`,
-//! `#{type: "button", id: "go", text: "Go"}`, `#{type: "stat", label, value}`,
-//! `"separator"`, `#{type: "row", items: [...]}`, `#{type: "progress", value: 0.5}`,
-//! `#{type: "game", app_id: 440}` (a game card), `#{type: "input", id, value, hint}`,
-//! `#{type: "toggle", id, text, value}`, `#{type: "link", text, page, arg}`,
-//! `#{type: "table", columns: [...], rows: [[...]]}`, `#{type: "pill", text}`,
-//! `#{type: "image", url, width, height}` (Steam's image servers, or the plugin's hosts).
+//! The full list of functions, hooks, events, permissions and widgets is in
+//! [`docs/plugin-api.md`](../../../docs/plugin-api.md). Keep it up to date
+//! when adding to the API (and bump [`API_VERSION`]).
 
 use rhai::{AST, Array, Dynamic, Engine, EvalAltResult, ImmutableString, Map, Scope};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+mod achievements;
+mod downloads;
+mod items;
+mod library;
+mod net;
+mod storage;
+mod store;
+mod timers;
+mod widgets;
+pub use widgets::{ChartKind, MAX_WIDGET_DEPTH, MAX_WIDGETS, Tone, Widget};
+use widgets::widgets_bounded;
+pub use net::blocked_ip;
+pub use achievements::AchievementWatch;
+pub use store::{STORE_LOOKUPS_PER_MINUTE, StoreApp, StoreHit, StorePrice, search_key, wishlist_changes};
+pub use downloads::{DownloadInfo, DownloadWatch, phase as download_phase};
+pub use library::GameInfo;
+
+/// What `api_version()` answers. Bump it when functions are added, so
+/// plugins can check before calling them.
+pub const API_VERSION: i64 = 1;
+
+/// Web requests a plugin can have waiting at once.
+pub const MAX_IN_FLIGHT: usize = 8;
+/// Longest a web request may take, in seconds.
+pub const MAX_TIMEOUT: u64 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Permission {
@@ -95,10 +69,12 @@ pub enum Permission {
     InventoryRead,
     TradesRead,
     TradesWrite,
+    AchievementsRead,
+    DownloadsWrite,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 16] = [
+    pub const ALL: [Permission; 18] = [
         Self::AccountRead,
         Self::FriendsRead,
         Self::LibraryRead,
@@ -115,6 +91,8 @@ impl Permission {
         Self::InventoryRead,
         Self::TradesRead,
         Self::TradesWrite,
+        Self::AchievementsRead,
+        Self::DownloadsWrite,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -134,6 +112,8 @@ impl Permission {
             Self::InventoryRead => "inventory.read",
             Self::TradesRead => "trades.read",
             Self::TradesWrite => "trades.write",
+            Self::AchievementsRead => "achievements.read",
+            Self::DownloadsWrite => "downloads.write",
         }
     }
     pub fn describe(self) -> &'static str {
@@ -149,16 +129,18 @@ impl Permission {
             Self::Network => "Connect to the websites it lists",
             Self::GamesLaunch => "Start your installed games",
             Self::DownloadsRead => "See your downloads",
-            Self::StoreRead => "See your wishlist",
+            Self::StoreRead => "See your wishlist, and Steam store pages and prices",
             Self::Clipboard => "Copy text to your clipboard",
             Self::InventoryRead => "See your inventory and items' market prices",
             Self::TradesRead => "See your trade offers",
             Self::TradesWrite => "Decline or cancel trade offers, and suggest trades for you to review",
+            Self::AchievementsRead => "See your achievements",
+            Self::DownloadsWrite => "Pause, resume, cancel and reorder your downloads",
         }
     }
     /// Permissions that act on your behalf or send data out get a warning in the UI.
     pub fn sensitive(self) -> bool {
-        matches!(self, Self::ChatRead | Self::ChatWrite | Self::StatusWrite | Self::Network | Self::TradesWrite)
+        matches!(self, Self::ChatRead | Self::ChatWrite | Self::StatusWrite | Self::Network | Self::TradesWrite | Self::DownloadsWrite)
     }
     fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.key() == s)
@@ -212,6 +194,10 @@ pub struct PageDecl {
     pub title: String,
     #[serde(default)]
     pub icon: String,
+    /// Also show the page in Big Picture (its Plugins tab). Off unless the
+    /// plugin says its page works with a controller.
+    #[serde(default)]
+    pub bigpicture: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -236,11 +222,18 @@ pub struct Snapshot {
     pub me: Option<(u64, String, String)>,
     /// (steam_id, name, status, game)
     pub friends: Vec<(u64, String, String, Option<String>)>,
-    /// (app_id, name, installed, playtime minutes)
-    pub library: Vec<(u32, String, bool, u64)>,
-    /// (app_id, name, progress 0..1, bytes per second, paused, queued)
-    pub downloads: Vec<(u32, String, f32, u64, bool, bool)>,
-    pub wishlist: Vec<u32>,
+    /// Your games: owned and installed ones.
+    pub library: Arc<Vec<GameInfo>>,
+    /// Running downloads, then the queue in order.
+    pub downloads: Vec<DownloadInfo>,
+    /// Your wishlist in your order: (app_id, added in Unix seconds).
+    pub wishlist: Vec<(u32, u64)>,
+    /// Store pages loaded for plugins.
+    pub store: Arc<HashMap<u32, Result<StoreApp, String>>>,
+    /// Store searches loaded for plugins, by [`search_key`].
+    pub searches: Arc<HashMap<String, Result<Vec<StoreHit>, String>>>,
+    /// Names of games the app knows (for wishlist items).
+    pub app_names: Arc<HashMap<u32, String>>,
     /// The app's language code ("en", "ru"...).
     pub language: String,
     /// Your trade offers, with the partner's name.
@@ -251,6 +244,10 @@ pub struct Snapshot {
     pub prices: Arc<std::collections::HashMap<(u32, String), u64>>,
     /// Your wallet's currency, as Steam formats it ("USD", "KZT"...).
     pub currency: String,
+    /// Achievements (unlocked, total) by game, for the games loaded so far.
+    pub achievement_progress: Arc<HashMap<u32, (u32, u32)>>,
+    /// Achievement lists by game, for the games loaded so far.
+    pub achievements: Arc<HashMap<u32, Result<Vec<model::Achievement>, String>>>,
 }
 
 /// Things a plugin asked the host to do.
@@ -260,7 +257,9 @@ pub enum Request {
     SetStatus(model::PersonaState),
     SendMessage(u64, String),
     /// A web request; the answer goes to `Plugin::http_done`.
-    Http { id: u64, method: String, url: String, body: String, headers: Vec<(String, String)> },
+    Http { id: u64, method: String, url: String, body: String, headers: Vec<(String, String)>, timeout: u64 },
+    /// Stop a web request (its answer is dropped).
+    HttpCancel(u64),
     Launch(u32),
     Navigate(String, Option<String>),
     Copy(String),
@@ -276,6 +275,22 @@ pub enum Request {
     LoadInventory(u32, u64),
     /// Look up market prices (app, market hash names).
     Prices(u32, Vec<String>),
+    /// Load a game's achievement list.
+    LoadAchievements(u32),
+    /// Load achievement progress (unlocked / total) for these games.
+    LoadAchievementProgress(Vec<u32>),
+    PauseDownload(u32),
+    ResumeDownload(u32),
+    /// Cancel a download, or take it out of the queue.
+    CancelDownload(u32),
+    /// Move a queued download to this place (0 = next).
+    MoveDownload(u32, usize),
+    /// Start a queued download now (the running one waits).
+    DownloadNow(u32),
+    /// Load a game's store page.
+    StoreDetails(u32),
+    /// Search the store (a [`search_key`]).
+    StoreSearch(String),
 }
 
 /// Events delivered to `on_event`.
@@ -288,30 +303,45 @@ pub enum HostEvent {
     Message { steam_id: u64, name: String, text: String },
     GameStarted { app_id: u32 },
     GameStopped { app_id: u32 },
-    DownloadFinished { app_id: u32, ok: bool },
+    DownloadFinished { app_id: u32, ok: bool, error: Option<String> },
+    /// A download started (left the queue).
+    DownloadStarted { app_id: u32 },
+    DownloadPaused { app_id: u32 },
+    DownloadResumed { app_id: u32 },
     /// Someone sent you a trade offer.
     TradeOffer { id: u64, partner: u64, name: String },
     /// One of your offers changed (accepted, declined...).
     TradeChanged { id: u64, state: model::TradeState },
+    /// You unlocked an achievement (seen when the game's list reloads: when
+    /// the game closes, or when you open its achievements).
+    AchievementUnlocked { app_id: u32, name: String, description: String, unlock_time: u64 },
+    /// Games were added to or removed from your wishlist.
+    WishlistChanged { added: Vec<u32>, removed: Vec<u32> },
+    /// A store page asked for with `app_details` / `store_price` arrived.
+    AppDetailsLoaded { app_id: u32 },
+    /// A store search asked for with `store_search` arrived.
+    StoreSearchLoaded { term: String },
+    /// A game finished installing (or was found on disk).
+    GameInstalled { app_id: u32, name: String },
+    /// A game was uninstalled.
+    GameUninstalled { app_id: u32, name: String },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Widget {
-    Heading(String),
-    Text(String),
-    Muted(String),
-    Button { id: String, text: String },
-    Stat { label: String, value: String },
-    Separator,
-    Row(Vec<Widget>),
-    Progress(f32),
-    Game(u32),
-    Input { id: String, value: String, hint: String },
-    Toggle { id: String, text: String, value: bool },
-    Link { text: String, page: String, arg: Option<String> },
-    Table { columns: Vec<String>, rows: Vec<Vec<String>> },
-    Pill(String),
-    Image { url: String, width: f32, height: f32 },
+/// Where a plugin's page is being shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum View {
+    #[default]
+    Window,
+    BigPicture,
+}
+
+impl View {
+    pub fn key(self) -> &'static str {
+        match self {
+            View::Window => "window",
+            View::BigPicture => "bigpicture",
+        }
+    }
 }
 
 /// An item a plugin adds to a game's page or a friend's menu.
@@ -322,7 +352,6 @@ pub struct MenuItem {
 }
 
 const MAX_OUTBOX: usize = 32;
-const MAX_WIDGET_DEPTH: usize = 8;
 
 #[derive(Default)]
 struct Host {
@@ -337,6 +366,18 @@ struct Host {
     next_request: u64,
     /// When recent requests were made (at most 30 a minute).
     request_times: VecDeque<std::time::Instant>,
+    /// Store lookups asked for in the last minute.
+    store_asked: HashMap<String, std::time::Instant>,
+    /// The store limit was hit and logged (once until it's under again).
+    store_limit_logged: bool,
+    timers: Vec<timers::Timer>,
+    next_timer: u64,
+    /// Web requests waiting for an answer.
+    in_flight: HashSet<u64>,
+    /// About this plugin, for `plugin_info()`.
+    info: Map,
+    /// Where its page was last shown (`view_mode()`).
+    view: View,
 }
 
 impl Host {
@@ -366,6 +407,42 @@ impl Host {
         self.hook_outbox += 1;
         self.outbox.push(r);
         Ok(())
+    }
+    /// Ask the host to load data. Never fails: a request that's already
+    /// queued isn't repeated, and past the outbox limit it's simply asked
+    /// again on a later call.
+    fn push_load(&mut self, r: Request) {
+        let merge = |q: &mut Request| -> bool {
+            match (q, &r) {
+                (Request::Prices(a, queued), Request::Prices(b, names)) if a == b => {
+                    for n in names {
+                        if queued.len() < 500 && !queued.contains(n) {
+                            queued.push(n.clone());
+                        }
+                    }
+                    true
+                }
+                (Request::LoadAchievementProgress(queued), Request::LoadAchievementProgress(ids)) => {
+                    for id in ids {
+                        if queued.len() < 500 && !queued.contains(id) {
+                            queued.push(*id);
+                        }
+                    }
+                    true
+                }
+                (Request::LoadAchievements(a), Request::LoadAchievements(b)) => *a == *b,
+                (Request::LoadInventory(a, c), Request::LoadInventory(b, d)) => *a == *b && *c == *d,
+                (Request::StoreDetails(a), Request::StoreDetails(b)) => *a == *b,
+                (Request::StoreSearch(a), Request::StoreSearch(b)) => *a == *b,
+                _ => false,
+            }
+        };
+        if self.outbox.iter_mut().any(merge) {
+            return;
+        }
+        if self.outbox.len() < MAX_OUTBOX {
+            self.outbox.push(r);
+        }
     }
     fn log(&mut self, s: String) {
         self.logs.push_back(s);
@@ -495,6 +572,17 @@ impl Plugin {
             let mut h = self.host.lock().unwrap();
             h.granted = self.manifest.permissions.iter().copied().filter(|p| approved.contains(p)).collect();
             h.hosts = self.manifest.hosts.clone();
+            let m = &self.manifest;
+            h.view = View::Window;
+            h.info = map([
+                ("id", m.id.clone().into()),
+                ("name", m.name.clone().into()),
+                ("version", m.version.clone().into()),
+                ("author", m.author.clone().into()),
+                ("permissions", Dynamic::from_array(m.permissions.iter().map(|p| Dynamic::from(p.key())).collect())),
+                ("hosts", Dynamic::from_array(m.hosts.iter().map(|x| Dynamic::from(x.clone())).collect())),
+                ("bigpicture", m.page.as_ref().is_some_and(|p| p.bigpicture).into()),
+            ]);
             h.storage = storage;
             h.storage_dirty = false;
             h.outbox.clear();
@@ -521,10 +609,40 @@ impl Plugin {
         }
     }
 
+    /// Stop the script: `on_unload()` runs first (it can still save), then
+    /// its timers and waiting requests are dropped and permissions revoked.
     pub fn stop(&mut self) {
+        if self.running {
+            self.call("on_unload", ());
+        }
         self.running = false;
         self.ast = None;
-        self.host.lock().unwrap().granted.clear();
+        let mut h = self.host.lock().unwrap();
+        h.granted.clear();
+        h.timers.clear();
+        h.in_flight.clear();
+    }
+
+    /// When the next timer is due (Unix seconds).
+    pub fn next_timer(&self) -> Option<u64> {
+        if self.running { self.host.lock().unwrap().next_timer_due() } else { None }
+    }
+
+    /// Run the timers due at `now` (Unix seconds). Returns when the next is due.
+    pub fn timers(&mut self, now: u64) -> Option<u64> {
+        if !self.running {
+            return None;
+        }
+        let due = self.host.lock().unwrap().due_timers(now);
+        for id in due {
+            self.call("on_timer", (id.to_string(),));
+        }
+        self.host.lock().unwrap().next_timer_due()
+    }
+
+    /// How many parameters a hook takes, if the script defines it.
+    fn params(&self, name: &str) -> Option<usize> {
+        self.ast.as_ref()?.iter_functions().find(|f| f.name == name).map(|f| f.params.len())
     }
 
     fn has_fn(&self, name: &str) -> bool {
@@ -573,14 +691,39 @@ impl Plugin {
                     ("game", game.clone().map(Dynamic::from).unwrap_or(Dynamic::UNIT)),
                 ]),
             ),
-            HostEvent::DownloadFinished { app_id, ok } if granted.contains(&Permission::DownloadsRead) => {
-                ("download_finished", map([("app_id", (*app_id as i64).into()), ("ok", (*ok).into())]))
-            }
+            HostEvent::DownloadFinished { app_id, ok, error } if granted.contains(&Permission::DownloadsRead) => (
+                "download_finished",
+                map([("app_id", (*app_id as i64).into()), ("ok", (*ok).into()), ("error", error.clone().map(Dynamic::from).unwrap_or(Dynamic::UNIT))]),
+            ),
+            HostEvent::DownloadStarted { app_id } if granted.contains(&Permission::DownloadsRead) => ("download_started", map([("app_id", (*app_id as i64).into())])),
+            HostEvent::DownloadPaused { app_id } if granted.contains(&Permission::DownloadsRead) => ("download_paused", map([("app_id", (*app_id as i64).into())])),
+            HostEvent::DownloadResumed { app_id } if granted.contains(&Permission::DownloadsRead) => ("download_resumed", map([("app_id", (*app_id as i64).into())])),
             HostEvent::TradeOffer { id, partner, name } if granted.contains(&Permission::TradesRead) => {
                 ("trade_offer", map([("id", id.to_string().into()), ("partner", partner.to_string().into()), ("name", name.clone().into())]))
             }
             HostEvent::TradeChanged { id, state } if granted.contains(&Permission::TradesRead) => {
                 ("trade_changed", map([("id", id.to_string().into()), ("state", trade_state(*state).into())]))
+            }
+            HostEvent::AchievementUnlocked { app_id, name, description, unlock_time } if granted.contains(&Permission::AchievementsRead) => (
+                "achievement_unlocked",
+                map([
+                    ("app_id", (*app_id as i64).into()),
+                    ("name", name.clone().into()),
+                    ("description", description.clone().into()),
+                    ("unlock_time", (*unlock_time as i64).into()),
+                ]),
+            ),
+            HostEvent::WishlistChanged { added, removed } if granted.contains(&Permission::StoreRead) => {
+                let ids = |v: &[u32]| Dynamic::from_array(v.iter().map(|x| Dynamic::from(*x as i64)).collect());
+                ("wishlist_changed", map([("added", ids(added)), ("removed", ids(removed))]))
+            }
+            HostEvent::AppDetailsLoaded { app_id } if granted.contains(&Permission::StoreRead) => ("app_details_loaded", map([("app_id", (*app_id as i64).into())])),
+            HostEvent::StoreSearchLoaded { term } if granted.contains(&Permission::StoreRead) => ("store_search_loaded", map([("term", term.clone().into())])),
+            HostEvent::GameInstalled { app_id, name } if granted.contains(&Permission::LibraryRead) => {
+                ("game_installed", map([("app_id", (*app_id as i64).into()), ("name", name.clone().into())]))
+            }
+            HostEvent::GameUninstalled { app_id, name } if granted.contains(&Permission::LibraryRead) => {
+                ("game_uninstalled", map([("app_id", (*app_id as i64).into()), ("name", name.clone().into())]))
             }
             HostEvent::Message { steam_id, name, text } if granted.contains(&Permission::ChatRead) => (
                 "message",
@@ -596,7 +739,37 @@ impl Plugin {
     }
 
     pub fn page(&mut self) -> Vec<Widget> {
-        self.call("page", ()).map(|d| widgets_bounded(d, 0, &mut 0)).unwrap_or_default()
+        self.page_in(View::Window)
+    }
+
+    /// The page's widgets for the normal window or Big Picture. In Big
+    /// Picture, `bigpicture_page()` is used if the script has one, else
+    /// `page()` (which can ask `view_mode()`).
+    pub fn page_in(&mut self, view: View) -> Vec<Widget> {
+        self.host.lock().unwrap().view = view;
+        let hook = if view == View::BigPicture && self.has_fn("bigpicture_page") { "bigpicture_page" } else { "page" };
+        self.call(hook, ()).map(|d| widgets_bounded(d, 0, &mut 0)).unwrap_or_default()
+    }
+
+    /// Whether the page should be in Big Picture: the manifest says so.
+    pub fn in_bigpicture(&self) -> bool {
+        self.running && self.manifest.page.as_ref().is_some_and(|p| p.bigpicture)
+    }
+
+    /// A select or tabs widget changed: `on_select(id, value)`, or
+    /// `on_input(id, value)` for a script without it.
+    pub fn select(&mut self, id: &str, value: &str) {
+        let hook = if self.has_fn("on_select") { "on_select" } else { "on_input" };
+        self.call(hook, (ImmutableString::from(id), ImmutableString::from(value)));
+    }
+
+    /// A slider moved: `on_slider(id, value)`, or `on_input(id, "value")`.
+    pub fn slider(&mut self, id: &str, value: f64) {
+        if self.has_fn("on_slider") {
+            self.call("on_slider", (ImmutableString::from(id), value));
+        } else {
+            self.call("on_input", (ImmutableString::from(id), ImmutableString::from(format_number(value))));
+        }
     }
 
     pub fn click(&mut self, id: &str) {
@@ -612,8 +785,19 @@ impl Plugin {
     }
 
     /// The answer to a request made with `http_get` and friends.
-    pub fn http_done(&mut self, id: u64, status: u16, body: String) {
-        self.call("on_http", (id.to_string(), status as i64, body));
+    /// `on_http(id, status, body)`, or `on_http(id, status, body, headers)`
+    /// if the script takes the headers (a map, names in lower case). The
+    /// answer to a cancelled request is dropped.
+    pub fn http_done(&mut self, id: u64, status: u16, body: String, headers: Vec<(String, String)>) {
+        if !self.host.lock().unwrap().in_flight.remove(&id) {
+            return;
+        }
+        if self.params("on_http") == Some(4) {
+            let headers: Map = headers.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+            self.call("on_http", (id.to_string(), status as i64, body, headers));
+        } else {
+            self.call("on_http", (id.to_string(), status as i64, body));
+        }
     }
 
     /// Call `on_tick` if it's due (`now` in seconds since the epoch).
@@ -677,6 +861,11 @@ impl Plugin {
     }
 }
 
+/// A number as a plugin would write it: "5", not "5.0".
+pub fn format_number(v: f64) -> String {
+    if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", v as i64) } else { format!("{v}") }
+}
+
 fn menu_items(d: Dynamic) -> Vec<MenuItem> {
     let Some(arr) = d.try_cast::<Array>() else { return Vec::new() };
     arr.into_iter()
@@ -700,7 +889,8 @@ fn host_allowed(url: &str, hosts: &[String]) -> Result<(), String> {
     if authority.contains('@') {
         return Err("userinfo not allowed in plugin URLs".into());
     }
-    let host = authority.split(':').next().unwrap_or_default().to_ascii_lowercase();
+    let host = net::host_of(authority);
+    net::public_host(&host)?;
     let ok = hosts.iter().any(|h| match h.strip_prefix("*.") {
         Some(base) => host == base || host.ends_with(&format!(".{base}")),
         None => host == *h,
@@ -760,6 +950,25 @@ pub fn trade_state(s: model::TradeState) -> &'static str {
     }
 }
 
+/// A trade offer as plugins see it.
+fn offer_map(s: &Snapshot, o: &model::TradeOffer, name: &str) -> Dynamic {
+    let price = |a: u32, i: &model::InventoryItem| s.prices.get(&(a, i.market_hash_name.clone())).copied();
+    let items = |l: &[model::TradeItem]| Dynamic::from_array(l.iter().map(|x| item_map(x.app_id, &x.item, price(x.app_id, &x.item))).collect());
+    Dynamic::from_map(map([
+        ("id", o.id.to_string().into()),
+        ("partner", o.partner.to_string().into()),
+        ("partner_name", name.to_string().into()),
+        ("message", o.message.clone().into()),
+        ("state", trade_state(o.state).into()),
+        ("ours", o.ours.into()),
+        ("created", (o.created as i64).into()),
+        ("expires", (o.expires as i64).into()),
+        ("held_until", (o.escrow_end as i64).into()),
+        ("give", items(&o.give)),
+        ("get", items(&o.get)),
+    ]))
+}
+
 fn item_map(app_id: u32, i: &model::InventoryItem, price: Option<u64>) -> Dynamic {
     let tags: Array = i.tags.iter().map(|(c, v, _)| Dynamic::from_map(map([("category", c.clone().into()), ("name", v.clone().into())]))).collect();
     let mut m = map([
@@ -775,6 +984,12 @@ fn item_map(app_id: u32, i: &model::InventoryItem, price: Option<u64>) -> Dynami
         ("color", i.name_color.clone().unwrap_or_default().into()),
         ("icon", if i.icon.is_empty() { String::new() } else { model::art::econ(&i.icon, 192) }.into()),
         ("tags", Dynamic::from_array(tags)),
+        ("class_id", i.class_id.to_string().into()),
+        ("icon_large", i.icon_large.as_deref().filter(|s| !s.is_empty()).map(|s| model::art::econ(s, 512)).unwrap_or_default().into()),
+        ("description", Dynamic::from_array(i.description.iter().map(|(text, _)| Dynamic::from(text.clone())).filter(|d| !d.to_string().trim().is_empty()).take(50).collect())),
+        ("trade_hold_days", (i.trade_hold_days as i64).into()),
+        ("market_hold_days", (i.market_hold_days as i64).into()),
+        ("commodity", i.commodity.into()),
     ]);
     m.insert("price".into(), price.map(|p| Dynamic::from(p as i64)).unwrap_or(Dynamic::UNIT));
     Dynamic::from_map(m)
@@ -805,67 +1020,6 @@ fn map<const N: usize>(pairs: [(&str, Dynamic); N]) -> Map {
     pairs.into_iter().map(|(k, v)| (k.into(), v)).collect()
 }
 
-fn widgets_bounded(d: Dynamic, depth: usize, budget: &mut usize) -> Vec<Widget> {
-    if depth >= MAX_WIDGET_DEPTH || *budget >= 500 {
-        return Vec::new();
-    }
-    let Some(arr) = d.try_cast::<Array>() else { return Vec::new() };
-    let mut out = Vec::new();
-    for item in arr {
-        if *budget >= 500 {
-            break;
-        }
-        if let Some(w) = widget_bounded(item, depth, budget) {
-            out.push(w);
-        }
-    }
-    out
-}
-
-fn widget_bounded(d: Dynamic, depth: usize, budget: &mut usize) -> Option<Widget> {
-    if *budget >= 500 {
-        return None;
-    }
-    let m = d.try_cast::<Map>()?;
-    let s = |k: &str| m.get(k).map(|v| v.to_string()).unwrap_or_default();
-    let ty = s("type");
-    if ty == "row" && depth + 1 >= MAX_WIDGET_DEPTH {
-        return None;
-    }
-    *budget += 1;
-    Some(match ty.as_str() {
-        "heading" => Widget::Heading(s("text")),
-        "text" => Widget::Text(s("text")),
-        "muted" => Widget::Muted(s("text")),
-        "button" => Widget::Button { id: s("id"), text: s("text") },
-        "stat" => Widget::Stat { label: s("label"), value: s("value") },
-        "separator" => Widget::Separator,
-        "progress" => Widget::Progress(m.get("value").and_then(|v| v.as_float().ok()).unwrap_or(0.0).clamp(0.0, 1.0) as f32),
-        "game" => Widget::Game(m.get("app_id").and_then(|v| v.as_int().ok()).unwrap_or(0) as u32),
-        "row" => Widget::Row(m.get("items").cloned().map(|v| widgets_bounded(v, depth + 1, budget)).unwrap_or_default()),
-        "input" => Widget::Input { id: s("id"), value: s("value"), hint: s("hint") },
-        "toggle" => Widget::Toggle { id: s("id"), text: s("text"), value: m.get("value").and_then(|v| v.as_bool().ok()).unwrap_or(false) },
-        "link" => Widget::Link { text: s("text"), page: s("page"), arg: m.get("arg").filter(|v| !v.is_unit()).map(|v| v.to_string()) },
-        "pill" => Widget::Pill(s("text")),
-        "table" => {
-            let list = |v: Option<&Dynamic>| -> Vec<Dynamic> { v.and_then(|v| v.clone().try_cast::<Array>()).unwrap_or_default() };
-            Widget::Table {
-                columns: list(m.get("columns")).iter().map(|c| c.to_string()).take(12).collect(),
-                rows: list(m.get("rows")).into_iter().take(500).map(|r| r.try_cast::<Array>().unwrap_or_default().iter().map(|c| c.to_string()).take(12).collect()).collect(),
-            }
-        }
-        "image" => Widget::Image {
-            url: s("url"),
-            width: m.get("width").and_then(|v| v.as_int().ok()).unwrap_or(240).clamp(16, 1200) as f32,
-            height: m.get("height").and_then(|v| v.as_int().ok()).unwrap_or(135).clamp(16, 1200) as f32,
-        },
-        _ => {
-            *budget = budget.saturating_sub(1);
-            return None;
-        }
-    })
-}
-
 fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     let mut e = Engine::new();
     e.set_max_operations(MAX_OPERATIONS);
@@ -884,6 +1038,14 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
 
     let h = host.clone();
     e.register_fn("log", move |s: &str| h.lock().unwrap().log(s.to_string()));
+    let h = host.clone();
+    e.register_fn("log_warn", move |s: &str| h.lock().unwrap().log(format!("warning: {s}")));
+    let h = host.clone();
+    e.register_fn("log_error", move |s: &str| h.lock().unwrap().log(format!("error: {s}")));
+    let h = host.clone();
+    e.register_fn("plugin_info", move || Dynamic::from_map(h.lock().unwrap().info.clone()));
+    let h = host.clone();
+    e.register_fn("view_mode", move || h.lock().unwrap().view.key());
     e.register_fn("now", || {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
     });
@@ -933,12 +1095,12 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         Ok(h.snapshot
             .library
             .iter()
-            .map(|(id, name, installed, minutes)| {
+            .map(|g| {
                 map([
-                    ("app_id", (*id as i64).into()),
-                    ("name", name.clone().into()),
-                    ("installed", (*installed).into()),
-                    ("playtime_minutes", (*minutes as i64).into()),
+                    ("app_id", (g.app_id as i64).into()),
+                    ("name", g.name.clone().into()),
+                    ("installed", g.installed.into()),
+                    ("playtime_minutes", (g.playtime_minutes as i64).into()),
                 ])
                 .into()
             })
@@ -978,10 +1140,13 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     });
 
     let h = host.clone();
-    let request = move |method: &str, url: &str, body: &str, headers: Map| -> Result<String, Box<EvalAltResult>> {
+    let request = move |method: &str, url: &str, body: &str, headers: Map, timeout: u64| -> Result<String, Box<EvalAltResult>> {
         let mut h = h.lock().unwrap();
         h.need(Permission::Network)?;
         host_allowed(url, &h.hosts)?;
+        if h.in_flight.len() >= MAX_IN_FLIGHT {
+            return Err(format!("too many requests at once: at most {MAX_IN_FLIGHT} waiting for an answer").into());
+        }
         let now = std::time::Instant::now();
         while h.request_times.front().is_some_and(|t| now.duration_since(*t).as_secs() >= 60) {
             h.request_times.pop_front();
@@ -991,21 +1156,54 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         }
         let id = h.next_request + 1;
         let headers = headers.into_iter().take(16).map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        h.push(Request::Http { id, method: method.to_ascii_uppercase(), url: url.to_string(), body: body.chars().take(256 * 1024).collect(), headers })?;
+        h.push(Request::Http { id, method: method.to_ascii_uppercase(), url: url.to_string(), body: body.chars().take(256 * 1024).collect(), headers, timeout })?;
+        h.in_flight.insert(id);
         h.next_request = id;
         h.request_times.push_back(now);
         Ok(id.to_string())
     };
     let r = request.clone();
-    e.register_fn("http_get", move |url: &str| r("GET", url, "", Map::new()));
+    e.register_fn("http_get", move |url: &str| r("GET", url, "", Map::new(), MAX_TIMEOUT));
     let r = request.clone();
-    e.register_fn("http_post", move |url: &str, body: &str| r("POST", url, body, Map::new()));
-    let r = request;
+    e.register_fn("http_post", move |url: &str, body: &str| r("POST", url, body, Map::new(), MAX_TIMEOUT));
+    let check_method = |method: &str| -> Result<(), Box<EvalAltResult>> {
+        if ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.to_ascii_uppercase().as_str()) { Ok(()) } else { Err(format!("unknown method '{method}'").into()) }
+    };
+    let r = request.clone();
     e.register_fn("http_request", move |method: &str, url: &str, body: &str, headers: Map| -> Result<String, Box<EvalAltResult>> {
-        if !["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.to_ascii_uppercase().as_str()) {
-            return Err(format!("unknown method '{method}'").into());
+        check_method(method)?;
+        r(method, url, body, headers, MAX_TIMEOUT)
+    });
+    let r = request;
+    e.register_fn("http_fetch", move |opts: Map| -> Result<String, Box<EvalAltResult>> {
+        let get = |k: &str| opts.get(k).filter(|v| !v.is_unit());
+        let url = get("url").map(|v| v.to_string()).ok_or("http_fetch needs a url")?;
+        let mut headers: Map = get("headers").and_then(|v| v.clone().try_cast::<Map>()).unwrap_or_default();
+        let body = match get("json") {
+            Some(v) => {
+                if !headers.keys().any(|k| k.eq_ignore_ascii_case("content-type")) {
+                    headers.insert("Content-Type".into(), "application/json".into());
+                }
+                to_json(v).to_string()
+            }
+            None => get("body").map(|v| v.to_string()).unwrap_or_default(),
+        };
+        let method = get("method").map(|v| v.to_string()).unwrap_or_else(|| if body.is_empty() { "GET".into() } else { "POST".into() });
+        check_method(&method)?;
+        let timeout = get("timeout").and_then(|v| v.as_int().ok()).unwrap_or(MAX_TIMEOUT as i64).clamp(1, MAX_TIMEOUT as i64) as u64;
+        r(&method, &url, &body, headers, timeout)
+    });
+
+    let h = host.clone();
+    e.register_fn("http_cancel", move |id: &str| -> Result<bool, Box<EvalAltResult>> {
+        let mut h = h.lock().unwrap();
+        h.need(Permission::Network)?;
+        let Ok(id) = id.parse::<u64>() else { return Ok(false) };
+        if !h.in_flight.remove(&id) {
+            return Ok(false);
         }
-        r(method, url, body, headers)
+        h.push_load(Request::HttpCancel(id));
+        Ok(true)
     });
 
     let h = host.clone();
@@ -1013,38 +1211,17 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
         let mut h = h.lock().unwrap();
         h.need(Permission::GamesLaunch)?;
         let id = app_id as u32;
-        if !h.snapshot.library.iter().any(|g| g.0 == id && g.2) {
+        if !h.snapshot.library.iter().any(|g| g.app_id == id && g.installed) {
             return Err("that game isn't installed".into());
         }
         h.push(Request::Launch(id))
     });
 
     let h = host.clone();
-    e.register_fn("downloads", move || -> Result<Array, Box<EvalAltResult>> {
-        let h = h.lock().unwrap();
-        h.need(Permission::DownloadsRead)?;
-        Ok(h.snapshot
-            .downloads
-            .iter()
-            .map(|(id, name, progress, speed, paused, queued)| {
-                map([
-                    ("app_id", (*id as i64).into()),
-                    ("name", name.clone().into()),
-                    ("progress", (*progress as f64).into()),
-                    ("bytes_per_second", (*speed as i64).into()),
-                    ("paused", (*paused).into()),
-                    ("queued", (*queued).into()),
-                ])
-                .into()
-            })
-            .collect())
-    });
-
-    let h = host.clone();
     e.register_fn("wishlist", move || -> Result<Array, Box<EvalAltResult>> {
         let h = h.lock().unwrap();
         h.need(Permission::StoreRead)?;
-        Ok(h.snapshot.wishlist.iter().map(|id| Dynamic::from(*id as i64)).collect())
+        Ok(h.snapshot.wishlist.iter().map(|(id, _)| Dynamic::from(*id as i64)).collect())
     });
 
     // Trades and inventory.
@@ -1052,28 +1229,7 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     e.register_fn("trade_offers", move || -> Result<Array, Box<EvalAltResult>> {
         let h = h.lock().unwrap();
         h.need(Permission::TradesRead)?;
-        let price = |a: u32, i: &model::InventoryItem| h.snapshot.prices.get(&(a, i.market_hash_name.clone())).copied();
-        Ok(h.snapshot
-            .trades
-            .iter()
-            .map(|(o, name)| {
-                let items = |l: &[model::TradeItem]| Dynamic::from_array(l.iter().map(|x| item_map(x.app_id, &x.item, price(x.app_id, &x.item))).collect());
-                map([
-                    ("id", o.id.to_string().into()),
-                    ("partner", o.partner.to_string().into()),
-                    ("partner_name", name.clone().into()),
-                    ("message", o.message.clone().into()),
-                    ("state", trade_state(o.state).into()),
-                    ("ours", o.ours.into()),
-                    ("created", (o.created as i64).into()),
-                    ("expires", (o.expires as i64).into()),
-                    ("held_until", (o.escrow_end as i64).into()),
-                    ("give", items(&o.give)),
-                    ("get", items(&o.get)),
-                ])
-                .into()
-            })
-            .collect())
+        Ok(h.snapshot.trades.iter().map(|(o, name)| offer_map(&h.snapshot, o, name)).collect())
     });
 
     let h = host.clone();
@@ -1173,16 +1329,20 @@ fn sandboxed_engine(host: Arc<Mutex<Host>>) -> Engine {
     });
     e.register_fn("json_string", |v: Dynamic| to_json(&v).to_string());
 
+    e.register_fn("api_version", || API_VERSION);
+    library::register(&mut e, &host);
+    achievements::register(&mut e, &host);
+    downloads::register(&mut e, &host);
+    store::register(&mut e, &host);
+    items::register(&mut e, &host);
+    timers::register(&mut e, &host);
+    storage::register(&mut e, &host);
+
     let h = host;
     e.register_fn("storage_set", move |k: &str, v: Dynamic| -> Result<(), Box<EvalAltResult>> {
         let mut h = h.lock().unwrap();
         h.need(Permission::Storage)?;
-        if h.storage.len() >= 200 && !h.storage.contains_key(k) {
-            return Err("storage is limited to 200 keys".into());
-        }
-        h.storage.insert(k.chars().take(100).collect(), v.to_string().chars().take(16 * 1024).collect());
-        h.storage_dirty = true;
-        Ok(())
+        h.store(k, v.to_string().chars().take(storage::MAX_VALUE).collect())
     });
 
     e
@@ -1230,6 +1390,7 @@ pub const EXAMPLES: &[(&str, &str, &str)] = &[
     ("backlog", include_str!("../examples/backlog/plugin.toml"), include_str!("../examples/backlog/main.rhai")),
     ("wishlist-sales", include_str!("../examples/wishlist-sales/plugin.toml"), include_str!("../examples/wishlist-sales/main.rhai")),
     ("trade-helper", include_str!("../examples/trade-helper/plugin.toml"), include_str!("../examples/trade-helper/main.rhai")),
+    ("widget-gallery", include_str!("../examples/widget-gallery/plugin.toml"), include_str!("../examples/widget-gallery/main.rhai")),
 ];
 
 /// Copy the bundled examples into `dir` if they aren't there yet.
@@ -1250,7 +1411,7 @@ pub fn install_examples(dir: &Path) {
 mod tests {
     use super::*;
 
-    fn plugin(toml: &str, script: &str) -> Plugin {
+    pub(crate) fn plugin(toml: &str, script: &str) -> Plugin {
         let dir = std::env::temp_dir().join(format!("sir-plugin-test-{}", rand_id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("plugin.toml"), toml).unwrap();
@@ -1302,7 +1463,7 @@ mod tests {
         assert!(p.error.is_none(), "{:?}", p.error);
         let reqs = p.drain();
         assert_eq!(reqs.len(), 2);
-        assert!(matches!(&reqs[0], Request::Http { id: 1, method, url, .. } if method == "GET" && url == "https://api.example.com/x?y=1"));
+        assert!(matches!(&reqs[0], Request::Http { id: 1, method, url, timeout: 20, .. } if method == "GET" && url == "https://api.example.com/x?y=1"));
 
         for bad in ["http://api.example.com/", "https://evil.com/", "https://api.example.com.evil.com/", "https://evil.com@api.example.com.x/", "https://evil.com@api.example.com/"] {
             let mut p = plugin(
@@ -1331,7 +1492,8 @@ mod tests {
         );
         p.start(&BTreeSet::from([Permission::Storage]), Default::default());
         assert!(p.error.is_none(), "{:?}", p.error);
-        p.http_done(7, 200, r#"{"name":"Ferris"}"#.into());
+        p.host.lock().unwrap().in_flight.insert(7);
+        p.http_done(7, 200, r#"{"name":"Ferris"}"#.into(), Vec::new());
         assert_eq!(p.tick(1000), Some(1030));
         assert_eq!(p.tick(1031), Some(1061));
         assert_eq!(p.game_actions(440), vec![MenuItem { id: "a".into(), text: "Look up 440".into() }]);
@@ -1531,5 +1693,135 @@ name = \"T\"
         let reqs = q.drain();
         assert_eq!(reqs.len(), 2);
         assert!(reqs.iter().any(|r| matches!(r, Request::Prices(753, names) if names.len() == 100)));
+    }
+
+    fn net_plugin(script: &str) -> Plugin {
+        let mut p = plugin("id = \"web\"\nname = \"W\"\nversion = \"1.2.3\"\npermissions = [\"network\", \"storage\"]\nhosts = [\"api.example.com\"]\n", script);
+        p.start(&BTreeSet::from([Permission::Network, Permission::Storage]), Default::default());
+        p
+    }
+
+    #[test]
+    fn http_fetch_sends_json_with_a_timeout() {
+        let p = net_plugin(r#"fn on_load() { http_fetch(#{url: "https://api.example.com/v1", json: #{a: 1}, timeout: 5}); http_fetch(#{url: "https://api.example.com/v2", method: "delete", timeout: 999}); }"#);
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let reqs = p.drain();
+        assert!(matches!(&reqs[0], Request::Http { method, body, headers, timeout: 5, .. } if method == "POST" && body == r#"{"a":1}"# && headers.iter().any(|(k, v)| k == "Content-Type" && v == "application/json")), "{reqs:?}");
+        assert!(matches!(&reqs[1], Request::Http { method, timeout: 20, .. } if method == "DELETE"), "{reqs:?}");
+        let bad = net_plugin(r#"fn on_load() { http_fetch(#{url: "https://api.example.com/", method: "TRACE"}); }"#);
+        assert!(bad.error.as_deref().is_some_and(|e| e.contains("unknown method")), "{:?}", bad.error);
+    }
+
+    #[test]
+    fn http_answers_carry_headers_and_cancelled_ones_are_dropped() {
+        let mut p = net_plugin(
+            r#"
+            fn on_load() { storage_set("a", http_get("https://api.example.com/a")); storage_set("b", http_get("https://api.example.com/b")); }
+            fn on_http(id, status, body, headers) { storage_set("got", id + " " + status + " " + headers["x-rate"]); }
+            fn cancel(id) { http_cancel(id) }
+            "#,
+        );
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let s = p.take_storage().unwrap();
+        let (a, b) = (s["a"].clone(), s["b"].clone());
+        p.drain();
+        assert_eq!(p.call("cancel", (b.clone(),)).unwrap().as_bool().unwrap(), true);
+        assert!(matches!(p.drain().as_slice(), [Request::HttpCancel(id)] if id.to_string() == b));
+        p.http_done(b.parse().unwrap(), 200, "late".into(), Vec::new());
+        assert!(p.take_storage().is_none(), "a cancelled answer is dropped");
+        p.http_done(a.parse().unwrap(), 200, "ok".into(), vec![("x-rate".into(), "5".into())]);
+        assert_eq!(p.take_storage().unwrap()["got"], format!("{a} 200 5"));
+        p.http_done(a.parse().unwrap(), 200, "twice".into(), Vec::new());
+        assert!(p.take_storage().is_none(), "one answer per request");
+    }
+
+    #[test]
+    fn requests_waiting_at_once_are_capped() {
+        let p = net_plugin("fn on_load() { for i in 0..9 { http_get(\"https://api.example.com/\" + i); } }");
+        assert!(p.error.as_deref().is_some_and(|e| e.contains("at most 8")), "{:?}", p.error);
+        assert_eq!(p.drain().len(), MAX_IN_FLIGHT);
+    }
+
+    #[test]
+    fn unload_info_and_log_levels() {
+        let mut p = net_plugin(
+            r#"
+            fn on_load() { let i = plugin_info(); log_warn("careful"); log_error("broke"); storage_set("info", i.id + " " + i.version + " " + i.permissions + " " + api_version()); }
+            fn on_unload() { storage_set("bye", "yes"); }
+            "#,
+        );
+        assert!(p.error.is_none(), "{:?}", p.error);
+        assert_eq!(p.take_storage().unwrap()["info"], "web 1.2.3 [\"storage\", \"network\"] 1");
+        assert!(p.logs().iter().any(|l| l == "warning: careful") && p.logs().iter().any(|l| l == "error: broke"));
+        p.stop();
+        assert_eq!(p.take_storage().unwrap()["bye"], "yes", "on_unload can still save");
+        assert!(!p.is_running());
+        p.stop();
+        assert!(p.take_storage().is_none(), "on_unload runs once");
+    }
+
+    #[test]
+    fn install_events_need_library_read() {
+        let script = "fn on_event(name, data) { storage_set(name, data.name + \" \" + data.app_id); }";
+        let mut p = plugin("id = \"ins\"\nname = \"I\"\npermissions = [\"library.read\", \"storage\"]\n", script);
+        p.start(&BTreeSet::from([Permission::LibraryRead, Permission::Storage]), Default::default());
+        p.event(&HostEvent::GameInstalled { app_id: 440, name: "TF2".into() });
+        p.event(&HostEvent::GameUninstalled { app_id: 70, name: "HL".into() });
+        let s = p.take_storage().unwrap();
+        assert_eq!(s["game_installed"], "TF2 440");
+        assert_eq!(s["game_uninstalled"], "HL 70");
+        let mut q = plugin("id = \"ins2\"\nname = \"I\"\npermissions = [\"storage\"]\n", script);
+        q.start(&BTreeSet::from([Permission::Storage]), Default::default());
+        q.event(&HostEvent::GameInstalled { app_id: 440, name: "TF2".into() });
+        assert!(q.take_storage().is_none());
+    }
+
+    #[test]
+    fn big_picture_pages_and_new_hooks() {
+        let mut p = plugin(
+            "id = \"bp\"\nname = \"B\"\npermissions = [\"storage\"]\n[page]\ntitle = \"B\"\nbigpicture = true\n",
+            r#"
+            fn page() { [#{type: "text", text: "page in " + view_mode()}] }
+            fn bigpicture_page() { [#{type: "text", text: "couch in " + view_mode()}] }
+            fn on_select(id, value) { storage_set(id, value); }
+            fn on_input(id, text) { storage_set("input " + id, text); }
+            "#,
+        );
+        p.start(&BTreeSet::from([Permission::Storage]), Default::default());
+        assert!(p.in_bigpicture());
+        assert_eq!(p.page_in(View::BigPicture), vec![Widget::Text("couch in bigpicture".into())]);
+        assert_eq!(p.page(), vec![Widget::Text("page in window".into())]);
+        p.select("sort", "time");
+        p.slider("vol", 5.0);
+        let s = p.take_storage().unwrap();
+        assert_eq!(s["sort"], "time");
+        assert_eq!(s["input vol"], "5", "a slider falls back to on_input");
+
+        // Without bigpicture_page, page() runs and knows where it is.
+        let mut q = plugin("id = \"bp2\"\nname = \"B\"\n[page]\ntitle = \"B\"\n", "fn page() { [#{type: \"text\", text: view_mode()}] }");
+        q.start(&BTreeSet::new(), Default::default());
+        assert!(!q.in_bigpicture(), "pages stay out of Big Picture unless they ask");
+        assert_eq!(q.page_in(View::BigPicture), vec![Widget::Text("bigpicture".into())]);
+        assert_eq!(format_number(2.5), "2.5");
+    }
+
+    #[test]
+    fn widget_gallery_renders_every_tab() {
+        let (_, manifest, script) = EXAMPLES.iter().find(|e| e.0 == "widget-gallery").unwrap();
+        let mut p = plugin(manifest, script);
+        let lib = vec![GameInfo { app_id: 440, name: "TF2".into(), installed: true, playtime_minutes: 600, ..Default::default() }];
+        p.set_snapshot(Snapshot { library: Arc::new(lib), ..Default::default() });
+        p.start(&p.manifest.permissions.iter().copied().collect(), Default::default());
+        assert!(p.in_bigpicture());
+        for tab in ["basics", "inputs", "data", "layout"] {
+            p.select("tab", tab);
+            let w = p.page_in(View::BigPicture);
+            assert!(p.error.is_none(), "{tab}: {:?}", p.error);
+            assert!(w.len() > 3, "{tab}: {w:?}");
+        }
+        p.click("count");
+        p.slider("level", 7.0);
+        let s = p.take_storage().unwrap();
+        assert_eq!((s["count"].as_str(), s["level"].as_str()), ("1", "7"));
     }
 }
