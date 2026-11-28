@@ -61,6 +61,8 @@ pub struct Prefs {
     pub bigpicture_stick: u8,
     /// Which version of the logo the taskbar button and tray icon show.
     pub tray_icon: ui::brand::Logo,
+    /// macOS: SteamInRust has a Dock icon (off: the menu bar only).
+    pub show_in_dock: bool,
     /// The one-time "try the new look" question has been answered (or
     /// wasn't needed: a new install starts on the new look).
     pub new_look_offered: bool,
@@ -151,6 +153,7 @@ impl Default for Prefs {
             bigpicture_repeat: 1,
             bigpicture_stick: 1,
             tray_icon: ui::brand::Logo::default(),
+            show_in_dock: true,
             new_look_offered: false,
             fps_corner: Default::default(),
         }
@@ -316,8 +319,10 @@ impl SteamApp {
             toast_messages: prefs.toast_messages,
             toast_notifications: prefs.toast_notifications,
             tray_icon: prefs.tray_icon,
+            show_in_dock: prefs.show_in_dock,
             fps_corner: prefs.fps_corner,
         }));
+        crate::dock::set_hidden(!prefs.show_in_dock);
         let mut registry = crate::builtin::registry(rt.handle().clone(), cc.egui_ctx.clone(), flags.clone());
         for id in &prefs.disabled {
             registry.set_enabled(id, false);
@@ -767,6 +772,7 @@ impl SteamApp {
         // An off-screen test copy never takes the keyboard from the desktop.
         if !offscreen() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            crate::dock::activate();
         }
     }
 
@@ -1281,6 +1287,10 @@ impl eframe::App for SteamApp {
             if self.prefs.tray_icon != f.tray_icon {
                 self.prefs.tray_icon = f.tray_icon;
                 self.tray.set_icon(f.tray_icon);
+            }
+            if self.prefs.show_in_dock != f.show_in_dock {
+                self.prefs.show_in_dock = f.show_in_dock;
+                crate::dock::set_hidden(!f.show_in_dock);
             }
             if self.prefs.cloud != f.cloud {
                 self.prefs.cloud = f.cloud;

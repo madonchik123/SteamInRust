@@ -432,6 +432,13 @@ pub fn spawn_compat(app: &OwnedApp, install_dir: &Path, args: &LaunchArgs, how: 
     game_args.extend(connect);
     let mut cmd = compat::wine_command(&runner, &prefix);
     cmd.current_dir(&cwd).env("SteamAppId", app.app_id.to_string()).env("SteamGameId", app.app_id.to_string());
+    // DirectX 10/11 through DXVK when it's in this prefix (first-time setup
+    // puts it there), else Wine's own D3D11 even if DXVK's files are there.
+    if runner.kind == compat::Kind::Wine {
+        let on = compat::wants_dxvk(&runner, &compat::load()) && compat::setup_done(&prefix).contains(compat::DXVK_STEP);
+        cmd.env("WINEDLLOVERRIDES", compat::dll_overrides(if on { compat::DXVK_ON } else { compat::DXVK_OFF }));
+        tracing::info!("{}: DXVK {}", app.name, if on { "on" } else { "off" });
+    }
     let dll = compat::windows_dll();
     match (&how.ipc_env, dll) {
         (Some(ipc), Some(dll)) => {

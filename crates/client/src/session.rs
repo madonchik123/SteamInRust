@@ -2895,11 +2895,19 @@ impl Online {
                 let done = crate::compat::setup_done(&prefix);
                 let steps = library.as_deref().map(|l| crate::installscript::pending_windows(l, app_id, &done)).unwrap_or_default();
                 let fresh = !prefix.join("system.reg").is_file();
-                if fresh || !steps.is_empty() {
-                    tracing::info!("{}: Steam Play setup in {} ({} step(s), new prefix: {fresh})", app.name, prefix.display(), steps.len());
+                // DirectX 10/11 through DXVK on plain Wine, once per prefix.
+                let dxvk = crate::compat::wants_dxvk(&runner, &crate::compat::load()) && !done.contains(crate::compat::DXVK_STEP);
+                if fresh || !steps.is_empty() || dxvk {
+                    tracing::info!("{}: Steam Play setup in {} ({} step(s), new prefix: {fresh}, DXVK: {dxvk})", app.name, prefix.display(), steps.len());
                     let (sink, dir, args) = (sink.clone(), dir.to_path_buf(), args.clone());
-                    let total = steps.len() + fresh as usize;
-                    let first = if fresh { format!("Wine ({})", runner.name) } else { steps[0].label.clone() };
+                    let total = steps.len() + fresh as usize + dxvk as usize;
+                    let first = if fresh {
+                        format!("Wine ({})", runner.name)
+                    } else if dxvk {
+                        "DXVK".to_string()
+                    } else {
+                        steps[0].label.clone()
+                    };
                     sink(Event::FirstTimeSetup { app_id, done: 0, total, step: first });
                     tokio::task::spawn_blocking(move || {
                         let progress = |i: usize, label: &str| sink(Event::FirstTimeSetup { app_id, done: i, total, step: label.to_string() });
@@ -2908,7 +2916,16 @@ impl Online {
                             tracing::warn!("Steam Play prefix for {app_id}: {e}");
                             sink(Event::Error(format!("First-time setup didn't finish: {e}")));
                         } else {
-                            let (ran, errors) = crate::compat::run_setup(&runner, &prefix, &steps, &|i, label| progress(i + fresh as usize, label));
+                            if dxvk {
+                                progress(fresh as usize, "DXVK");
+                                // Not fatal: without it the game still starts (with Wine's own D3D11).
+                                match crate::compat::ensure_dxvk().and_then(|d| crate::compat::install_dxvk(&prefix, &d)) {
+                                    Ok(()) => crate::compat::mark_setup_done(&prefix, &[crate::compat::DXVK_STEP.to_string()]),
+                                    Err(e) => tracing::warn!("DXVK for {app_id}: {e}"),
+                                }
+                            }
+                            let before = fresh as usize + dxvk as usize;
+                            let (ran, errors) = crate::compat::run_setup(&runner, &prefix, &steps, &|i, label| progress(i + before, label));
                             crate::compat::mark_setup_done(&prefix, &ran);
                             if !errors.is_empty() {
                                 tracing::warn!("Steam Play setup of {app_id}: {}", errors.join("; "));

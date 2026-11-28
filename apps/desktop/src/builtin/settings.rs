@@ -86,6 +86,8 @@ pub struct AppFlags {
     pub toast_notifications: bool,
     /// Which version of the logo the tray icon shows.
     pub tray_icon: ui::brand::Logo,
+    /// macOS: a Dock icon (off: the menu bar only).
+    pub show_in_dock: bool,
     pub fps_corner: FpsCorner,
 }
 
@@ -748,7 +750,23 @@ impl Settings {
                 }
             }, |_| {});
         });
-        group(ui, t, t!("App icon"), |ui| tray_icon_picker(ui, t, &self.flags));
+        if cfg!(windows) {
+            group(ui, t, t!("Window"), |ui| {
+                let mut on = crate::chrome::windows_frame_saved();
+                if switch_row(ui, t, t!("Use the Windows title bar"), t!("If the window looks shifted, with a black stripe at the top and left, or clicks land in the wrong place, turn this on. Takes effect the next time SteamInRust starts."), &mut on) {
+                    crate::chrome::save_windows_frame(on);
+                }
+            });
+        }
+        group(ui, t, t!("App icon"), |ui| {
+            tray_icon_picker(ui, t, &self.flags);
+            if cfg!(target_os = "macos") {
+                let mut dock = self.flags.lock().unwrap().show_in_dock;
+                if switch_row(ui, t, t!("Show in the Dock"), t!("Turn off to keep SteamInRust in the menu bar only."), &mut dock) {
+                    self.flags.lock().unwrap().show_in_dock = dock;
+                }
+            }
+        });
     }
 }
 
@@ -796,7 +814,7 @@ fn theme_card(ui: &mut Ui, t: &Theme, preset: &Theme, selected: bool) -> egui::R
 /// color, like the theme cards.
 fn tray_icon_picker(ui: &mut Ui, t: &Theme, flags: &SharedFlags) {
     use ui::brand::Logo;
-    ui.label(w::body_m(t, t!("The logo SteamInRust shows on the taskbar and in the system tray."), t.text_dim));
+    ui.label(w::body_m(t, if cfg!(target_os = "macos") { t!("The logo SteamInRust shows in the Dock and the menu bar.") } else { t!("The logo SteamInRust shows on the taskbar and in the system tray.") }, t.text_dim));
     ui.add_space(t.spacing.sm);
     let mut current = flags.lock().unwrap().tray_icon;
     ui.horizontal_wrapped(|ui| {
@@ -940,6 +958,9 @@ fn compatibility(ui: &mut Ui, t: &Theme) {
     group(ui, t, t!("Steam Play"), |ui| {
         ui.label(w::body_m(t, t!("Windows games can run on this Mac through CrossOver or Wine. Games with anti-cheat can't."), t.text_dim));
         if switch_row(ui, t, t!("Enable Steam Play for all other titles"), t!("Windows-only games install their Windows version and run through the default tool."), &mut cfg.other_titles) {
+            let _ = client::compat::save(&cfg);
+        }
+        if switch_row(ui, t, t!("Use DXVK for DirectX 10 and 11 games"), t!("Most DirectX 11 games need it to start with Wine. It's downloaded once (3 MB) the first time a game starts. CrossOver has its own and doesn't use it."), &mut cfg.dxvk) {
             let _ = client::compat::save(&cfg);
         }
         if runners.is_empty() {

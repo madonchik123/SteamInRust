@@ -176,6 +176,13 @@ fn rows(bp: &mut BigPicture, f: &mut Frame) -> Vec<Row> {
                 })),
                 toggle(t!("Steam Cloud"), t!("Enable Steam Cloud for games that support it. Each game can also be turned off in its Properties."), flags.cloud, flag(|x| &mut x.cloud)),
             ];
+            // Like Settings → Appearance in the normal window.
+            if cfg!(windows) {
+                out.push(toggle(t!("Use the Windows title bar"), t!("If the window looks shifted, with a black stripe at the top and left, or clicks land in the wrong place, turn this on. Takes effect the next time SteamInRust starts."), crate::chrome::windows_frame_saved(), act(|_, _, _| crate::chrome::save_windows_frame(!crate::chrome::windows_frame_saved()))));
+            }
+            if cfg!(target_os = "macos") {
+                out.push(toggle(t!("Show in the Dock"), t!("Turn off to keep SteamInRust in the menu bar only."), flags.show_in_dock, flag(|x| &mut x.show_in_dock)));
+            }
             // Steam Play on a Mac: Windows games through CrossOver or Wine.
             if client::compat::SUPPORTED {
                 let cfg = client::compat::load();
@@ -183,6 +190,11 @@ fn rows(bp: &mut BigPicture, f: &mut Frame) -> Vec<Row> {
                 out.push(toggle(t!("Enable Steam Play for all other titles"), t!("Windows-only games install their Windows version and run through the default tool."), cfg.other_titles, act(|_, _, _| {
                     let mut c = client::compat::load();
                     c.other_titles = !c.other_titles;
+                    let _ = client::compat::save(&c);
+                })));
+                out.push(toggle(t!("Use DXVK for DirectX 10 and 11 games"), t!("Most DirectX 11 games need it to start with Wine. It's downloaded once (3 MB) the first time a game starts. CrossOver has its own and doesn't use it."), cfg.dxvk, act(|_, _, _| {
+                    let mut c = client::compat::load();
+                    c.dxvk = !c.dxvk;
                     let _ = client::compat::save(&c);
                 })));
                 match client::compat::runner_for(0, &client::compat::Config { games: Default::default(), ..cfg.clone() }, &runners) {

@@ -135,6 +135,67 @@ pub fn logo_rgba(size: u32) -> Vec<u8> {
     Logo::Purple.rgba(size)
 }
 
+/// The Mac app icon at `size` × `size`: `logo` on a dark rounded tile with
+/// the margin every Mac icon has (Apple's grid: an 824-point tile in a
+/// 1024 canvas, corners about 22% of its side), so it sits in the Dock and
+/// Finder like other apps instead of a bare octagon edge to edge.
+pub fn mac_tile(logo: Logo, size: u32) -> Vec<u8> {
+    use resvg::{tiny_skia, usvg};
+    let blank = || vec![0; (size * size * 4) as usize];
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(size, size) else { return blank() };
+    let s = size as f32 / 1024.0;
+    let (x, y, side) = (100.0 * s, 100.0 * s, 824.0 * s);
+    let r = side * 0.2237;
+    // A rounded square (cubic corners, k = 0.5523 for a circle's quarter).
+    let k = r * (1.0 - 0.5523);
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + side - r, y);
+    pb.cubic_to(x + side - k, y, x + side, y + k, x + side, y + r);
+    pb.line_to(x + side, y + side - r);
+    pb.cubic_to(x + side, y + side - k, x + side - k, y + side, x + side - r, y + side);
+    pb.line_to(x + r, y + side);
+    pb.cubic_to(x + k, y + side, x, y + side - k, x, y + side - r);
+    pb.line_to(x, y + r);
+    pb.cubic_to(x, y + k, x + k, y, x + r, y);
+    pb.close();
+    let Some(tile) = pb.finish() else { return blank() };
+    // A soft shadow under the tile, like Apple's own icons.
+    let mut shadow = tiny_skia::Paint::default();
+    shadow.set_color_rgba8(0, 0, 0, 70);
+    shadow.anti_alias = true;
+    pixmap.fill_path(&tile, &shadow, tiny_skia::FillRule::Winding, tiny_skia::Transform::from_translate(0.0, 10.0 * s), None);
+    // Dark, a touch lighter at the top.
+    let mut paint = tiny_skia::Paint::default();
+    paint.anti_alias = true;
+    if let Some(shader) = tiny_skia::LinearGradient::new(
+        tiny_skia::Point::from_xy(0.0, y),
+        tiny_skia::Point::from_xy(0.0, y + side),
+        vec![tiny_skia::GradientStop::new(0.0, tiny_skia::Color::from_rgba8(46, 46, 56, 255)), tiny_skia::GradientStop::new(1.0, tiny_skia::Color::from_rgba8(20, 20, 26, 255))],
+        tiny_skia::SpreadMode::Pad,
+        tiny_skia::Transform::identity(),
+    ) {
+        paint.shader = shader;
+    }
+    pixmap.fill_path(&tile, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+    // The logo, centred, about 70% of the tile.
+    if let Ok(tree) = usvg::Tree::from_data(logo.svg(), &usvg::Options::default()) {
+        let (w, h) = (tree.size().width(), tree.size().height());
+        let box_side = side * 0.70;
+        let scale = box_side / w.max(h);
+        let (dx, dy) = (x + (side - w * scale) / 2.0, y + (side - h * scale) / 2.0);
+        resvg::render(&tree, tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, dx, dy), &mut pixmap.as_mut());
+    }
+    pixmap
+        .pixels()
+        .iter()
+        .flat_map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        })
+        .collect()
+}
+
 /// Straight (not premultiplied) RGBA of `svg` at `size` × `size`, centered,
 /// as window and tray icons expect.
 fn render(svg: &[u8], size: u32) -> Vec<u8> {
@@ -159,6 +220,29 @@ fn render(svg: &[u8], size: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::Logo;
+
+    #[test]
+    fn mac_tile_leaves_apples_margin() {
+        let size = 256;
+        let px = super::mac_tile(Logo::Purple, size);
+        // Corners and the margin are see-through; the tile's middle isn't.
+        assert_eq!(alpha(&px, size, 2, 2), 0);
+        assert_eq!(alpha(&px, size, 12, size / 2), 0);
+        assert_eq!(alpha(&px, size, size / 2, size / 2), 255);
+        assert_eq!(alpha(&px, size, 40, size / 2), 255);
+    }
+
+    /// Writes `assets/icon-macos.png`, the Mac app's icon (the release
+    /// build packs it into AppIcon.icns). Run after changing the logo:
+    /// `cargo test -p ui write_mac_icon -- --ignored`
+    #[test]
+    #[ignore]
+    fn write_mac_icon() {
+        let size = 1024;
+        let img = image::RgbaImage::from_raw(size, size, super::mac_tile(Logo::Purple, size)).unwrap();
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/icon-macos.png");
+        img.save(out).unwrap();
+    }
 
     fn alpha(px: &[u8], size: u32, x: u32, y: u32) -> u8 {
         px[((y * size + x) * 4 + 3) as usize]

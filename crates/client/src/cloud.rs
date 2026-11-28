@@ -110,6 +110,37 @@ impl Target {
         })
     }
 
+    /// Where a rule's files are on this computer: the folder and the path
+    /// under it (placeholders not yet filled in). A native Mac or Linux
+    /// version follows Steam's root override for its system: Oxygen Not
+    /// Included's `WinMyDocuments` + `Klei/OxygenNotIncluded/cloud_save_files`
+    /// is `MacAppSupport` + `unity.Klei.Oxygen Not Included/cloud_save_files`
+    /// on a Mac. Cloud names keep the rule's own root and path, like Steam.
+    fn rule_location(&self, rule: &model::SaveRule) -> Option<(PathBuf, String)> {
+        let path = rule_dir(&rule.path);
+        let over = self
+            .wine_prefix
+            .is_none()
+            .then(|| self.config.as_ref()?.root_overrides.iter().find(|o| o.applies(model::THIS_OS) && canonical_root(&o.root).eq_ignore_ascii_case(&canonical_root(&rule.root))))
+            .flatten();
+        let Some(o) = over else { return Some((self.root_dir(&rule.root)?, path)) };
+        let mut sub = path;
+        for (find, replace) in &o.transforms {
+            let find = rule_dir(find);
+            let starts = sub.get(..find.len()).is_some_and(|head| head.eq_ignore_ascii_case(&find)) && (sub.len() == find.len() || sub.as_bytes()[find.len()] == b'/');
+            if !find.is_empty() && starts {
+                sub = format!("{}{}", rule_dir(replace), &sub[find.len()..]);
+                break;
+            }
+        }
+        let add = rule_dir(&o.add_path);
+        if !add.is_empty() {
+            sub = if sub.is_empty() { add } else { format!("{add}/{sub}") };
+        }
+        let root = if o.use_instead.is_empty() { &rule.root } else { &o.use_instead };
+        Some((self.root_dir(root)?, sub.trim_matches('/').to_string()))
+    }
+
     /// Steam's placeholders in Auto-Cloud paths.
     fn expand(&self, path: &str) -> String {
         path.replace("{64BitSteamID}", &self.steam_id.to_string()).replace("{Steam3AccountID}", &self.account().to_string())
@@ -141,7 +172,7 @@ impl Target {
         if !canonical_root(raw_root).eq_ignore_ascii_case(&canonical_root(&rule.root)) {
             return None;
         }
-        let base = self.root_dir(&rule.root)?;
+        let (base, local_sub) = self.rule_location(rule)?;
         safe_rel_segments(after_root)?;
         let segs = safe_rel_segments(&self.expand(after_root))?;
         let rule_sub = rule_dir(&self.expand(&rule.path));
@@ -160,8 +191,10 @@ impl Target {
         if !glob(&rule.pattern, file_name) {
             return None;
         }
-        let mut out_segs = rule_segs;
-        out_segs.extend_from_slice(&segs[out_segs.len()..]);
+        // The rule's folder as it is here (moved by a root override).
+        let local = rule_dir(&self.expand(&local_sub));
+        let mut out_segs = if local.is_empty() { Vec::new() } else { safe_rel_segments(&local)? };
+        out_segs.extend_from_slice(&segs[rule_segs.len()..]);
         Some((base, out_segs))
     }
 
@@ -190,13 +223,14 @@ impl Target {
             }
         }
         for rule in self.config.iter().flat_map(|c| c.save_files.iter()) {
-            let Some(base) = self.root_dir(&rule.root) else { continue };
+            let Some((base, local_sub)) = self.rule_location(rule) else { continue };
             let sub = self.expand(&rule_dir(&rule.path));
-            let dir = if sub.is_empty() {
+            let local = self.expand(&local_sub);
+            let dir = if local.is_empty() {
                 let Some(_) = resolve_scan_root(&base) else { continue };
                 base
             } else {
-                let Some(sub_segs) = safe_rel_segments(&sub) else { continue };
+                let Some(sub_segs) = safe_rel_segments(&local) else { continue };
                 let Some(d) = resolve_scan_dir(&base, &sub_segs) else { continue };
                 d
             };
@@ -215,7 +249,9 @@ impl Target {
                 }
                 let mut name = format!("%{}%", canonical_root(&rule.root));
                 if !sub.is_empty() {
-                    name.push_str(&rule_dir(&rule.path));
+                    // Placeholders filled in, as Steam names them
+                    // (`cloud_save_files/76561198…/`, not `{64BitSteamID}`).
+                    name.push_str(&sub);
                     name.push('/');
                 }
                 name.push_str(&rel_str);
@@ -1138,11 +1174,80 @@ mod tests {
             quota: 1000,
             max_files: 10,
             save_files: vec![model::SaveRule { root: "GameInstall".into(), path: "saves".into(), pattern: "*.sav".into(), recursive: false }],
+            ..Default::default()
         };
         let t = Target { app_id: 10, steam_id: 76561197960265729, install_dir: PathBuf::from("C:/Games/X"), steam_root: Some(PathBuf::from("C:/Steam")), config: Some(cfg), cell_id: 0, wine_prefix: None };
         assert_eq!(t.local_path("%GameInstall%saves/a.sav").unwrap(), PathBuf::from("C:/Games/X").join("saves").join("a.sav"));
         assert_eq!(t.local_path("profile.dat").unwrap(), PathBuf::from("C:/Steam/userdata/1/10/remote/profile.dat"));
         assert_eq!(t.expand("{Steam3AccountID}/x"), "1/x");
+    }
+
+    /// Oxygen Not Included, as Steam lists it: Windows saves in Documents,
+    /// the Mac version's in Application Support under another name.
+    #[test]
+    fn root_overrides_move_native_saves() {
+        let oni = CloudConfig {
+            quota: 1000,
+            max_files: 10,
+            save_files: vec![model::SaveRule { root: "WinMyDocuments".into(), path: "Klei/OxygenNotIncluded/cloud_save_files/{64BitSteamID}".into(), pattern: "*".into(), recursive: true }],
+            root_overrides: vec![
+                model::RootOverride {
+                    root: "WinMyDocuments".into(),
+                    os: "macos".into(),
+                    use_instead: "MacAppSupport".into(),
+                    transforms: vec![("Klei/OxygenNotIncluded/cloud_save_files/{64BitSteamID}".into(), "unity.Klei.Oxygen Not Included/cloud_save_files/{64BitSteamID}".into())],
+                    ..Default::default()
+                },
+                model::RootOverride {
+                    root: "WinMyDocuments".into(),
+                    os: "linux".into(),
+                    use_instead: "LinuxHome".into(),
+                    transforms: vec![("Klei/OxygenNotIncluded/cloud_save_files/{64BitSteamID}".into(), ".config/unity3d/Klei/Oxygen Not Included/cloud_save_files/{64BitSteamID}".into())],
+                    ..Default::default()
+                },
+            ],
+        };
+        let t = |pfx: Option<PathBuf>| Target { app_id: 457140, steam_id: 76561197960265729, install_dir: PathBuf::from("/g"), steam_root: Some(PathBuf::from("/s")), config: Some(oni.clone()), cell_id: 0, wine_prefix: pfx };
+        let name = "%WinMyDocuments%Klei/OxygenNotIncluded/cloud_save_files/76561197960265729/Colony/Colony.sav";
+        let path = t(None).local_path(name).expect("resolves");
+        if model::THIS_OS == "macos" {
+            let support = directories::BaseDirs::new().unwrap().data_dir().to_path_buf();
+            assert_eq!(path, support.join("unity.Klei.Oxygen Not Included").join("cloud_save_files").join("76561197960265729").join("Colony").join("Colony.sav"));
+        } else {
+            // No override for Windows: Documents, as before.
+            assert!(path.ends_with("Klei/OxygenNotIncluded/cloud_save_files/76561197960265729/Colony/Colony.sav"));
+        }
+        // The Windows version under Wine keeps Windows' folders.
+        let pfx = std::env::temp_dir().join(format!("sir-cloud-oni-{}", std::process::id()));
+        std::fs::create_dir_all(pfx.join("drive_c").join("users").join("crossover")).unwrap();
+        let wine = t(Some(pfx.clone())).local_path(name).unwrap();
+        assert!(wine.starts_with(crate::compat::wine_user_dir(&pfx).join("Documents").join("Klei")));
+        let _ = std::fs::remove_dir_all(&pfx);
+        // "!=" applies everywhere but the named system.
+        let o = model::RootOverride { os: "windows".into(), not_os: true, ..Default::default() };
+        assert!(o.applies("macos"));
+        assert!(!o.applies("windows"));
+    }
+
+    /// Local files are named with the IDs filled in, like Steam stores them.
+    /// (Named `{64BitSteamID}`, they never matched the cloud's copies, were
+    /// sent up as new files and Steam refused them: error 42, "no match".)
+    #[test]
+    fn scanned_names_fill_in_placeholders() {
+        let game = std::env::temp_dir().join(format!("sir-cloud-names-{}", std::process::id()));
+        let saves = game.join("saves").join("76561197960265729");
+        std::fs::create_dir_all(&saves).unwrap();
+        std::fs::write(saves.join("a.sav"), b"x").unwrap();
+        let cfg = CloudConfig {
+            quota: 1000,
+            max_files: 10,
+            save_files: vec![model::SaveRule { root: "GameInstall".into(), path: "saves/{64BitSteamID}".into(), pattern: "*.sav".into(), recursive: false }],
+            ..Default::default()
+        };
+        let t = Target { app_id: 10, steam_id: 76561197960265729, install_dir: game.clone(), steam_root: Some(game.join("steam")), config: Some(cfg), cell_id: 0, wine_prefix: None };
+        let names: Vec<String> = t.scan_local().into_keys().collect();
+        assert_eq!(names, vec!["%GameInstall%saves/76561197960265729/a.sav".to_string()]);
+        let _ = std::fs::remove_dir_all(&game);
     }
 
     #[test]
@@ -1153,6 +1258,7 @@ mod tests {
             quota: 1000,
             max_files: 10,
             save_files: vec![model::SaveRule { root: "WinAppDataLocalLow".into(), path: "Studio/Game".into(), pattern: "*.sav".into(), recursive: false }],
+            ..Default::default()
         };
         let t = Target { app_id: 10, steam_id: 76561197960265729, install_dir: PathBuf::from("/g"), steam_root: Some(PathBuf::from("/s")), config: Some(cfg), cell_id: 0, wine_prefix: Some(pfx.clone()) };
         let user = crate::compat::wine_user_dir(&pfx);
@@ -1180,7 +1286,7 @@ mod tests {
         assert!(t_none.local_path("../escape.dat").is_none());
         assert!(t_none.local_path("").is_none());
 
-        let t_empty = base_target(Some(CloudConfig { quota: 1000, max_files: 10, save_files: vec![] }));
+        let t_empty = base_target(Some(CloudConfig { quota: 1000, max_files: 10, save_files: vec![], ..Default::default() }));
         assert!(t_empty.local_path("%GameInstall%saves/a.sav").is_none());
 
         let cfg = CloudConfig {
@@ -1190,6 +1296,7 @@ mod tests {
                 model::SaveRule { root: "GameInstall".into(), path: "Saves/{Steam3AccountID}".into(), pattern: "*.sav".into(), recursive: false },
                 model::SaveRule { root: "GameInstall".into(), path: "Profiles".into(), pattern: "*.cfg".into(), recursive: true },
             ],
+            ..Default::default()
         };
         let t_ruled = base_target(Some(cfg));
         assert_eq!(
@@ -1217,6 +1324,7 @@ mod tests {
             quota: 1000,
             max_files: 10,
             save_files: vec![model::SaveRule { root: "WinAppDataLocal".into(), path: "KnightsEnd/Saved".into(), pattern: "*.sav".into(), recursive: true }],
+            ..Default::default()
         }));
         let save = win.local_path("%WinAppDataLocal%KnightsEnd/Saved/SaveGames/Save02.sav").expect("windows root resolves");
         assert!(save.ends_with("KnightsEnd/Saved/SaveGames/Save02.sav"));
@@ -1244,6 +1352,7 @@ mod tests {
                 quota: 1000,
                 max_files: 10,
                 save_files: vec![model::SaveRule { root: "GameInstall".into(), path: "saves".into(), pattern: "*.sav".into(), recursive: false }],
+                ..Default::default()
             }),
             cell_id: 0,
             wine_prefix: None,

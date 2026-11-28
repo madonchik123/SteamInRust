@@ -185,6 +185,7 @@ All native, no web view.
 | Per-game toggle, sync before launch and after quit, usage | Done |
 | Conflicts, with a local backup before anything is replaced | Done. The question brings the window forward even when a game starts from a desktop shortcut while SteamInRust is in the tray |
 | Saves changed offline upload by themselves once online | Done |
+| A game's own Mac or Linux version keeps its saves where Steam's per-system rules say (`rootoverrides`: Oxygen Not Included's Mac saves are in Application Support, not Documents) | Done. Unit-tested with Oxygen Not Included's rules |
 
 ## Steam features inside games
 
@@ -195,7 +196,7 @@ Details: [steam-compatibility.md](steam-compatibility.md).
 | Games without anti-cheat use SteamInRust's own `steamclient` DLL, 64-bit and 32-bit | Done |
 | The same on a Mac: one `steamclient.dylib` for Apple and Intel games (Intel games run under Rosetta) | Done. Tested with Human: Fall Flat: Workshop, stats, and joining a stranger's lobby on the official client |
 | Games with VAC, Easy Anti-Cheat or BattlEye start through the official client, silently | Done. Our DLL is never used for them |
-| Steam Play on a Mac: the Windows version of a game downloads (Windows depots, recorded as `platform_override_source` like Steam), gets a Wine prefix with Steam's redistributables, and starts through the runner with our Windows `steamclient64.dll` (localhost connection to the app, same token check). Anti-cheat games never start this way | Done with Wine Devel 11.21 on an M4 Mac (macOS 27): MineSweeper Rush (32-bit) installed, started, read stats, used leaderboards and unlocked an achievement through our DLL; a Steam Cloud file written under Wine landed in the Mac's userdata folder. Not tried: CrossOver, a 64-bit game, Auto-Cloud rules under Wine (unit-tested). See [steam-compatibility.md](steam-compatibility.md#1b-steam-play-on-a-mac-windows-games-through-crossover-or-wine) |
+| Steam Play on a Mac: the Windows version of a game downloads (Windows depots, recorded as `platform_override_source` like Steam), gets a Wine prefix with Steam's redistributables, and starts through the runner with our Windows `steamclient64.dll` (localhost connection to the app, same token check). Anti-cheat games never start this way | Done with Wine Devel 11.21 on an M4 Mac (macOS 27): MineSweeper Rush (32-bit) installed, started, read stats, used leaderboards and unlocked an achievement through our DLL; a Steam Cloud file written under Wine landed in the Mac's userdata folder. DirectX 10 and 11 games draw through DXVK for macOS (D3D11 through Vulkan and MoltenVK; downloaded once, pinned and checksummed, put in the prefix by first-time setup; a setting in Settings and Big Picture turns it off; CrossOver uses its own): PLA_TOON (Unreal Engine 4) went from "DX11 feature level 10.0 is required" to running with feature level 11_0 on the M4. Not tried: CrossOver, Auto-Cloud rules under Wine (unit-tested). See [steam-compatibility.md](steam-compatibility.md#1b-steam-play-on-a-mac-windows-games-through-crossover-or-wine) |
 | User, apps, achievements, stats, cloud, friends, auth tickets, encrypted app tickets | Done |
 | Lobbies (`ISteamMatchmaking`) through Steam's matchmaking service | Done |
 | P2P (`ISteamNetworking`) between SteamInRust players | Done, with UDP hole punching |

@@ -6,6 +6,7 @@ mod bigpicture;
 mod builtin;
 mod chrome;
 mod demo;
+mod dock;
 mod friends_window;
 mod image_cache;
 mod sized_images;
@@ -80,6 +81,8 @@ fn main() -> eframe::Result {
     if app::offscreen() {
         viewport = viewport.with_position(app::OFFSCREEN_POS);
     }
+    // The Windows title bar, if the player chose it (needed before the window).
+    chrome::load_windows_frame();
     let options = eframe::NativeOptions {
         // A test copy's off-screen window must never become the real app's.
         persist_window: !app::offscreen(),

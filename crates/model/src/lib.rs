@@ -147,6 +147,33 @@ pub struct CloudConfig {
     pub max_files: u32,
     /// Auto-Cloud: folders the game saves into by itself.
     pub save_files: Vec<SaveRule>,
+    /// Steam's `rootoverrides`: where a rule's files really are on another
+    /// system (Oxygen Not Included's Mac saves are in Application Support,
+    /// not Documents).
+    #[serde(default)]
+    pub root_overrides: Vec<RootOverride>,
+}
+
+/// One of Steam's `rootoverrides`: on systems matching `os`, files under
+/// `root` live under `use_instead`, with each `transforms` (find, replace)
+/// applied to the start of the rule's path and `add_path` put before it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RootOverride {
+    pub root: String,
+    /// "windows", "macos" or "linux" (lowercase).
+    pub os: String,
+    /// `oscompare` "!=": systems other than `os`.
+    pub not_os: bool,
+    pub use_instead: String,
+    pub add_path: String,
+    pub transforms: Vec<(String, String)>,
+}
+
+impl RootOverride {
+    /// Does it apply on `os` ("windows", "macos", "linux")?
+    pub fn applies(&self, os: &str) -> bool {
+        (self.os == os) != self.not_os
+    }
 }
 
 /// One Auto-Cloud rule: files matching `pattern` under `root`/`path`.

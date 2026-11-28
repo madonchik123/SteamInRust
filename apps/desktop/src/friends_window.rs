@@ -228,7 +228,7 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
         .with_title(t!("Friends & Chat"))
         .with_inner_size(size_flag().unwrap_or([width, 720.0]))
         .with_min_inner_size([if has_pane { list_w + t.dense(360.0) } else { list_w }, 420.0])
-        .with_decorations(crate::chrome::SYSTEM_FRAME)
+        .with_decorations(crate::chrome::system_frame())
         .with_icon(crate::window_icon::icon_data(app.prefs.tray_icon, 64));
     // A preview copy keeps it off the screen too, beside the main window.
     if crate::app::offscreen() {
@@ -278,7 +278,7 @@ pub fn show(app: &mut SteamApp, ctx: &egui::Context, actions: &mut Vec<Action>) 
             if has_pane {
                 // The window buttons sit over the tabs when the conversation
                 // side is the right one.
-                let reserve = if side == Side::Left && !crate::chrome::SYSTEM_FRAME { 3.0 * 46.0 } else { 0.0 };
+                let reserve = if side == Side::Left && !crate::chrome::system_frame() { 3.0 * 46.0 } else { 0.0 };
                 pane(app, ui, actions, reserve);
             } else {
                 // Widened by hand with nothing open.

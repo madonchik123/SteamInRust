@@ -13,6 +13,9 @@ pub struct WindowIcon {
     /// last ones live as long as the window).
     #[cfg(windows)]
     made: Vec<windows_sys::Win32::UI::WindowsAndMessaging::HICON>,
+    /// macOS: the logo the Dock shows.
+    #[cfg(target_os = "macos")]
+    dock: Option<ui::brand::Logo>,
 }
 
 impl WindowIcon {
@@ -22,12 +25,27 @@ impl WindowIcon {
         {
             self.drawn = None;
         }
+        #[cfg(target_os = "macos")]
+        {
+            self.dock = None;
+        }
     }
 
     /// Draws the icons for the window's scaling and `logo`, and again when
     /// either changes (moved to another display, another logo picked).
+    /// macOS: the Dock shows the picked logo on a Mac tile like the app's
+    /// own icon (the app's icon itself for the default logo).
+    #[cfg(target_os = "macos")]
+    pub fn show(&mut self, _frame: &eframe::Frame, logo: ui::brand::Logo) {
+        if self.dock == Some(logo) {
+            return;
+        }
+        self.dock = Some(logo);
+        crate::dock::set_icon((logo != ui::brand::Logo::default()).then_some(logo));
+    }
+
     /// Elsewhere the system takes the app's icon from its bundle.
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub fn show(&mut self, _frame: &eframe::Frame, _logo: ui::brand::Logo) {}
 
     #[cfg(windows)]

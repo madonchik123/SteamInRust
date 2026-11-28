@@ -5,7 +5,10 @@
 //!
 //! Most items are depot content: the item's `hcontent_file` is a manifest in
 //! the game's own depot (depot id = app id), fetched and installed like a
-//! game. Old ("legacy") items are a single file at `file_url`.
+//! game. Old ("legacy") items are a single file at `file_url` (their
+//! `hcontent_file` is that file's handle, not a manifest: Oxygen Not
+//! Included's mods are zips like this). Games are given the file itself for
+//! those, like Steam does (see the steamclient's `GetItemInstallInfo`).
 
 use model::{AppId, SteamId};
 use net::Connection;
@@ -99,7 +102,16 @@ pub async fn sync_with_progress(conn: &Connection, me: SteamId, app: AppId, libr
             }
         };
         progress(n as u32, total, &title);
-        let result = if manifest != 0 {
+        // A file link means a legacy item, whatever `hcontent_file` holds.
+        let legacy = !d.file_url().is_empty();
+        let result = if legacy {
+            if d.file_size() > MAX_LEGACY_ITEM_BYTES as u64 {
+                Err("Workshop item exceeds 512 MiB limit".into())
+            } else {
+                let file_sha = ugc_file_sha(conn, app, d.hcontent_file()).await;
+                legacy_item(d.file_url(), d.filename(), file_sha.as_bytes(), &dir).await
+            }
+        } else if manifest != 0 {
             if cdn.is_none() {
                 let servers = crate::download::content_servers(conn, cell_id).await?;
                 let c = Arc::new(depot::Cdn::new(servers));
@@ -111,20 +123,13 @@ pub async fn sync_with_progress(conn: &Connection, me: SteamId, app: AppId, libr
                 cdn = Some(c);
             }
             depot_item(conn, cdn.clone().unwrap(), app, manifest, &dir).await
-        } else if !d.file_url().is_empty() {
-            if d.file_size() > MAX_LEGACY_ITEM_BYTES as u64 {
-                Err("Workshop item exceeds 512 MiB limit".into())
-            } else {
-                let file_sha = ugc_file_sha(conn, app, d.hcontent_file()).await;
-                legacy_item(d.file_url(), d.filename(), file_sha.as_bytes(), &dir).await
-            }
         } else {
             Err("Steam has no files for this item".into())
         };
         match result {
             Ok(size) => {
                 tracing::info!("workshop {app}/{id} ({title}): {size} bytes");
-                record.installed.insert(id, Installed { size, updated: d.time_updated(), manifest, subscribed_by: me });
+                record.installed.insert(id, Installed { size, updated: d.time_updated(), manifest, subscribed_by: me, legacy });
                 // Saved after each item, so an interrupted sync keeps what's done.
                 record.save(&ws, app).map_err(|e| e.to_string())?;
                 report.downloaded.push((id, title));
@@ -330,6 +335,16 @@ async fn legacy_item(url: &str, filename: &str, file_sha: &[u8], dir: &Path) -> 
     {
         return Err("refusing symlink Workshop file".into());
     }
+    // The item is this one file: an older version's file (another name)
+    // goes, or the game would be given the wrong one.
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let old = e.path();
+            if old != target && e.file_type().is_ok_and(|t| t.is_file()) {
+                let _ = std::fs::remove_file(old);
+            }
+        }
+    }
     std::fs::write(target, &bytes).map_err(|e| e.to_string())?;
     Ok(bytes.len() as u64)
 }
@@ -410,6 +425,8 @@ struct Installed {
     updated: u32,
     manifest: u64,
     subscribed_by: SteamId,
+    /// A single file (see the module notes): `legacy` "1" in the record.
+    legacy: bool,
 }
 
 /// `appworkshop_<app>.acf`, the record Steam keeps of installed items.
@@ -426,10 +443,12 @@ impl Record {
             if let Some(items) = doc.path(&["AppWorkshop", "WorkshopItemsInstalled"]) {
                 for (id, v) in items.iter() {
                     let (Ok(id), Some(o)) = (id.parse::<u64>(), v.as_obj()) else { continue };
-                    let by = details.and_then(|d| d.obj(&id.to_string())).and_then(|d| d.u64("subscribedby")).unwrap_or(0);
+                    let detail = details.and_then(|d| d.obj(&id.to_string()));
+                    let by = detail.and_then(|d| d.u64("subscribedby")).unwrap_or(0);
+                    let legacy = detail.and_then(|d| d.str("legacy")) == Some("1");
                     installed.insert(
                         id,
-                        Installed { size: o.u64("size").unwrap_or(0), updated: o.u64("timeupdated").unwrap_or(0) as u32, manifest: o.u64("manifest").unwrap_or(0), subscribed_by: by },
+                        Installed { size: o.u64("size").unwrap_or(0), updated: o.u64("timeupdated").unwrap_or(0) as u32, manifest: o.u64("manifest").unwrap_or(0), subscribed_by: by, legacy },
                     );
                 }
             }
@@ -446,14 +465,15 @@ impl Record {
                 &id.to_string(),
                 vdf::Obj::default().with("size", i.size.to_string()).with("timeupdated", i.updated.to_string()).with("manifest", i.manifest.to_string()),
             );
-            details = details.with_obj(
-                &id.to_string(),
-                vdf::Obj::default()
-                    .with("manifest", i.manifest.to_string())
-                    .with("timeupdated", i.updated.to_string())
-                    .with("timetouched", now.to_string())
-                    .with("subscribedby", i.subscribed_by.to_string()),
-            );
+            let mut detail = vdf::Obj::default()
+                .with("manifest", i.manifest.to_string())
+                .with("timeupdated", i.updated.to_string())
+                .with("timetouched", now.to_string())
+                .with("subscribedby", i.subscribed_by.to_string());
+            if i.legacy {
+                detail = detail.with("legacy", "1");
+            }
+            details = details.with_obj(&id.to_string(), detail);
         }
         let total: u64 = self.installed.values().map(|i| i.size).sum();
         let doc = vdf::Obj::default().with_obj(
@@ -477,6 +497,23 @@ impl Record {
 mod tests {
     use super::*;
 
+    /// Legacy items (single files, like Oxygen Not Included's mod zips) keep
+    /// their mark in the record, which the in-game steamclient reads.
+    #[test]
+    fn record_keeps_legacy_items() {
+        let ws = std::env::temp_dir().join(format!("sir-ws-legacy-{}", std::process::id()));
+        let mut r = Record { installed: BTreeMap::new() };
+        r.installed.insert(2018291283, Installed { size: 169095, updated: 1719616041, manifest: 2495639017700739042, subscribed_by: 76561197960265729, legacy: true });
+        r.installed.insert(7, Installed { size: 1, updated: 1, manifest: 9, subscribed_by: 76561197960265729, legacy: false });
+        r.save(&ws, 457140).unwrap();
+        let text = std::fs::read_to_string(ws.join("appworkshop_457140.acf")).unwrap();
+        assert_eq!(text.matches("\"legacy\"").count(), 1);
+        let back = Record::load(&ws, 457140);
+        assert!(back.installed[&2018291283].legacy);
+        assert!(!back.installed[&7].legacy);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
     #[test]
     fn finds_the_library_of_an_install() {
         let lib = std::env::temp_dir().join("SteamLibrary");
@@ -489,7 +526,7 @@ mod tests {
     fn record_round_trips() {
         let dir = std::env::temp_dir().join(format!("sir-ws-{}", std::process::id()));
         let mut r = Record { installed: BTreeMap::new() };
-        r.installed.insert(42, Installed { size: 10, updated: 5, manifest: 7, subscribed_by: 9 });
+        r.installed.insert(42, Installed { size: 10, updated: 5, manifest: 7, subscribed_by: 9, legacy: false });
         r.save(&dir, 477160).unwrap();
         let back = Record::load(&dir, 477160);
         let i = &back.installed[&42];

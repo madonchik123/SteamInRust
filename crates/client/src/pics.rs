@@ -388,7 +388,35 @@ fn parse_cloud(info: &vdf::Obj) -> Option<model::CloudConfig> {
                 .collect()
         })
         .unwrap_or_default();
-    (quota > 0 || !save_files.is_empty()).then_some(model::CloudConfig { quota, max_files: ufs.u64("maxnumfiles").unwrap_or(0) as u32, save_files })
+    let root_overrides = ufs
+        .obj("rootoverrides")
+        .map(|r| {
+            r.iter()
+                .filter_map(|(_, v)| {
+                    let o = v.as_obj()?;
+                    let os = match o.str("os")?.to_lowercase().as_str() {
+                        "macos" | "osx" | "mac" => "macos",
+                        "linux" => "linux",
+                        "windows" => "windows",
+                        _ => return None,
+                    };
+                    let transforms = o
+                        .obj("pathtransforms")
+                        .map(|t| t.iter().filter_map(|(_, v)| v.as_obj()).filter_map(|t| Some((t.str("find")?.to_string(), t.str("replace").unwrap_or_default().to_string()))).collect())
+                        .unwrap_or_default();
+                    Some(model::RootOverride {
+                        root: o.str("root")?.to_string(),
+                        os: os.to_string(),
+                        not_os: o.str("oscompare") == Some("!="),
+                        use_instead: o.str("useinstead").unwrap_or_default().to_string(),
+                        add_path: o.str("addpath").unwrap_or_default().to_string(),
+                        transforms,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (quota > 0 || !save_files.is_empty()).then_some(model::CloudConfig { quota, max_files: ufs.u64("maxnumfiles").unwrap_or(0) as u32, save_files, root_overrides })
 }
 
 pub(crate) fn parse_depots(info: &vdf::Obj) -> Vec<model::DepotInfo> {
