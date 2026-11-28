@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/madonchik123/SteamInRust/compare/v0.16.0...v0.17.0) (2026-11-28)
+
+
+### New
+
+* chat pictures, videos and links you can check, select and copy ([#150](https://github.com/madonchik123/SteamInRust/issues/150)) ([047b944](https://github.com/madonchik123/SteamInRust/commit/047b94417f2ce63c9d973ace47082830dd171d2e))
+* plugin API - Big Picture plugin pages, new widgets, library, achievements, downloads, store, timers, safer HTTP ([#151](https://github.com/madonchik123/SteamInRust/issues/151)) ([7cb1375](https://github.com/madonchik123/SteamInRust/commit/7cb13757de664782707342a5161617b5785bd82a))
+
+
+### Fixes
+
+* pick the Mac or Windows version on install, with each one's size ([#148](https://github.com/madonchik123/SteamInRust/issues/148)) ([b849114](https://github.com/madonchik123/SteamInRust/commit/b849114a566599bea3527747cd4052551f41809c))
+
 ## [0.16.0](https://github.com/madonchik123/SteamInRust/compare/v0.15.0...v0.16.0) (2026-11-27)
 
 
